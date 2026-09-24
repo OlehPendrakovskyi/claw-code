@@ -8,7 +8,7 @@
     "ignorePatterns": ["out/**", "assets/**", "node_modules/**"],
     "overrides": [
         {
-            "files": ["src/chat/**"],
+            "files": ["src/webview/**"],
             "rules": {
                 "no-useless-escape": "off"
             }

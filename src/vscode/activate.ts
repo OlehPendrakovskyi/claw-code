@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { ChatViewProvider } from '../chat/ChatViewProvider';
-import { openDebugChatPanel } from '../chat/debugPanel';
+import { ChatViewProvider } from '../webview/ChatViewProvider';
+import { openDebugChatPanel } from '../webview/debugPanel';
 import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';

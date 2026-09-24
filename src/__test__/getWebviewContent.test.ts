@@ -1,6 +1,6 @@
 
 import * as vscode from 'vscode';
-import { getWebviewContent } from '../chat/getWebviewContent';
+import { getWebviewContent } from '../webview/content';
 
 function renderHTML(): string {
     return getWebviewContent(

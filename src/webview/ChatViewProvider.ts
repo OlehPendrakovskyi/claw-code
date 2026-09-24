@@ -3,8 +3,8 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { TextDecoder, TextEncoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
-import { ChatEvent, ChatService, UsageInfo } from './ChatService';
-import { getWebviewContent } from './getWebviewContent';
+import { ChatEvent, ChatService, UsageInfo } from '../chat/ChatService';
+import { getWebviewContent } from './content';
 import {
     SLASH_COMMANDS,
     buildSlashPrompt,

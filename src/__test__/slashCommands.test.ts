@@ -4,7 +4,7 @@ import {
     findCommand,
     filterCommands,
     buildSlashPrompt,
-} from '../chat/slashCommands';
+} from '../webview/slashCommands';
 
 describe('SLASH_COMMANDS', () => {
     it('has at least 5 commands', () => {
