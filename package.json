@@ -215,6 +215,7 @@
     "pretest": "pnpm run compile && pnpm run lint",
     "lint": "oxlint .",
     "test": "jest",
+    "license:check": "license-checker-rseidelsohn --production --onlyAllow \"MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense\"",
     "installLocal": "scripts/install-local.sh",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish -p $OVSX_TOKEN",
@@ -227,6 +228,7 @@
     "@types/ws": "^8.18.1",
     "esbuild": "^0.27.4",
     "jest": "^30.5.2",
+    "license-checker-rseidelsohn": "^5.0.1",
     "oxlint": "^1.85.0",
     "ts-jest": "^29.4.13",
     "typescript": "^6"
