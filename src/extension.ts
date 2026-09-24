@@ -6,12 +6,10 @@ import { promisify, TextEncoder } from 'util';
 import { ChatViewProvider } from './chat/ChatViewProvider';
 import { openDebugChatPanel } from './chat/debugPanel';
 import {
-    asString,
     extractAccessInfoFromCli,
     extractAccessInfoFromConfig,
     formatAccessSummaryMarkdown,
     formatAccessSummaryShort,
-    formatNamedEntry,
     isRecord,
     mergeAccessInfo,
     uniqueList,
@@ -27,6 +25,8 @@ import {
     writeOpenClawConfigRecord,
     type HardeningMode
 } from './core/configIO';
+import { computeToolToggle, loadToolsForOverview, readEntryAtPath, type ToolEntry } from './core/tools';
+
 
 
 
@@ -60,15 +60,6 @@ const PROVIDER_DOCS: Record<string, string> = {
 const LEGACY_CLI_ALIASES = new Set(['molt', 'molt.exe', 'clawdbot', 'clawdbot.exe']);
 const STATUS_LABEL = 'OpenClaw';
 type QuickPickOption<T extends string> = vscode.QuickPickItem & { value: T };
-type ToolEntry = {
-    id: string;
-    label: string;
-    enabled: boolean;
-    path: Array<string | number>;
-    source: string;
-    description?: string;
-};
-
 export function activate(context: vscode.ExtensionContext) {
     log.info('activate() start');
 
@@ -441,84 +432,6 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
     }
 }
 
-function getToolEnabled(entry: unknown) {
-    if (isRecord(entry) && typeof entry.enabled === 'boolean') {
-        return entry.enabled;
-    }
-    return true;
-}
-
-function getToolDescription(entry: unknown) {
-    if (!isRecord(entry)) {
-        return undefined;
-    }
-    return (
-        asString(entry.description) ??
-        asString(entry.summary) ??
-        asString(entry.purpose) ??
-        asString(entry.details)
-    );
-}
-
-function collectToolEntries(config: Record<string, unknown>): ToolEntry[] {
-    const entries: ToolEntry[] = [];
-    const sources: Array<{
-        source: string;
-        basePath: Array<string | number>;
-        value: unknown;
-    }> = [
-        { source: 'tools', basePath: ['tools'], value: config.tools },
-        {
-            source: 'mcp.tools',
-            basePath: ['mcp', 'tools'],
-            value: isRecord(config.mcp) ? config.mcp.tools : undefined
-        },
-        {
-            source: 'capabilities.tools',
-            basePath: ['capabilities', 'tools'],
-            value: isRecord(config.capabilities) ? config.capabilities.tools : undefined
-        }
-    ];
-
-    for (const source of sources) {
-        if (Array.isArray(source.value)) {
-            source.value.forEach((entry, index) => {
-                const label = formatNamedEntry(entry) || `Tool ${index + 1}`;
-                entries.push({
-                    id: `${source.source}:${source.basePath.join('.')}:${index}`,
-                    label,
-                    enabled: getToolEnabled(entry),
-                    description: getToolDescription(entry),
-                    path: [...source.basePath, index],
-                    source: source.source
-                });
-            });
-        } else if (isRecord(source.value)) {
-            for (const [name, entry] of Object.entries(source.value)) {
-                const label = formatNamedEntry(entry, name) || name;
-                entries.push({
-                    id: `${source.source}:${source.basePath.join('.')}:${name}`,
-                    label,
-                    enabled: getToolEnabled(entry),
-                    description: getToolDescription(entry),
-                    path: [...source.basePath, name],
-                    source: source.source
-                });
-            }
-        }
-    }
-
-    return entries.sort((a, b) => a.label.localeCompare(b.label));
-}
-
-async function loadToolsForOverview(): Promise<{ entries: ToolEntry[]; error?: string }> {
-    const { config, error } = await loadOpenClawConfigRecord();
-    if (!config) {
-        return { entries: [], error };
-    }
-    return { entries: collectToolEntries(config), error };
-}
-
 async function toggleToolEntry(tool: ToolEntry) {
     const { config, error, path: configPath } = await loadOpenClawConfigRecord();
     if (!config) {
@@ -531,41 +444,26 @@ async function toggleToolEntry(tool: ToolEntry) {
         return;
     }
     const { parent, key } = parentInfo;
-    const current =
-        Array.isArray(parent) && typeof key === 'number'
-            ? parent[key]
-            : isRecord(parent) && typeof key === 'string'
-            ? parent[key]
-            : undefined;
-    if (typeof current === 'undefined') {
-        vscode.window.showErrorMessage(`Unable to locate tool "${tool.label}" in config.`);
-        return;
-    }
-    const currentlyEnabled = getToolEnabled(current);
-    const nextEnabled = !currentlyEnabled;
-    let nextEntry = current;
-
-    if (typeof current === 'string') {
-        if (!nextEnabled) {
-            nextEntry = { name: current, enabled: false };
-        }
-    } else if (isRecord(current)) {
-        nextEntry = { ...current, enabled: nextEnabled };
-    } else {
-        vscode.window.showErrorMessage(`Tool "${tool.label}" has an unsupported format.`);
+    const toggle = computeToolToggle(readEntryAtPath(parent, key));
+    if (!toggle.ok) {
+        vscode.window.showErrorMessage(
+            toggle.reason === 'missing'
+                ? `Unable to locate tool "${tool.label}" in config.`
+                : `Tool "${tool.label}" has an unsupported format.`
+        );
         return;
     }
 
     if (Array.isArray(parent) && typeof key === 'number') {
-        parent[key] = nextEntry as unknown;
+        parent[key] = toggle.nextEntry;
     } else if (isRecord(parent) && typeof key === 'string') {
-        parent[key] = nextEntry as unknown;
+        parent[key] = toggle.nextEntry;
     }
 
     await writeOpenClawConfigRecord(configPath, config);
     overviewProvider?.refreshTools();
     vscode.window.showInformationMessage(
-        `${nextEnabled ? 'Enabled' : 'Disabled'} tool "${tool.label}".`
+        `${toggle.enabled ? 'Enabled' : 'Disabled'} tool "${tool.label}".`
     );
 }
 
