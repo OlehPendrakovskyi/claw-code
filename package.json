@@ -1,0 +1,240 @@
+{
+  "name": "openclaw-extension",
+  "displayName": "OpenClaw Extension",
+  "description": "Status bar connector for the OpenClaw CLI",
+  "version": "0.2.1",
+  "publisher": "openknot",
+  "author": {
+    "name": "Val Alexander",
+    "email": "val@openknot.ai"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/openknots/openclaw-extension",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openknots/openclaw-extension.git"
+  },
+  "icon": "assets/images/image.png",
+  "engines": {
+    "vscode": "^1.105.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "cli",
+    "openclaw",
+    "openknot",
+    "clawdbot",
+    "moltbot",
+    "vscode"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "openclaw.connect",
+        "title": "OpenClaw: Connect"
+      },
+      {
+        "command": "openclaw.setup",
+        "title": "OpenClaw: Setup"
+      },
+      {
+        "command": "openclaw.modelSetup",
+        "title": "OpenClaw: Model Setup Wizard"
+      },
+      {
+        "command": "openclaw.harden",
+        "title": "OpenClaw: Harden"
+      },
+      {
+        "command": "openclaw.hardening.showAccessSummary",
+        "title": "OpenClaw: Hardening Access Summary"
+      },
+      {
+        "command": "openclaw.chat.open",
+        "title": "OpenClaw: Open Chat"
+      },
+      {
+        "command": "openclaw.chat.popOut",
+        "title": "OpenClaw: Pop Out Chat"
+      },
+      {
+        "command": "openclaw.chat.newSession",
+        "title": "OpenClaw: New Chat Session"
+      },
+      {
+        "command": "openclaw.chat.debug",
+        "title": "OpenClaw: Debug Chat Panel"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "openclaw",
+          "title": "OpenClaw",
+          "icon": "assets/icons/openclaw.svg"
+        }
+      ]
+    },
+    "views": {
+      "openclaw": [
+        {
+          "id": "openclaw.chat",
+          "type": "webview",
+          "name": "Chat"
+        },
+        {
+          "id": "openclaw.overview",
+          "name": "Overview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "OpenClaw",
+      "properties": {
+        "openclaw.autoConnect": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically connect to OpenClaw on startup"
+        },
+        "openclaw.command": {
+          "type": "string",
+          "default": "openclaw status",
+          "description": "Command to run when connecting (e.g. 'openclaw status' or 'wsl openclaw status')"
+        },
+        "openclaw.hardening.mode": {
+          "type": "string",
+          "enum": [
+            "full",
+            "audit",
+            "auditFix"
+          ],
+          "default": "full",
+          "description": "Hardening workflow to run: audit only, audit + fix, or full (audit, fix, deep)"
+        },
+        "openclaw.hardening.command": {
+          "type": "string",
+          "default": "openclaw",
+          "description": "Command prefix to run OpenClaw hardening (e.g. 'openclaw' or 'wsl openclaw')"
+        },
+        "openclaw.chat.agent": {
+          "type": "string",
+          "default": "codex",
+          "description": "Agent to use for chat sessions (e.g. 'codex', 'gemini', 'opencode')"
+        },
+        "openclaw.chat.permissions": {
+          "type": "string",
+          "enum": [
+            "approve-reads",
+            "approve-all",
+            "deny-all"
+          ],
+          "default": "approve-reads",
+          "description": "Permission mode for chat agent: approve-reads (default), approve-all, or deny-all"
+        },
+        "openclaw.chat.models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "codex",
+            "claude",
+            "opencode"
+          ],
+          "description": "Available models shown in the chat model picker"
+        },
+        "openclaw.chat.thinkingLevel": {
+          "type": "string",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "default": "medium",
+          "description": "Thinking/reasoning depth for the AI model (none, low, medium, high)"
+        },
+        "openclaw.chat.temperature": {
+          "type": "number",
+          "default": 0.7,
+          "minimum": 0,
+          "maximum": 2,
+          "description": "Temperature for response generation (0 = deterministic, 2 = very creative)"
+        },
+        "openclaw.chat.maxTokens": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum response tokens (0 = model default)"
+        },
+        "openclaw.chat.systemPrompt": {
+          "type": "string",
+          "default": "",
+          "description": "Custom system prompt prepended to all chat messages (leave empty for default)"
+        },
+        "openclaw.chat.dynamicSubject": {
+          "type": "boolean",
+          "default": true,
+          "description": "Dynamically update thread subjects based on chat context (slash commands, file names, topics)"
+        },
+        "openclaw.chat.collapseCompleted": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically collapse completed chats in 1x1 multichat view. Collapsed threads show only their header and can be expanded by clicking."
+        },
+        "openclaw.chat.dimension": {
+          "type": "string",
+          "enum": [
+            "1x1",
+            "2x2",
+            "2x3",
+            "3x3",
+            "4x4"
+          ],
+          "default": "1x1",
+          "description": "Grid dimension for chat threads (e.g. '2x2' creates a 2x2 grid with 4 visible threads)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "pnpm run compile",
+    "compile": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc -p ./ --noEmit",
+    "pretest": "pnpm run compile && pnpm run lint",
+    "lint": "eslint src",
+    "test": "vitest run",
+    "installLocal": "scripts/install-local.sh",
+    "publish:vsce": "vsce publish",
+    "publish:ovsx": "ovsx publish -p $OVSX_TOKEN",
+    "publish:all": "scripts/publish-all.sh"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.15",
+    "@types/vscode": "~1.105.0",
+    "@typescript-eslint/eslint-plugin": "^8.57.2",
+    "@typescript-eslint/parser": "^8.57.2",
+    "esbuild": "^0.27.4",
+    "eslint": "^10",
+    "typescript": "^6",
+    "vitest": "^4.1.1"
+  },
+  "dependencies": {
+    "@create-markdown/core": "^2.0.0",
+    "@create-markdown/preview": "^2.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
