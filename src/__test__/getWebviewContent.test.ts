@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+
 import * as vscode from 'vscode';
 import { getWebviewContent } from '../chat/getWebviewContent';
 
