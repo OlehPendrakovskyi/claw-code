@@ -1,10 +1,8 @@
 ![OpenClaw hero](assets/images/readme.png)
 
-# OpenClaw VS Code Extension
+# Claw Code
 
 A full-featured VS Code companion for [OpenClaw](https://docs.openclaw.ai) — chat with any codebase, run security hardening, manage tools, and connect to the OpenClaw gateway, all from the sidebar.
-
-> Built by [OpenKnot](https://openknot.ai)
 
 ## Screenshots
 
@@ -223,3 +221,7 @@ npm install -g acpx
 ## License
 
 [MIT](./LICENSE)
+
+## Acknowledgments
+
+Claw Code is a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) © Val Alexander / OpenKnot AI. Many thanks for the original work.

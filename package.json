@@ -1,18 +1,22 @@
 {
-  "name": "openclaw-extension",
-  "displayName": "OpenClaw Extension",
-  "description": "Status bar connector for the OpenClaw CLI",
+  "name": "claw-code",
+  "displayName": "Claw Code",
+  "description": "VS Code extension for OpenClaw — chat gateway client",
   "version": "0.2.1",
   "publisher": "openknot",
   "author": {
-    "name": "Val Alexander",
-    "email": "val@openknot.ai"
+    "name": "OlehPendrakovskyi"
   },
+  "contributors": [
+    {
+      "name": "OlehPendrakovskyi"
+    }
+  ],
   "license": "MIT",
-  "homepage": "https://github.com/openknots/openclaw-extension",
+  "homepage": "https://github.com/OlehPendrakovskyi/claw-code",
   "repository": {
     "type": "git",
-    "url": "https://github.com/openknots/openclaw-extension.git"
+    "url": "https://github.com/OlehPendrakovskyi/claw-code.git"
   },
   "icon": "assets/images/image.png",
   "engines": {
@@ -26,9 +30,7 @@
     "ai",
     "cli",
     "openclaw",
-    "openknot",
-    "clawdbot",
-    "moltbot",
+    "claw-code",
     "vscode"
   ],
   "activationEvents": [
