@@ -4,6 +4,8 @@ import * as path from 'path';
 import { TextDecoder, TextEncoder } from 'util';
 import { isRecord } from './accessInfo';
 
+export type HardeningMode = 'full' | 'audit' | 'auditFix';
+
 export async function readOpenClawConfig(
     configPath: string
 ): Promise<{ config: unknown | null; error?: string }> {
@@ -43,6 +45,21 @@ export async function loadOpenClawConfigRecord(): Promise<{
         };
     }
     return { config: result.config, error: result.error, path: configPath };
+}
+
+export function getHardeningCommandPrefix() {
+    const config = vscode.workspace.getConfiguration('openclaw');
+    const prefix = (config.get<string>('hardening.command') ?? 'openclaw').trim();
+    return prefix;
+}
+
+export function getHardeningMode(): HardeningMode {
+    const config = vscode.workspace.getConfiguration('openclaw');
+    const configured = (config.get<string>('hardening.mode') ?? 'full').trim();
+    if (configured === 'audit' || configured === 'auditFix' || configured === 'full') {
+        return configured;
+    }
+    return 'full';
 }
 
 export async function writeOpenClawConfigRecord(configPath: string, config: Record<string, unknown>) {
