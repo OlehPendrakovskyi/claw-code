@@ -141,7 +141,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('## CLI status --all output');
     if (cliOutput) {
         lines.push('```');
-        lines.push(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)).trim());
+        lines.push(redactPlainSecrets(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))).trim());
         lines.push('```');
     } else {
         lines.push('No CLI output captured.');
@@ -263,6 +263,14 @@ export function redactEndpoint(endpoint: string): string {
     } catch {
         return endpoint;
     }
+}
+
+/** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer x`) so non-URL secrets never reach a report verbatim. */
+export function redactPlainSecrets(text: string): string {
+    return text
+        .replace(/\b(token|api[_-]?key|apikey|secret|password|passwd|credential|access[_-]?key)s?\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi, '$1=***')
+        .replace(/\b(authorization)\s*[:=]\s*("[^"]*"|'[^']*'|\S+.*)/gi, '$1=***')
+        .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
 }
 
 /** Format a named entry (name + credential-redacted endpoint) for reports. */

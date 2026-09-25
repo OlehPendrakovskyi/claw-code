@@ -4,6 +4,7 @@ import {
     extractAccessInfoFromCli,
     extractAccessInfoFromConfig,
     redactEndpoint,
+    redactPlainSecrets,
     extractEnvVarName,
     extractMcpServers,
     extractTools,
@@ -258,6 +259,15 @@ describe('extractAccessInfoFromCli', () => {
             'http://three',
             'https://one.two'
         ]);
+    });
+});
+
+describe('redactPlainSecrets', () => {
+    it('masks plain-text credentials and bearer tokens', () => {
+        expect(redactPlainSecrets('token=abc123')).toBe('token=***');
+        expect(redactPlainSecrets('api_key="sk-123"')).toBe('api_key=***');
+        expect(redactPlainSecrets('Authorization: Bearer abcdef123456')).toBe('Authorization=***');
+        expect(redactPlainSecrets('plain text stays')).toBe('plain text stays');
     });
 });
 
