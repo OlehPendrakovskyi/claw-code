@@ -109,8 +109,10 @@ describe('GatewayChatService', () => {
     const log = { lines: [] as string[] };
     const svc = makeService(ws, log);
     const pending = svc.connect();
-    // Emit open -> connect frame sent.
+    // Emit open, then the pre-connect challenge -> connect frame sent (challenge-gated).
     ws.emit('open');
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { ts: Date.now() } }));
     await new Promise<void>((r) => setTimeout(r, 0));
     expect(ws.sent).toHaveLength(1);
     const connectFrame = JSON.parse(ws.sent[0]) as { method: string; params: Record<string, unknown> };
@@ -131,6 +133,7 @@ describe('GatewayChatService', () => {
     const svc = makeService(ws, { lines: [] });
     const pending = svc.connect();
     ws.emit('open');
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { ts: Date.now() } }));
     await new Promise<void>((r) => setTimeout(r, 0));
     ws.emit('message', JSON.stringify({ type: 'res', id: 'cc-1', ok: false, error: { code: 'UNAUTHORIZED', message: 'no' } }));
     await expect(pending).rejects.toThrow('handshake rejected');
@@ -141,6 +144,7 @@ describe('GatewayChatService', () => {
     const svc = makeService(ws, { lines: [] });
     const connecting = svc.connect();
     ws.emit('open');
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { ts: Date.now() } }));
     await new Promise<void>((r) => setTimeout(r, 0));
     ws.emit('message', JSON.stringify(HELLO_OK));
     await connecting;

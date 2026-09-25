@@ -63,6 +63,8 @@ type PendingRequest = {
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
+/** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
+const CHALLENGE_FALLBACK_MS = 500;
 
 function defaultWsFactory(url: string): WebSocketLike {
   // Lazy require keeps `ws` off the extension-activation path until connect().
@@ -173,12 +175,28 @@ export class GatewayChatService {
     const ws = this.ws;
     return new Promise<HelloOk>((resolve, reject) => {
       let settled = false;
+      let helloSent = false;
+      let challengeTimer: ReturnType<typeof setTimeout> | null = null;
       const settleError = (msg: string) => {
         if (settled) return;
         settled = true;
+        if (challengeTimer) {
+          clearTimeout(challengeTimer);
+          challengeTimer = null;
+        }
         reject(new Error(msg));
       };
-      const onOpen = () => {
+      // protocol/handshake.md + auth.md: gate `connect` on the pre-connect
+      // `connect.challenge` event when the gateway sends one (nonce-first
+      // handshake). Token-only clients need no signature, but a short fallback
+      // timer keeps compatibility with gateways that do not challenge.
+      const sendHello = () => {
+        if (helloSent || settled) return;
+        helloSent = true;
+        if (challengeTimer) {
+          clearTimeout(challengeTimer);
+          challengeTimer = null;
+        }
         const frame: RpcRequestFrame = {
           type: 'req',
           id: this.allocId(),
@@ -186,6 +204,9 @@ export class GatewayChatService {
           params: this.buildHello() as unknown as Record<string, unknown>,
         };
         ws.send(JSON.stringify(frame));
+      };
+      const onOpen = () => {
+        challengeTimer = setTimeout(() => sendHello(), CHALLENGE_FALLBACK_MS);
       };
       const onMessage = (data: unknown) => {
         const frame = parseFrame(data);
@@ -205,6 +226,8 @@ export class GatewayChatService {
           }
         } else if (!settled && (frame as { event?: string }).event === GatewayEvents.connectChallenge) {
           // Pre-connect challenge observed; token auth needs no signed reply.
+          // Gate the connect request on it (nonce-first handshake compatibility).
+          sendHello();
           return;
         }
       };
@@ -215,6 +238,11 @@ export class GatewayChatService {
       const onClose = () => {
         this.connected = false;
         if (!settled) settleError('gateway closed before handshake completed');
+        if (challengeTimer) {
+          clearTimeout(challengeTimer);
+          challengeTimer = null;
+        }
+        this.rejectAllPending('gateway connection closed');
         this.scheduleReconnect();
       };
       ws.on('open', onOpen as () => void);
@@ -294,6 +322,14 @@ export class GatewayChatService {
     this.onSessionEvent(evt);
     const chatEvent = mapSessionEventToChatEvent(evt);
     if (chatEvent) this.onEvent(chatEvent);
+  }
+
+  /** Reject and clear every in-flight request (socket closed / disposed). */
+  private rejectAllPending(reason: string): void {
+    for (const [id, pending] of this.pending) {
+      this.pending.delete(id);
+      pending.reject(new Error(reason));
+    }
   }
 
   private scheduleReconnect(): void {
