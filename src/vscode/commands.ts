@@ -11,7 +11,6 @@ import {
     mergeAccessInfo,
     redactEndpoint,
     redactPlainSecrets,
-    uniqueList,
     type AccessSummary
 } from '../core/accessInfo';
 import {
@@ -257,7 +256,7 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
     const cliInfo = extractAccessInfoFromCli(cliResult.output);
 
     const combined = mergeAccessInfo(configInfo, cliInfo);
-    combined.networkEndpoints = uniqueList([...combined.networkEndpoints, redactEndpoint(getDashboardUrl())]);
+    combined.networkEndpoints = [...new Set(combined.networkEndpoints.map((e) => redactEndpoint(e)))].sort();
 
     const short = formatAccessSummaryShort(combined, configResult.error, cliResult.error);
     const markdown = formatAccessSummaryMarkdown(

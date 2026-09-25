@@ -1,3 +1,5 @@
+import { compact, get, isString, map, sortBy, uniq } from 'lodash-es';
+
 export type AccessSummary = {
     short: string;
     markdown: string;
@@ -13,6 +15,12 @@ export type AccessInfo = {
     notes: string[];
 };
 
+/** De-duplicate strings, drop blank entries and return the result sorted. */
+function uniqSorted(items: string[]): string[] {
+    return sortBy(uniq(items.filter((item) => item && item.trim().length > 0)));
+}
+
+/** Extract access-relevant details (servers, tools, keys, endpoints, files) from a config object. */
 export function extractAccessInfoFromConfig(config: unknown, configPath: string): AccessInfo {
     const info = createEmptyAccessInfo();
     info.localFiles.push(configPath);
@@ -32,10 +40,10 @@ export function extractAccessInfoFromConfig(config: unknown, configPath: string)
 
     scanAccessInfo(config, [], keySources, localFiles, endpoints, notes);
 
-    info.keySources = uniqueList([...keySources]);
-    info.localFiles = uniqueList([...localFiles]);
-    info.networkEndpoints = uniqueList([...endpoints]);
-    info.notes = uniqueList([...notes]);
+    info.keySources = uniqSorted([...keySources]);
+    info.localFiles = uniqSorted([...localFiles]);
+    info.networkEndpoints = uniqSorted([...endpoints]);
+    info.notes = uniqSorted([...notes]);
 
     return info;
 }
@@ -46,18 +54,18 @@ export function extractAccessInfoFromCli(output?: string): AccessInfo {
         return info;
     }
     const urls = output.match(/https?:\/\/\S+/g) ?? [];
-    info.networkEndpoints = uniqueList(urls.map(redactEndpoint));
+    info.networkEndpoints = uniqSorted(map(urls, redactEndpoint));
     return info;
 }
 
 export function mergeAccessInfo(base: AccessInfo, extra: AccessInfo): AccessInfo {
     return {
-        mcpServers: uniqueList([...base.mcpServers, ...extra.mcpServers]),
-        tools: uniqueList([...base.tools, ...extra.tools]),
-        keySources: uniqueList([...base.keySources, ...extra.keySources]),
-        networkEndpoints: uniqueList([...base.networkEndpoints, ...extra.networkEndpoints]),
-        localFiles: uniqueList([...base.localFiles, ...extra.localFiles]),
-        notes: uniqueList([...base.notes, ...extra.notes])
+        mcpServers: uniqSorted([...base.mcpServers, ...extra.mcpServers]),
+        tools: uniqSorted([...base.tools, ...extra.tools]),
+        keySources: uniqSorted([...base.keySources, ...extra.keySources]),
+        networkEndpoints: uniqSorted([...base.networkEndpoints, ...extra.networkEndpoints]),
+        localFiles: uniqSorted([...base.localFiles, ...extra.localFiles]),
+        notes: uniqSorted([...base.notes, ...extra.notes])
     };
 }
 
@@ -128,7 +136,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     lines.push('## Local files');
-    const files = configPath ? uniqueList([configPath, ...info.localFiles]) : info.localFiles;
+    const files = configPath ? uniqSorted([configPath, ...info.localFiles]) : info.localFiles;
     lines.push(formatList(files, 'No local files detected.'));
     lines.push('');
 
@@ -170,24 +178,19 @@ export function createEmptyAccessInfo(): AccessInfo {
 
 export function extractMcpServers(config: Record<string, unknown>): string[] {
     const results = new Set<string>();
-    const mcp = config.mcp;
-    if (Array.isArray(mcp)) {
-        for (const entry of mcp) {
-            const label = formatNamedEntry(entry);
-            if (label) {
-                results.add(label);
-            }
+    const addLabels = (entries: unknown[]) => {
+        for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
+            results.add(label);
         }
+    };
+    const mcp = get(config, 'mcp');
+    if (Array.isArray(mcp)) {
+        addLabels(mcp);
     }
     if (isRecord(mcp)) {
-        const servers = mcp.servers;
+        const servers = get(mcp, 'servers');
         if (Array.isArray(servers)) {
-            for (const entry of servers) {
-                const label = formatNamedEntry(entry);
-                if (label) {
-                    results.add(label);
-                }
-            }
+            addLabels(servers);
         } else if (isRecord(servers)) {
             for (const [name, entry] of Object.entries(servers)) {
                 const label = formatNamedEntry(entry, name);
@@ -197,35 +200,31 @@ export function extractMcpServers(config: Record<string, unknown>): string[] {
             }
         }
     }
-    if (Array.isArray(config.mcpServers)) {
-        for (const entry of config.mcpServers) {
-            const label = formatNamedEntry(entry);
-            if (label) {
-                results.add(label);
-            }
-        }
+    const mcpServers = get(config, 'mcpServers');
+    if (Array.isArray(mcpServers)) {
+        addLabels(mcpServers);
     }
-    return uniqueList([...results]);
+    return uniqSorted([...results]);
 }
 
 export function extractTools(config: Record<string, unknown>): string[] {
     const results = new Set<string>();
-    const sources = [config.tools];
+    const addLabels = (entries: unknown[]) => {
+        for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
+            results.add(label);
+        }
+    };
+    const sources = [get(config, 'tools')];
     if (isRecord(config.mcp)) {
-        sources.push(config.mcp.tools);
+        sources.push(get(config.mcp, 'tools'));
     }
     if (isRecord(config.capabilities)) {
-        sources.push(config.capabilities.tools);
+        sources.push(get(config.capabilities, 'tools'));
     }
 
     for (const source of sources) {
         if (Array.isArray(source)) {
-            for (const entry of source) {
-                const label = formatNamedEntry(entry);
-                if (label) {
-                    results.add(label);
-                }
-            }
+            addLabels(source);
         } else if (isRecord(source)) {
             for (const [name, entry] of Object.entries(source)) {
                 const label = formatNamedEntry(entry, name);
@@ -236,7 +235,7 @@ export function extractTools(config: Record<string, unknown>): string[] {
         }
     }
 
-    return uniqueList([...results]);
+    return uniqSorted([...results]);
 }
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
@@ -275,7 +274,7 @@ export function redactPlainSecrets(text: string): string {
         .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
 }
 
-/** Format a named entry (name + credential-redacted endpoint) for reports. */
+/** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
         return redactEndpoint(entry);
@@ -283,8 +282,11 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (!isRecord(entry)) {
         return fallbackName;
     }
-    const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
-    const rawEndpoint = asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
+    const name = (isString(entry.name) ? entry.name : undefined) ?? (isString(entry.id) ? entry.id : undefined) ?? fallbackName;
+    const rawEndpoint =
+        (isString(entry.url) ? entry.url : undefined) ??
+        (isString(entry.endpoint) ? entry.endpoint : undefined) ??
+        (isString(entry.host) ? entry.host : undefined);
     const endpoint = rawEndpoint !== undefined ? redactEndpoint(rawEndpoint) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
@@ -363,20 +365,16 @@ export function summarizeKeySources(sources: string[]) {
     return categories.size > 0 ? [...categories].sort().join(', ') : 'none';
 }
 
+/** Read the environment-variable name from a key entry record (`env`, `envVar` or `environment`). */
 export function getEnvVarFromRecord(entry: Record<string, unknown>) {
-    const envValue = asString(entry.env) ?? asString(entry.envVar) ?? asString(entry.environment);
-    if (!envValue) {
-        return undefined;
-    }
-    return envValue;
+    const envValue = get(entry, 'env') ?? get(entry, 'envVar') ?? get(entry, 'environment');
+    return isString(envValue) ? envValue : undefined;
 }
 
+/** Read a plausible filesystem path from a key entry record (`path`, `file` or `filePath`). */
 export function getFilePathFromRecord(entry: Record<string, unknown>) {
-    const fileValue = asString(entry.path) ?? asString(entry.file) ?? asString(entry.filePath);
-    if (!fileValue) {
-        return undefined;
-    }
-    if (looksLikePath(fileValue)) {
+    const fileValue = get(entry, 'path') ?? get(entry, 'file') ?? get(entry, 'filePath');
+    if (isString(fileValue) && looksLikePath(fileValue)) {
         return fileValue;
     }
     return undefined;
@@ -403,14 +401,12 @@ export function looksLikePath(value: string) {
     return /[\\/]/.test(value) && !isUrl(value);
 }
 
-export function uniqueList(items: string[]) {
-    return [...new Set(items.filter((item) => item && item.trim().length > 0))].sort();
-}
-
+/** Check that a value is a non-null object (arrays included, by design). */
 export function isRecord(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null;
 }
 
+/** Resolve a string value from `value`, returning undefined for anything else. */
 export function asString(value: unknown): string | undefined {
-    return typeof value === 'string' ? value : undefined;
+    return isString(value) ? value : undefined;
 }

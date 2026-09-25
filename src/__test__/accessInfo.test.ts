@@ -21,7 +21,6 @@ import {
     mergeAccessInfo,
     scanAccessInfo,
     summarizeKeySources,
-    uniqueList,
     type AccessInfo
 } from '../core/accessInfo';
 
@@ -52,14 +51,6 @@ describe('primitives', () => {
         expect(asString('abc')).toBe('abc');
         expect(asString(1)).toBeUndefined();
         expect(asString(undefined)).toBeUndefined();
-    });
-
-    it('uniqueList drops empties, de-dupes and sorts', () => {
-        expect(uniqueList(['b', 'a', 'b', '', '  ', 'c'])).toEqual(['a', 'b', 'c']);
-    });
-
-    it('uniqueList returns an empty list for empty input', () => {
-        expect(uniqueList([])).toEqual([]);
     });
 
     it('isKeyIndicator matches credential-ish keys case-insensitively', () => {
