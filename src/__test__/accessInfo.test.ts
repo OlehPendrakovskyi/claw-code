@@ -269,6 +269,13 @@ describe('redactPlainSecrets', () => {
         expect(redactPlainSecrets('Authorization: Bearer abcdef123456')).toBe('Authorization=***');
         expect(redactPlainSecrets('plain text stays')).toBe('plain text stays');
     });
+
+    it('masks quoted JSON keys and prefixed environment names', () => {
+        expect(redactPlainSecrets('{"token":"secret"}')).toBe('{"token"=***}');
+        expect(redactPlainSecrets('OPENAI_API_KEY=secret')).toBe('OPENAI_API_KEY=***');
+        expect(redactPlainSecrets('AWS_SECRET_ACCESS_KEY=abc')).toBe('AWS_SECRET_ACCESS_KEY=***');
+        expect(redactPlainSecrets('"Authorization":"Basic dXNlcjpwYXNz"')).toBe('"Authorization"=***');
+    });
 });
 
 describe('mergeAccessInfo', () => {
