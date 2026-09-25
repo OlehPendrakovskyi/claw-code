@@ -758,7 +758,25 @@ export async function openOnboardDocs() {
 }
 
 export async function openDashboard() {
-    await vscode.env.openExternal(vscode.Uri.parse(getDashboardUrl()));
+    const url = getDashboardUrl();
+    // dashboardUrl is workspace-configurable; restrict to http(s) so a
+    // repository cannot make "Open dashboard" launch file:/custom handlers.
+    let uri: vscode.Uri;
+    try {
+        uri = vscode.Uri.parse(url);
+    } catch {
+        vscode.window.showErrorMessage(
+            `Invalid OpenClaw dashboard URL: ${url}. Use an http(s) URL (openclaw.dashboardUrl).`
+        );
+        return;
+    }
+    if (uri.scheme !== 'http' && uri.scheme !== 'https') {
+        vscode.window.showErrorMessage(
+            `Refused to open dashboard URL with scheme '${uri.scheme}': only http/https is allowed (openclaw.dashboardUrl).`
+        );
+        return;
+    }
+    await vscode.env.openExternal(uri);
 }
 
 export async function openUpdateDocs() {
