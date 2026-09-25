@@ -21,7 +21,7 @@ import {
     mergeAccessInfo,
     scanAccessInfo,
     summarizeKeySources,
-    uniqueList,
+    uniqSorted,
     type AccessInfo
 } from '../core/accessInfo';
 
@@ -52,14 +52,6 @@ describe('primitives', () => {
         expect(asString('abc')).toBe('abc');
         expect(asString(1)).toBeUndefined();
         expect(asString(undefined)).toBeUndefined();
-    });
-
-    it('uniqueList drops empties, de-dupes and sorts', () => {
-        expect(uniqueList(['b', 'a', 'b', '', '  ', 'c'])).toEqual(['a', 'b', 'c']);
-    });
-
-    it('uniqueList returns an empty list for empty input', () => {
-        expect(uniqueList([])).toEqual([]);
     });
 
     it('isKeyIndicator matches credential-ish keys case-insensitively', () => {
@@ -420,5 +412,32 @@ describe('redactEndpoint', () => {
     it('keeps ordinary URLs untouched', () => {
         expect(redactEndpoint('https://example.com/path?x=1')).toBe('https://example.com/path?x=1');
         expect(redactEndpoint('127.0.0.1:18789')).toBe('127.0.0.1:18789');
+    });
+});
+
+describe('uniqSorted', () => {
+    it('deduplicates, drops blank and whitespace-only entries, and sorts', () => {
+        expect(uniqSorted(['b', 'a', 'b', '', '   ', 'c'])).toEqual(['a', 'b', 'c']);
+    });
+
+    it('keeps single values and returns an empty array for blank input', () => {
+        expect(uniqSorted(['x'])).toEqual(['x']);
+        expect(uniqSorted(['', ' '])).toEqual([]);
+    });
+});
+
+describe('accessInfo getter fallback semantics', () => {
+    it('getEnvVarFromRecord skips non-string values and continues the chain', () => {
+        expect(getEnvVarFromRecord({ env: 123, envVar: 'OPENAI_KEY' } as Record<string, unknown>)).toBe('OPENAI_KEY');
+        expect(getEnvVarFromRecord({ env: null, environment: 'FOO' } as Record<string, unknown>)).toBe('FOO');
+        expect(getEnvVarFromRecord({})).toBeUndefined();
+        expect(getEnvVarFromRecord({ env: '', envVar: 'OPENAI_KEY' })).toBe('OPENAI_KEY');
+        expect(getEnvVarFromRecord({ envVar: '' })).toBeUndefined();
+    });
+
+    it('getFilePathFromRecord skips non-string values and continues the chain', () => {
+        expect(getFilePathFromRecord({ path: 42, file: '/tmp/key.pem' } as Record<string, unknown>)).toBe('/tmp/key.pem');
+        expect(getFilePathFromRecord({ path: '/tmp/key.pem' })).toBe('/tmp/key.pem');
+        expect(getFilePathFromRecord({ path: 'just words' })).toBeUndefined();
     });
 });

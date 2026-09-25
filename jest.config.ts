@@ -9,6 +9,8 @@ const config: JestConfigWithTsJest = {
     setupFiles: ['<rootDir>/src/__test__/setup.ts'],
     moduleNameMapper: {
         '^vscode$': path.resolve(process.cwd(), 'src/__test__/vscode.mock.ts'),
+        '^lodash-es$': 'lodash',
+        '^(\\.{1,2}/.*)\\.js$': '$1',
     },
 };
 

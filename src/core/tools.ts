@@ -1,4 +1,5 @@
-import { isRecord, asString, formatNamedEntry } from './accessInfo';
+import { isRecord, asString } from './accessInfo/util';
+import { formatNamedEntry } from './accessInfo/format';
 import { loadOpenClawConfigRecord } from './configIO';
 
 export type ToolEntry = {
@@ -134,5 +135,3 @@ export function computeToolToggle(current: unknown): ToggleToolResult {
     return { ok: true, nextEntry, enabled: nextEnabled };
 }
 
-export { extractMcpServers, extractTools } from './accessInfo';
-export type { AccessInfo } from './accessInfo';
