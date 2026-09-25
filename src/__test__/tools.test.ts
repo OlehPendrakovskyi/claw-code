@@ -164,13 +164,13 @@ describe('loadToolsForOverview', () => {
     });
 });
 
-describe('tools re-exports', () => {
-    it('re-exports the access-info helpers', () => {
+describe('accessInfo barrel helpers', () => {
+    it('exposes the access-info helpers', () => {
         expect(typeof extractMcpServers).toBe('function');
         expect(typeof extractTools).toBe('function');
     });
 
-    it('re-exported helpers keep their behaviour', () => {
+    it('barrel helpers keep their behaviour', () => {
         expect(extractTools({ tools: ['read'] })).toEqual(['read']);
         expect(extractMcpServers({ mcpServers: ['legacy'] })).toEqual(['legacy']);
     });

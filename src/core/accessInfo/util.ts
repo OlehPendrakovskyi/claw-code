@@ -1,4 +1,4 @@
-import { get, isString, sortBy, uniq } from 'lodash-es';
+import { isString, sortBy, uniq } from 'lodash-es';
 import type { AccessInfo } from './types.js';
 
 /** Check that a value is a non-null object (arrays included, by design). */
@@ -36,19 +36,18 @@ export function extractEnvVarName(value: string) {
     return match ? match[1] : undefined;
 }
 
-/** Read the environment-variable name from a key entry record (`env`, `envVar` or `environment`). */
+/** Read the environment-variable name from a key entry record (`env`, `envVar` or `environment`); non-string values are skipped and the chain continues. */
 export function getEnvVarFromRecord(entry: Record<string, unknown>) {
-    const envValue = get(entry, 'env') ?? get(entry, 'envVar') ?? get(entry, 'environment');
-    return isString(envValue) ? envValue : undefined;
+    return asString(entry.env) ?? asString(entry.envVar) ?? asString(entry.environment);
 }
 
-/** Read a plausible filesystem path from a key entry record (`path`, `file` or `filePath`). */
+/** Read a plausible filesystem path from a key entry record (`path`, `file` or `filePath`); non-string values are skipped and the chain continues. */
 export function getFilePathFromRecord(entry: Record<string, unknown>) {
-    const fileValue = get(entry, 'path') ?? get(entry, 'file') ?? get(entry, 'filePath');
-    if (isString(fileValue) && looksLikePath(fileValue)) {
-        return fileValue;
+    const fileValue = asString(entry.path) ?? asString(entry.file) ?? asString(entry.filePath);
+    if (!fileValue) {
+        return undefined;
     }
-    return undefined;
+    return looksLikePath(fileValue) ? fileValue : undefined;
 }
 
 /** Create an AccessInfo with all collections empty. */
