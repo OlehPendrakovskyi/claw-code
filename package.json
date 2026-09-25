@@ -1,18 +1,22 @@
 {
-  "name": "openclaw-extension",
-  "displayName": "OpenClaw Extension",
-  "description": "Status bar connector for the OpenClaw CLI",
+  "name": "claw-code",
+  "displayName": "Claw Code",
+  "description": "VS Code extension for OpenClaw — chat gateway client",
   "version": "0.2.1",
   "publisher": "openknot",
   "author": {
-    "name": "Val Alexander",
-    "email": "val@openknot.ai"
+    "name": "OlehPendrakovskyi"
   },
+  "contributors": [
+    {
+      "name": "OlehPendrakovskyi"
+    }
+  ],
   "license": "MIT",
-  "homepage": "https://github.com/openknots/openclaw-extension",
+  "homepage": "https://github.com/OlehPendrakovskyi/claw-code",
   "repository": {
     "type": "git",
-    "url": "https://github.com/openknots/openclaw-extension.git"
+    "url": "https://github.com/OlehPendrakovskyi/claw-code.git"
   },
   "icon": "assets/images/image.png",
   "engines": {
@@ -26,9 +30,7 @@
     "ai",
     "cli",
     "openclaw",
-    "openknot",
-    "clawdbot",
-    "moltbot",
+    "claw-code",
     "vscode"
   ],
   "activationEvents": [
@@ -201,6 +203,11 @@
           ],
           "default": "1x1",
           "description": "Grid dimension for chat threads (e.g. '2x2' creates a 2x2 grid with 4 visible threads)"
+        },
+        "openclaw.dashboardUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:18789/",
+          "description": "OpenClaw gateway dashboard URL to open (default: local gateway address)"
         }
       }
     }
@@ -211,26 +218,30 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc -p ./ --noEmit",
     "pretest": "pnpm run compile && pnpm run lint",
-    "lint": "eslint src",
-    "test": "vitest run",
+    "lint": "oxlint .",
+    "test": "jest",
+    "license:check": "license-checker-rseidelsohn --production --onlyAllow \"MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense\"",
     "installLocal": "scripts/install-local.sh",
     "publish:vsce": "vsce publish",
     "publish:ovsx": "ovsx publish -p $OVSX_TOKEN",
     "publish:all": "scripts/publish-all.sh"
   },
   "devDependencies": {
-    "@types/node": "^22.19.15",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.6.2",
     "@types/vscode": "~1.105.0",
-    "@typescript-eslint/eslint-plugin": "^8.57.2",
-    "@typescript-eslint/parser": "^8.57.2",
+    "@types/ws": "^8.18.1",
     "esbuild": "^0.27.4",
-    "eslint": "^10",
-    "typescript": "^6",
-    "vitest": "^4.1.1"
+    "jest": "^30.5.2",
+    "license-checker-rseidelsohn": "^5.0.1",
+    "oxlint": "^1.85.0",
+    "ts-jest": "^29.4.13",
+    "typescript": "^6"
   },
   "dependencies": {
     "@create-markdown/core": "^2.0.0",
-    "@create-markdown/preview": "^2.0.0"
+    "@create-markdown/preview": "^2.0.0",
+    "ws": "^8.21.3"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -1,0 +1,26 @@
+{
+    "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+    "categories": {
+        "correctness": "error",
+        "suspicious": "warn"
+    },
+    "plugins": ["typescript"],
+    "ignorePatterns": ["out/**", "assets/**", "node_modules/**"],
+    "overrides": [
+        {
+            "files": ["src/webview/**"],
+            "rules": {
+                "no-useless-escape": "off"
+            }
+        },
+        {
+            "files": ["src/__test__/**"],
+            "rules": {
+                "no-unused-vars": "off",
+                "typescript/no-unused-vars": "off",
+                "no-extraneous-class": "off",
+                "no-underscore-dangle": "off"
+            }
+        }
+    ]
+}

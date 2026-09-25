@@ -1,5 +1,7 @@
 # Changelog
 
+> Fork of openknots/openclaw-extension, continuing as Claw Code.
+
 All notable changes to this project are documented in this file.
 The format is based on Keep a Changelog, and this project adheres to
 Semantic Versioning.

@@ -160,9 +160,8 @@ export class ChatService {
         return this.activeProcess !== null;
     }
 
+    /** Plain chat mode is read-only regardless of the global permission setting. */
     static getPermissionsForChatType(chatType: string, configuredPermissions: string): string {
-        // Plain chat mode is intentionally read-only even if the global chat
-        // permission setting is more permissive.
         if (chatType === 'chat') {
             return 'approve-reads';
         }
@@ -272,7 +271,6 @@ export class ChatService {
             }
         }
 
-        // Parse usage/token metadata from various event shapes
         if (eventType === 'usage' || eventType === 'message_stop' || obj.usage) {
             const usage = (obj.usage ?? obj) as Record<string, unknown>;
             const promptTokens = Number(usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokens ?? 0);

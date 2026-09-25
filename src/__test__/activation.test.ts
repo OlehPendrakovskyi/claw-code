@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../extension';
 
@@ -6,7 +6,7 @@ function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscod
     const subscriptions: vscode.Disposable[] = [];
     const context = {
         extensionUri: vscode.Uri.file('/tmp/test-ext'),
-        globalState: { get: vi.fn(), update: vi.fn() },
+        globalState: { get: jest.fn(), update: jest.fn() },
         subscriptions,
     } as unknown as vscode.ExtensionContext;
     return { context, subscriptions };
@@ -14,7 +14,7 @@ function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscod
 
 describe('extension activation', () => {
     beforeEach(() => {
-        vi.clearAllMocks();
+        jest.clearAllMocks();
     });
 
     it('exports activate and deactivate', () => {
@@ -40,7 +40,7 @@ describe('extension activation', () => {
     it('registers the expected commands', () => {
         const { context } = makeContext();
         activate(context);
-        const registered = (vscode.commands.registerCommand as ReturnType<typeof vi.fn>).mock.calls.map(
+        const registered = (vscode.commands.registerCommand as ReturnType<typeof jest.fn>).mock.calls.map(
             (c: unknown[]) => c[0],
         );
         expect(registered).toContain('openclaw.connect');
