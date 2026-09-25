@@ -141,8 +141,6 @@ export function formatAccessSummaryMarkdown(
     lines.push('## CLI status --all output');
     if (cliOutput) {
         lines.push('```');
-        // Raw CLI output may contain credential-bearing URLs; redact before
-        // including it in the report.
         lines.push(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)).trim());
         lines.push('```');
     } else {
@@ -241,11 +239,7 @@ export function extractTools(config: Record<string, unknown>): string[] {
     return uniqueList([...results]);
 }
 
-/**
- * Redact credentials from an endpoint URL before it is displayed in reports:
- * userinfo (`user:pass@host`) and sensitive query params (api_key, token,
- * password, secret, credential) never reach the UI/summary output.
- */
+/** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
     const sensitiveParam = /(api_?key|token|password|secret|credential|access_key|signature)/i;
     try {
@@ -267,12 +261,11 @@ export function redactEndpoint(endpoint: string): string {
         }
         return redacted ? url.toString() : endpoint;
     } catch {
-        // Not an absolute URL (host like "example.com:8080") — no parsable
-        // credentials; return as-is.
         return endpoint;
     }
 }
 
+/** Format a named entry (name + credential-redacted endpoint) for reports. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
         // String entries may themselves be endpoints (e.g. `mcpServers:

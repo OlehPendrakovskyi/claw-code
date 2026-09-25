@@ -758,10 +758,9 @@ export async function openOnboardDocs() {
     await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_ONBOARD_DOCS_URL));
 }
 
+/** Open the user-configured dashboard URL; http(s) schemes only. */
 export async function openDashboard() {
     const url = getDashboardUrl();
-    // dashboardUrl is workspace-configurable; restrict to http(s) so a
-    // repository cannot make "Open dashboard" launch file:/custom handlers.
     let uri: vscode.Uri;
     try {
         uri = vscode.Uri.parse(url);

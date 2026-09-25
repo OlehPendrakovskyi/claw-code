@@ -191,9 +191,7 @@ export class GatewayChatService {
 
   /** Open the WebSocket and complete the operator handshake. */
   connect(): Promise<void> {
-    // Serialize concurrent connect() calls: a second call joins the
-    // in-flight attempt instead of overwriting `this.ws` (which would bind
-    // attachRuntimeHandlers() to the wrong socket).
+    // Serialize concurrent connect() calls (see connectPromise doc).
     if (this.connectPromise) {
       return this.connectPromise;
     }
