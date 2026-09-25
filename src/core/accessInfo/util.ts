@@ -1,4 +1,4 @@
-import { isString, sortBy, uniq } from 'lodash-es';
+import { sortBy, uniq } from 'lodash-es';
 import type { AccessInfo } from './types.js';
 
 /** Check that a value is a non-null object (arrays included, by design). */
@@ -8,7 +8,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Resolve a string value from `value`, returning undefined for anything else. */
 export function asString(value: unknown): string | undefined {
-    return isString(value) ? value : undefined;
+    return typeof value === 'string' ? value : undefined;
 }
 
 /** Detect http(s) URLs. */

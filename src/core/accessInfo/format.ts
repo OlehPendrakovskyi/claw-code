@@ -1,4 +1,4 @@
-import { isString } from 'lodash-es';
+import { asString } from './util.js';
 import { redactEndpoint, redactPlainSecrets } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
@@ -110,11 +110,9 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (!isRecord(entry)) {
         return fallbackName;
     }
-    const name = (isString(entry.name) ? entry.name : undefined) ?? (isString(entry.id) ? entry.id : undefined) ?? fallbackName;
+    const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
     const rawEndpoint =
-        (isString(entry.url) ? entry.url : undefined) ??
-        (isString(entry.endpoint) ? entry.endpoint : undefined) ??
-        (isString(entry.host) ? entry.host : undefined);
+        asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
     const endpoint = rawEndpoint !== undefined ? redactEndpoint(rawEndpoint) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
