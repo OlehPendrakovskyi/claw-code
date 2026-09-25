@@ -759,7 +759,7 @@ export async function openDashboard() {
         uri = vscode.Uri.parse(url);
     } catch {
         vscode.window.showErrorMessage(
-            `Invalid OpenClaw dashboard URL: ${url}. Use an http(s) URL (openclaw.dashboardUrl).`
+            `Invalid OpenClaw dashboard URL. Use an http(s) URL (openclaw.dashboardUrl).`
         );
         return;
     }
