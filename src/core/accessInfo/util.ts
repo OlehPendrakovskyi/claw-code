@@ -36,9 +36,15 @@ export function extractEnvVarName(value: string) {
     return match ? match[1] : undefined;
 }
 
-/** Read the environment-variable name from a key entry record (`env`, `envVar` or `environment`); non-string values are skipped and the chain continues. */
+/** Read the environment-variable name from a key entry record (`env`, `envVar` or `environment`); non-string and empty values are skipped and the chain continues. */
 export function getEnvVarFromRecord(entry: Record<string, unknown>) {
-    return asString(entry.env) ?? asString(entry.envVar) ?? asString(entry.environment);
+    for (const candidate of [entry.env, entry.envVar, entry.environment]) {
+        const value = asString(candidate);
+        if (value) {
+            return value;
+        }
+    }
+    return undefined;
 }
 
 /** Read a plausible filesystem path from a key entry record (`path`, `file` or `filePath`); non-string values are skipped and the chain continues. */

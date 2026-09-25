@@ -431,6 +431,8 @@ describe('accessInfo getter fallback semantics', () => {
         expect(getEnvVarFromRecord({ env: 123, envVar: 'OPENAI_KEY' } as Record<string, unknown>)).toBe('OPENAI_KEY');
         expect(getEnvVarFromRecord({ env: null, environment: 'FOO' } as Record<string, unknown>)).toBe('FOO');
         expect(getEnvVarFromRecord({})).toBeUndefined();
+        expect(getEnvVarFromRecord({ env: '', envVar: 'OPENAI_KEY' })).toBe('OPENAI_KEY');
+        expect(getEnvVarFromRecord({ envVar: '' })).toBeUndefined();
     });
 
     it('getFilePathFromRecord skips non-string values and continues the chain', () => {
