@@ -8,7 +8,7 @@ import {
     readEntryAtPath,
     type ToolEntry
 } from '../core/tools';
-import { extractMcpServers, extractTools } from '../core/tools';
+import { extractMcpServers, extractTools } from '../core/accessInfo';
 
 const configRecord = (config: Record<string, unknown>) => config;
 

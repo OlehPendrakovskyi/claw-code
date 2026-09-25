@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import { TextDecoder, TextEncoder } from 'util';
-import { isRecord } from './accessInfo';
+import { isRecord } from './accessInfo/util';
 
 export type HardeningMode = 'full' | 'audit' | 'auditFix';
 
