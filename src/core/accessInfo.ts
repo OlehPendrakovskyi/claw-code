@@ -98,7 +98,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     if (configError) {
-        lines.push(`Config issue: ${configError}`);
+        lines.push(`Config issue: ${redactPlainSecrets(configError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
         lines.push('');
     }
     if (cliError) {
