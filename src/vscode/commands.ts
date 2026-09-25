@@ -10,6 +10,7 @@ import {
     isRecord,
     mergeAccessInfo,
     redactEndpoint,
+    redactPlainSecrets,
     uniqueList,
     type AccessSummary
 } from '../core/accessInfo';
@@ -270,8 +271,7 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
     return { short, markdown, generatedAt: new Date() };
 }
 
-/** Run `status --all` without shell semantics; returned error text is credential-redacted since execFile embeds child stderr. */
-/** Run the hardening command's `status --all` via execFile (no shell); redacts URLs from errors. */
+/** Run the hardening command's `status --all` via execFile (no shell); returned error text is credential-redacted since execFile embeds child stderr. */
 async function runStatusAll(prefix: string): Promise<{ output?: string; error?: string }> {
     try {
         const parsed = splitHardeningCommand(prefix);
@@ -287,7 +287,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
         return { output: output.length > 0 ? output : undefined };
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return { error: message.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)) };
+        return { error: redactPlainSecrets(message.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))) };
     }
 }
 

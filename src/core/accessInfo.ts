@@ -102,7 +102,7 @@ export function formatAccessSummaryMarkdown(
         lines.push('');
     }
     if (cliError) {
-        lines.push(`CLI issue: ${cliError}`);
+        lines.push(`CLI issue: ${redactPlainSecrets(cliError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
         lines.push('');
     }
 
