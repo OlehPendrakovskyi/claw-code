@@ -71,8 +71,20 @@ const HANDSHAKE_TIMEOUT_MS = 10_000;
 
 function defaultWsFactory(url: string): WebSocketLike {
   // Lazy require keeps `ws` off the extension-activation path until connect().
-  const wsModule = require('ws') as { WebSocket: new (url: string) => WebSocketLike };
-  return new wsModule.WebSocket(url);
+  // The CommonJS entry point of `ws` exports the WebSocket constructor
+  // directly; the ESM interop shape exposes it as `.default.WebSocket` /
+  // `.WebSocket`. Handle both so the default factory works in every build.
+  const wsModule = require('ws') as unknown;
+  const WSCtor =
+    typeof wsModule === 'function'
+      ? (wsModule as new (url: string) => WebSocketLike)
+      : ((wsModule as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket ??
+        (wsModule as { default?: { WebSocket?: new (url: string) => WebSocketLike } }).default
+          ?.WebSocket);
+  if (typeof WSCtor !== 'function') {
+    throw new Error('unable to resolve WebSocket constructor from the ws package');
+  }
+  return new WSCtor(url);
 }
 
 /** Extract frames from mixed WS message data (string/Buffer). */
@@ -184,6 +196,17 @@ export class GatewayChatService {
     // attachRuntimeHandlers() to the wrong socket).
     if (this.connectPromise) {
       return this.connectPromise;
+    }
+    // Idempotent when already connected: repeated connect() calls must not
+    // open a second socket and overwrite `this.ws`.
+    if (this.connected && this.ws) {
+      return Promise.resolve();
+    }
+    // An explicit attempt cancels any pending scheduled reconnect so the
+    // timer cannot fire mid-handshake and open yet another socket.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
     }
     const attempt = this.openAndHandshake()
       .then((hello) => {

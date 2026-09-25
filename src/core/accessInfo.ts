@@ -275,7 +275,10 @@ export function redactEndpoint(endpoint: string): string {
 
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
-        return entry;
+        // String entries may themselves be endpoints (e.g. `mcpServers:
+        // ["https://user:token@example.com"]`) — always redact; the helper
+        // leaves ordinary labels untouched.
+        return redactEndpoint(entry);
     }
     if (!isRecord(entry)) {
         return fallbackName;
