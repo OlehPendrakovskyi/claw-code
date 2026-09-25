@@ -119,7 +119,7 @@ describe('GatewayChatService', () => {
     expect(connectFrame.method).toBe('connect');
     expect(connectFrame.params.role).toBe('operator');
     expect((connectFrame.params.auth as { token: string }).token).toBe('secret-token-value');
-    // Reply hello-ok (id mismatch tolerated: skeleton resolves first ok hello-ok).
+    // Reply hello-ok with the connect request id (responses are id-correlated).
     ws.emit('message', JSON.stringify(HELLO_OK));
     await pending;
     expect(svc.isRunning).toBe(true);
@@ -167,6 +167,7 @@ describe('GatewayChatService', () => {
       const connecting = svc.connect();
       await Promise.resolve();
       ws.emit('open');
+      ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { ts: Date.now() } }));
       ws.emit('message', JSON.stringify(HELLO_OK));
       await Promise.resolve();
       await Promise.resolve();

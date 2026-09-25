@@ -96,16 +96,28 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
   const payload = (evt.payload ?? {}) as {
     role?: string;
     text?: unknown;
-    usage?: { promptTokens?: number; completionTokens?: number } | null;
+    usage?:
+      | {
+          promptTokens?: number;
+          completionTokens?: number;
+          prompt_tokens?: number;
+          completion_tokens?: number;
+          input_tokens?: number;
+          output_tokens?: number;
+        }
+      | null;
   };
   if (payload.role && payload.role !== 'assistant') return null;
   if (typeof payload.text === 'string' && payload.text.length > 0) {
     return { type: 'text', text: payload.text };
   }
   const u = payload.usage;
-  if (u && (u.promptTokens || u.completionTokens)) {
-    const promptTokens = Number(u.promptTokens ?? 0);
-    const completionTokens = Number(u.completionTokens ?? 0);
+  // Accept camelCase plus the snake_case aliases used across gateway/ChatService parsers.
+  const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
+  const completionTokens = Number(
+    u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
+  );
+  if (u && (promptTokens || completionTokens)) {
     return {
       type: 'usage',
       usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
@@ -176,6 +188,7 @@ export class GatewayChatService {
     return new Promise<HelloOk>((resolve, reject) => {
       let settled = false;
       let helloSent = false;
+      let connectRequestId: string | null = null;
       let challengeTimer: ReturnType<typeof setTimeout> | null = null;
       const settleError = (msg: string) => {
         if (settled) return;
@@ -203,6 +216,7 @@ export class GatewayChatService {
           method: GatewayRpcMethods.connect,
           params: this.buildHello() as unknown as Record<string, unknown>,
         };
+        connectRequestId = frame.id;
         ws.send(JSON.stringify(frame));
       };
       const onOpen = () => {
@@ -213,6 +227,10 @@ export class GatewayChatService {
         if (!frame) return;
         if (frame.type === 'res') {
           const res = frame as RpcResponseFrame;
+          // Protocol: response ids correlate with requests. Ignore responses
+          // that do not belong to this socket's connect request (stale or
+          // unrelated frames must not complete the handshake).
+          if (res.id !== connectRequestId) return;
           if (res.ok) {
             const payload = res.payload as { type?: string } | undefined;
             if (payload?.type !== 'hello-ok') return;

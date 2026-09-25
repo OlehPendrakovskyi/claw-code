@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
-import { OPENCLAW_DASHBOARD_URL } from '../core/constants';
 import { getHardeningMode } from '../core/configIO';
+import { getDashboardUrl } from '../vscode/config';
 import { loadToolsForOverview, type ToolEntry } from '../core/tools';
 import type { AccessSummary } from '../core/accessInfo';
 
@@ -148,7 +148,7 @@ export class OverviewTreeProvider implements vscode.TreeDataProvider<OverviewIte
                     }
                 }),
                 new OverviewItem('Open dashboard', {
-                    description: OPENCLAW_DASHBOARD_URL,
+                    description: getDashboardUrl(),
                     icon: new vscode.ThemeIcon('globe'),
                     command: {
                         command: 'openclaw.hardening.openDashboard',

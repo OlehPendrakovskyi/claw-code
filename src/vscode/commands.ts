@@ -37,7 +37,7 @@ import {
     replaceExecutable
 } from '../core/setupOptions';
 import { setStatus } from './statusbar';
-import { openOpenClawConfig, openAuthProfiles, openSettings, openHardeningSettings } from './config';
+import { openOpenClawConfig, openAuthProfiles, openSettings, openHardeningSettings, getDashboardUrl } from './config';
 
 export const log = vscode.window.createOutputChannel('OpenClaw', { log: true });
 
@@ -73,12 +73,15 @@ export function getOverviewProvider(): OverviewTreeProvider | undefined {
 export function disposeTerminals() {
     if (terminal) {
         terminal.dispose();
+        terminal = undefined;
     }
     if (setupTerminal) {
         setupTerminal.dispose();
+        setupTerminal = undefined;
     }
     if (hardeningTerminal) {
         hardeningTerminal.dispose();
+        hardeningTerminal = undefined;
     }
 }
 
@@ -756,7 +759,7 @@ export async function openOnboardDocs() {
 }
 
 export async function openDashboard() {
-    await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_DASHBOARD_URL));
+    await vscode.env.openExternal(vscode.Uri.parse(getDashboardUrl()));
 }
 
 export async function openUpdateDocs() {

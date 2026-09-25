@@ -37,14 +37,24 @@ export async function loadOpenClawConfigRecord(): Promise<{
 }> {
     const configPath = getOpenClawConfigPath();
     const result = await readOpenClawConfig(configPath);
-    if (!result.config || !isRecord(result.config)) {
+    const parsed = result.config;
+    if (parsed === null) {
         return {
             config: null,
             error: result.error ?? 'Config file not found.',
             path: configPath
         };
     }
-    return { config: result.config, error: result.error, path: configPath };
+    // Arrays and scalars are structurally invalid for a config root; report
+    // them as invalid config, not as a missing file.
+    if (Array.isArray(parsed) || !isRecord(parsed)) {
+        return {
+            config: null,
+            error: 'Invalid config: expected a JSON object at the root.',
+            path: configPath
+        };
+    }
+    return { config: parsed, error: result.error, path: configPath };
 }
 
 export function getHardeningCommandPrefix() {

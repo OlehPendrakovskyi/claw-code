@@ -193,7 +193,14 @@ describe('loadOpenClawConfigRecord', () => {
         readFile.mockResolvedValueOnce(encode('42'));
         const result = await loadOpenClawConfigRecord();
         expect(result.config).toBeNull();
-        expect(result.error).toBe('Config file not found.');
+        expect(result.error).toBe('Invalid config: expected a JSON object at the root.');
+    });
+
+    it('rejects an array at the config root as invalid config', async () => {
+        readFile.mockResolvedValueOnce(encode('[1,2,3]'));
+        const result = await loadOpenClawConfigRecord();
+        expect(result.config).toBeNull();
+        expect(result.error).toBe('Invalid config: expected a JSON object at the root.');
     });
 
     it('propagates read errors', async () => {

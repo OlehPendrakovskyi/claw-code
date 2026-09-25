@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { TextEncoder } from 'util';
 import { getOpenClawConfigPath } from '../core/configIO';
+import { OPENCLAW_DASHBOARD_URL } from '../core/constants';
 
 export async function openOpenClawConfig(createIfMissing: boolean) {
     const configPath = getOpenClawConfigPath();
@@ -72,4 +73,15 @@ export async function openSettings() {
 
 export async function openHardeningSettings() {
     await vscode.commands.executeCommand('workbench.action.openSettings', 'openclaw.hardening');
+}
+
+/**
+ * Gateway dashboard URL: user-configurable via `openclaw.dashboardUrl`,
+ * defaulting to the local gateway address (constants.ts).
+ */
+export function getDashboardUrl() {
+    return vscode.workspace
+        .getConfiguration('openclaw')
+        .get<string>('dashboardUrl')
+        ?.trim() || OPENCLAW_DASHBOARD_URL;
 }
