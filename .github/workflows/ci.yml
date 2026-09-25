@@ -4,20 +4,29 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # v4.2.2 (11bd71901bbe5b1630ceea73d27597364c9af683)
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v4 # v4.1.0 (7088e561eb65bb68695d245aa206f005ef30921d)
         with:
           version: 12
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v4 # v4.4.0 (49933ea5288caeca8642d1e84afbd3f7d6820020)
         with:
           node-version: 24
           cache: pnpm
