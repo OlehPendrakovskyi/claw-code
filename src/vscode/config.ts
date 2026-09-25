@@ -9,12 +9,22 @@ export async function openOpenClawConfig(createIfMissing: boolean) {
     await openFileInEditor(configPath, createIfMissing, '{\n  \n}\n');
 }
 
+function isValidPathSegment(value: string): boolean {
+    return value.length > 0 && !/[/\\]/.test(value) && value !== '.' && value !== '..';
+}
+
 export async function openAuthProfiles() {
     const agentId = await vscode.window.showInputBox({
         prompt: 'Enter the agent id (folder name under ~/.openclaw/agents)',
         placeHolder: 'main'
     });
     if (!agentId) {
+        return;
+    }
+    if (!isValidPathSegment(agentId)) {
+        void vscode.window.showErrorMessage(
+            'Invalid agent id: must be a single folder name without path separators.'
+        );
         return;
     }
     const profilesPath = path.join(os.homedir(), '.openclaw', 'agents', agentId, 'agent', 'auth-profiles.json');

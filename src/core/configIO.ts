@@ -19,7 +19,7 @@ export async function readOpenClawConfig(
         }
         return { config: JSON.parse(contents) };
     } catch (error) {
-        if (error instanceof Error && 'code' in error) {
+        if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
             return { config: null, error: 'Config file not found.' };
         }
         return { config: null, error: 'Unable to read config file.' };
