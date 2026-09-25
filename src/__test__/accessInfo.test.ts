@@ -3,6 +3,7 @@ import {
     createEmptyAccessInfo,
     extractAccessInfoFromCli,
     extractAccessInfoFromConfig,
+    redactEndpoint,
     extractEnvVarName,
     extractMcpServers,
     extractTools,
@@ -382,5 +383,25 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).toContain('Config issue: no config');
         expect(markdown).toContain('CLI issue: cli exploded');
         expect(markdown).toContain('No CLI output captured.');
+    });
+});
+
+describe('redactEndpoint', () => {
+    it('redacts userinfo from URLs', () => {
+        expect(redactEndpoint('https://user:secret@example.com/mcp')).toBe(
+            'https://***:***@example.com/mcp'
+        );
+    });
+
+    it('redacts sensitive query parameters', () => {
+        expect(redactEndpoint('https://gw.example.com/ws?api_key=abc123&x=1')).toBe(
+            'https://gw.example.com/ws?api_key=***&x=1'
+        );
+        expect(redactEndpoint('https://gw.example.com/ws?token=t&y=2')).toContain('token=***');
+    });
+
+    it('keeps ordinary URLs untouched', () => {
+        expect(redactEndpoint('https://example.com/path?x=1')).toBe('https://example.com/path?x=1');
+        expect(redactEndpoint('127.0.0.1:18789')).toBe('127.0.0.1:18789');
     });
 });

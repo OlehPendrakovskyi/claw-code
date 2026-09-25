@@ -194,6 +194,18 @@ export class GatewayChatService {
       let connectRequestId: string | null = null;
       let handshakeTimer: ReturnType<typeof setTimeout> | null = null;
       let challengeTimer: ReturnType<typeof setTimeout> | null = null;
+      // Handshake watchdog starts at socket creation (not on `open`): a socket
+      // that never emits `open` must not leave callers pending forever. On
+      // expiry the promise rejects and the half-open socket is closed so
+      // onClose schedules the reconnect.
+      handshakeTimer = setTimeout(() => {
+        settleError('gateway handshake timed out');
+        try {
+          ws.close();
+        } catch {
+          // socket already closed
+        }
+      }, HANDSHAKE_TIMEOUT_MS);
       const settleError = (msg: string) => {
         if (settled) return;
         settled = true;
@@ -229,12 +241,11 @@ export class GatewayChatService {
       };
       const onOpen = () => {
         challengeTimer = setTimeout(() => sendHello(), CHALLENGE_FALLBACK_MS);
-        // Finite handshake timeout: a gateway that never answers must not
-        // leave callers pending forever.
-        handshakeTimer = setTimeout(() => {
-          settleError('gateway handshake timed out');
-        }, HANDSHAKE_TIMEOUT_MS);
       };
+      // Handshake watchdog starts at socket creation (not on `open`): a socket
+      // that never emits `open` must not leave callers pending forever. On
+      // expiry the promise rejects and the half-open socket is closed so
+      // onClose schedules the reconnect.
       const onMessage = (data: unknown) => {
         const frame = parseFrame(data);
         if (!frame) return;

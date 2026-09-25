@@ -239,6 +239,38 @@ export function extractTools(config: Record<string, unknown>): string[] {
     return uniqueList([...results]);
 }
 
+/**
+ * Redact credentials from an endpoint URL before it is displayed in reports:
+ * userinfo (`user:pass@host`) and sensitive query params (api_key, token,
+ * password, secret, credential) never reach the UI/summary output.
+ */
+export function redactEndpoint(endpoint: string): string {
+    const sensitiveParam = /(api_?key|token|password|secret|credential|access_key|signature)/i;
+    try {
+        const url = new URL(endpoint);
+        let redacted = false;
+        if (url.username) {
+            url.username = '***';
+            redacted = true;
+        }
+        if (url.password) {
+            url.password = '***';
+            redacted = true;
+        }
+        for (const key of [...url.searchParams.keys()]) {
+            if (sensitiveParam.test(key)) {
+                url.searchParams.set(key, '***');
+                redacted = true;
+            }
+        }
+        return redacted ? url.toString() : endpoint;
+    } catch {
+        // Not an absolute URL (host like "example.com:8080") — no parsable
+        // credentials; return as-is.
+        return endpoint;
+    }
+}
+
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
         return entry;
@@ -247,7 +279,8 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         return fallbackName;
     }
     const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
-    const endpoint = asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
+    const rawEndpoint = asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
+    const endpoint = rawEndpoint !== undefined ? redactEndpoint(rawEndpoint) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
     }
