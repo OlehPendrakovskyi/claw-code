@@ -152,6 +152,8 @@ export class GatewayChatService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private connected = false;
+  /** In-flight connect() (serialized: concurrent calls share the attempt). */
+  private connectPromise: Promise<void> | null = null;
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
@@ -177,12 +179,24 @@ export class GatewayChatService {
 
   /** Open the WebSocket and complete the operator handshake. */
   connect(): Promise<void> {
-    return this.openAndHandshake().then((hello) => {
-      this.hello = hello;
-      this.reconnectAttempt = 0;
-      this.attachRuntimeHandlers();
-      this.logger.info(`gateway connected protocol=${hello.protocol}`);
-    });
+    // Serialize concurrent connect() calls: a second call joins the
+    // in-flight attempt instead of overwriting `this.ws` (which would bind
+    // attachRuntimeHandlers() to the wrong socket).
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
+    const attempt = this.openAndHandshake()
+      .then((hello) => {
+        this.hello = hello;
+        this.reconnectAttempt = 0;
+        this.attachRuntimeHandlers();
+        this.logger.info(`gateway connected protocol=${hello.protocol}`);
+      })
+      .finally(() => {
+        this.connectPromise = null;
+      });
+    this.connectPromise = attempt;
+    return attempt;
   }
 
   private openAndHandshake(): Promise<HelloOk> {

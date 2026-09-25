@@ -46,7 +46,7 @@ export function extractAccessInfoFromCli(output?: string): AccessInfo {
         return info;
     }
     const urls = output.match(/https?:\/\/\S+/g) ?? [];
-    info.networkEndpoints = uniqueList(urls);
+    info.networkEndpoints = uniqueList(urls.map(redactEndpoint));
     return info;
 }
 
@@ -141,7 +141,9 @@ export function formatAccessSummaryMarkdown(
     lines.push('## CLI status --all output');
     if (cliOutput) {
         lines.push('```');
-        lines.push(cliOutput.trim());
+        // Raw CLI output may contain credential-bearing URLs; redact before
+        // including it in the report.
+        lines.push(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)).trim());
         lines.push('```');
     } else {
         lines.push('No CLI output captured.');
@@ -324,7 +326,7 @@ export function scanAccessInfo(
     }
     if (typeof value === 'string') {
         if (isUrl(value)) {
-            endpoints.add(value);
+            endpoints.add(redactEndpoint(value));
         } else if (looksLikePath(value)) {
             localFiles.add(value);
         }
