@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import {
     extractAccessInfoFromCli,
@@ -23,6 +23,7 @@ import {
     type HardeningMode
 } from '../core/configIO';
 import { computeToolToggle, readEntryAtPath, type ToolEntry } from '../core/tools';
+import { splitHardeningCommand } from '../core/hardeningCommand';
 import { OPENCLAW_DASHBOARD_URL } from '../core/constants';
 import type { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import {
@@ -40,7 +41,7 @@ import { openOpenClawConfig, openAuthProfiles, openSettings, openHardeningSettin
 
 export const log = vscode.window.createOutputChannel('OpenClaw', { log: true });
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const OPENCLAW_DOCS_URL = 'https://docs.openclaw.ai/';
 const OPENCLAW_ONBOARD_DOCS_URL = 'https://docs.openclaw.ai/start/wizard';
 const OPENCLAW_UPDATE_DOCS_URL = 'https://docs.openclaw.ai/install/updating';
@@ -272,9 +273,16 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
 
 async function runStatusAll(prefix: string): Promise<{ output?: string; error?: string }> {
     try {
-        const { stdout, stderr } = await execAsync(`${prefix} status --all`, {
-            maxBuffer: 1024 * 1024
-        });
+        const parsed = splitHardeningCommand(prefix);
+        if (!parsed) {
+            return { error: 'Hardening command is invalid (shell metacharacters or unbalanced quotes are not allowed).' };
+        }
+        // No shell: workspace-configurable setting must not gain shell semantics.
+        const { stdout, stderr } = await execFileAsync(
+            parsed.executable,
+            [...parsed.args, 'status', '--all'],
+            { maxBuffer: 1024 * 1024 }
+        );
         const output = [stdout, stderr].filter(Boolean).join('\n').trim();
         return { output: output.length > 0 ? output : undefined };
     } catch (error) {
@@ -359,10 +367,22 @@ export async function ensureHardeningCommandReady(): Promise<{ prefix: string; m
         return null;
     }
 
-    const executable = prefix.split(/\s+/)[0];
-    if (!executable) {
-        vscode.window.showErrorMessage('OpenClaw hardening command is invalid. Update OpenClaw: Hardening Command.');
+    const parsed = splitHardeningCommand(prefix);
+    if (!parsed) {
+        vscode.window.showErrorMessage(
+            'OpenClaw hardening command is invalid: use a single executable with plain arguments (shell metacharacters are not allowed). Update OpenClaw: Hardening Command.'
+        );
         await openHardeningSettings();
+        return null;
+    }
+    const executable = parsed.executable;
+
+    // Workspace-configurable setting: refuse hidden command execution in
+    // untrusted workspaces (belt & braces on top of no-shell execution).
+    if (!vscode.workspace.isTrusted) {
+        vscode.window.showErrorMessage(
+            'OpenClaw hardening commands are disabled in untrusted workspaces. Trust this workspace and retry.'
+        );
         return null;
     }
 
@@ -393,9 +413,14 @@ export async function ensureHardeningCommandReady(): Promise<{ prefix: string; m
 }
 
 export async function isCommandAvailable(command: string) {
-    const probe = process.platform === 'win32' ? `where ${command}` : `command -v ${command}`;
     try {
-        await execAsync(probe);
+        if (process.platform === 'win32') {
+            await execFileAsync('where', [command]);
+        } else {
+            // `command -v` is a shell builtin; pass the name as a quoted
+            // positional argument so it is never shell-interpreted.
+            await execFileAsync('sh', ['-c', 'command -v "$1"', 'sh', command]);
+        }
         return true;
     } catch {
         return false;
