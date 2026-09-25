@@ -103,15 +103,26 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Check auto-connect setting
+    // Check auto-connect setting. Workspace-configurable (autoConnect +
+    // command), so it must be gated on workspace trust: activation runs on
+    // startup and must not execute an untrusted repository's command.
     const config = vscode.workspace.getConfiguration('openclaw');
     const autoConnect = config.get<boolean>('autoConnect', false);
 
-    if (autoConnect) {
+    if (autoConnect && vscode.workspace.isTrusted) {
         log.info('auto-connect enabled, scheduling connect');
         setTimeout(() => {
             void connect();
         }, 1000);
+    } else if (autoConnect) {
+        // Deferred: connect once the user grants trust to this workspace.
+        log.info('auto-connect enabled but workspace untrusted; waiting for trust');
+        context.subscriptions.push(
+            vscode.workspace.onDidGrantWorkspaceTrust(() => {
+                log.info('workspace trusted, connecting (auto-connect)');
+                void connect();
+            })
+        );
     }
 
     context.subscriptions.push(

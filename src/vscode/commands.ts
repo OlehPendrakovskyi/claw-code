@@ -24,7 +24,6 @@ import {
 } from '../core/configIO';
 import { computeToolToggle, readEntryAtPath, type ToolEntry } from '../core/tools';
 import { splitHardeningCommand } from '../core/hardeningCommand';
-import { OPENCLAW_DASHBOARD_URL } from '../core/constants';
 import type { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import {
     LEGACY_CLI_ALIASES,
@@ -260,7 +259,7 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
     const cliInfo = extractAccessInfoFromCli(cliResult.output);
 
     const combined = mergeAccessInfo(configInfo, cliInfo);
-    combined.networkEndpoints = uniqueList([...combined.networkEndpoints, OPENCLAW_DASHBOARD_URL]);
+    combined.networkEndpoints = uniqueList([...combined.networkEndpoints, getDashboardUrl()]);
 
     const short = formatAccessSummaryShort(combined, configResult.error, cliResult.error);
     const markdown = formatAccessSummaryMarkdown(

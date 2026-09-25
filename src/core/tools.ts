@@ -125,7 +125,7 @@ export function computeToolToggle(current: unknown): ToggleToolResult {
         if (!nextEnabled) {
             nextEntry = { name: current, enabled: false };
         }
-    } else if (isRecord(current)) {
+    } else if (isRecord(current) && !Array.isArray(current)) {
         nextEntry = { ...current, enabled: nextEnabled };
     } else {
         return { ok: false, reason: 'unsupported' };
