@@ -241,7 +241,7 @@ export function extractTools(config: Record<string, unknown>): string[] {
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
-    const sensitiveParam = /(api_?key|token|password|secret|credential|access_key|signature)/i;
+    const sensitiveParam = /(api_?key|api-key|key|token|password|secret|credential|access_key|signature)/i;
     try {
         const url = new URL(endpoint);
         let redacted = false;

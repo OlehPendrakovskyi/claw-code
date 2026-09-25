@@ -240,6 +240,11 @@ export class GatewayChatService {
       const settleError = (msg: string) => {
         if (settled) return;
         settled = true;
+        try {
+          ws.close();
+        } catch {
+          // socket already closed
+        }
         if (challengeTimer) {
           clearTimeout(challengeTimer);
           challengeTimer = null;
@@ -303,6 +308,7 @@ export class GatewayChatService {
         settleError(`gateway error ${err.message}`);
       };
       const onClose = () => {
+        if (this.ws !== ws) return;
         this.connected = false;
         if (!settled) settleError('gateway closed before handshake completed');
         if (challengeTimer) {
