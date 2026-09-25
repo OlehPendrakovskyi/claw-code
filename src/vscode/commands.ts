@@ -175,16 +175,12 @@ export async function connect() {
             return;
         }
 
-        // Create or reuse terminal
         if (!terminal) {
             terminal = vscode.window.createTerminal('OpenClaw');
         }
 
-        // Show terminal and send command
-        terminal.show(true); // true = preserve focus
+        terminal.show(true);
         terminal.sendText(command);
-
-        // Update status to connected
         setStatus('connected');
 
         vscode.window.showInformationMessage('OpenClaw command sent.');
@@ -275,13 +271,13 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
 }
 
 /** Run `status --all` without shell semantics; returned error text is credential-redacted since execFile embeds child stderr. */
+/** Run the hardening command's `status --all` via execFile (no shell); redacts URLs from errors. */
 async function runStatusAll(prefix: string): Promise<{ output?: string; error?: string }> {
     try {
         const parsed = splitHardeningCommand(prefix);
         if (!parsed) {
             return { error: 'Hardening command is invalid (shell metacharacters or unbalanced quotes are not allowed).' };
         }
-        // No shell: workspace-configurable setting must not gain shell semantics.
         const { stdout, stderr } = await execFileAsync(
             parsed.executable,
             [...parsed.args, 'status', '--all'],
@@ -380,9 +376,6 @@ export async function ensureHardeningCommandReady(): Promise<{ prefix: string; m
         return null;
     }
     const executable = parsed.executable;
-
-    // Workspace-configurable setting: refuse hidden command execution in
-    // untrusted workspaces (belt & braces on top of no-shell execution).
     if (!vscode.workspace.isTrusted) {
         vscode.window.showErrorMessage(
             'OpenClaw hardening commands are disabled in untrusted workspaces. Trust this workspace and retry.'
@@ -416,13 +409,12 @@ export async function ensureHardeningCommandReady(): Promise<{ prefix: string; m
     return { prefix, mode: getHardeningMode() };
 }
 
+/** Probe for a command's presence without invoking a shell (where / sh -c with a quoted positional). */
 export async function isCommandAvailable(command: string) {
     try {
         if (process.platform === 'win32') {
             await execFileAsync('where', [command]);
         } else {
-            // `command -v` is a shell builtin; pass the name as a quoted
-            // positional argument so it is never shell-interpreted.
             await execFileAsync('sh', ['-c', 'command -v "$1"', 'sh', command]);
         }
         return true;

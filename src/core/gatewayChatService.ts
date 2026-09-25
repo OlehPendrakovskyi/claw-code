@@ -69,11 +69,8 @@ const CHALLENGE_FALLBACK_MS = 500;
 /** Finite timeout for the full connect handshake (no-response protection). */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 
+/** Lazily require `ws` (activation-path friendly); handles CJS and ESM interop shapes. */
 function defaultWsFactory(url: string): WebSocketLike {
-  // Lazy require keeps `ws` off the extension-activation path until connect().
-  // The CommonJS entry point of `ws` exports the WebSocket constructor
-  // directly; the ESM interop shape exposes it as `.default.WebSocket` /
-  // `.WebSocket`. Handle both so the default factory works in every build.
   const wsModule = require('ws') as unknown;
   const WSCtor =
     typeof wsModule === 'function'
@@ -127,7 +124,6 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
     return { type: 'text', text: payload.text };
   }
   const u = payload.usage;
-  // Accept camelCase plus the snake_case aliases used across gateway/ChatService parsers.
   const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
   const completionTokens = Number(
     u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
@@ -189,19 +185,18 @@ export class GatewayChatService {
     return this.connected;
   }
 
-  /** Open the WebSocket and complete the operator handshake. */
+  /**
+   * Open the WebSocket and complete the operator handshake. Serialized
+   * (concurrent calls join the in-flight attempt), idempotent while
+   * connected; an explicit attempt cancels any pending scheduled reconnect.
+   */
   connect(): Promise<void> {
-    // Serialize concurrent connect() calls (see connectPromise doc).
     if (this.connectPromise) {
       return this.connectPromise;
     }
-    // Idempotent when already connected: repeated connect() calls must not
-    // open a second socket and overwrite `this.ws`.
     if (this.connected && this.ws) {
       return Promise.resolve();
     }
-    // An explicit attempt cancels any pending scheduled reconnect so the
-    // timer cannot fire mid-handshake and open yet another socket.
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -220,6 +215,11 @@ export class GatewayChatService {
     return attempt;
   }
 
+  /**
+   * Full connect handshake: gate `connect` on the pre-connect
+   * `connect.challenge` event (token-only clients need no signed reply;
+   * a short fallback timer keeps gateways without challenge working).
+   */
   private openAndHandshake(): Promise<HelloOk> {
     this.ws = this.wsFactory(this.url);
     const ws = this.ws;
@@ -229,10 +229,6 @@ export class GatewayChatService {
       let connectRequestId: string | null = null;
       let handshakeTimer: ReturnType<typeof setTimeout> | null = null;
       let challengeTimer: ReturnType<typeof setTimeout> | null = null;
-      // Handshake watchdog starts at socket creation (not on `open`): a socket
-      // that never emits `open` must not leave callers pending forever. On
-      // expiry the promise rejects and the half-open socket is closed so
-      // onClose schedules the reconnect.
       handshakeTimer = setTimeout(() => {
         settleError('gateway handshake timed out');
         try {
@@ -254,10 +250,6 @@ export class GatewayChatService {
         }
         reject(new Error(msg));
       };
-      // protocol/handshake.md + auth.md: gate `connect` on the pre-connect
-      // `connect.challenge` event when the gateway sends one (nonce-first
-      // handshake). Token-only clients need no signature, but a short fallback
-      // timer keeps compatibility with gateways that do not challenge.
       const sendHello = () => {
         if (helloSent || settled) return;
         helloSent = true;
@@ -277,24 +269,15 @@ export class GatewayChatService {
       const onOpen = () => {
         challengeTimer = setTimeout(() => sendHello(), CHALLENGE_FALLBACK_MS);
       };
-      // Handshake watchdog starts at socket creation (not on `open`): a socket
-      // that never emits `open` must not leave callers pending forever. On
-      // expiry the promise rejects and the half-open socket is closed so
-      // onClose schedules the reconnect.
       const onMessage = (data: unknown) => {
         const frame = parseFrame(data);
         if (!frame) return;
         if (frame.type === 'res') {
           const res = frame as RpcResponseFrame;
-          // Protocol: response ids correlate with requests. Ignore responses
-          // that do not belong to this socket's connect request (stale or
-          // unrelated frames must not complete the handshake).
           if (res.id !== connectRequestId) return;
           if (res.ok) {
             const payload = res.payload as { type?: string } | undefined;
             if (payload?.type !== 'hello-ok') {
-              // Correlated success with unexpected payload: reject instead of
-              // leaving the handshake promise pending forever.
               settleError(`gateway handshake unexpected payload type=${payload?.type ?? 'unknown'}`);
               return;
             }
@@ -311,8 +294,6 @@ export class GatewayChatService {
             settleError(`gateway handshake rejected code=${res.error?.code ?? 'unknown'}`);
           }
         } else if (!settled && (frame as { event?: string }).event === GatewayEvents.connectChallenge) {
-          // Pre-connect challenge observed; token auth needs no signed reply.
-          // Gate the connect request on it (nonce-first handshake compatibility).
           sendHello();
           return;
         }
@@ -443,7 +424,7 @@ export class GatewayChatService {
   }
 
   abort(): void {
-    // Skeleton: nothing to abort over the gateway yet.
+    // Sprint 0 skeleton: nothing to abort over the gateway yet.
   }
 
   dispose(): void {

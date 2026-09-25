@@ -493,7 +493,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 });
                 changed = true;
             } catch {
-                // Ignore invalid or unreadable dropped paths.
+                // invalid or unreadable dropped path
             }
         }
 
@@ -821,7 +821,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.pendingAssistantText += event.text;
                 thread.isStreaming = true;
                 thread.status = 'running';
-                // Send lightweight update instead of full state rebuild
                 this.postToAll({
                     type: 'textUpdate',
                     threadId: thread.id,

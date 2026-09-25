@@ -54,8 +54,8 @@ export function getWebviewContent(
 </html>`;
 }
 
+/** CSP nonce: cryptographically unpredictable, not Math.random. */
 function getNonce(): string {
-    // CSP nonce must be cryptographically unpredictable (not Math.random).
     const bytes = new Uint8Array(16);
     globalThis.crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');

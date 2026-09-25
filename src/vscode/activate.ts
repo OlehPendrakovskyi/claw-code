@@ -34,7 +34,6 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBarItem);
     log.info('status bar created');
 
-    // Command registry
     const commandRegistrations: Array<[string, (...args: never[]) => unknown]> = [
         ['openclaw.connect', () => connect()],
         ['openclaw.setup', () => runSetupFlow()],
@@ -103,9 +102,6 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    // Check auto-connect setting. Workspace-configurable (autoConnect +
-    // command), so it must be gated on workspace trust: activation runs on
-    // startup and must not execute an untrusted repository's command.
     const config = vscode.workspace.getConfiguration('openclaw');
     const autoConnect = config.get<boolean>('autoConnect', false);
 
@@ -115,7 +111,6 @@ export function activate(context: vscode.ExtensionContext) {
             void connect();
         }, 1000);
     } else if (autoConnect) {
-        // Deferred: connect once the user grants trust to this workspace.
         log.info('auto-connect enabled but workspace untrusted; waiting for trust');
         context.subscriptions.push(
             vscode.workspace.onDidGrantWorkspaceTrust(() => {

@@ -268,9 +268,6 @@ export function redactEndpoint(endpoint: string): string {
 /** Format a named entry (name + credential-redacted endpoint) for reports. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
-        // String entries may themselves be endpoints (e.g. `mcpServers:
-        // ["https://user:token@example.com"]`) — always redact; the helper
-        // leaves ordinary labels untouched.
         return redactEndpoint(entry);
     }
     if (!isRecord(entry)) {

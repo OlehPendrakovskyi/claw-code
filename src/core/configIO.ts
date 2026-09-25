@@ -45,8 +45,6 @@ export async function loadOpenClawConfigRecord(): Promise<{
             path: configPath
         };
     }
-    // Arrays and scalars are structurally invalid for a config root; report
-    // them as invalid config, not as a missing file.
     if (Array.isArray(parsed) || !isRecord(parsed)) {
         return {
             config: null,
