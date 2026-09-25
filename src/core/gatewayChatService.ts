@@ -66,6 +66,9 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
 
+/** Finite timeout for the full connect handshake (no-response protection). */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
 function defaultWsFactory(url: string): WebSocketLike {
   // Lazy require keeps `ws` off the extension-activation path until connect().
   const wsModule = require('ws') as { WebSocket: new (url: string) => WebSocketLike };
@@ -189,6 +192,7 @@ export class GatewayChatService {
       let settled = false;
       let helloSent = false;
       let connectRequestId: string | null = null;
+      let handshakeTimer: ReturnType<typeof setTimeout> | null = null;
       let challengeTimer: ReturnType<typeof setTimeout> | null = null;
       const settleError = (msg: string) => {
         if (settled) return;
@@ -196,6 +200,10 @@ export class GatewayChatService {
         if (challengeTimer) {
           clearTimeout(challengeTimer);
           challengeTimer = null;
+        }
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
         }
         reject(new Error(msg));
       };
@@ -221,6 +229,11 @@ export class GatewayChatService {
       };
       const onOpen = () => {
         challengeTimer = setTimeout(() => sendHello(), CHALLENGE_FALLBACK_MS);
+        // Finite handshake timeout: a gateway that never answers must not
+        // leave callers pending forever.
+        handshakeTimer = setTimeout(() => {
+          settleError('gateway handshake timed out');
+        }, HANDSHAKE_TIMEOUT_MS);
       };
       const onMessage = (data: unknown) => {
         const frame = parseFrame(data);
@@ -233,9 +246,18 @@ export class GatewayChatService {
           if (res.id !== connectRequestId) return;
           if (res.ok) {
             const payload = res.payload as { type?: string } | undefined;
-            if (payload?.type !== 'hello-ok') return;
+            if (payload?.type !== 'hello-ok') {
+              // Correlated success with unexpected payload: reject instead of
+              // leaving the handshake promise pending forever.
+              settleError(`gateway handshake unexpected payload type=${payload?.type ?? 'unknown'}`);
+              return;
+            }
             if (!settled) {
               settled = true;
+              if (handshakeTimer) {
+                clearTimeout(handshakeTimer);
+                handshakeTimer = null;
+              }
               this.connected = true;
               resolve(payload as unknown as HelloOk);
             }
