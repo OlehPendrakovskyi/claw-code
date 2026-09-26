@@ -9,6 +9,7 @@
  */
 
 import * as vscode from 'vscode';
+import { log } from '../vscode/commands/shared';
 
 /** SecretStorage key under which the gateway token is stored. */
 export const GATEWAY_TOKEN_SECRET_KEY = 'openclaw.gateway.token';
@@ -88,7 +89,27 @@ export async function migrateLegacyGatewayToken(
     vscode.ConfigurationTarget.Workspace,
     vscode.ConfigurationTarget.WorkspaceFolder,
   ]) {
-    await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
+    // Skip scopes that never held the legacy value, and never let a
+    // failing scope write break activation (WorkspaceFolder throws when
+    // no folder is open).
+    const hadValue =
+      inspection != null &&
+      ((target === vscode.ConfigurationTarget.Global && inspection.globalValue !== undefined) ||
+        (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceValue !== undefined) ||
+        (target === vscode.ConfigurationTarget.WorkspaceFolder &&
+          inspection.workspaceFolderValue !== undefined));
+    if (!hadValue) {
+      continue;
+    }
+    try {
+      await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
+    } catch (err) {
+      log.warn(
+        `legacy token cleanup failed for target ${target}: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    }
   }
   return true;
 }

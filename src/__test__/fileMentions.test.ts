@@ -1,4 +1,4 @@
-import path from 'path';
+import * as path from 'path';
 import { parseFileMentions, buildMention } from '../webview/fileMentions';
 
 describe('parseFileMentions', () => {
@@ -36,6 +36,10 @@ describe('parseFileMentions', () => {
 
     it('requires word boundary before @', () => {
         expect(parseFileMentions('email user@example.com')).toEqual([]);
+    });
+
+    it('trims trailing punctuation from prose', () => {
+        expect(parseFileMentions('see @src/a.ts, then continue')[0]).toEqual({ path: 'src/a.ts' });
     });
 
     it('clamps #L0 to line 1 instead of dropping the range', () => {

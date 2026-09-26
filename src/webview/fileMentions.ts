@@ -23,7 +23,8 @@ export function parseFileMentions(text: string): FileMention[] {
 
     let match: RegExpExecArray | null;
     while ((match = mentionRegex.exec(text)) !== null) {
-        const path = match[1];
+        // Trailing sentence punctuation belongs to prose, not the path.
+        const path = match[1].replace(/[.,:;)}\]]+$/, '');
         if (!path) {
             continue;
         }
