@@ -206,7 +206,32 @@ export class GatewayChatService {
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
   /** Message ids already surfaced for the active session (dedup on resume). */
-  private seenMessageIds = new Set<string>();
+  /** Seen message IDs per session key, capped so long-lived sessions cannot
+   *  grow memory unbounded. Keyed per session: messageIds are only unique
+   *  within one session's transcript. */
+  private seenMessageIdsBySession = new Map<string, Set<string>>();
+  private static readonly SEEN_MESSAGE_LIMIT = 500;
+
+  /** Record a messageId as seen for one session (oldest entry evicted at the cap). */
+  private rememberSeen(sessionKey: string, messageId: string): void {
+    let seen = this.seenMessageIdsBySession.get(sessionKey);
+    if (!seen) {
+      seen = new Set<string>();
+      this.seenMessageIdsBySession.set(sessionKey, seen);
+    }
+    if (seen.size >= GatewayChatService.SEEN_MESSAGE_LIMIT) {
+      const oldest = seen.values().next().value;
+      if (oldest !== undefined) {
+        seen.delete(oldest);
+      }
+    }
+    seen.add(messageId);
+  }
+
+  /** Whether a messageId was already delivered for one session. */
+  private hasSeen(sessionKey: string, messageId: string): boolean {
+    return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
+  }
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
@@ -427,6 +452,7 @@ export class GatewayChatService {
    *  session's live events to a callback for a thread that no longer exists. */
   clearSessionSink(sessionKey: string): void {
     this.transcriptSinksBySession.delete(sessionKey);
+    this.seenMessageIdsBySession.delete(sessionKey);
   }
 
   /** Session key the next send will target (null → gateway default). */
@@ -454,7 +480,7 @@ export class GatewayChatService {
           ? ((row as Record<string, unknown>).messageId as string)
           : null;
       if (messageId) {
-        this.seenMessageIds.add(messageId);
+        this.rememberSeen(sessionKey, messageId);
       }
     }
   }
@@ -518,7 +544,7 @@ export class GatewayChatService {
           // Live delivery counts as seen: record the id so the next reconnect's
           // catch-up replay does not surface this message a second time.
           if (typeof payload.messageId === 'string') {
-            this.seenMessageIds.add(payload.messageId);
+            this.rememberSeen(String(payload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY), payload.messageId);
           }
           routedChatEvent = chatEvent;
           sink(chatEvent);
@@ -606,10 +632,11 @@ export class GatewayChatService {
   /** Route a session event to its session-keyed run sink. */
   private sinkForSession(sessionKey: unknown): ((event: ChatEvent) => void) | null {
     if (sessionKey === undefined || sessionKey === null) {
-      // Frames without a session key belong to the bound active session
-      // (its transcript sink when no run is streaming).
+      // Frames without a session key belong to the bound active session:
+      // prefer the in-flight run sink, then the transcript sink, mirroring
+      // the keyed path so streaming is not dropped between frames.
       const fallbackKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-      return this.transcriptSinksBySession.get(fallbackKey) ?? null;
+      return this.runSinksBySession.get(fallbackKey) ?? this.transcriptSinksBySession.get(fallbackKey) ?? null;
     }
     const key = String(sessionKey);
     return this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
@@ -682,11 +709,11 @@ export class GatewayChatService {
       }
       for (const row of payload.messages) {
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
-        if (messageId && this.seenMessageIds.has(messageId)) {
+        if (messageId && this.hasSeen(sessionKey, messageId)) {
           continue;
         }
         if (messageId) {
-          this.seenMessageIds.add(messageId);
+          this.rememberSeen(sessionKey, messageId);
         }
         const mapped = mapSessionEventToChatEvent({
           event: GatewayEvents.sessionMessage,

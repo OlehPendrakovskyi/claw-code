@@ -71,7 +71,9 @@ export function activate(context: vscode.ExtensionContext) {
     log.info('overview tree view created');
 
     const chatViewProvider = new ChatViewProvider(context.extensionUri, context);
-    void migrateLegacyGatewayToken(context);
+    void migrateLegacyGatewayToken(context).catch((err: unknown) => {
+        log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider),
         chatViewProvider

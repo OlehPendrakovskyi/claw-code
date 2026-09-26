@@ -27,9 +27,10 @@ export function parseFileMentions(text: string): FileMention[] {
         if (!path) {
             continue;
         }
-        const lineStart = match[2] ? parseInt(match[2], 10) : undefined;
-        const lineEndRaw = match[3] ? parseInt(match[3], 10) : undefined;
-        const lineEnd = lineEndRaw ?? lineStart;
+        const lineStart = match[2] != null ? Math.max(1, parseInt(match[2], 10)) : undefined;
+        const lineEndRaw = match[3] != null ? Math.max(1, parseInt(match[3], 10)) : undefined;
+        const lineEnd =
+            lineEndRaw != null && lineStart != null ? Math.max(lineStart, lineEndRaw) : lineStart;
         // Dedupe on path + range so the same file with different ranges is kept.
         const key = `${path}#${lineStart ?? ''}-${lineEnd ?? ''}`;
         if (seen.has(key)) {
@@ -38,20 +39,26 @@ export function parseFileMentions(text: string): FileMention[] {
         seen.add(key);
         mentions.push({
             path,
-            ...(lineStart ? { lineStart, lineEnd } : {})
+            ...(lineStart !== undefined ? { lineStart, lineEnd } : {})
         });
     }
 
     return mentions;
 }
 
-/** Build the mention string for an editor context (path plus optional line range). */
+/** Build the mention string for an editor context (path plus optional line range).
+ *  Non-positive starts clamp to line 1; reversed ranges collapse to the start line. */
 export function buildMention(filePath: string, lineStart?: number, lineEnd?: number): string {
-    if (lineStart && lineEnd && lineEnd > lineStart) {
-        return `@${filePath}#L${lineStart}-${lineEnd}`;
+    if (lineStart != null && lineEnd != null) {
+        const start = Math.max(1, lineStart);
+        const end = Math.max(start, lineEnd);
+        if (end > start) {
+            return `@${filePath}#L${start}-${end}`;
+        }
+        return `@${filePath}#L${start}`;
     }
-    if (lineStart) {
-        return `@${filePath}#L${lineStart}`;
+    if (lineStart != null) {
+        return `@${filePath}#L${Math.max(1, lineStart)}`;
     }
     return `@${filePath}`;
 }

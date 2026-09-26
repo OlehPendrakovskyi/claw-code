@@ -37,6 +37,14 @@ describe('parseFileMentions', () => {
     it('requires word boundary before @', () => {
         expect(parseFileMentions('email user@example.com')).toEqual([]);
     });
+
+    it('clamps #L0 to line 1 instead of dropping the range', () => {
+        expect(parseFileMentions('@a.ts#L0')[0]).toEqual({ path: 'a.ts', lineStart: 1, lineEnd: 1 });
+    });
+
+    it('normalizes reversed ranges to the start line', () => {
+        expect(parseFileMentions('@a.ts#L10-5')[0]).toEqual({ path: 'a.ts', lineStart: 10, lineEnd: 10 });
+    });
 });
 
 describe('buildMention', () => {

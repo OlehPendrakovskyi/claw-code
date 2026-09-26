@@ -163,14 +163,16 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
 }
 
 /** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.
- *  A missing range returns the whole body; a non-positive start clamps to line 1. */
-function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
+ *  A missing range returns the whole body; a non-positive start clamps to line 1;
+ *  reversed ranges (end < start) collapse to the start line; CRLF is handled by
+ *  splitting on `/\r?\n/` so Windows line endings do not pollute slices. */
+export function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
     if (lineStart == null) {
         return content;
     }
-    const lines = content.split('\n');
+    const lines = content.split(/\r?\n/);
     const start = Math.max(1, lineStart) - 1;
-    const end = Math.min(lines.length, lineEnd ?? lineStart);
+    const end = Math.min(lines.length, Math.max(1, Math.max(lineStart, lineEnd ?? lineStart)));
     if (start >= lines.length) {
         return '';
     }
