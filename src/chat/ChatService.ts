@@ -11,7 +11,7 @@ export type UsageInfo = {
 
 export type ChatEvent =
     | { type: 'text'; text: string }
-    | { type: 'toolCall'; title: string; status: string; details: string }
+    | { type: 'toolCall'; title: string; status: string; details: string; id?: string }
     | { type: 'usage'; usage: UsageInfo }
     | { type: 'done' }
     | { type: 'error'; message: string };

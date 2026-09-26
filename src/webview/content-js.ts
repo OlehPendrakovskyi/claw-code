@@ -1724,7 +1724,7 @@ export const CONTENT_JS = `
                     }
                     return;
                 }
-                if (message.type === 'sessionsList') {
+                if (message.type === 'agentsList' || message.type === 'sessionsList') {
                     renderSessionsPanel(message.sessions || []);
                     return;
                 }

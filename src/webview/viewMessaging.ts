@@ -14,7 +14,7 @@ export type ChatMessage =
     | { role: 'user' | 'assistant' | 'error'; content: string; html?: string }
     | {
         role: 'tool';
-        entries: Array<{ title: string; status: string; details: string }>;
+        entries: Array<{ title: string; status: string; details: string; id?: string }>;
     };
 
 /** An attachment referenced by a chat thread. */
@@ -193,14 +193,24 @@ export function sliceLineRange(content: string, lineStart?: number, lineEnd?: nu
     return lines.slice(start, end).join('\n');
 }
 
-/** Append or update a tool-call message in a thread snapshot. */
+/** Append or update a tool-call message in a thread snapshot.
+ *  Entries carrying an id update the matching entry in the last tool message
+ *  (lifecycle transitions like running→done stay on one row); entries without
+ *  an id are always appended. */
 export function appendToolMessage(
     thread: ChatThreadState,
-    entry: { title: string; status: string; details: string }
+    entry: { title: string; status: string; details: string; id?: string }
 ): void {
     const lastMessage = thread.messages[thread.messages.length - 1];
     if (lastMessage?.role === 'tool') {
-        lastMessage.entries.push(entry);
+        const existing = entry.id != null
+            ? lastMessage.entries.findIndex(e => e.id === entry.id)
+            : -1;
+        if (existing >= 0) {
+            lastMessage.entries[existing] = entry;
+        } else {
+            lastMessage.entries.push(entry);
+        }
         return;
     }
 

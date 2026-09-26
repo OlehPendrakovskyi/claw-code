@@ -128,7 +128,7 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
     role?: string;
     text?: unknown;
     delta?: unknown;
-    toolCall?: { name?: unknown; title?: unknown; status?: unknown } | null;
+    toolCall?: { id?: unknown; name?: unknown; title?: unknown; status?: unknown; details?: unknown } | null;
     usage?:
       | {
           promptTokens?: number;
@@ -150,7 +150,8 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
       type: 'toolCall',
       title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
       status,
-      details: '',
+      details: typeof tc.details === 'string' ? tc.details : '',
+      ...(typeof tc.id === 'string' && tc.id ? { id: tc.id } : {}),
     });
   }
   if (typeof payload.delta === 'string' && payload.delta.length > 0) {
@@ -244,8 +245,9 @@ export class GatewayChatService {
   }
 
   /** Drop one transcript sink for a session; the session entry disappears when
-   *  the last subscriber for that key is removed. */
-  private removeTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+   *  the last subscriber for that key is removed. Callers (e.g. the provider
+   *  reopening a session) use it to replace, not duplicate, their callback. */
+  removeTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
     const sinks = this.transcriptSinksBySession.get(sessionKey);
     if (!sinks) return;
     sinks.delete(onEvent);

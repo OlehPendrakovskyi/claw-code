@@ -55,6 +55,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private resumeStarted = false;
     private threadCounter = 0;
     private readonly threads = new Map<string, ChatThreadState>();
+    /** Live transcript callback per resumed session, so reopening a session
+     *  replaces the previous sink instead of duplicating event delivery. */
+    private transcriptCallbacks = new Map<string, (event: ChatEvent) => void>();
     private visibleThreadIds: string[] = [];
     private activeThreadId = '';
 
@@ -781,6 +784,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
+        // Rebinding the transport retires the previous backend: an old acpx
+        // process (whose callback has no epoch) or a stale gateway sink must
+        // not keep appending events into the new run, and cancel/close must
+        // reach whichever backend is actually live for the thread.
+        const previousBackend = thread.transportBackend;
+        if (previousBackend && previousBackend !== choice.service && previousBackend !== thread.service) {
+            if (previousBackend instanceof GatewayChatService) {
+                // The gateway client is cached and shared across threads:
+                // never dispose it; abort only this thread's session so its
+                // in-flight run ends cleanly, and bump the epoch so callbacks
+                // captured by earlier runs drop their late events.
+                if (thread.sessionKey) {
+                    previousBackend.abort(thread.sessionKey);
+                }
+            } else {
+                previousBackend.dispose();
+            }
+            thread.eventEpoch += 1;
+        }
         thread.transportBackend = choice.service;
         let runEpoch: number | undefined;
         if (choice.service instanceof GatewayChatService) {
@@ -867,7 +889,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 appendToolMessage(thread, {
                     title: event.title,
                     status: event.status,
-                    details: event.details
+                    details: event.details,
+                    ...(event.id != null ? { id: event.id } : {})
                 });
                 this.emitState();
                 break;
@@ -1177,8 +1200,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
                     thread.title = label;
                     this.emitState();
-                    const resumeEpoch = thread.eventEpoch;
-                    gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event, resumeEpoch); });
+                    this.resumeSessionForThread(gateway, thread, sessionKey);
                     return;
                 }
             }
@@ -1207,9 +1229,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             thread.status = 'idle';
         }
-        const resumeEpoch = thread.eventEpoch;
-        gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event, resumeEpoch); });
+        this.resumeSessionForThread(gateway, thread, sessionKey);
         this.emitState();
+    }
+
+    /** Resume a session for a thread, replacing any previous transcript
+     *  callback for that session so reopen cannot deliver events twice. */
+    private resumeSessionForThread(gateway: GatewayChatService, thread: ChatThreadState, sessionKey: string): void {
+        const prior = this.transcriptCallbacks.get(sessionKey);
+        if (prior) {
+            gateway.removeTranscriptSink(sessionKey, prior);
+        }
+        const resumeEpoch = thread.eventEpoch;
+        const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, resumeEpoch); };
+        this.transcriptCallbacks.set(sessionKey, cb);
+        gateway.resumeSession(sessionKey, cb);
     }
 
     /** Persist the last selected session key for window-restart resume. */
@@ -1241,6 +1275,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // would pile up as one pending response).
             try {
                 const history = await gateway.getHistory(sessionKey);
+                // Re-check after the await: opening another session meanwhile
+                // must not let this late resume overwrite its transcript.
+                if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey) {
+                    return;
+                }
                 // Replace the transcript instead of appending: on a
                 // re-resume the thread may already hold in-memory
                 // messages that would otherwise duplicate restored
@@ -1255,8 +1294,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } catch (err) {
                 log.warn('history restore during resume failed', err);
             }
-            const resumeEpoch = thread.eventEpoch;
-            gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event, resumeEpoch); });
+            this.resumeSessionForThread(gateway, thread, sessionKey);
             this.emitState();
         }
     }
