@@ -25,7 +25,7 @@ import {
 import { buildRecommendations } from './recommendations';
 import { parseFileMentions, type FileMention } from './fileMentions';
 import { ChatServiceFactory } from './chatServiceFactory';
-import { GatewayChatService } from '../core/gatewayChatService';
+import { GatewayChatService, DEFAULT_SESSION_KEY } from '../core/gatewayChatService';
 import {
     AgentPicker,
     COLD_SESSION_PLACEHOLDER,
@@ -476,6 +476,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const backend = this.backendFor(thread);
         if (backend instanceof GatewayChatService) {
             backend.abort(thread.sessionKey);
+            // Drop the thread's transcript sink if no surviving thread still
+            // listens to this session, so the closed thread's callback is not
+            // retained by the shared gateway service.
+            if (thread.sessionKey &&
+                ![...this.threads.values()].some(t => t.id !== threadId && t.sessionKey === thread.sessionKey)) {
+                backend.clearSessionSink(thread.sessionKey);
+            }
         } else {
             backend.abort();
         }
@@ -728,9 +735,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const choice = await this.resolveServiceForSend(thread.service);
         thread.transportBackend = choice.service;
-        // Rebind the shared gateway to this thread's session before each send
-        // so one thread's prompt/stream cannot leak into another session.
-        if (choice.service instanceof GatewayChatService && thread.sessionKey) {
+        if (choice.service instanceof GatewayChatService) {
+            // Bind a session key to the thread before every gateway send: an
+            // unbound thread must not ride the shared gateway's active session
+            // (which another thread may have selected) or leave cancel passing
+            // an undefined key that targets the shared fallback.
+            if (!thread.sessionKey) {
+                thread.sessionKey = choice.service.getActiveSessionKey() ?? DEFAULT_SESSION_KEY;
+            }
             choice.service.setActiveSession(thread.sessionKey);
         }
         choice.service.sendMessage(
@@ -1073,6 +1085,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Carry the persisted key onto the thread so later cancel/reset
             // aborts target this resumed session, not the shared fallback.
             thread.sessionKey = sessionKey;
+            // Restore the full transcript before subscribing, so the catch-up
+            // delta callback does not replay the whole session into the live
+            // stream (user messages would be dropped and assistant messages
+            // would pile up as one pending response).
+            try {
+                const history = await gateway.getHistory(sessionKey);
+                const restored = mapHistoryMessages(history);
+                for (const msg of restored) {
+                    thread.messages.push({ role: msg.role, content: msg.content });
+                }
+                thread.status = 'idle';
+            } catch (err) {
+                log.warn('history restore during resume failed', err);
+            }
             gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         }
     }

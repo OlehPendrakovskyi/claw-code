@@ -63,7 +63,7 @@ type PendingRequest = {
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
 /** Session key used when the gateway does not echo one back. */
-const DEFAULT_SESSION_KEY = 'main';
+export const DEFAULT_SESSION_KEY = 'main';
 
 /** Extract a `sessionKey` from an RPC payload, when present. */
 function extractSessionKey(payload: unknown): string | null {
@@ -421,6 +421,12 @@ export class GatewayChatService {
   /** Bind the active chat to a session key (agent picker). */
   setActiveSession(sessionKey: string): void {
     this.activeSessionKey = sessionKey;
+  }
+
+  /** Drop a session's transcript sink (thread teardown): stops routing that
+   *  session's live events to a callback for a thread that no longer exists. */
+  clearSessionSink(sessionKey: string): void {
+    this.transcriptSinksBySession.delete(sessionKey);
   }
 
   /** Session key the next send will target (null → gateway default). */
