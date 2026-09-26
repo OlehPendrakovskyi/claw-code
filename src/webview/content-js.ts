@@ -81,6 +81,7 @@ export const CONTENT_JS = `
             };
 
             var collapseCompleted = true;
+            var hideToolActivity = false;
             var collapseOverrides = Object.create(null); // threadId -> true/false manual override
 
             function isValidDimension(value) {
@@ -267,6 +268,19 @@ export const CONTENT_JS = `
                 return Math.ceil(text.length / 4);
             }
 
+            /** Usage status line: tokens of the last run plus rough context fill percent. */
+            function renderUsageIndicator(thread) {
+                var usage = thread.lastUsage;
+                if (!usage || !usage.totalTokens) {
+                    return '';
+                }
+                var max = thread.contextMax || 128000;
+                var pct = Math.min(100, Math.round((usage.totalTokens / max) * 100));
+                return '<span class="usage-indicator" title="Last run: ' + usage.totalTokens + ' tokens (~' +
+                    pct + '% of context)">' +
+                    formatTokenCount(usage.totalTokens) + ' tok · ' + pct + '%</span>';
+            }
+
             function getThreadSpaceUsage(thread) {
                 if (!thread) {
                     return 0;
@@ -309,10 +323,30 @@ export const CONTENT_JS = `
                 }
             }
 
+            var TERMINAL_STATUSES = ['done', 'error', 'failed'];
+
+            /** Group status: running while any entry is still non-terminal; error/failed
+             *  win over done so failed groups are visible and never hidden as "done". */
             function getToolGroupStatus(entries) {
+                if (entries.some(function(entry) {
+                    return entry.status === 'error' || entry.status === 'failed';
+                })) { return 'error'; }
                 return entries.some(function(entry) {
-                    return entry.status !== 'done';
+                    return TERMINAL_STATUSES.indexOf(entry.status) === -1;
                 }) ? 'running' : 'done';
+            }
+
+            /** One of ✓ / ✗ / ⟳ for a tool entry status. */
+            function getToolStatusSymbol(status) {
+                if (status === 'done') { return '\u2713'; }
+                if (status === 'error' || status === 'failed') { return '\u2717'; }
+                return '\u27F3';
+            }
+
+            function getToolStatusClass(status) {
+                if (status === 'done') { return ' tool-ok'; }
+                if (status === 'error' || status === 'failed') { return ' tool-fail'; }
+                return ' tool-run';
             }
 
             function renderToolMessage(message) {
@@ -325,14 +359,38 @@ export const CONTENT_JS = `
                 }
 
                 var summary = document.createElement('summary');
-                summary.innerHTML =
-                    '<span class="message-tool-summary">' +
-                        '<svg class="message-tool-chevron" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-                        '<span class="message-tool-icon">&#9881;</span>' +
-                        '<span class="message-tool-label">Tools</span>' +
-                        '<span class="message-tool-count">(' + entries.length + ')</span>' +
-                    '</span>' +
-                    '<span class="message-tool-status">' + escapeHtml(status) + '</span>';
+                var summaryLine = document.createElement('span');
+                summaryLine.className = 'message-tool-summary';
+                var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                chevron.setAttribute('class', 'message-tool-chevron');
+                chevron.setAttribute('viewBox', '0 0 16 16');
+                chevron.setAttribute('fill', 'currentColor');
+                var chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                chevronPath.setAttribute('d', 'M6 4l4 4-4 4');
+                chevronPath.setAttribute('stroke', 'currentColor');
+                chevronPath.setAttribute('stroke-width', '1.5');
+                chevronPath.setAttribute('fill', 'none');
+                chevronPath.setAttribute('stroke-linecap', 'round');
+                chevronPath.setAttribute('stroke-linejoin', 'round');
+                chevron.appendChild(chevronPath);
+                var icon = document.createElement('span');
+                icon.className = 'message-tool-icon';
+                icon.innerHTML = '&#9881;';
+                var label = document.createElement('span');
+                label.className = 'message-tool-label';
+                label.textContent = 'Tools';
+                var count = document.createElement('span');
+                count.className = 'message-tool-count';
+                count.textContent = '(' + entries.length + ')';
+                summaryLine.appendChild(chevron);
+                summaryLine.appendChild(icon);
+                summaryLine.appendChild(label);
+                summaryLine.appendChild(count);
+                var statusEl = document.createElement('span');
+                statusEl.className = 'message-tool-status' + getToolStatusClass(status);
+                statusEl.textContent = getToolStatusSymbol(status) + ' ' + status;
+                summary.appendChild(summaryLine);
+                summary.appendChild(statusEl);
                 node.appendChild(summary);
 
                 var toolBody = document.createElement('div');
@@ -341,12 +399,21 @@ export const CONTENT_JS = `
                 entries.forEach(function(entry) {
                     var item = document.createElement('div');
                     item.className = 'message-tool-entry';
-                    item.innerHTML =
-                        '<div class="message-tool-entry-header">' +
-                            '<span class="message-tool-entry-title">' + escapeHtml(entry.title || 'tool') + '</span>' +
-                            '<span class="message-tool-entry-status">' + escapeHtml(entry.status || '') + '</span>' +
-                        '</div>' +
-                        '<pre class="message-tool-details">' + linkifyFilePaths(escapeHtml(entry.details || '')) + '</pre>';
+                    var header = document.createElement('div');
+                    header.className = 'message-tool-entry-header';
+                    var title = document.createElement('span');
+                    title.className = 'message-tool-entry-title';
+                    title.textContent = entry.title || 'tool';
+                    var entryStatus = document.createElement('span');
+                    entryStatus.className = 'message-tool-entry-status' + getToolStatusClass(entry.status || '');
+                    entryStatus.textContent = getToolStatusSymbol(entry.status || '') + ' ' + (entry.status || '');
+                    header.appendChild(title);
+                    header.appendChild(entryStatus);
+                    var details = document.createElement('pre');
+                    details.className = 'message-tool-details';
+                    details.innerHTML = linkifyFilePaths(escapeHtml(entry.details || ''));
+                    item.appendChild(header);
+                    item.appendChild(details);
                     toolBody.appendChild(item);
                 });
 
@@ -639,7 +706,8 @@ export const CONTENT_JS = `
                                 return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') +
                                     '" data-token-est="' + thread.id + '">' +
                                     (hasVal ? '~' + formatTokenCount(est) + ' tokens' : '') +
-                                '</span>';
+                                '</span>' +
+                                renderUsageIndicator(thread);
                             })() +
                             (messageQueue[thread.id] ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
                             '<button class="btn-send' + (thread.isStreaming ? ' streaming' : '') + '"' +
@@ -731,6 +799,7 @@ export const CONTENT_JS = `
                             (currentDimension === '1x1' && state.threads.length > 1
                                 ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + thread.id + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
                                 : '') +
+                            '<button class="pane-btn" data-action="sessions" data-thread-id="' + thread.id + '">Sessions</button>' +
                             '<button class="pane-btn" data-action="export" data-thread-id="' + thread.id + '">Export</button>' +
                             '<button class="pane-btn" data-action="clear" data-thread-id="' + thread.id + '">Clear</button>' +
                             (state.threads.length > 1
@@ -753,6 +822,12 @@ export const CONTENT_JS = `
                     body.appendChild(empty);
                 } else {
                     messages.forEach(function(message) {
+                        if (message.role === 'tool' && hideToolActivity) {
+                            var toolEntries = Array.isArray(message.entries) ? message.entries : [];
+                            if (getToolGroupStatus(toolEntries) === 'done') {
+                                return;
+                            }
+                        }
                         var node = document.createElement('div');
                         if (message.role === 'tool') {
                             node = renderToolMessage(message);
@@ -1246,6 +1321,14 @@ export const CONTENT_JS = `
                     renderState(captureComposerFocus());
                     return;
                 }
+                if (action === 'sessions') {
+                    vscode.postMessage({ type: 'requestSessions' });
+                    return;
+                }
+                if (action === 'open-session') {
+                    vscode.postMessage({ type: 'openSession', sessionKey: actionEl.getAttribute('data-session-key') });
+                    return;
+                }
                 if (action === 'clear') {
                     vscode.postMessage({ type: 'clearThread', threadId: threadId });
                     return;
@@ -1627,6 +1710,40 @@ export const CONTENT_JS = `
                 if (message.type === 'onboardingDone') {
                     return;
                 }
+                if (message.type === 'insertMention') {
+                    var mention = String(message.mention || '');
+                    if (mention && state.activeThreadId) {
+                        var draft = getDraft(state.activeThreadId);
+                        var nextDraft = draft ? draft + ' ' + mention : mention;
+                        setDraft(state.activeThreadId, nextDraft);
+                        renderState({
+                            threadId: state.activeThreadId,
+                            selectionStart: nextDraft.length,
+                            selectionEnd: nextDraft.length
+                        });
+                    }
+                    return;
+                }
+                if (message.type === 'sessionsList') {
+                    renderSessionsPanel(message.sessions || []);
+                    return;
+                }
+                if (message.type === 'agentSelected') {
+                    var panel = document.getElementById('claw-sessions-panel');
+                    if (panel) { panel.remove(); }
+                    return;
+                }
+                if (message.type === 'transportStatus') {
+                    var badge = document.getElementById('claw-transport-status');
+                    if (!badge) {
+                        badge = document.createElement('div');
+                        badge.id = 'claw-transport-status';
+                        badge.style.cssText = 'position:fixed;top:4px;right:8px;font-size:10px;opacity:0.6;z-index:50;pointer-events:none';
+                        document.body.appendChild(badge);
+                    }
+                    badge.textContent = String(message.label || '');
+                    return;
+                }
                 if (message.type === 'textUpdate') {
                     // Lightweight incremental update — only touch the pending element
                     var tid = message.threadId;
@@ -1691,6 +1808,9 @@ export const CONTENT_JS = `
                     if (typeof message.collapseCompleted === 'boolean') {
                         collapseCompleted = message.collapseCompleted;
                     }
+                    if (typeof message.hideToolActivity === 'boolean') {
+                        hideToolActivity = message.hideToolActivity;
+                    }
                     if (isValidDimension(message.dimension)) {
                         currentDimension = message.dimension;
                     }
@@ -1710,6 +1830,66 @@ export const CONTENT_JS = `
                             sendThread(t.id);
                         }
                     }
+                }
+            }
+
+            function renderSessionsPanel(sessions) {
+                dismissSessionsPanel();
+                if (!sessions || sessions.length === 0) {
+                    return;
+                }
+                var panel = document.createElement('div');
+                panel.id = 'claw-sessions-panel';
+                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:var(--vscode-editorWidget-background, #252526);border:1px solid var(--vscode-editorWidget-border, #454545);color:var(--vscode-editor-foreground, inherit);padding:6px;z-index:60;min-width:220px;font-size:12px';
+                var title = document.createElement('div');
+                title.textContent = 'Sessions';
+                title.style.cssText = 'opacity:0.7;margin-bottom:4px';
+                panel.appendChild(title);
+                sessions.forEach(function(session) {
+                    var row = document.createElement('button');
+                    row.setAttribute('data-action', 'open-session');
+                    row.setAttribute('data-session-key', session.sessionKey || '');
+                    row.style.cssText = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
+                    var label = session.label || session.sessionKey || '';
+                    if (session.hasActiveRun) { label = '\u25CF ' + label; }
+                    if (session.cold) { label = '\u2744 ' + label; }
+                    row.textContent = label;
+                    row.title = session.sessionKey || '';
+                    // The panel lives on document.body, outside paneGrid, so
+                    // the pane-level click delegation never sees these rows:
+                    // each row carries its own handler posting openSession.
+                    row.addEventListener('click', function(ev) {
+                        ev.stopPropagation();
+                        vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '' });
+                    });
+                    panel.appendChild(row);
+                });
+                document.body.appendChild(panel);
+                setTimeout(function() {
+                    // Panel may have been removed (e.g. agentSelected) before
+                    // this deferred registration runs: do not then leave a
+                    // dangling document listener.
+                    if (!document.getElementById('claw-sessions-panel')) { return; }
+                    sessionsPanelDismiss = function dismiss(ev) {
+                        var p = document.getElementById('claw-sessions-panel');
+                        if (p && ev.target instanceof Node && !p.contains(ev.target)) {
+                            dismissSessionsPanel();
+                        } else if (!p) {
+                            // Panel already gone via another path: stop listening.
+                            dismissSessionsPanel();
+                        }
+                    };
+                    document.addEventListener('click', sessionsPanelDismiss);
+                }, 0);
+            }
+
+            var sessionsPanelDismiss = null;
+            function dismissSessionsPanel() {
+                var p = document.getElementById('claw-sessions-panel');
+                if (p) { p.remove(); }
+                if (sessionsPanelDismiss) {
+                    document.removeEventListener('click', sessionsPanelDismiss);
+                    sessionsPanelDismiss = null;
                 }
             }
 

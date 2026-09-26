@@ -83,6 +83,20 @@ export const SLASH_COMMANDS: SlashCommand[] = [
         placeholder: 'Security focus? Leave blank for full analysis',
     },
     {
+        name: 'plan',
+        description: 'Create an implementation plan',
+        icon: '\u{1F5D3}\uFE0F',
+        contextType: 'none',
+        placeholder: 'What should I plan?',
+    },
+    {
+        name: 'compact',
+        description: 'Summarize and compact the conversation',
+        icon: '\u{1F4E7}',
+        contextType: 'none',
+        placeholder: 'Any compaction focus? Leave blank for general summary',
+    },
+    {
         name: 'search',
         description: 'Search codebase',
         icon: '\u{1F50E}',
@@ -110,6 +124,10 @@ const COMMAND_INSTRUCTIONS: Record<string, string> = {
         'Perform a security analysis of the following code. Identify vulnerabilities, insecure patterns, and suggest hardening improvements with corrected code.',
     search:
         'Search the codebase to answer the following question.',
+    plan:
+        'Create a step-by-step implementation plan for the following request. Break the work into ordered, verifiable tasks and note dependencies and risks. Do not write code yet.',
+    compact:
+        'Summarize the conversation so far into a compact context handoff: key decisions, current state, open questions, and next steps. Keep it concise.',
 };
 
 function formatContext(ctx: EditorContext, contextType: ContextType): string {

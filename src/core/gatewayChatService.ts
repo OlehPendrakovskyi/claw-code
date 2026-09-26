@@ -62,6 +62,20 @@ type PendingRequest = {
 
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
+/** Session key used when the gateway does not echo one back. */
+export const DEFAULT_SESSION_KEY = 'main';
+
+/** Extract a `sessionKey` from an RPC payload, when present. */
+function extractSessionKey(payload: unknown): string | null {
+  if (payload && typeof payload === 'object') {
+    const key = (payload as { sessionKey?: unknown; session?: { key?: unknown } }).sessionKey ??
+      (payload as { session?: { key?: unknown } }).session?.key;
+    if (typeof key === 'string' && key) {
+      return key;
+    }
+  }
+  return null;
+}
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
@@ -99,15 +113,22 @@ export function parseFrame(data: unknown): RpcInboundFrame | null {
   }
 }
 
+const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
+
 /**
- * Map a gateway `session.message` event to a UI ChatEvent.
- * Returns null when the event carries no assistant text or usage.
+ * Map a gateway `session.message` event to zero or more UI ChatEvents.
+ * Handles toolCall payloads, streaming text deltas, final text, and usage.
+ * Frames may carry several of these at once (e.g. toolCall alongside a delta
+ * and usage), so every present facet is emitted in order; returns [] when
+ * the event carries none of them.
  */
-export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null {
-  if (evt.event !== GatewayEvents.sessionMessage) return null;
+export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
+  if (evt.event !== GatewayEvents.sessionMessage) return [];
   const payload = (evt.payload ?? {}) as {
     role?: string;
     text?: unknown;
+    delta?: unknown;
+    toolCall?: { name?: unknown; title?: unknown; status?: unknown } | null;
     usage?:
       | {
           promptTokens?: number;
@@ -119,9 +140,24 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
         }
       | null;
   };
-  if (payload.role && payload.role !== 'assistant') return null;
+  if (payload.role && payload.role !== 'assistant') return [];
+  const tc = payload.toolCall;
+  const events: ChatEvent[] = [];
+  if (tc && typeof tc === 'object') {
+    const rawStatus = typeof tc.status === 'string' ? tc.status : '';
+    const status = TOOL_CALL_STATUSES.has(rawStatus) ? rawStatus : rawStatus ? 'running' : 'done';
+    events.push({
+      type: 'toolCall',
+      title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
+      status,
+      details: '',
+    });
+  }
+  if (typeof payload.delta === 'string' && payload.delta.length > 0) {
+    events.push({ type: 'text', text: payload.delta });
+  }
   if (typeof payload.text === 'string' && payload.text.length > 0) {
-    return { type: 'text', text: payload.text };
+    events.push({ type: 'text', text: payload.text });
   }
   const u = payload.usage;
   const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
@@ -129,12 +165,12 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
     u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
   );
   if (u && (promptTokens || completionTokens)) {
-    return {
+    events.push({
       type: 'usage',
       usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
-    };
+    });
   }
-  return null;
+  return events;
 }
 
 /**
@@ -146,8 +182,8 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
  * with per-request ids and timeouts.
  */
 export class GatewayChatService {
-  private readonly url: string;
-  private readonly token: string;
+  private url: string;
+  private token: string;
   private readonly logger: Logger;
   private readonly wsFactory: WebSocketFactory;
   private readonly baseDelayMs: number;
@@ -162,6 +198,76 @@ export class GatewayChatService {
   private connected = false;
   /** In-flight connect() (serialized: concurrent calls share the attempt). */
   private connectPromise: Promise<void> | null = null;
+  /** Session key the last sendMessage targeted (falls back to default). */
+  private activeSessionKey: string | null = null;
+  /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
+   *  An entry also marks that session as having an active run (queue-mode selection). */
+  private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect.
+   *  Multiple threads may bind the same session, so sinks fan out per key —
+   *  a later subscriber must not overwrite an earlier thread's callback. */
+  private transcriptSinksBySession = new Map<string, Set<((event: ChatEvent) => void)>>();
+
+  /** Latest delta cursor per session key (for catch-up after reconnect). */
+  private deltaCursorBySession = new Map<string, unknown>();
+  /** Message ids already surfaced for the active session (dedup on resume). */
+  /** Seen message IDs per session key, capped so long-lived sessions cannot
+   *  grow memory unbounded. Keyed per session: messageIds are only unique
+   *  within one session's transcript. */
+  private seenMessageIdsBySession = new Map<string, Set<string>>();
+  private static readonly SEEN_MESSAGE_LIMIT = 500;
+
+  /** Record a messageId as seen for one session (oldest entry evicted at the cap). */
+  private rememberSeen(sessionKey: string, messageId: string): void {
+    let seen = this.seenMessageIdsBySession.get(sessionKey);
+    if (!seen) {
+      seen = new Set<string>();
+      this.seenMessageIdsBySession.set(sessionKey, seen);
+    }
+    if (seen.size >= GatewayChatService.SEEN_MESSAGE_LIMIT) {
+      const oldest = seen.values().next().value;
+      if (oldest !== undefined) {
+        seen.delete(oldest);
+      }
+    }
+    seen.add(messageId);
+  }
+
+  /** Register a transcript sink for one session (fan-out, never overwrite). */
+  private addTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    let sinks = this.transcriptSinksBySession.get(sessionKey);
+    if (!sinks) {
+      sinks = new Set();
+      this.transcriptSinksBySession.set(sessionKey, sinks);
+    }
+    sinks.add(onEvent);
+  }
+
+  /** Drop one transcript sink for a session; the session entry disappears when
+   *  the last subscriber for that key is removed. */
+  private removeTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey);
+    if (!sinks) return;
+    sinks.delete(onEvent);
+    if (sinks.size === 0) {
+      this.transcriptSinksBySession.delete(sessionKey);
+    }
+  }
+
+  /** Complete and drop every transcript sink of one session (subscribe
+   *  failure / teardown: none of them will receive further events). */
+  private retireTranscriptSinks(sessionKey: string): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey);
+    this.transcriptSinksBySession.delete(sessionKey);
+    for (const sink of sinks ?? []) {
+      sink({ type: 'done' });
+    }
+  }
+
+  /** Whether a messageId was already delivered for one session. */
+  private hasSeen(sessionKey: string, messageId: string): boolean {
+    return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
+  }
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
@@ -185,6 +291,26 @@ export class GatewayChatService {
     return this.connected;
   }
 
+  /** Update gateway credentials in place instead of replacing the client:
+   *  threads hold this instance for lifecycle actions (abort/cancel), so a
+   *  dispose-and-recreate on url/token change would sever in-flight runs.
+   *  Closing the socket routes the switch through the normal reconnect path
+   *  (pending RPCs are rejected, transcript sinks re-subscribe). */
+  updateConnection(url: string, token: string): void {
+    if (this.url === url && this.token === token) { return; }
+    this.url = url;
+    this.token = token;
+    this.connectPromise = null;
+    if (this.ws) {
+      const oldWs = this.ws;
+      this.ws = null;
+      this.connected = false;
+      this.rejectAllPending('gateway credentials changed');
+      try { oldWs.close(); } catch { /* already closed */ }
+      this.scheduleReconnect();
+    }
+  }
+
   /**
    * Open the WebSocket and complete the operator handshake. Serialized
    * (concurrent calls join the in-flight attempt), idempotent while
@@ -206,6 +332,7 @@ export class GatewayChatService {
         this.hello = hello;
         this.reconnectAttempt = 0;
         this.attachRuntimeHandlers();
+        this.resubscribeActiveSession();
         this.logger.info(`gateway connected protocol=${hello.protocol}`);
       })
       .finally(() => {
@@ -344,7 +471,9 @@ export class GatewayChatService {
   /** Send an RPC request and resolve with the response payload. */
   send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     if (!this.ws || !this.connected) {
-      return Promise.reject(new Error('gateway not connected'));
+      return Promise.reject(
+        new Error('Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.')
+      );
     }
     const id = this.allocId();
     const frame: RpcRequestFrame = { type: 'req', id, method, params };
@@ -372,6 +501,77 @@ export class GatewayChatService {
     return this.send(GatewayRpcMethods.sessionsList, params);
   }
 
+  /** Bind the active chat to a session key (agent picker). */
+  setActiveSession(sessionKey: string): void {
+    this.activeSessionKey = sessionKey;
+  }
+
+  /** Drop a session's transcript sink (thread teardown): stops routing that
+   *  session's live events to a callback for a thread that no longer exists. */
+  clearSessionSink(sessionKey: string): void {
+    this.transcriptSinksBySession.delete(sessionKey);
+    this.seenMessageIdsBySession.delete(sessionKey);
+    this.deltaCursorBySession.delete(sessionKey);
+  }
+
+  /** Session key the next send will target (null → gateway default). */
+  getActiveSessionKey(): string | null {
+    return this.activeSessionKey;
+  }
+
+  /** Seed delta cursor and messageId dedupe from a `getHistory` payload so
+   *  a subsequent resumeSession catch-up does not replay restored history. */
+  seedHistory(sessionKey: string, payload: unknown): void {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const data = payload as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
+    const cursor = data.deltaCursor ?? data.cursor;
+    if (typeof cursor === 'string' && cursor) {
+      this.deltaCursorBySession.set(sessionKey, cursor);
+    }
+    if (!Array.isArray(data.messages)) {
+      return;
+    }
+    for (const row of data.messages) {
+      const messageId =
+        row && typeof row === 'object' && typeof (row as Record<string, unknown>).messageId === 'string'
+          ? ((row as Record<string, unknown>).messageId as string)
+          : null;
+      if (messageId) {
+        this.rememberSeen(sessionKey, messageId);
+      }
+    }
+  }
+
+  /**
+   * Resume a session after a window restart: bind the session key and
+   * subscribe to its transcript events; the deltaCursor catch-up then
+   * replays only messages the UI has not seen yet (deduped by messageId).
+   */
+  resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    this.activeSessionKey = sessionKey;
+    this.addTranscriptSink(sessionKey, onEvent);
+    this.subscribeSessionMessages(sessionKey);
+  }
+
+  /**
+   * Fetch a transcript tail for a session (`chat.history`, no delta cursor)
+   * for UI-side history restore. Returns null on transport/RPC failure.
+   */
+  async getHistory(sessionKey: string): Promise<unknown> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return null;
+    }
+    try {
+      return await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`chat.history fetch failed ${message}`);
+      return null;
+    }
+  }
+
   /** Wire runtime event handlers after the handshake promise settles. */
   private attachRuntimeHandlers(): void {
     const ws = this.ws;
@@ -393,8 +593,56 @@ export class GatewayChatService {
     }
     const evt = frame as SessionEvent;
     this.onSessionEvent(evt);
-    const chatEvent = mapSessionEventToChatEvent(evt);
-    if (chatEvent) this.onEvent(chatEvent);
+    let routedChatEvent: ChatEvent | null = null;
+    let isSessionMessage = evt.event === GatewayEvents.sessionMessage;
+    if (isSessionMessage) {
+      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
+      const routed = this.sinkForSession(payload.sessionKey);
+      if (routed) {
+        const chatEvents = mapSessionEventToChatEvent(evt);
+        if (chatEvents.length > 0) {
+          // Live delivery counts as seen: record the id so the next reconnect's
+          // catch-up replay does not surface this message a second time.
+          if (typeof payload.messageId === 'string') {
+            this.rememberSeen(routed.key, payload.messageId);
+          }
+          routedChatEvent = chatEvents[0];
+          for (const chatEvent of chatEvents) {
+            for (const sink of routed.sinks) {
+              sink(chatEvent);
+            }
+          }
+        }
+      } else {
+        // Unroutable session.message frames (e.g. ambiguous keyless frames in
+        // multi-session mode) are dropped by design in sinkForSession; emitting
+        // them on the global onEvent would leak another session's content.
+      }
+    }
+    if (evt.event === GatewayEvents.sessionEnd) {
+      const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
+      const endKey = this.resolveSessionEndKey(endPayload.sessionKey);
+      if (endKey) {
+        // A resumed session only carries a transcript sink (no run entry);
+        // its stream must still observe the run's end. The run sink wins
+        // when present; without one every resumed subscriber is completed.
+        const runSink = this.runSinksBySession.get(endKey);
+        const endSinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(endKey) ?? [])];
+        this.runSinksBySession.delete(endKey);
+        for (const endSink of endSinks) {
+          endSink({ type: 'done' });
+        }
+      }
+      // Keyless ends in multi-session mode are ambiguous and dropped:
+      // no sink is completed, so the run is cleaned up on its own
+      // lifecycle path (abort/reconnect/dispose) instead.
+    }
+    // Global onEvent only carries non-session frames; session.message frames
+    // are either routed to a sink above or dropped, never leaked globally.
+    if (!routedChatEvent && !isSessionMessage) {
+      const chatEvents = mapSessionEventToChatEvent(evt);
+      for (const chatEvent of chatEvents) this.onEvent(chatEvent);
+    }
   }
 
   /** Reject and clear every in-flight request (socket closed / disposed). */
@@ -403,6 +651,25 @@ export class GatewayChatService {
       this.pending.delete(id);
       pending.reject(new Error(reason));
     }
+  }
+
+  /** Resolve the session key for a `session.end` frame. Valid keys pass
+   *  through; a keyless/ambiguous end is routed only when exactly one
+   *  session sink exists (the gateway's own default is unknown here), and
+   *  returns null otherwise so the caller drops the frame instead of
+   *  completing the wrong session's sink via the mutable activeSessionKey. */
+  private resolveSessionEndKey(sessionKey: unknown): string | null {
+    if (typeof sessionKey === 'string' && sessionKey.length > 0) {
+      return sessionKey;
+    }
+    const sinkKeys = new Set<string>([
+      ...this.runSinksBySession.keys(),
+      ...this.transcriptSinksBySession.keys()
+    ]);
+    if (sinkKeys.size === 1) {
+      return sinkKeys.values().next().value ?? null;
+    }
+    return null;
   }
 
   private scheduleReconnect(): void {
@@ -418,19 +685,209 @@ export class GatewayChatService {
     }, delay);
   }
 
-  /** ChatService-compatible send entry point (skeleton, no dispatch yet). */
+  /** ChatService-compatible send entry point: RPC `chat.send` with
+   * queue-mode selection (steer during an active run, enqueue otherwise),
+   * then subscription to per-session message events streamed into onEvent. */
   sendMessage(
-    _prompt: string,
+    prompt: string,
     _cwd: string,
     _model: string,
     _chatType: string,
     _onEvent: (event: ChatEvent) => void
   ): void {
-    throw new Error('GatewayChatService.sendMessage not implemented yet (sprint 0 skeleton)');
+    if (!this.connected) {
+      _onEvent({
+        type: 'error',
+        message:
+          'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.'
+      });
+      _onEvent({ type: 'done' });
+      return;
+    }
+    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+    const existingSink = this.runSinksBySession.get(sessionKey);
+    const queueMode = existingSink ? 'steer' : 'enqueue';
+    this.runSinksBySession.set(sessionKey, _onEvent);
+    if (existingSink && existingSink !== _onEvent) {
+      // A different thread still owns a run on this shared session: end its
+      // stream cleanly instead of letting it hang while the replacement sink
+      // silently receives all subsequent events.
+      existingSink({ type: 'done' });
+    }
+    void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
+      .then((payload) => {
+        const key = extractSessionKey(payload) ?? sessionKey;
+        this.activeSessionKey = key;
+        const existingKeySink = this.runSinksBySession.get(key);
+        if (existingKeySink && existingKeySink !== _onEvent) {
+          // Another thread still owns a run on the resolved key: end its
+          // stream cleanly before replacing it, mirroring the existingSink
+          // handling for the initially requested sessionKey.
+          existingKeySink({ type: 'done' });
+        }
+        this.runSinksBySession.set(key, _onEvent);
+        if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {
+          this.runSinksBySession.delete(sessionKey);
+        }
+        this.addTranscriptSink(key, _onEvent);
+        this.subscribeSessionMessages(key);
+      })
+      .catch((err: Error) => {
+        if (this.runSinksBySession.get(sessionKey) === _onEvent) {
+          this.runSinksBySession.delete(sessionKey);
+        }
+        _onEvent({ type: 'error', message: err.message });
+        _onEvent({ type: 'done' });
+      });
   }
 
-  abort(): void {
-    // Sprint 0 skeleton: nothing to abort over the gateway yet.
+  /** Route a session event to its session-keyed run sink.
+   *
+   *  Keyless frames are ambiguous: with several sessions in flight they are
+   *  dropped instead of guessed, because whichever send acknowledgement ran
+   *  last would otherwise claim them. Returns the sink together with its
+   *  resolved session key so callers can bookkeep per session. */
+  private sinkForSession(sessionKey: unknown): { sinks: Array<((event: ChatEvent) => void)>; key: string } | null {
+    if (sessionKey === undefined || sessionKey === null) {
+      const keys = new Set<string>([...this.runSinksBySession.keys(), ...this.transcriptSinksBySession.keys()]);
+      if (keys.size !== 1) {
+        return null;
+      }
+      const fallbackKey = [...keys][0];
+      const runSink = this.runSinksBySession.get(fallbackKey);
+      const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(fallbackKey) ?? [])];
+      return sinks.length > 0 ? { sinks, key: fallbackKey } : null;
+    }
+    const key = String(sessionKey);
+    const runSink = this.runSinksBySession.get(key);
+    const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    return sinks.length > 0 ? { sinks, key } : null;
+  }
+
+  /** Re-issue transcript subscriptions after reconnect (subscriptions are connection-scoped). */
+  private resubscribeActiveSession(): void {
+    for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
+      this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
+      this.subscribeSessionMessages(sessionKey);
+    }
+  }
+
+  /** Subscribe to transcript events for a session key (soft method check);
+   *  subscription is per session, and delivery fans out to all sinks. */
+  private subscribeSessionMessages(sessionKey: string): void {
+    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
+      this.logger.warn(
+        `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
+      );
+      this.retireTranscriptSinks(sessionKey);
+      return;
+    }
+    void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
+      .then(() => {
+        void this.catchUpHistory(sessionKey);
+      })
+      .catch((err: Error) => {
+        this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
+        this.retireTranscriptSinks(sessionKey);
+      });
+  }
+
+  /**
+   * Catch-up after reconnect: pull transcript tail with the stored delta
+   * cursor, deduplicating by messageId so resumed streams do not replay
+   * already-rendered messages. Never crashes on unknown payload shapes.
+   */
+  private async catchUpHistory(sessionKey: string): Promise<void> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return;
+    }
+    try {
+      const payload = (await this.send(GatewayRpcMethods.chatHistory, {
+        sessionKey,
+        deltaCursor: this.deltaCursorBySession.get(sessionKey),
+      })) as {
+        messages?: Array<Record<string, unknown>>;
+        deltaCursor?: unknown;
+        cursor?: unknown;
+      } | null;
+      if (!payload || !Array.isArray(payload.messages)) {
+        return;
+      }
+      const cursor = payload.deltaCursor ?? payload.cursor;
+      if (cursor !== undefined && cursor !== null) {
+        this.deltaCursorBySession.set(sessionKey, cursor);
+      }
+      for (const row of payload.messages) {
+        const messageId = typeof row.messageId === 'string' ? row.messageId : null;
+        if (messageId && this.hasSeen(sessionKey, messageId)) {
+          continue;
+        }
+        if (messageId) {
+          this.rememberSeen(sessionKey, messageId);
+        }
+        const mapped = mapSessionEventToChatEvent({
+          event: GatewayEvents.sessionMessage,
+          payload: row as Record<string, unknown>,
+        });
+        const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
+        for (const chatEvent of mapped) {
+          for (const sink of sinks) {
+            sink(chatEvent);
+          }
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`chat.history catch-up failed ${message}`);
+    }
+  }
+
+  /** Whether hello-ok advertises the given RPC method (unknown-tolerant). */
+  private methodAdvertised(method: string): boolean {
+    const methods = this.hello?.features?.methods;
+    if (!Array.isArray(methods)) {
+      return true;
+    }
+    return methods.includes(method);
+  }
+
+  /** Abort the run for one session: RPC `chat.abort` targeted at the given
+   *  session key (falls back to the last active session); completes that
+   *  session's sink. A session key from the calling thread avoids aborting
+   *  another thread's run. Runs while disconnected still retire the local
+   *  sinks and complete the callback, so a later reconnect cannot re-subscribe
+   *  a cancelled run. */
+  abort(sessionKey?: string): void {
+    const key = sessionKey ?? this.activeSessionKey;
+    if (!key) {
+      return;
+    }
+    const runSink = this.runSinksBySession.get(key);
+    const sinks = runSink
+      ? [runSink]
+      : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    this.runSinksBySession.delete(key);
+    // Retire both sink roles for these callbacks: a lingering transcript
+    // sink would keep routing late session.message events (and reconnect
+    // resubscriptions) into the cancelled thread after its `done`.
+    for (const retired of sinks) {
+      this.removeTranscriptSink(key, retired);
+    }
+    if (!this.connected) {
+      for (const retired of sinks) {
+        retired({ type: 'done' });
+      }
+      return;
+    }
+    void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
+      .catch((err: Error) => {
+        this.logger.warn(`chat.abort failed ${err.message}`);
+      })
+      .finally(() => {
+        for (const retired of sinks) {
+          retired({ type: 'done' });
+        }
+      });
   }
 
   dispose(): void {

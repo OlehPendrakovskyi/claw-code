@@ -67,6 +67,7 @@ export const workspace = {
     getConfiguration: jest.fn(() => ({
         get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
         update: jest.fn(),
+        inspect: jest.fn(() => undefined),
     })),
     workspaceFolders: undefined,
     fs: {

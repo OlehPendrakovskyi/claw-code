@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
+import type { GatewayChatService } from '../core/gatewayChatService';
 import { EditorContext, ContextType } from './slashCommands';
 
 /** Shared output channel for chat panel logging. */
@@ -17,7 +18,7 @@ export type ChatMessage =
     };
 
 /** An attachment referenced by a chat thread. */
-export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string };
+export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string; lineStart?: number; lineEnd?: number };
 
 /** Full mutable state of one chat thread. */
 export type ChatThreadState = {
@@ -37,6 +38,13 @@ export type ChatThreadState = {
     contextMax: number;
     lastUsage: UsageInfo | null;
     service: ChatService;
+    /** Backend transport of the most recent send (legacy or gateway); lifecycle actions target it. */
+    transportBackend?: ChatService | GatewayChatService;
+    /** Gateway session key bound to this thread (agent/session picker); scopes lifecycle actions. */
+    sessionKey?: string;
+    /** Monotonic generation for gateway event delivery: rebound/cancelled
+     *  threads bump it so sinks captured by an earlier run stop delivering. */
+    eventEpoch: number;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
@@ -136,25 +144,53 @@ export function escapeGlob(str: string): string {
     return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
 }
 
-/** Read attachment files into prompt-ready text blocks. */
+export function escapeXmlAttr(str: string): string {
+    return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
+/** Escape file body text embedded inside a <file> block so content containing
+ *  `</file>` (or other markup) cannot break the prompt structure. Escapes the
+ *  minimum set (&, <, >) that terminates or opens tags; text stays readable. */
+export function escapeXmlBody(str: string): string {
+    return str.replace(/[&<>]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
+/** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
     for (const att of attachments) {
         if (att.type === 'image') {
-            sections.push(`<image path="${att.path}" />`);
+            sections.push(`<image path="${escapeXmlAttr(att.path)}" />`);
             continue;
         }
         try {
             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(att.path));
             const content = new TextDecoder().decode(bytes);
-            sections.push(`<file path="${att.path}">\n${content}\n</file>`);
+            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
         } catch {
-            sections.push(`<file path="${att.path}">\n[Could not read file]\n</file>`);
+            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
         }
     }
 
     return sections.join('\n\n');
+}
+
+/** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.
+ *  A missing range returns the whole body; a non-positive start clamps to line 1;
+ *  reversed ranges (end < start) collapse to the start line; CRLF is handled by
+ *  splitting on `/\r?\n/` so Windows line endings do not pollute slices. */
+export function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
+    if (lineStart == null) {
+        return content;
+    }
+    const lines = content.split(/\r?\n/);
+    const start = Math.max(1, lineStart) - 1;
+    const end = Math.min(lines.length, Math.max(1, Math.max(lineStart, lineEnd ?? lineStart)));
+    if (start >= lines.length) {
+        return '';
+    }
+    return lines.slice(start, end).join('\n');
 }
 
 /** Append or update a tool-call message in a thread snapshot. */
