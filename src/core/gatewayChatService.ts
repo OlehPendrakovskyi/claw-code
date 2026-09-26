@@ -453,6 +453,7 @@ export class GatewayChatService {
   clearSessionSink(sessionKey: string): void {
     this.transcriptSinksBySession.delete(sessionKey);
     this.seenMessageIdsBySession.delete(sessionKey);
+    this.deltaCursorBySession.delete(sessionKey);
   }
 
   /** Session key the next send will target (null → gateway default). */

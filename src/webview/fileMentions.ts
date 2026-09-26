@@ -10,7 +10,7 @@ export interface FileMention {
 
 /**
  * Parse `@path` / `@path#L5` / `@path#L5-10` mentions from a draft text.
- * Mentions start at word boundaries and stop at whitespace.
+ * Mentions start after whitespace (or at the start of the text) and stop at whitespace.
  */
 export function parseFileMentions(text: string): FileMention[] {
     if (!text) {
