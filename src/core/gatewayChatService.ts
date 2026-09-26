@@ -806,6 +806,16 @@ export class GatewayChatService {
         }
         this.addTranscriptSink(key, _onEvent);
         this.subscribeSessionMessages(key);
+        // A fresh run has no delta cursor (only history/seed paths set one),
+        // so a reconnect catch-up for this session would be skipped and
+        // deltas missed during the disconnect permanently lost. Fire a
+        // one-shot history snapshot to seed the cursor and seen-ids; nothing
+        // is replayed here — the cursor only enables the next catch-up.
+        if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
+          void this.send(GatewayRpcMethods.chatHistory, { sessionKey: key })
+            .then((history) => this.seedHistory(key, history))
+            .catch(() => undefined);
+        }
         // The gateway may resolve a different session than requested (e.g.
         // the requested key was unbound). The run now lives under `key`, so
         // the owning thread must rebind too — otherwise its later

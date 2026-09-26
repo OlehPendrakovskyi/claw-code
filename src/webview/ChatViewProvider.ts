@@ -31,6 +31,7 @@ import {
     COLD_SESSION_PLACEHOLDER,
     buildAgentSessionItems,
     isColdSession,
+    isMainAgentSessionKey,
     mapHistoryMessages,
     parseSessionRows,
 } from '../core/agentPicker';
@@ -305,12 +306,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     await this.handleListSessions(msg.type === 'requestAgents');
                     break;
                 case 'selectAgent':
-                    if (msg.sessionKey) {
+                    // Webview-supplied keys are untrusted: enforce the same
+                    // strict main-session filter as the picker for both actions.
+                    if (msg.sessionKey && isMainAgentSessionKey(msg.sessionKey)) {
                         await this.handleSelectAgent(msg.sessionKey);
                     }
                     break;
                 case 'openSession':
-                    if (msg.sessionKey) {
+                    if (msg.sessionKey && isMainAgentSessionKey(msg.sessionKey)) {
                         await this.handleOpenSession(msg.sessionKey);
                     }
                     break;
@@ -863,7 +866,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // captured epoch must already be stale when it fires.
                     thread.eventEpoch += 1;
                     thread.bindingEpoch += 1;
-                    previousBackend.abort(thread.sessionKey);
+                    // Same shared-run guard as cancel/reset: this thread may
+                    // be only an idle subscriber on the shared session while
+                    // another thread owns the live run — the Gateway→acpx
+                    // fallback must not cancel that run. Its own in-flight
+                    // gateway run cannot coexist with another running thread
+                    // on the key (pre-send busy check), so skipping the abort
+                    // here never leaves this thread's own run dangling.
+                    const sharedRun = [...this.threads.values()].some(
+                        t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
+                    );
+                    if (!sharedRun) {
+                        previousBackend.abort(thread.sessionKey);
+                    }
                 }
             } else {
                 previousBackend.dispose();

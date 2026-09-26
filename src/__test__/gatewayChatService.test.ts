@@ -259,6 +259,33 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('seeds a delta cursor for a fresh run so reconnect catch-up has one', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', () => {});
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const snapshot = sentRequests(ws).find((r) => r.method === 'chat.history' && !('deltaCursor' in r.params));
+    expect(snapshot).toBeDefined();
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: snapshot!.id,
+      ok: true,
+      payload: { deltaCursor: 'cursor-seed', messages: [{ messageId: 'm0', role: 'user', text: 'hi' }] },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: subscribe.id, ok: true, payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const catchUp = sentRequests(ws)
+      .filter((r) => r.method === 'chat.history')
+      .find((r) => r.params.deltaCursor === 'cursor-seed');
+    expect(catchUp).toBeDefined();
+    svc.dispose();
+  });
+
   it('streams session.message deltas to the active sink and finishes on session_end', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);

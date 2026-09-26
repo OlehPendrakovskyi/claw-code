@@ -10,6 +10,7 @@ import {
   isColdSession,
   isDuplicateMessage,
   isMainAgentSession,
+  isMainAgentSessionKey,
   mapHistoryMessages,
   parseSessionRows,
   toAgentSessionItems,
@@ -98,6 +99,17 @@ describe('parseSessionRows', () => {
     expect(parseSessionRows({ sessions: 'nope' }).ok).toBe(false);
     expect(parseSessionRows(null).ok).toBe(false);
     expect(parseSessionRows('junk').rows).toEqual([]);
+  });
+});
+
+describe('isMainAgentSessionKey', () => {
+  it('applies the same filter to webview-supplied keys', () => {
+    expect(isMainAgentSessionKey('agent:coder:main')).toBe(true);
+    expect(isMainAgentSessionKey('main')).toBe(true);
+    expect(isMainAgentSessionKey('agent:main:subagent:0214')).toBe(false);
+    expect(isMainAgentSessionKey('node:dev:xyz')).toBe(false);
+    expect(isMainAgentSessionKey(undefined)).toBe(false);
+    expect(isMainAgentSessionKey(42)).toBe(false);
   });
 });
 

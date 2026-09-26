@@ -145,6 +145,12 @@ export function buildAgentSessionItems(payload: unknown): AgentSessionItem[] {
   return toAgentSessionItems(parseSessionRows(payload).rows);
 }
 
+/** Shape-only main-session check for webview-supplied keys: the same filter
+ *  as isMainAgentSession, usable before any sessions.list rows are fetched. */
+export function isMainAgentSessionKey(key: unknown): boolean {
+  return typeof key === 'string' && isMainAgentSession({ key } as SessionRow);
+}
+
 /** A restored transcript message (deduplicated by messageId upstream). */
 export type HistoryMessage = {
   role: 'user' | 'assistant';
