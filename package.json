@@ -76,12 +76,24 @@
         "title": "OpenClaw: Pick Agent Session"
       },
       {
+        "command": "openclaw.chat.insertSelection",
+        "title": "OpenClaw: Insert Selection Mention",
+        "keybinding": "Alt+K"
+      },
+      {
         "command": "openclaw.chat.debug",
         "title": "OpenClaw: Debug Chat Panel"
       },
       {
         "command": "openclaw.chat.connectGateway",
         "title": "OpenClaw: Connect to Gateway"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "openclaw.chat.insertSelection",
+        "key": "alt+k",
+        "when": "editorTextFocus"
       }
     ],
     "viewsContainers": {
@@ -199,6 +211,11 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically collapse completed chats in 1x1 multichat view. Collapsed threads show only their header and can be expanded by clicking."
+        },
+        "openclaw.chat.attachOpenFile": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically attach the active editor file as context when sending a message"
         },
         "openclaw.chat.hideToolActivity": {
           "type": "boolean",

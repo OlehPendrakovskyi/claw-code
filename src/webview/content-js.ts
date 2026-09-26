@@ -1689,6 +1689,20 @@ export const CONTENT_JS = `
                 if (message.type === 'onboardingDone') {
                     return;
                 }
+                if (message.type === 'insertMention') {
+                    var mention = String(message.mention || '');
+                    if (mention && state.activeThreadId) {
+                        var draft = getDraft(state.activeThreadId);
+                        var nextDraft = draft ? draft + ' ' + mention : mention;
+                        setDraft(state.activeThreadId, nextDraft);
+                        renderState({
+                            threadId: state.activeThreadId,
+                            selectionStart: nextDraft.length,
+                            selectionEnd: nextDraft.length
+                        });
+                    }
+                    return;
+                }
                 if (message.type === 'sessionsList') {
                     renderSessionsPanel(message.sessions || []);
                     return;

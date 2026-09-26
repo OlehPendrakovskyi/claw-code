@@ -22,6 +22,7 @@ import {
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
+import { parseFileMentions } from './fileMentions';
 import { ChatServiceFactory } from './chatServiceFactory';
 import { GatewayChatService } from '../core/gatewayChatService';
 import {
@@ -330,6 +331,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (thread && Array.isArray(msg.filePaths) && msg.filePaths.length > 0) {
                         await this.addAttachments(thread, msg.filePaths);
                     }
+                    break;
+                case 'insertMention':
+                    await this.insertSelectionMention();
                     break;
                 case 'openFile':
                     if (msg.filePath) {
@@ -643,6 +647,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private async handleSend(thread: ChatThreadState, text: string): Promise<void> {
         log.info(`handleSend: thread=${thread.id}, text="${text.slice(0, 80)}"`);
         const attachments = [...thread.pendingAttachments];
+
+        const autoAttachPath = await this.getActiveEditorFilePath();
+        if (autoAttachPath) {
+            const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
+            if (autoAttach) {
+                await this.addAttachments(thread, [autoAttachPath]);
+                attachments.push(...thread.pendingAttachments.filter(a => a.path === autoAttachPath));
+            }
+        }
+
+        const mentionPaths = this.resolveMentionPaths(text);
+        if (mentionPaths.length > 0) {
+            await this.addAttachments(thread, mentionPaths);
+            attachments.push(...thread.pendingAttachments.filter(a => mentionPaths.includes(a.path)));
+        }
 
         thread.messages.push({ role: 'user', content: text });
         thread.pendingAssistantText = '';
@@ -1005,6 +1024,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (thread) {
             gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         }
+    }
+
+    /** Absolute fsPath of the active editor file, if any. */
+    private async getActiveEditorFilePath(): Promise<string | undefined> {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.uri.scheme !== 'file') {
+            return undefined;
+        }
+        return editor.document.uri.fsPath;
+    }
+
+    /** Resolve @file mentions in a draft to candidate paths (addAttachments filters invalid ones). */
+    private resolveMentionPaths(text: string): string[] {
+        const cwd = this.getWorkspaceCwd();
+        if (!cwd) {
+            return [];
+        }
+        return parseFileMentions(text)
+            .map(mention => path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path));
+    }
+
+    /** Gather the current selection and insert an @file mention into the webview composer. */
+    async insertSelectionMention(): Promise<void> {
+        const context = await gatherEditorContext('selection', (args) => this.runGit(args));
+        if (!context.filePath) {
+            return;
+        }
+        const lineCount = context.selection ? context.selection.split('\n').length : 0;
+        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+            type: 'insertMention',
+            mention: lineCount > 0
+                ? `@${context.filePath}#L1-${lineCount}`
+                : `@${context.filePath}`
+        });
     }
 
     private async openFileInEditor(filePath: string, lineStr?: string): Promise<void> {

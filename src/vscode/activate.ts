@@ -52,7 +52,8 @@ export function activate(context: vscode.ExtensionContext) {
         ['openclaw.configure', () => runCliInTerminal('openclaw configure', 'Running openclaw configure.')],
         ['openclaw.tools.refresh', () => getOverviewProvider()?.refreshTools()],
         ['openclaw.tools.toggle', async (tool: ToolEntry) => toggleToolEntry(tool)],
-        ['openclaw.tools.uninstall', async (tool: ToolEntry) => uninstallToolEntry(tool)]
+        ['openclaw.tools.uninstall', async (tool: ToolEntry) => uninstallToolEntry(tool)],
+        ['openclaw.chat.insertSelection', () => chatViewProvider?.insertSelectionMention()]
     ];
 
     for (const [id, handler] of commandRegistrations) {
