@@ -522,6 +522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 backend.removeTranscriptSink(thread.sessionKey, ownCallback.cb);
             }
         }
+        this.suspendedTranscriptSinks.delete(threadId);
         if (backend instanceof GatewayChatService) {
             backend.abort(thread.sessionKey);
             // Drop the thread's transcript sink if no surviving thread still
@@ -894,6 +895,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // gateway runs and would otherwise drop every acpx event after
             // the thread has ever used the gateway transport.
             runEpoch = thread.eventEpoch;
+            // A resumed thread's persistent transcript callback is still in
+            // the gateway's fan-out set; the per-run sink would deliver every
+            // live event twice to the same thread. Suspend it for the run and
+            // restore it when the run ends.
+            this.suspendThreadTranscriptSink(choice.service, thread);
         }
         choice.service.sendMessage(
             fullPrompt,
@@ -908,6 +914,35 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Resolve the configured chat backend for one send, reusing the thread's
      *  legacy service so per-run lifecycle (abort/cancel) stays intact. */
+    /** Persistent transcript callbacks per thread, suspended for the duration
+     *  of a run on the same session (the run sink covers live delivery). */
+    private suspendedTranscriptSinks = new Map<string, { gateway: GatewayChatService; sessionKey: string }>();
+
+    /** Suspend a thread's persistent transcript callback for an in-flight run
+     *  on the same session; prevents duplicate fan-out to the run sink. */
+    private suspendThreadTranscriptSink(gateway: GatewayChatService, thread: ChatThreadState): void {
+        const own = this.transcriptCallbacks.get(thread.id);
+        if (!own || own.sessionKey !== thread.sessionKey) {
+            return;
+        }
+        gateway.removeTranscriptSink(own.sessionKey, own.cb);
+        this.suspendedTranscriptSinks.set(thread.id, { gateway, sessionKey: own.sessionKey });
+    }
+
+    /** Restore a suspended transcript callback after a run ends: a fresh
+     *  callback is created because bindingEpoch may have changed mid-run. */
+    private restoreSuspendedTranscriptSink(thread: ChatThreadState): void {
+        const suspended = this.suspendedTranscriptSinks.get(thread.id);
+        if (!suspended) {
+            return;
+        }
+        this.suspendedTranscriptSinks.delete(thread.id);
+        const epoch = thread.bindingEpoch;
+        const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, epoch, 'binding'); };
+        this.transcriptCallbacks.set(thread.id, { sessionKey: suspended.sessionKey, cb });
+        suspended.gateway.rebindTranscriptSink(suspended.sessionKey, cb);
+    }
+
     private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
         return this.chatServiceFactory.resolve(existing);
     }
@@ -971,6 +1006,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (thread.status !== 'error' && thread.status !== 'cancelled' && thread.status !== 'idle') {
                     thread.status = 'complete';
                 }
+                this.restoreSuspendedTranscriptSink(thread);
                 this.updateThreadSubjectFromContext(thread);
                 this.emitState();
                 break;
@@ -983,6 +1019,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.messages.push({ role: 'error', content: event.message });
                 thread.isStreaming = false;
                 thread.status = 'error';
+                this.restoreSuspendedTranscriptSink(thread);
                 this.emitState();
                 break;
         }

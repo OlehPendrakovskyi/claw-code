@@ -73,6 +73,21 @@ describe('buildMention', () => {
         expect(buildMention('a.ts', 10, 5)).toBe('@a.ts#L10');
         expect(buildMention('a.ts')).toBe('@a.ts');
     });
+
+    it('quotes paths containing whitespace', () => {
+        expect(buildMention('src/My File.ts')).toBe('@"src/My File.ts"');
+        expect(buildMention('src/My File.ts', 3, 4)).toBe('@"src/My File.ts"#L3-4');
+    });
+
+    it('parses quoted mentions with spaces and ranges', () => {
+        expect(parseFileMentions('see @"src/My File.ts" please')[0]).toEqual({ path: 'src/My File.ts' });
+        expect(parseFileMentions('@"a b.ts"#L2-3')[0]).toEqual({ path: 'a b.ts', lineStart: 2, lineEnd: 3 });
+    });
+
+    it('round-trips a quoted path through build/parse', () => {
+        const mention = buildMention('src/My File.ts');
+        expect(parseFileMentions(`before ${mention} after`).map(m => m.path)).toEqual(['src/My File.ts']);
+    });
 });
 
 describe('mention path scoping', () => {

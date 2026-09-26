@@ -270,6 +270,14 @@ export class GatewayChatService {
     }
   }
 
+  /** Re-register a transcript sink without claiming the active session:
+   *  used by callers restoring a suspended resume callback after a run so a
+   *  concurrent thread's session selection is not overwritten. */
+  rebindTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    this.addTranscriptSink(sessionKey, onEvent);
+    this.subscribeSessionMessages(sessionKey);
+  }
+
   /** Complete and drop every sink of one session (subscribe failure /
    *  teardown: none of them will receive further events). Retires the run
    *  sink too: leaving it in runSinksBySession would make the next

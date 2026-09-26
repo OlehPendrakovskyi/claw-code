@@ -10,26 +10,28 @@ export interface FileMention {
 
 /**
  * Parse `@path` / `@path#L5` / `@path#L5-10` mentions from a draft text.
- * Mentions start after whitespace (or at the start of the text) and stop at whitespace.
+ * Mentions start after whitespace (or at the start of the text) and stop at
+ * whitespace; paths containing whitespace must be double-quoted (`@"my file.ts"`),
+ * matching the encoding produced by buildMention.
  */
 export function parseFileMentions(text: string): FileMention[] {
     if (!text) {
         return [];
     }
 
-    const mentionRegex = /(?:^|\s)@([^#\s@]+?)(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
+    const mentionRegex = /(?:^|\s)@("([^"]+)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
     const mentions: FileMention[] = [];
     const seen = new Set<string>();
 
     let match: RegExpExecArray | null;
     while ((match = mentionRegex.exec(text)) !== null) {
         // Trailing sentence punctuation belongs to prose, not the path.
-        const path = match[1].replace(/[.,:;)}\]]+$/, '');
+        const path = match[1].startsWith('"') ? match[2] : match[1].replace(/[.,:;)}\]]+$/, '');
         if (!path) {
             continue;
         }
-        const lineStart = match[2] != null ? Math.max(1, parseInt(match[2], 10)) : undefined;
-        const lineEndRaw = match[3] != null ? Math.max(1, parseInt(match[3], 10)) : undefined;
+        const lineStart = match[4] != null ? Math.max(1, parseInt(match[4], 10)) : undefined;
+        const lineEndRaw = match[5] != null ? Math.max(1, parseInt(match[5], 10)) : undefined;
         const lineEnd =
             lineEndRaw != null && lineStart != null ? Math.max(lineStart, lineEndRaw) : lineStart;
         // Dedupe on path + range so the same file with different ranges is kept.
@@ -50,16 +52,19 @@ export function parseFileMentions(text: string): FileMention[] {
 /** Build the mention string for an editor context (path plus optional line range).
  *  Non-positive starts clamp to line 1; reversed ranges collapse to the start line. */
 export function buildMention(filePath: string, lineStart?: number, lineEnd?: number): string {
+    // Paths with whitespace need a delimiter the parser understands; double
+    // quotes are unambiguous because raw (unquoted) paths cannot contain them.
+    const pathPart = /\s/.test(filePath) ? `@"${filePath}"` : `@${filePath}`;
     if (lineStart != null && lineEnd != null) {
         const start = Math.max(1, lineStart);
         const end = Math.max(start, lineEnd);
         if (end > start) {
-            return `@${filePath}#L${start}-${end}`;
+            return `${pathPart}#L${start}-${end}`;
         }
-        return `@${filePath}#L${start}`;
+        return `${pathPart}#L${start}`;
     }
     if (lineStart != null) {
-        return `@${filePath}#L${Math.max(1, lineStart)}`;
+        return `${pathPart}#L${Math.max(1, lineStart)}`;
     }
-    return `@${filePath}`;
+    return pathPart;
 }
