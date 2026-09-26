@@ -69,9 +69,11 @@ export class ChatServiceFactory {
     } catch {
       log.warn(`gateway connect failed; ${settings.transport === 'auto' ? 'falling back to acpx' : 'continuing without gateway'}`);
       if (settings.transport === 'auto') {
-        // Drop the cached client so a failed or timed-out connect cannot leave
-        // a stray WebSocket attempt running behind the acpx fallback.
-        this.dispose();
+        // Keep the shared client cached instead of disposing it: this client
+        // is shared by every thread, so closing it here would sever other
+        // chats' connections and retire their session sinks on a transient
+        // per-send probe failure. It retries via its own reconnect path, so
+        // a later thread can still reach the gateway.
         this.onStatus?.('acpx', true);
         return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
       }

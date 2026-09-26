@@ -1073,8 +1073,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // the previous session first so its late events cannot leak into
             // the newly selected conversation and Cancel targets the new key.
             if (activeThread.sessionKey && activeThread.sessionKey !== sessionKey) {
-                gateway.abort(activeThread.sessionKey);
-                gateway.clearSessionSink(activeThread.sessionKey);
+                const previousKey = activeThread.sessionKey;
+                // Abort/clear only when no other thread still shares the
+                // previous session: sinks are keyed by session on the shared
+                // gateway client, so an unconditional teardown would also
+                // abort another thread's live run on the same key.
+                if (![...this.threads.values()].some(t => t.id !== activeThread.id && t.sessionKey === previousKey)) {
+                    gateway.abort(previousKey);
+                    gateway.clearSessionSink(previousKey);
+                }
                 // Invalidate sinks captured by the retired run: abort()
                 // completes the old callback asynchronously, and after the
                 // rebind it would otherwise deliver `done` (and commit stale
@@ -1107,8 +1114,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // reach the rebound thread.
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
             const previousKey = thread.sessionKey;
-            gateway.abort(previousKey);
-            gateway.clearSessionSink(previousKey);
+            // Same shared-session guard as handleSelectAgent: only tear down
+            // the previous session when no other thread is still bound to it.
+            if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
+                gateway.abort(previousKey);
+                gateway.clearSessionSink(previousKey);
+            }
             // Same generation guard as handleSelectAgent: the aborted run's
             // async completion must not reach the rebound thread.
             thread.eventEpoch += 1;

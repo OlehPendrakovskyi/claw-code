@@ -203,8 +203,10 @@ export class GatewayChatService {
   /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
    *  An entry also marks that session as having an active run (queue-mode selection). */
   private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
-  /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect. */
-  private transcriptSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect.
+   *  Multiple threads may bind the same session, so sinks fan out per key —
+   *  a later subscriber must not overwrite an earlier thread's callback. */
+  private transcriptSinksBySession = new Map<string, Set<((event: ChatEvent) => void)>>();
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
@@ -229,6 +231,37 @@ export class GatewayChatService {
       }
     }
     seen.add(messageId);
+  }
+
+  /** Register a transcript sink for one session (fan-out, never overwrite). */
+  private addTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    let sinks = this.transcriptSinksBySession.get(sessionKey);
+    if (!sinks) {
+      sinks = new Set();
+      this.transcriptSinksBySession.set(sessionKey, sinks);
+    }
+    sinks.add(onEvent);
+  }
+
+  /** Drop one transcript sink for a session; the session entry disappears when
+   *  the last subscriber for that key is removed. */
+  private removeTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey);
+    if (!sinks) return;
+    sinks.delete(onEvent);
+    if (sinks.size === 0) {
+      this.transcriptSinksBySession.delete(sessionKey);
+    }
+  }
+
+  /** Complete and drop every transcript sink of one session (subscribe
+   *  failure / teardown: none of them will receive further events). */
+  private retireTranscriptSinks(sessionKey: string): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey);
+    this.transcriptSinksBySession.delete(sessionKey);
+    for (const sink of sinks ?? []) {
+      sink({ type: 'done' });
+    }
   }
 
   /** Whether a messageId was already delivered for one session. */
@@ -518,8 +551,8 @@ export class GatewayChatService {
    */
   resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
     this.activeSessionKey = sessionKey;
-    this.transcriptSinksBySession.set(sessionKey, onEvent);
-    this.subscribeSessionMessages(sessionKey, onEvent);
+    this.addTranscriptSink(sessionKey, onEvent);
+    this.subscribeSessionMessages(sessionKey);
   }
 
   /**
@@ -574,7 +607,11 @@ export class GatewayChatService {
             this.rememberSeen(routed.key, payload.messageId);
           }
           routedChatEvent = chatEvents[0];
-          for (const chatEvent of chatEvents) routed.sink(chatEvent);
+          for (const chatEvent of chatEvents) {
+            for (const sink of routed.sinks) {
+              sink(chatEvent);
+            }
+          }
         }
       } else {
         // Unroutable session.message frames (e.g. ambiguous keyless frames in
@@ -587,11 +624,12 @@ export class GatewayChatService {
       const endKey = this.resolveSessionEndKey(endPayload.sessionKey);
       if (endKey) {
         // A resumed session only carries a transcript sink (no run entry);
-        // its stream must still observe the run's end.
-        const endSink =
-          this.runSinksBySession.get(endKey) ?? this.transcriptSinksBySession.get(endKey) ?? null;
+        // its stream must still observe the run's end. The run sink wins
+        // when present; without one every resumed subscriber is completed.
+        const runSink = this.runSinksBySession.get(endKey);
+        const endSinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(endKey) ?? [])];
         this.runSinksBySession.delete(endKey);
-        if (endSink) {
+        for (const endSink of endSinks) {
           endSink({ type: 'done' });
         }
       }
@@ -684,7 +722,8 @@ export class GatewayChatService {
         if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {
           this.runSinksBySession.delete(sessionKey);
         }
-        this.subscribeSessionMessages(key, _onEvent);
+        this.addTranscriptSink(key, _onEvent);
+        this.subscribeSessionMessages(key);
       })
       .catch((err: Error) => {
         if (this.runSinksBySession.get(sessionKey) === _onEvent) {
@@ -701,59 +740,49 @@ export class GatewayChatService {
    *  dropped instead of guessed, because whichever send acknowledgement ran
    *  last would otherwise claim them. Returns the sink together with its
    *  resolved session key so callers can bookkeep per session. */
-  private sinkForSession(sessionKey: unknown): { sink: (event: ChatEvent) => void; key: string } | null {
+  private sinkForSession(sessionKey: unknown): { sinks: Array<((event: ChatEvent) => void)>; key: string } | null {
     if (sessionKey === undefined || sessionKey === null) {
       const keys = new Set<string>([...this.runSinksBySession.keys(), ...this.transcriptSinksBySession.keys()]);
       if (keys.size !== 1) {
         return null;
       }
       const fallbackKey = [...keys][0];
-      const sink = this.runSinksBySession.get(fallbackKey) ?? this.transcriptSinksBySession.get(fallbackKey);
-      return sink ? { sink, key: fallbackKey } : null;
+      const runSink = this.runSinksBySession.get(fallbackKey);
+      const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(fallbackKey) ?? [])];
+      return sinks.length > 0 ? { sinks, key: fallbackKey } : null;
     }
     const key = String(sessionKey);
-    const sink = this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
-    return sink ? { sink, key } : null;
+    const runSink = this.runSinksBySession.get(key);
+    const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    return sinks.length > 0 ? { sinks, key } : null;
   }
 
   /** Re-issue transcript subscriptions after reconnect (subscriptions are connection-scoped). */
   private resubscribeActiveSession(): void {
-    for (const [sessionKey, sink] of this.transcriptSinksBySession) {
+    for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
       this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
-      this.subscribeSessionMessages(sessionKey, sink);
+      this.subscribeSessionMessages(sessionKey);
     }
   }
 
-  /** Subscribe to transcript events for a session key (soft method check). */
-  private subscribeSessionMessages(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
-    this.transcriptSinksBySession.set(sessionKey, onEvent);
+  /** Subscribe to transcript events for a session key (soft method check);
+   *  subscription is per session, and delivery fans out to all sinks. */
+  private subscribeSessionMessages(sessionKey: string): void {
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
       this.logger.warn(
         `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
       );
-      this.retireSinks(sessionKey, onEvent);
-      onEvent({ type: 'done' });
+      this.retireTranscriptSinks(sessionKey);
       return;
     }
     void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
       .then(() => {
-        void this.catchUpHistory(sessionKey, onEvent);
+        void this.catchUpHistory(sessionKey);
       })
       .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
-        this.retireSinks(sessionKey, onEvent);
-        onEvent({ type: 'done' });
+        this.retireTranscriptSinks(sessionKey);
       });
-  }
-
-  /** Drop the run/transcript sinks for a session only when they still point at the given callback. */
-  private retireSinks(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
-    if (this.runSinksBySession.get(sessionKey) === onEvent) {
-      this.runSinksBySession.delete(sessionKey);
-    }
-    if (this.transcriptSinksBySession.get(sessionKey) === onEvent) {
-      this.transcriptSinksBySession.delete(sessionKey);
-    }
   }
 
   /**
@@ -761,7 +790,7 @@ export class GatewayChatService {
    * cursor, deduplicating by messageId so resumed streams do not replay
    * already-rendered messages. Never crashes on unknown payload shapes.
    */
-  private async catchUpHistory(sessionKey: string, onEvent: (event: ChatEvent) => void): Promise<void> {
+  private async catchUpHistory(sessionKey: string): Promise<void> {
     if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
       return;
     }
@@ -793,8 +822,11 @@ export class GatewayChatService {
           event: GatewayEvents.sessionMessage,
           payload: row as Record<string, unknown>,
         });
+        const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of mapped) {
-          onEvent(chatEvent);
+          for (const sink of sinks) {
+            sink(chatEvent);
+          }
         }
       }
     } catch (err) {
@@ -824,16 +856,19 @@ export class GatewayChatService {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
-    const sink = runSink ?? this.transcriptSinksBySession.get(key) ?? null;
-    if (sink) {
-      // Retire both sink roles for this callback: a lingering transcript sink
-      // would keep routing late session.message events (and reconnect
-      // resubscriptions) into the cancelled thread after its `done`.
-      this.retireSinks(key, sink);
+    const sinks = runSink
+      ? [runSink]
+      : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    this.runSinksBySession.delete(key);
+    // Retire both sink roles for these callbacks: a lingering transcript
+    // sink would keep routing late session.message events (and reconnect
+    // resubscriptions) into the cancelled thread after its `done`.
+    for (const retired of sinks) {
+      this.removeTranscriptSink(key, retired);
     }
     if (!this.connected) {
-      if (sink) {
-        sink({ type: 'done' });
+      for (const retired of sinks) {
+        retired({ type: 'done' });
       }
       return;
     }
@@ -842,8 +877,8 @@ export class GatewayChatService {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
-        if (sink) {
-          sink({ type: 'done' });
+        for (const retired of sinks) {
+          retired({ type: 'done' });
         }
       });
   }
