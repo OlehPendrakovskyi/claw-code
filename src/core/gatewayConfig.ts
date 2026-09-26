@@ -75,14 +75,23 @@ export async function migrateLegacyGatewayToken(
 ): Promise<boolean> {
   const config = vscode.workspace.getConfiguration('openclaw');
   const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
-  const legacy =
-    inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? inspection?.globalValue;
-  if (legacy === undefined) {
+  // An explicitly empty value in one scope must not shadow a non-empty
+  // token in another: pick the first non-empty scoped value, falling back
+  // to any defined value only for cleanup bookkeeping.
+  const nonEmpty =
+    [inspection?.workspaceFolderValue, inspection?.workspaceValue, inspection?.globalValue].find(
+      (v) => typeof v === 'string' && v
+    ) ?? '';
+  const legacyDefined =
+    inspection?.workspaceFolderValue !== undefined ||
+    inspection?.workspaceValue !== undefined ||
+    inspection?.globalValue !== undefined;
+  if (!legacyDefined) {
     return false;
   }
   const existing = await getGatewayToken(context.secrets);
-  if (!existing && legacy) {
-    await setGatewayToken(context.secrets, legacy);
+  if (!existing && nonEmpty) {
+    await setGatewayToken(context.secrets, nonEmpty);
   }
   for (const target of [
     vscode.ConfigurationTarget.Global,

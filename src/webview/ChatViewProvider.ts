@@ -447,7 +447,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private resetThread(thread: ChatThreadState): void {
         const backend = this.backendFor(thread);
         if (backend instanceof GatewayChatService) {
-            backend.abort(thread.sessionKey);
+            // Only abort the session when no other thread is still bound to
+            // it: that thread may own the active run, and resetting an idle
+            // thread must not cancel the other thread's run.
+            const shared = [...this.threads.values()].some(
+                t => t.id !== thread.id && t.sessionKey === thread.sessionKey
+            );
+            if (thread.sessionKey && !shared) {
+                backend.abort(thread.sessionKey);
+            }
+            if (thread.sessionKey) {
+                thread.eventEpoch += 1;
+            }
         } else {
             backend.abort();
         }
@@ -1097,7 +1108,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
-    /** Open a session: restore its transcript into the active thread. */
+    /** Open a session: restore its transcript into the active thread.
+     *  Session opening is async: after every await, the thread is re-checked
+     *  (still the active thread, still bound to the requested key) so a
+     *  newer open of another session cannot be overwritten by this call's
+     *  late history/resume. */
     private async handleOpenSession(sessionKey: string): Promise<void> {
         const gateway = await this.resolveGateway();
         if (!gateway) {
@@ -1127,11 +1142,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
+        if (this.getActiveThread()?.id !== thread.id) {
+            return;
+        }
         thread.sessionKey = sessionKey;
 
         let label = sessionKey;
         try {
             const payload = await gateway.listSessions({});
+            if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey) {
+                return;
+            }
             const rows = parseSessionRows(payload).rows as SessionRow[];
             const row = rows.find(r => r.key === sessionKey);
             if (row) {
@@ -1155,6 +1176,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const history = await gateway.getHistory(sessionKey);
+        if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey) {
+            return;
+        }
         // A successful fetch replaces the transcript unconditionally (empty
         // history clears the prior session's messages); a failed fetch keeps
         // the current transcript rather than wiping it on transport errors.

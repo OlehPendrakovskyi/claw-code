@@ -254,12 +254,21 @@ export class GatewayChatService {
     }
   }
 
-  /** Complete and drop every transcript sink of one session (subscribe
-   *  failure / teardown: none of them will receive further events). */
+  /** Complete and drop every sink of one session (subscribe failure /
+   *  teardown: none of them will receive further events). Retires the run
+   *  sink too: leaving it in runSinksBySession would make the next
+   *  sendMessage select queueMode 'steer' against a run that already
+   *  ended. */
   private retireTranscriptSinks(sessionKey: string): void {
     const sinks = this.transcriptSinksBySession.get(sessionKey);
     this.transcriptSinksBySession.delete(sessionKey);
-    for (const sink of sinks ?? []) {
+    const retired = new Set(sinks ?? []);
+    const runSink = this.runSinksBySession.get(sessionKey);
+    this.runSinksBySession.delete(sessionKey);
+    if (runSink) {
+      retired.add(runSink);
+    }
+    for (const sink of retired) {
       sink({ type: 'done' });
     }
   }
