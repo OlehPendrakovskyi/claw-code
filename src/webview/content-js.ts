@@ -1841,10 +1841,10 @@ export const CONTENT_JS = `
                 title.style.cssText = 'opacity:0.7;margin-bottom:4px';
                 panel.appendChild(title);
                 sessions.forEach(function(session) {
-                    var row = document.createElement('div');
+                    var row = document.createElement('button');
                     row.setAttribute('data-action', 'open-session');
                     row.setAttribute('data-session-key', session.sessionKey || '');
-                    row.style.cssText = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+                    row.style.cssText = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
                     var label = session.label || session.sessionKey || '';
                     if (session.hasActiveRun) { label = '\u25CF ' + label; }
                     if (session.cold) { label = '\u2744 ' + label; }

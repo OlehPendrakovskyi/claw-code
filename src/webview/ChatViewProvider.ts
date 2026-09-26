@@ -683,13 +683,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private async handleSend(thread: ChatThreadState, text: string): Promise<void> {
         log.info(`handleSend: thread=${thread.id}, text="${text.slice(0, 80)}"`);
         const attachments = [...thread.pendingAttachments];
+        const accepted = new Set(attachments.map(attachmentKey));
+        const pushNew = (candidates: typeof attachments): void => {
+            for (const a of candidates) {
+                const key = attachmentKey(a);
+                if (!accepted.has(key)) {
+                    accepted.add(key);
+                    attachments.push(a);
+                }
+            }
+        };
 
         const autoAttachPath = await this.getActiveEditorFilePath();
         if (autoAttachPath) {
             const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
             if (autoAttach) {
                 await this.addAttachments(thread, [autoAttachPath]);
-                attachments.push(...thread.pendingAttachments.filter(a => a.path === autoAttachPath));
+                pushNew(thread.pendingAttachments.filter(a => a.path === autoAttachPath));
             }
         }
 
@@ -700,7 +710,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // entries whose range matches an accepted mention, not every
             // attachment of the same file.
             const mentionKeys = new Set(mentions.map(mentionKey));
-            attachments.push(...thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
+            pushNew(thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
         }
 
         thread.messages.push({ role: 'user', content: text });
@@ -1040,6 +1050,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (row) {
                 label = row.label || row.agentId || sessionKey;
                 if (isColdSession(row)) {
+                        // A cold session has no transcript: drop any previous
+                        // thread content before showing its placeholder.
+                        thread.messages = [];
                     thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
                     thread.title = label;
                     this.emitState();

@@ -503,7 +503,10 @@ export class GatewayChatService {
     if (evt.event === GatewayEvents.sessionEnd) {
       const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
       const endKey = String(endPayload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY);
-      const endSink = this.runSinksBySession.get(endKey);
+      // A resumed session only carries a transcript sink (no run entry);
+      // its stream must still observe the run's end.
+      const endSink =
+        this.runSinksBySession.get(endKey) ?? this.transcriptSinksBySession.get(endKey) ?? null;
       this.runSinksBySession.delete(endKey);
       if (endSink) {
         endSink({ type: 'done' });
@@ -578,9 +581,13 @@ export class GatewayChatService {
   /** Route a session event to its session-keyed run sink. */
   private sinkForSession(sessionKey: unknown): ((event: ChatEvent) => void) | null {
     if (sessionKey === undefined || sessionKey === null) {
-      return null;
+      // Frames without a session key belong to the bound active session
+      // (its transcript sink when no run is streaming).
+      const fallbackKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+      return this.transcriptSinksBySession.get(fallbackKey) ?? null;
     }
-    return this.runSinksBySession.get(String(sessionKey)) ?? null;
+    const key = String(sessionKey);
+    return this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
   }
 
   /** Re-issue transcript subscriptions after reconnect (subscriptions are connection-scoped). */
