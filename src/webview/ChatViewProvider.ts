@@ -262,6 +262,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         }
                         thread.isStreaming = false;
                         thread.status = 'cancelled';
+                        // The run sink's `done` is epoch-dropped above, so the
+                        // suspended transcript callback would stay stranded
+                        // and the thread would stop receiving transcript
+                        // events until a later run restores it.
+                        this.restoreSuspendedTranscriptSink(thread);
                         this.emitState();
                     }
                     break;
@@ -488,6 +493,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.pendingAttachments = [];
         thread.isStreaming = false;
         thread.status = 'idle';
+        // Abort's `done` is epoch-dropped above, so the suspended transcript
+        // callback would stay stranded: restore it explicitly so the thread
+        // keeps receiving transcript events after the reset.
+        this.restoreSuspendedTranscriptSink(thread);
         thread.title = `Thread ${thread.index}`;
         thread.contextTokens = 0;
         thread.lastUsage = null;
@@ -917,6 +926,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // rebind while the thread is still bound to the requested
                 // key — a mid-run agent switch owns the binding by then.
                 if (thread.sessionKey !== requestedKey) {
+                    // Binding mismatch: the thread was switched to another
+                    // session mid-run, so the resolved run no longer belongs
+                    // to it. Retire the run instead of letting its events
+                    // flow through this thread's callback — output from the
+                    // old session would otherwise appear in the newly
+                    // selected conversation, and Cancel would target the
+                    // wrong key.
+                    thread.eventEpoch += 1;
+                    if (choice.service instanceof GatewayChatService) {
+                        choice.service.abort(resolvedKey);
+                        if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === resolvedKey)) {
+                            choice.service.clearSessionSink(resolvedKey);
+                        }
+                    }
                     return;
                 }
                 thread.sessionKey = resolvedKey;
