@@ -1035,14 +1035,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return editor.document.uri.fsPath;
     }
 
-    /** Resolve @file mentions in a draft to candidate paths (addAttachments filters invalid ones). */
+    /** Resolve @file mentions in a draft to workspace-scoped paths; mentions escaping the workspace are rejected. */
     private resolveMentionPaths(text: string): string[] {
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
             return [];
         }
         return parseFileMentions(text)
-            .map(mention => path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path));
+            .map(mention => path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path))
+            .map(candidate => path.resolve(candidate))
+            .filter(resolved => {
+                const rel = path.relative(cwd, resolved);
+                return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+            });
     }
 
     /** Gather the current selection and insert an @file mention into the webview composer. */
