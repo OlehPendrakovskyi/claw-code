@@ -556,7 +556,7 @@ export class GatewayChatService {
     }
     if (evt.event === GatewayEvents.sessionEnd) {
       const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
-      const endKey = String(endPayload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY);
+      const endKey = this.resolveSessionEndKey(endPayload.sessionKey);
       // A resumed session only carries a transcript sink (no run entry);
       // its stream must still observe the run's end.
       const endSink =
@@ -580,6 +580,19 @@ export class GatewayChatService {
       this.pending.delete(id);
       pending.reject(new Error(reason));
     }
+  }
+
+  /** Resolve the session key for a `session.end` frame. Non-string or empty
+   *  values fall back to the active session key, then to the default, so a
+   *  malformed frame can never mint a bogus key that misses the real sink. */
+  private resolveSessionEndKey(sessionKey: unknown): string {
+    if (typeof sessionKey === 'string' && sessionKey.length > 0) {
+      return sessionKey;
+    }
+    if (this.activeSessionKey) {
+      return this.activeSessionKey;
+    }
+    return DEFAULT_SESSION_KEY;
   }
 
   private scheduleReconnect(): void {
