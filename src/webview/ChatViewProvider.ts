@@ -1044,9 +1044,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         // Retire any run still active on the previous session before
         // rebinding: late events from the old run would otherwise be
-        // appended to the newly opened transcript.
+        // appended to the newly opened transcript. The old transcript
+        // sink is dropped too, so events for the previous key cannot
+        // reach the rebound thread.
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
-            gateway.abort(thread.sessionKey);
+            const previousKey = thread.sessionKey;
+            gateway.abort(previousKey);
+            gateway.clearSessionSink(previousKey);
             thread.isStreaming = false;
         }
         gateway.setActiveSession(sessionKey);
@@ -1134,6 +1138,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 log.warn('history restore during resume failed', err);
             }
             gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
+            this.emitState();
         }
     }
 

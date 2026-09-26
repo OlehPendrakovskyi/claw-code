@@ -76,7 +76,7 @@ export async function migrateLegacyGatewayToken(
   const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
   const legacy =
     inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? inspection?.globalValue;
-  if (!legacy) {
+  if (legacy === undefined) {
     return false;
   }
   const existing = await getGatewayToken(context.secrets);
