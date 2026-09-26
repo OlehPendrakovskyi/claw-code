@@ -115,6 +115,20 @@ export function parseFrame(data: unknown): RpcInboundFrame | null {
 
 const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
 
+/** Fallback details for tool-call frames that carry typed fields instead of a
+ *  ready-made `details` string: serialize arguments/result so the UI still
+ *  shows the call's inputs and outcome instead of an empty details block. */
+function serializeToolCallDetails(tc: { arguments?: unknown; result?: unknown }): string {
+  const parts: string[] = [];
+  if (tc.arguments !== undefined) {
+    parts.push(`arguments: ${JSON.stringify(tc.arguments, null, 2)}`);
+  }
+  if (tc.result !== undefined) {
+    parts.push(`result: ${JSON.stringify(tc.result, null, 2)}`);
+  }
+  return parts.join('\n');
+}
+
 /**
  * Map a gateway `session.message` event to zero or more UI ChatEvents.
  * Handles toolCall payloads, streaming text deltas, final text, and usage.
@@ -128,7 +142,7 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
     role?: string;
     text?: unknown;
     delta?: unknown;
-    toolCall?: { id?: unknown; name?: unknown; title?: unknown; status?: unknown; details?: unknown } | null;
+    toolCall?: { id?: unknown; name?: unknown; title?: unknown; status?: unknown; details?: unknown; arguments?: unknown; result?: unknown } | null;
     usage?:
       | {
           promptTokens?: number;
@@ -150,7 +164,7 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
       type: 'toolCall',
       title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
       status,
-      details: typeof tc.details === 'string' ? tc.details : '',
+      details: typeof tc.details === 'string' && tc.details ? tc.details : serializeToolCallDetails(tc),
       ...(typeof tc.id === 'string' && tc.id ? { id: tc.id } : {}),
     });
   }
