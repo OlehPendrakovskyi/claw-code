@@ -165,6 +165,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     dispose(): void {
         for (const thread of this.threads.values()) {
             thread.service.dispose();
+            if (thread.transportBackend && thread.transportBackend !== thread.service &&
+                !(thread.transportBackend instanceof GatewayChatService)) {
+                thread.transportBackend.dispose();
+            }
         }
         this.popOutPanel?.dispose();
         this.debugPanel?.dispose();
@@ -487,6 +491,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             backend.abort();
         }
         thread.service.dispose();
+        // An acpx run stores a dedicated backend on the thread; dispose it
+        // too unless it is the thread's legacy service or the shared gateway
+        // client (which other threads may still use).
+        if (thread.transportBackend && thread.transportBackend !== thread.service &&
+            !(thread.transportBackend instanceof GatewayChatService)) {
+            thread.transportBackend.dispose();
+        }
         this.threads.delete(threadId);
         this.visibleThreadIds = this.visibleThreadIds.filter(id => id !== threadId);
 
@@ -746,7 +757,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const choice = await this.resolveServiceForSend(thread.service);
+        const choice = await this.resolveServiceForSend(this.backendFor(thread));
         thread.transportBackend = choice.service;
         if (choice.service instanceof GatewayChatService) {
             // Bind a session key to the thread before every gateway send: an
@@ -1080,13 +1091,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const history = await gateway.getHistory(sessionKey);
-        const restored = mapHistoryMessages(history);
-        // Seed the gateway's delta cursor and messageId dedupe set from the
-        // restored transcript so resumeSession's catch-up does not replay the
-        // history we just rendered (or leave the thread streaming).
-        gateway.seedHistory(sessionKey, history);
-        thread.title = label;
-        if (restored.length > 0) {
+        // A successful fetch replaces the transcript unconditionally (empty
+        // history clears the prior session's messages); a failed fetch keeps
+        // the current transcript rather than wiping it on transport errors.
+        if (history !== null) {
+            const restored = mapHistoryMessages(history);
+            // Seed the gateway's delta cursor and messageId dedupe set from
+            // the restored transcript so resumeSession's catch-up does not
+            // replay the history we just rendered (or leave the thread
+            // streaming).
+            gateway.seedHistory(sessionKey, history);
+            thread.title = label;
             thread.messages = [];
             for (const msg of restored) {
                 thread.messages.push({ role: msg.role, content: msg.content });
