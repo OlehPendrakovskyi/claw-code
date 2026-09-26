@@ -739,7 +739,8 @@ export class GatewayChatService {
     _cwd: string,
     _model: string,
     _chatType: string,
-    _onEvent: (event: ChatEvent) => void
+    _onEvent: (event: ChatEvent) => void,
+    onSessionResolved?: (resolvedKey: string, requestedKey: string) => void
   ): void {
     if (!this.connected) {
       _onEvent({
@@ -786,6 +787,14 @@ export class GatewayChatService {
         }
         this.addTranscriptSink(key, _onEvent);
         this.subscribeSessionMessages(key);
+        // The gateway may resolve a different session than requested (e.g.
+        // the requested key was unbound). The run now lives under `key`, so
+        // the owning thread must rebind too — otherwise its later
+        // cancel/reset/close aborts the stale requested key and the actual
+        // run stays active.
+        if (key !== sessionKey) {
+          onSessionResolved?.(key, sessionKey);
+        }
       })
       .catch((err: Error) => {
         if (this.runSinksBySession.get(sessionKey) === _onEvent) {

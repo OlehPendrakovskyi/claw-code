@@ -908,6 +908,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.currentChatType,
             (event: ChatEvent) => {
                 void this.handleChatEvent(thread.id, event, runEpoch);
+            },
+            (resolvedKey, requestedKey) => {
+                // The gateway resolved the send to a different session than
+                // requested: rebind the thread (and any suspended transcript
+                // callback) to the resolved key so later cancel/reset/close
+                // target the session the run actually lives under. Only
+                // rebind while the thread is still bound to the requested
+                // key — a mid-run agent switch owns the binding by then.
+                if (thread.sessionKey !== requestedKey) {
+                    return;
+                }
+                thread.sessionKey = resolvedKey;
+                const suspended = this.suspendedTranscriptSinks.get(thread.id);
+                if (suspended && suspended.sessionKey === requestedKey) {
+                    suspended.sessionKey = resolvedKey;
+                }
             }
         );
     }
