@@ -8,6 +8,7 @@ const mockUpdateConnection = jest.fn();
 jest.mock('../core/gatewayConfig', () => ({
     getGatewaySettings: jest.fn(),
     getGatewayToken: jest.fn(),
+    migrateLegacyGatewayToken: jest.fn(async () => undefined),
 }));
 
 jest.mock('../core/gatewayChatService', () => ({

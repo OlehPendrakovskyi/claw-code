@@ -13,7 +13,7 @@
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/ChatService';
 import { GatewayChatService } from '../core/gatewayChatService';
-import { getGatewaySettings, getGatewayToken } from '../core/gatewayConfig';
+import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
 
 /** Resolved backend for one send. */
@@ -33,17 +33,34 @@ export class ChatServiceFactory {
   private gatewayService: GatewayChatService | null = null;
   private cachedUrl = '';
   private cachedToken = '';
+  /** Completes once legacy-token migration has finished: gateway resolution
+   *  waits for it so a valid legacy token is never mistaken for a missing one. */
+  private migrationDone: Promise<void> | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly onStatus?: (transport: 'gateway' | 'acpx', connected: boolean) => void
   ) {}
 
+  /** Await one-shot legacy-token migration before any token-dependent
+   *  resolution; failures are non-fatal (logged, resolution proceeds). */
+  private ensureMigrated(): Promise<void> {
+    if (!this.migrationDone) {
+      this.migrationDone = migrateLegacyGatewayToken(this.context)
+        .then(() => undefined)
+        .catch((err: Error) => {
+          log.warn(`legacy gateway token migration failed ${err.message}`);
+        });
+    }
+    return this.migrationDone!;
+  }
+
   /**
    * Resolve the backend for the current settings. In `auto` mode a failed
    * or missing-token gateway connect falls back to acpx transparently.
    */
   async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
+    await this.ensureMigrated();
     const settings = getGatewaySettings();
     if (settings.transport === 'acpx') {
       this.onStatus?.('acpx', true);

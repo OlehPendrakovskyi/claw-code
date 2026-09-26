@@ -22,24 +22,24 @@ describe('extension activation', () => {
         expect(typeof deactivate).toBe('function');
     });
 
-    it('activate registers commands and views without throwing', () => {
+    it('activate registers commands and views without throwing', async () => {
         const { context, subscriptions } = makeContext();
-        expect(() => activate(context)).not.toThrow();
+        await activate(context);
         expect(subscriptions.length).toBeGreaterThan(0);
     });
 
-    it('creates a status bar item', () => {
+    it('creates a status bar item', async () => {
         const { context } = makeContext();
-        activate(context);
+        await activate(context);
         expect(vscode.window.createStatusBarItem).toHaveBeenCalledWith(
             vscode.StatusBarAlignment.Right,
             100,
         );
     });
 
-    it('registers the expected commands', () => {
+    it('registers the expected commands', async () => {
         const { context } = makeContext();
-        activate(context);
+        await activate(context);
         const registered = (vscode.commands.registerCommand as ReturnType<typeof jest.fn>).mock.calls.map(
             (c: unknown[]) => c[0],
         );
@@ -51,18 +51,18 @@ describe('extension activation', () => {
         expect(registered).toContain('openclaw.chat.newSession');
     });
 
-    it('registers the overview tree view', () => {
+    it('registers the overview tree view', async () => {
         const { context } = makeContext();
-        activate(context);
+        await activate(context);
         expect(vscode.window.createTreeView).toHaveBeenCalledWith(
             'openclaw.overview',
             expect.objectContaining({ treeDataProvider: expect.anything() }),
         );
     });
 
-    it('registers the chat webview view provider', () => {
+    it('registers the chat webview view provider', async () => {
         const { context } = makeContext();
-        activate(context);
+        await activate(context);
         expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalledWith(
             'openclaw.chat',
             expect.anything(),
@@ -73,9 +73,9 @@ describe('extension activation', () => {
         expect(() => deactivate()).not.toThrow();
     });
 
-    it('does not auto-connect when autoConnect is false', () => {
+    it('does not auto-connect when autoConnect is false', async () => {
         const { context } = makeContext();
-        activate(context);
+        await activate(context);
         expect(vscode.window.createTerminal).not.toHaveBeenCalled();
     });
 });

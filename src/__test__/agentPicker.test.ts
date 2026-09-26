@@ -260,6 +260,10 @@ describe('GatewayChatService session selection and resume', () => {
     svc.setActiveSession('agent:coder:main');
     expect(svc.getActiveSessionKey()).toBe('agent:coder:main');
 
+    // Catch-up runs only on a cursor/resume path: seed a delta cursor first
+    // (the initial send itself must not replay an unscoped history tail).
+    svc.seedHistory('agent:coder:main', { deltaCursor: 'c0', messages: [] });
+
     let done: Array<unknown> = [];
     svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => done.push(e));
     let req = lastRequest(ws);

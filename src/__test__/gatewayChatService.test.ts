@@ -385,6 +385,9 @@ describe('GatewayChatService sendMessage/abort', () => {
     const svc = await connectService(ws);
     const events: unknown[] = [];
     svc.onEvent = (e) => events.push(e);
+    // Catch-up runs only on a cursor/resume path: seed a delta cursor first
+    // (the initial send itself must not replay an unscoped history tail).
+    svc.seedHistory('main', { deltaCursor: 'cursor-42', messages: [] });
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;

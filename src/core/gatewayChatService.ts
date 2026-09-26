@@ -563,7 +563,9 @@ export class GatewayChatService {
   resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
     this.activeSessionKey = sessionKey;
     this.addTranscriptSink(sessionKey, onEvent);
-    this.subscribeSessionMessages(sessionKey);
+    // Resume is an explicit cursor path: allow the unscoped-tail catch-up
+    // (deduped by messageId) even when no delta cursor was seeded yet.
+    this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: true });
   }
 
   /**
@@ -638,7 +640,11 @@ export class GatewayChatService {
         // its stream must still observe the run's end. The run sink wins
         // when present; without one every resumed subscriber is completed.
         const runSink = this.runSinksBySession.get(endKey);
-        const endSinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(endKey) ?? [])];
+        const transcript = [...(this.transcriptSinksBySession.get(endKey) ?? [])];
+        // Fan out to the union of the run sink and all transcript-only
+        // subscribers (deduplicated): a resumed thread on the same session
+        // must still observe the run's end and commit its pending response.
+        const endSinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
         this.runSinksBySession.delete(endKey);
         // Retire the completed run sink from the transcript set as well;
         // leaving it there retains the callback forever and replays catch-up
@@ -778,7 +784,11 @@ export class GatewayChatService {
     }
     const key = String(sessionKey);
     const runSink = this.runSinksBySession.get(key);
-    const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    const transcript = [...(this.transcriptSinksBySession.get(key) ?? [])];
+    // Fan out to the union: a run sink alone would drop live deltas/tool
+    // events/usage for transcript-only subscribers (a resumed thread) on the
+    // same session while another thread is running.
+    const sinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
     return sinks.length > 0 ? { sinks, key } : null;
   }
 
@@ -786,13 +796,13 @@ export class GatewayChatService {
   private resubscribeActiveSession(): void {
     for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
       this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
-      this.subscribeSessionMessages(sessionKey);
+      this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: true });
     }
   }
 
   /** Subscribe to transcript events for a session key (soft method check);
    *  subscription is per session, and delivery fans out to all sinks. */
-  private subscribeSessionMessages(sessionKey: string): void {
+  private subscribeSessionMessages(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean }): void {
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
       this.logger.warn(
         `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
@@ -802,7 +812,7 @@ export class GatewayChatService {
     }
     void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
       .then(() => {
-        void this.catchUpHistory(sessionKey);
+        void this.catchUpHistory(sessionKey, opts);
       })
       .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
@@ -815,8 +825,14 @@ export class GatewayChatService {
    * cursor, deduplicating by messageId so resumed streams do not replay
    * already-rendered messages. Never crashes on unknown payload shapes.
    */
-  private async catchUpHistory(sessionKey: string): Promise<void> {
+  private async catchUpHistory(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean }): Promise<void> {
     if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return;
+    }
+    // Catch-up is reserved for a known cursor/resume path: replaying an
+    // unscoped history tail into the first subscription of a normal send
+    // would duplicate prior assistant messages into the new turn.
+    if (!this.deltaCursorBySession.has(sessionKey) && !opts?.allowUnscopedCatchUp) {
       return;
     }
     try {

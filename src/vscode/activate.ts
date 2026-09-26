@@ -26,7 +26,7 @@ import {
     getOverviewProvider
 } from './commands';
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
     log.info('activate() start');
 
     const statusBarItem = initStatusBar();
@@ -74,7 +74,11 @@ export function activate(context: vscode.ExtensionContext) {
 
     const provider = new ChatViewProvider(context.extensionUri, context);
     chatViewProvider = provider;
-    void migrateLegacyGatewayToken(context).catch((err: unknown) => {
+    // Gateway resolution must not race the legacy-token migration: a send
+    // before migration finishes sees an empty SecretStorage token and falls
+    // back to acpx / reports the gateway offline. Await it before the chat
+    // provider becomes reachable, then register.
+    await migrateLegacyGatewayToken(context).catch((err: unknown) => {
         log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     context.subscriptions.push(

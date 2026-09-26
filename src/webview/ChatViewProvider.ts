@@ -243,7 +243,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (thread) {
                         const backend = this.backendFor(thread);
                         if (backend instanceof GatewayChatService) {
-                            backend.abort(thread.sessionKey);
+                            // Same shared-run guard as resetThread: aborting a
+                            // shared session key would cancel another thread's
+                            // live run on the shared gateway client.
+                            const shared = [...this.threads.values()].some(
+                                t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
+                            );
+                            // Bump the epoch BEFORE abort: a disconnected
+                            // gateway completes the old sink synchronously, so
+                            // the incremented epoch must already be in place or
+                            // the stale completion is treated as current.
+                            thread.eventEpoch += 1;
+                            if (thread.sessionKey && !shared) {
+                                backend.abort(thread.sessionKey);
+                            }
                         } else {
                             backend.abort();
                         }
@@ -582,6 +595,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args));
+        // Slash commands resolve @mentions too: without this, `/review @src/a.ts#L5`
+        // silently omits the requested file attachment.
+        const mentions = await this.resolveMentions(userText);
+        if (mentions.length > 0) {
+            await this.addAttachments(thread, mentions);
+        }
         // /compact summarizes prior turns: include the thread transcript so the
         // fresh per-send exec (both transports) has the conversation to compress.
         const transcript = commandName === 'compact' && thread.messages.length > 0
@@ -807,12 +826,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // in-flight run ends cleanly, and bump the epoch so callbacks
                 // captured by earlier runs drop their late events.
                 if (thread.sessionKey) {
+                    // Epoch bump precedes abort: a disconnected gateway
+                    // completes the old sink synchronously, and the sink's
+                    // captured epoch must already be stale when it fires.
+                    thread.eventEpoch += 1;
                     previousBackend.abort(thread.sessionKey);
                 }
             } else {
                 previousBackend.dispose();
+                thread.eventEpoch += 1;
             }
-            thread.eventEpoch += 1;
         }
         thread.transportBackend = choice.service;
         let runEpoch: number | undefined;
@@ -1135,6 +1158,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // gateway client, so an unconditional teardown would also
                 // abort another thread's live run on the same key.
                 if (![...this.threads.values()].some(t => t.id !== activeThread.id && t.sessionKey === previousKey)) {
+                    // Epoch bump precedes abort: a disconnected gateway
+                    // completes the old sink synchronously, and the sink's
+                    // captured epoch must already be stale when it fires.
+                    activeThread.eventEpoch += 1;
                     gateway.abort(previousKey);
                     gateway.clearSessionSink(previousKey);
                 }
@@ -1142,7 +1169,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // completes the old callback asynchronously, and after the
                 // rebind it would otherwise deliver `done` (and commit stale
                 // pending text) into this same thread.
-                activeThread.eventEpoch += 1;
+                if (activeThread.sessionKey !== sessionKey && [...this.threads.values()].some(t => t.id !== activeThread.id && t.sessionKey === previousKey)) {
+                    activeThread.eventEpoch += 1;
+                }
                 activeThread.isStreaming = false;
             }
             activeThread.sessionKey = sessionKey;
@@ -1177,12 +1206,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Same shared-session guard as handleSelectAgent: only tear down
             // the previous session when no other thread is still bound to it.
             if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
+                // Epoch bump precedes abort: a disconnected gateway completes
+                // the old sink synchronously, and the sink's captured epoch
+                // must already be stale when it fires.
+                thread.eventEpoch += 1;
                 gateway.abort(previousKey);
                 gateway.clearSessionSink(previousKey);
             }
             // Same generation guard as handleSelectAgent: the aborted run's
             // async completion must not reach the rebound thread.
-            thread.eventEpoch += 1;
+            if ([...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
+                thread.eventEpoch += 1;
+            }
             thread.isStreaming = false;
         }
         gateway.setActiveSession(sessionKey);
