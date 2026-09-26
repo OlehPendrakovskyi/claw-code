@@ -1,6 +1,9 @@
 import type * as GatewayConfig from '../core/gatewayConfig';
 
 const mockConnect = jest.fn();
+// Declare before the hoisted jest.mock factories: they reference these
+// spies, and the factory can run before later const initializers.
+const mockUpdateConnection = jest.fn();
 
 jest.mock('../core/gatewayConfig', () => ({
     getGatewaySettings: jest.fn(),
@@ -34,7 +37,6 @@ import { ChatService } from '../chat/ChatService';
 
 const mockSettings = getGatewaySettings as jest.MockedFunction<typeof GatewayConfig.getGatewaySettings>;
 const mockToken = getGatewayToken as jest.MockedFunction<typeof GatewayConfig.getGatewayToken>;
-const mockUpdateConnection = jest.fn();
 
 import type * as vscode from 'vscode';
 

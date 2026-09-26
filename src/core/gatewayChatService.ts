@@ -718,6 +718,13 @@ export class GatewayChatService {
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
+        const existingKeySink = this.runSinksBySession.get(key);
+        if (existingKeySink && existingKeySink !== _onEvent) {
+          // Another thread still owns a run on the resolved key: end its
+          // stream cleanly before replacing it, mirroring the existingSink
+          // handling for the initially requested sessionKey.
+          existingKeySink({ type: 'done' });
+        }
         this.runSinksBySession.set(key, _onEvent);
         if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {
           this.runSinksBySession.delete(sessionKey);
