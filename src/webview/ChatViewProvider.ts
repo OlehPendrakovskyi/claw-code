@@ -1301,6 +1301,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const historyEpoch = thread.eventEpoch;
+        // Reopening the session this thread is already bound to while a run
+        // is in flight must not replace the transcript or reset status:
+        // the unconditional restore would drop the live response. The thread
+        // keeps its registered transcript callback, so nothing to rebind.
+        if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {
+            return;
+        }
         const history = await gateway.getHistory(sessionKey);
         if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey || thread.eventEpoch !== historyEpoch) {
             return;

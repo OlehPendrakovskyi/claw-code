@@ -886,10 +886,24 @@ export class GatewayChatService {
           event: GatewayEvents.sessionMessage,
           payload: row as Record<string, unknown>,
         });
+        // A completed assistant history row (full text, no delta) must also
+        // finalize: replaying only its text would leave subscribers streaming
+        // forever, since catch-up never replays a session_end for it.
+        const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
+        const isFinalAssistantRow =
+          rowPayload.role === 'assistant' &&
+          typeof rowPayload.text === 'string' &&
+          rowPayload.text.length > 0 &&
+          typeof rowPayload.delta !== 'string';
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of mapped) {
           for (const sink of sinks) {
             sink(chatEvent);
+          }
+        }
+        if (isFinalAssistantRow) {
+          for (const sink of sinks) {
+            sink({ type: 'done' });
           }
         }
       }
@@ -920,19 +934,23 @@ export class GatewayChatService {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
-    const sinks = runSink
-      ? [runSink]
-      : [...(this.transcriptSinksBySession.get(key) ?? [])];
+    // Abort retires the union of the run sink and all transcript sinks:
+    // keeping only the run sink would leave transcript-only subscribers
+    // registered, still receiving late events after the cancellation.
+    const retired = new Set(this.transcriptSinksBySession.get(key) ?? []);
+    if (runSink) {
+      retired.add(runSink);
+    }
     this.runSinksBySession.delete(key);
     // Retire both sink roles for these callbacks: a lingering transcript
     // sink would keep routing late session.message events (and reconnect
     // resubscriptions) into the cancelled thread after its `done`.
-    for (const retired of sinks) {
-      this.removeTranscriptSink(key, retired);
+    for (const sink of retired) {
+      this.removeTranscriptSink(key, sink);
     }
     if (!this.connected) {
-      for (const retired of sinks) {
-        retired({ type: 'done' });
+      for (const sink of retired) {
+        sink({ type: 'done' });
       }
       return;
     }
@@ -941,8 +959,8 @@ export class GatewayChatService {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
-        for (const retired of sinks) {
-          retired({ type: 'done' });
+        for (const sink of retired) {
+          sink({ type: 'done' });
         }
       });
   }

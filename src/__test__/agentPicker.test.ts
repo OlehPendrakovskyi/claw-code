@@ -283,7 +283,8 @@ describe('GatewayChatService session selection and resume', () => {
     rpcPayload(ws, req.id, { messages: [{ role: 'assistant', text: 'routed', messageId: 'm-r1' }], deltaCursor: 'c1' });
     await new Promise((r) => setTimeout(r, 0));
     svc.dispose();
-    expect(done).toEqual([{ type: 'text', text: 'routed' }]);
+    // Completed assistant history rows finalize: text event followed by done.
+    expect(done).toEqual([{ type: 'text', text: 'routed' }, { type: 'done' }]);
   });
 
   it('resumeSession subscribes and replays unseen history (dedup by messageId)', async () => {
@@ -312,6 +313,44 @@ describe('GatewayChatService session selection and resume', () => {
 
     const texts = events.filter((e) => e.type === 'text').map((e) => e.text);
     expect(texts).toEqual(['restored']);
+    // The completed assistant row (full text, no delta) finalizes; the empty
+    // text row does not.
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+    svc.dispose();
+  });
+
+  it('abort retires the union of the run sink and transcript subscribers', async () => {
+    const log = { lines: [] as string[] };
+    const { svc, ws, ready } = makeConnected(log);
+    await ready;
+    svc.seedHistory('agent:main:main', { deltaCursor: 'c0', messages: [] });
+    const runEvents: Array<Record<string, unknown>> = [];
+    const transcriptEvents: Array<Record<string, unknown>> = [];
+    svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => runEvents.push(e as unknown as Record<string, unknown>));
+    let req = lastRequest(ws);
+    expect(req.method).toBe('chat.send');
+    rpcPayload(ws, req.id, { sessionKey: 'agent:main:main' });
+    await new Promise((r) => setTimeout(r, 0));
+    req = lastRequest(ws);
+    expect(req.method).toBe('sessions.messages.subscribe');
+    rpcPayload(ws, req.id, {});
+    await new Promise((r) => setTimeout(r, 0));
+    // A second, transcript-only subscriber on the same session.
+    svc.resumeSession('agent:main:main', (e) => transcriptEvents.push(e as unknown as Record<string, unknown>));
+    req = lastRequest(ws);
+    expect(req.method).toBe('sessions.messages.subscribe');
+    rpcPayload(ws, req.id, {});
+    await new Promise((r) => setTimeout(r, 0));
+
+    svc.abort('agent:main:main');
+    req = lastRequest(ws);
+    expect(req.method).toBe('chat.abort');
+    rpcPayload(ws, req.id, {});
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Both the run sink and the transcript-only subscriber are retired with done.
+    expect(runEvents.some((e) => e.type === 'done')).toBe(true);
+    expect(transcriptEvents.some((e) => e.type === 'done')).toBe(true);
     svc.dispose();
   });
 
