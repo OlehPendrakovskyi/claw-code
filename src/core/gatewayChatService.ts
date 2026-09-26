@@ -742,6 +742,15 @@ export class GatewayChatService {
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
+        const stillOwns = this.runSinksBySession.get(key) === _onEvent ||
+          this.runSinksBySession.get(sessionKey) === _onEvent;
+        if (!stillOwns) {
+          // Cancel (abort) removed this run's sink while the RPC was in
+          // flight: never resurrect it here, or the cancelled run would be
+          // re-registered for the session and late events would revive the
+          // abandoned thread.
+          return;
+        }
         const existingKeySink = this.runSinksBySession.get(key);
         if (existingKeySink && existingKeySink !== _onEvent) {
           // Another thread still owns a run on the resolved key: end its

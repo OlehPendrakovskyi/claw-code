@@ -45,6 +45,10 @@ export type ChatThreadState = {
     /** Monotonic generation for gateway event delivery: rebound/cancelled
      *  threads bump it so sinks captured by an earlier run stop delivering. */
     eventEpoch: number;
+    /** Monotonic generation for persistent transcript sinks: bumped on
+     *  rebind/reset only (never per run), so a session's transcript callback
+     *  keeps delivering events across successive runs on the same binding. */
+    bindingEpoch: number;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
