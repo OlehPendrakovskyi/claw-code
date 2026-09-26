@@ -323,9 +323,11 @@ export const CONTENT_JS = `
                 }
             }
 
+            /** Group status: running while any entry is still non-terminal; done/error/failed are terminal. */
             function getToolGroupStatus(entries) {
+                var TERMINAL_STATUSES = ['done', 'error', 'failed'];
                 return entries.some(function(entry) {
-                    return entry.status !== 'done';
+                    return TERMINAL_STATUSES.indexOf(entry.status) === -1;
                 }) ? 'running' : 'done';
             }
 
@@ -1850,6 +1852,11 @@ export const CONTENT_JS = `
                     row.textContent = label;
                     row.title = session.sessionKey || '';
                     panel.appendChild(row);
+                });
+                panel.addEventListener('click', function(ev) {
+                    var row = ev.target && ev.target.closest ? ev.target.closest('[data-action="open-session"]') : null;
+                    if (!row) { return; }
+                    vscode.postMessage({ type: 'openSession', sessionKey: row.getAttribute('data-session-key') || '' });
                 });
                 document.body.appendChild(panel);
                 setTimeout(function() {

@@ -3,6 +3,7 @@ import * as path from 'path';
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
+import type { GatewayChatService } from '../core/gatewayChatService';
 import { EditorContext, ContextType } from './slashCommands';
 
 /** Shared output channel for chat panel logging. */
@@ -17,7 +18,7 @@ export type ChatMessage =
     };
 
 /** An attachment referenced by a chat thread. */
-export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string };
+export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string; lineStart?: number; lineEnd?: number };
 
 /** Full mutable state of one chat thread. */
 export type ChatThreadState = {
@@ -37,6 +38,8 @@ export type ChatThreadState = {
     contextMax: number;
     lastUsage: UsageInfo | null;
     service: ChatService;
+    /** Backend transport of the most recent send (legacy or gateway); lifecycle actions target it. */
+    transportBackend?: ChatService | GatewayChatService;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
@@ -136,7 +139,7 @@ export function escapeGlob(str: string): string {
     return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
 }
 
-/** Read attachment files into prompt-ready text blocks. */
+/** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
@@ -148,13 +151,27 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         try {
             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(att.path));
             const content = new TextDecoder().decode(bytes);
-            sections.push(`<file path="${att.path}">\n${content}\n</file>`);
+            sections.push(`<file path="${att.path}">\n${sliceLineRange(content, att.lineStart, att.lineEnd)}\n</file>`);
         } catch {
             sections.push(`<file path="${att.path}">\n[Could not read file]\n</file>`);
         }
     }
 
     return sections.join('\n\n');
+}
+
+/** Slice a file body to a 1-based inclusive line range when the mention carries a #L range. */
+function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
+    if (!lineStart) {
+        return content;
+    }
+    const lines = content.split('\n');
+    const start = Math.max(1, lineStart) - 1;
+    const end = Math.min(lines.length, lineEnd ?? lineStart);
+    if (start >= lines.length) {
+        return '';
+    }
+    return lines.slice(start, end).join('\n');
 }
 
 /** Append or update a tool-call message in a thread snapshot. */

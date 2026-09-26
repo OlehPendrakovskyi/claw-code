@@ -201,6 +201,10 @@ export class GatewayChatService {
   private hasActiveRun = false;
   /** Event sink of the in-flight run (deltas/usage/done routing). */
   private activeRunEventSink: ((event: ChatEvent) => void) | null = null;
+  /** Run sinks keyed by session so concurrent thread sends do not overwrite each other. */
+  private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Latest transcript subscriber (run or resume); re-subscribed after reconnect. */
+  private transcriptSink: ((event: ChatEvent) => void) | null = null;
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
@@ -250,6 +254,7 @@ export class GatewayChatService {
         this.hello = hello;
         this.reconnectAttempt = 0;
         this.attachRuntimeHandlers();
+        this.resubscribeActiveSession();
         this.logger.info(`gateway connected protocol=${hello.protocol}`);
       })
       .finally(() => {
@@ -433,6 +438,7 @@ export class GatewayChatService {
    */
   resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
     this.activeSessionKey = sessionKey;
+    this.transcriptSink = onEvent;
     this.subscribeSessionMessages(sessionKey, onEvent);
   }
 
@@ -476,12 +482,10 @@ export class GatewayChatService {
     this.onSessionEvent(evt);
     if (evt.event === GatewayEvents.sessionMessage) {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown };
-      if (
-        this.activeRunEventSink &&
-        (!payload.sessionKey || payload.sessionKey === this.activeSessionKey)
-      ) {
+      const sink = this.sinkForSession(payload.sessionKey);
+      if (sink) {
         const chatEvent = mapSessionEventToChatEvent(evt);
-        if (chatEvent) this.activeRunEventSink(chatEvent);
+        if (chatEvent) sink(chatEvent);
       }
     }
     if (evt.event === GatewayEvents.sessionStart) {
@@ -489,10 +493,15 @@ export class GatewayChatService {
     }
     if (evt.event === GatewayEvents.sessionEnd) {
       this.hasActiveRun = false;
-      const sink = this.activeRunEventSink;
-      this.activeRunEventSink = null;
-      if (sink) {
-        sink({ type: 'done' });
+      const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
+      const endKey = String(endPayload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY);
+      const endSink = this.runSinksBySession.get(endKey);
+      this.runSinksBySession.delete(endKey);
+      if (this.activeRunEventSink === endSink) {
+        this.activeRunEventSink = null;
+      }
+      if (endSink) {
+        endSink({ type: 'done' });
       }
     }
     const chatEvent = mapSessionEventToChatEvent(evt);
@@ -543,15 +552,41 @@ export class GatewayChatService {
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
         this.activeRunEventSink = _onEvent;
+        this.transcriptSink = _onEvent;
+        this.runSinksBySession.set(key, _onEvent);
         this.subscribeSessionMessages(key, _onEvent);
       })
       .catch((err: Error) => {
         if (this.activeRunEventSink === _onEvent) {
           this.activeRunEventSink = null;
         }
+        if (this.transcriptSink === _onEvent) {
+          this.transcriptSink = null;
+        }
+        if (this.runSinksBySession.get(sessionKey) === _onEvent) {
+          this.runSinksBySession.delete(sessionKey);
+        }
         _onEvent({ type: 'error', message: err.message });
         _onEvent({ type: 'done' });
       });
+  }
+
+  /** Route a session event to its session-keyed sink; fall back to the active run sink. */
+  private sinkForSession(sessionKey: unknown): ((event: ChatEvent) => void) | null {
+    if (sessionKey !== undefined && sessionKey !== null) {
+      const sink = this.runSinksBySession.get(String(sessionKey));
+      if (sink) return sink;
+    }
+    return this.activeRunEventSink;
+  }
+
+  /** Re-issue transcript subscription and catch-up after reconnect (subscriptions are connection-scoped). */
+  private resubscribeActiveSession(): void {
+    const sink = this.transcriptSink;
+    if (!sink) return;
+    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+    this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
+    this.subscribeSessionMessages(sessionKey, sink);
   }
 
   /** Subscribe to transcript events for a session key (soft method check). */

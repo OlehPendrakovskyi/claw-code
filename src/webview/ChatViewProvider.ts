@@ -22,7 +22,7 @@ import {
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
-import { parseFileMentions } from './fileMentions';
+import { parseFileMentions, type FileMention } from './fileMentions';
 import { ChatServiceFactory } from './chatServiceFactory';
 import { GatewayChatService } from '../core/gatewayChatService';
 import {
@@ -50,6 +50,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private globalState: vscode.Memento;
     private readonly context: vscode.ExtensionContext;
     private lastSessionKey: string | null = null;
+    /** Guards session-resume bootstrap so each webview does not re-subscribe. */
+    private resumeStarted = false;
     private threadCounter = 0;
     private readonly threads = new Map<string, ChatThreadState>();
     private visibleThreadIds: string[] = [];
@@ -231,7 +233,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'cancel':
                     if (thread) {
-                        thread.service.abort();
+                        this.backendFor(thread).abort();
                         thread.isStreaming = false;
                         thread.status = 'cancelled';
                         this.emitState();
@@ -432,7 +434,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private resetThread(thread: ChatThreadState): void {
-        thread.service.abort();
+        this.backendFor(thread).abort();
         thread.messages = [];
         thread.pendingAssistantText = '';
         thread.pendingAttachments = [];
@@ -481,10 +483,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif',
     ]);
 
-    private async addAttachments(thread: ChatThreadState, filePaths: string[]): Promise<void> {
+    private async addAttachments(thread: ChatThreadState, items: Array<string | FileMention>): Promise<void> {
         let changed = false;
 
-        for (const filePath of filePaths) {
+        for (const item of items) {
+            const filePath = typeof item === 'string' ? item : item.path;
             if (!filePath || thread.pendingAttachments.some(a => a.path === filePath)) {
                 continue;
             }
@@ -496,6 +499,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     name: path.basename(filePath),
                     path: filePath,
                     type: ChatViewProvider.IMAGE_EXTENSIONS.has(ext) ? 'image' : 'file',
+                    ...(typeof item !== 'string' && item.lineStart
+                        ? { lineStart: item.lineStart, lineEnd: item.lineEnd ?? item.lineStart }
+                        : {}),
                 });
                 changed = true;
             } catch {
@@ -657,9 +663,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
 
-        const mentionPaths = this.resolveMentionPaths(text);
-        if (mentionPaths.length > 0) {
-            await this.addAttachments(thread, mentionPaths);
+        const mentions = this.resolveMentions(text);
+        const mentionPaths = mentions.map(m => m.path);
+        if (mentions.length > 0) {
+            await this.addAttachments(thread, mentions);
             attachments.push(...thread.pendingAttachments.filter(a => mentionPaths.includes(a.path)));
         }
 
@@ -680,6 +687,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.sendPrompt(thread, fullPrompt);
     }
 
+    /** Lifecycle backend for a thread: the transport of the last send, else the legacy service. */
+    private backendFor(thread: ChatThreadState): ChatService | GatewayChatService {
+        return thread.transportBackend ?? thread.service;
+    }
+
     private async sendPrompt(thread: ChatThreadState, fullPrompt: string): Promise<void> {
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
@@ -692,6 +704,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const choice = await this.resolveServiceForSend();
+        thread.transportBackend = choice.service;
         choice.service.sendMessage(
             fullPrompt,
             cwd,
@@ -889,7 +902,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], { type: 'onboardingDone' });
             }
         }, 100);
-        void this.resumeLastSession();
+        if (!this.resumeStarted) {
+            this.resumeStarted = true;
+            void this.resumeLastSession();
+        }
     }
 
     /** Command-palette agent picker bound to the active chat. */
@@ -1036,18 +1052,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Resolve @file mentions in a draft to workspace-scoped paths; mentions escaping the workspace are rejected. */
-    private resolveMentionPaths(text: string): string[] {
+    private resolveMentions(text: string): FileMention[] {
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
             return [];
         }
         return parseFileMentions(text)
-            .map(mention => path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path))
-            .map(candidate => path.resolve(candidate))
-            .filter(resolved => {
-                const rel = path.relative(cwd, resolved);
+            .map(mention => ({ ...mention, path: path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path) }))
+            .map(mention => ({ ...mention, path: path.resolve(mention.path) }))
+            .filter(mention => {
+                const rel = path.relative(cwd, mention.path);
                 return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
             });
+    }
+
+    /** Workspace-scoped paths only, for callers that ignore mention line ranges. */
+    private resolveMentionPaths(text: string): string[] {
+        return this.resolveMentions(text).map(m => m.path);
     }
 
     /** Gather the current selection and insert an @file mention into the webview composer. */
