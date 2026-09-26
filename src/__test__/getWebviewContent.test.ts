@@ -280,6 +280,12 @@ describe('error handling and fallback', () => {
         expect(html).toContain('\u27F3');
     });
 
+    it('renders a usage indicator for the last run', () => {
+        const html = renderHTML();
+        expect(html).toContain('renderUsageIndicator');
+        expect(html).toContain('usage-indicator');
+    });
+
     it('wraps initial render and state request in try/catch', () => {
         const html = renderHTML();
         expect(html).toContain("_showCrash('Initial render failed");

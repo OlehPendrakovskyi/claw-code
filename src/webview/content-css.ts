@@ -859,6 +859,12 @@ export const CONTENT_CSS = `
             padding: 0 8px 8px;
         }
 
+        .usage-indicator {
+            font-size: 10px;
+            opacity: 0.6;
+            white-space: nowrap;
+        }
+
         .composer-status {
             font-size: 11px;
             opacity: 0.58;

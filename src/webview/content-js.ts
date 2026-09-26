@@ -268,6 +268,19 @@ export const CONTENT_JS = `
                 return Math.ceil(text.length / 4);
             }
 
+            /** Usage status line: tokens of the last run plus rough context fill percent. */
+            function renderUsageIndicator(thread) {
+                var usage = thread.lastUsage;
+                if (!usage || !usage.totalTokens) {
+                    return '';
+                }
+                var max = thread.contextMax || 128000;
+                var pct = Math.min(100, Math.round((usage.totalTokens / max) * 100));
+                return '<span class="usage-indicator" title="Last run: ' + usage.totalTokens + ' tokens (~' +
+                    pct + '% of context)">' +
+                    formatTokenCount(usage.totalTokens) + ' tok · ' + pct + '%</span>';
+            }
+
             function getThreadSpaceUsage(thread) {
                 if (!thread) {
                     return 0;
@@ -686,7 +699,8 @@ export const CONTENT_JS = `
                                 return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') +
                                     '" data-token-est="' + thread.id + '">' +
                                     (hasVal ? '~' + formatTokenCount(est) + ' tokens' : '') +
-                                '</span>';
+                                '</span>' +
+                                renderUsageIndicator(thread);
                             })() +
                             (messageQueue[thread.id] ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
                             '<button class="btn-send' + (thread.isStreaming ? ' streaming' : '') + '"' +
