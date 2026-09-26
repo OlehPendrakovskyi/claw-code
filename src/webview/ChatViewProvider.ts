@@ -23,6 +23,9 @@ import {
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
 
+// Re-export the moved interface so existing imports from this module keep working.
+export type { Recommendation } from './recommendations';
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'openclaw.chat';
 
