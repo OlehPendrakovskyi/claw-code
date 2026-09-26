@@ -750,11 +750,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.transportBackend = choice.service;
         if (choice.service instanceof GatewayChatService) {
             // Bind a session key to the thread before every gateway send: an
-            // unbound thread must not ride the shared gateway's active session
-            // (which another thread may have selected) or leave cancel passing
-            // an undefined key that targets the shared fallback.
+            // unbound thread must never read the shared gateway's mutable
+            // active session (another thread may have selected it) — it gets
+            // its own default session, so cross-thread leakage is impossible.
+            // Deliberate selections always go through handleSelectAgent/
+            // handleOpenSession, which set thread.sessionKey explicitly.
             if (!thread.sessionKey) {
-                thread.sessionKey = choice.service.getActiveSessionKey() ?? DEFAULT_SESSION_KEY;
+                thread.sessionKey = DEFAULT_SESSION_KEY;
             }
             choice.service.setActiveSession(thread.sessionKey);
         }
