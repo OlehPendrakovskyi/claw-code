@@ -476,20 +476,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Only abort the session when no other thread is still bound to
             // it: that thread may own the active run, and resetting an idle
             // thread must not cancel the other thread's run.
-            const shared = [...this.threads.values()].some(
-                t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
-            );
+            // Both generations bump before abort: a disconnected gateway
+            // completes the old sink synchronously, and its captured
+            // epochs must already be stale when the `done` fires.
+            thread.eventEpoch += 1;
+            thread.bindingEpoch += 1;
             if (thread.sessionKey) {
+                const shared = [...this.threads.values()].some(
+                    t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
+                );
                 if (!shared) {
                     backend.abort(thread.sessionKey);
                 }
-                // Both generations bump before abort: a disconnected gateway
-                // completes the old sink synchronously, and its captured
-                // epochs must already be stale when the `done` fires.
-                thread.eventEpoch += 1;
-                thread.bindingEpoch += 1;
             }
         } else {
+            thread.eventEpoch += 1;
+            thread.bindingEpoch += 1;
             backend.abort();
         }
         thread.messages = [];
@@ -1264,6 +1266,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.persistLastSessionKey(sessionKey);
         const activeThread = this.getActiveThread();
         if (activeThread) {
+            // An acpx run has no session key (and a gateway-fallback run can
+            // still use an acpx backend): selecting another agent while such
+            // a run is streaming must retire its backend, or its late output
+            // would bleed into the newly selected conversation. The gateway
+            // branch below aborts the previous session key itself.
+            const previousBackend = this.backendFor(activeThread);
+            if (activeThread.status === 'running' && !(previousBackend instanceof GatewayChatService)) {
+                activeThread.eventEpoch += 1;
+                activeThread.bindingEpoch += 1;
+                previousBackend.abort();
+            }
             // Selecting another agent rebinds the thread: retire any run on
             // the previous session first so its late events cannot leak into
             // the newly selected conversation and Cancel targets the new key.
@@ -1350,6 +1363,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const thread = this.getActiveThread();
         if (!thread) {
             return;
+        }
+        // Same acpx guard as handleSelectAgent: a streaming run without a
+        // gateway session key (or on an acpx fallback backend) must be
+        // retired before rebinding, or its late output lands in the newly
+        // opened transcript.
+        const previousBackend = this.backendFor(thread);
+        if (thread.status === 'running' && !(previousBackend instanceof GatewayChatService)) {
+            thread.eventEpoch += 1;
+            thread.bindingEpoch += 1;
+            previousBackend.abort();
         }
         // Retire any run still active on the previous session before
         // rebinding: late events from the old run would otherwise be

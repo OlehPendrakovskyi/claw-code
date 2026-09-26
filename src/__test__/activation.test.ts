@@ -4,9 +4,23 @@ import { activate, deactivate } from '../extension';
 
 function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscode.Disposable[] } {
     const subscriptions: vscode.Disposable[] = [];
+    // activate() awaits migrateLegacyGatewayToken(context): a mocked
+    // SecretStorage keeps that call safe even if the config mock ever
+    // reports a legacy value.
+    const secrets = {
+        get: jest.fn(async () => undefined as string | undefined),
+        store: jest.fn(async () => undefined),
+        delete: jest.fn(async () => undefined),
+    };
+    const workspaceState = {
+        get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
+        update: jest.fn(async () => undefined),
+    };
     const context = {
         extensionUri: vscode.Uri.file('/tmp/test-ext'),
         globalState: { get: jest.fn(), update: jest.fn() },
+        workspaceState,
+        secrets,
         subscriptions,
     } as unknown as vscode.ExtensionContext;
     return { context, subscriptions };
