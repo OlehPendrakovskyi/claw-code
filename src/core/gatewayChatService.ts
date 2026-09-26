@@ -434,6 +434,31 @@ export class GatewayChatService {
     return this.activeSessionKey;
   }
 
+  /** Seed delta cursor and messageId dedupe from a `getHistory` payload so
+   *  a subsequent resumeSession catch-up does not replay restored history. */
+  seedHistory(sessionKey: string, payload: unknown): void {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const data = payload as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
+    const cursor = data.deltaCursor ?? data.cursor;
+    if (typeof cursor === 'string' && cursor) {
+      this.deltaCursorBySession.set(sessionKey, cursor);
+    }
+    if (!Array.isArray(data.messages)) {
+      return;
+    }
+    for (const row of data.messages) {
+      const messageId =
+        row && typeof row === 'object' && typeof (row as Record<string, unknown>).messageId === 'string'
+          ? ((row as Record<string, unknown>).messageId as string)
+          : null;
+      if (messageId) {
+        this.seenMessageIds.add(messageId);
+      }
+    }
+  }
+
   /**
    * Resume a session after a window restart: bind the session key and
    * subscribe to its transcript events; the deltaCursor catch-up then

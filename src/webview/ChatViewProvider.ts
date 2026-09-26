@@ -812,7 +812,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.messages.push({ role: 'assistant', content: raw, html });
                 }
                 thread.isStreaming = false;
-                if (thread.status !== 'error') {
+                // A `done` emitted by abort() or a teardown path must not
+                // upgrade a cancelled/idle thread to complete.
+                if (thread.status !== 'error' && thread.status !== 'cancelled' && thread.status !== 'idle') {
                     thread.status = 'complete';
                 }
                 this.updateThreadSubjectFromContext(thread);
@@ -1040,6 +1042,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!thread) {
             return;
         }
+        // Retire any run still active on the previous session before
+        // rebinding: late events from the old run would otherwise be
+        // appended to the newly opened transcript.
+        if (thread.sessionKey && thread.sessionKey !== sessionKey) {
+            gateway.abort(thread.sessionKey);
+            thread.isStreaming = false;
+        }
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
         thread.sessionKey = sessionKey;
@@ -1068,6 +1077,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const history = await gateway.getHistory(sessionKey);
         const restored = mapHistoryMessages(history);
+        // Seed the gateway's delta cursor and messageId dedupe set from the
+        // restored transcript so resumeSession's catch-up does not replay the
+        // history we just rendered (or leave the thread streaming).
+        gateway.seedHistory(sessionKey, history);
         thread.title = label;
         if (restored.length > 0) {
             thread.messages = [];
@@ -1114,6 +1127,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.messages.push({ role: msg.role, content: msg.content });
                 }
                 thread.status = 'idle';
+                // Seed cursor/message dedupe from the restored transcript so
+                // the resume catch-up below does not replay this history.
+                gateway.seedHistory(sessionKey, history);
             } catch (err) {
                 log.warn('history restore during resume failed', err);
             }
