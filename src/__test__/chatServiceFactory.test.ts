@@ -1,5 +1,7 @@
 import type * as GatewayConfig from '../core/gatewayConfig';
 
+const mockConnect = jest.fn();
+
 jest.mock('../core/gatewayConfig', () => ({
     getGatewaySettings: jest.fn(),
     getGatewayToken: jest.fn(),
@@ -9,6 +11,7 @@ jest.mock('../core/gatewayChatService', () => ({
     GatewayChatService: jest.fn().mockImplementation(() => ({
         connect: mockConnect,
         dispose: jest.fn(),
+        updateConnection: mockUpdateConnection,
     })),
 }));
 
@@ -31,7 +34,7 @@ import { ChatService } from '../chat/ChatService';
 
 const mockSettings = getGatewaySettings as jest.MockedFunction<typeof GatewayConfig.getGatewaySettings>;
 const mockToken = getGatewayToken as jest.MockedFunction<typeof GatewayConfig.getGatewayToken>;
-const mockConnect = jest.fn();
+const mockUpdateConnection = jest.fn();
 
 import type * as vscode from 'vscode';
 
@@ -138,7 +141,7 @@ describe('ChatServiceFactory.resolve', () => {
         expect(spy.calls).toContainEqual(['gateway', false]);
     });
 
-    it('caches the gateway client and rebuilds it when the token changes', async () => {
+    it('caches the gateway client and updates its credentials in place when the token changes', async () => {
         mockConnect.mockResolvedValue(undefined);
         const factory = new ChatServiceFactory(contextStub());
 
@@ -150,6 +153,9 @@ describe('ChatServiceFactory.resolve', () => {
         mockToken.mockResolvedValue('rotated-token');
         await factory.resolve();
 
-        expect(GatewayChatService).toHaveBeenCalledTimes(2);
+        // Same instance is kept (threads hold it for lifecycle actions);
+        // credentials are refreshed in place instead of dispose-and-recreate.
+        expect(GatewayChatService).toHaveBeenCalledTimes(1);
+        expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'rotated-token');
     });
 });

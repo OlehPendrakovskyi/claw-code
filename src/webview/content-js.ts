@@ -1872,7 +1872,7 @@ export const CONTENT_JS = `
                     if (!document.getElementById('claw-sessions-panel')) { return; }
                     sessionsPanelDismiss = function dismiss(ev) {
                         var p = document.getElementById('claw-sessions-panel');
-                        if (p && !p.contains(ev.target)) {
+                        if (p && ev.target instanceof Node && !p.contains(ev.target)) {
                             dismissSessionsPanel();
                         } else if (!p) {
                             // Panel already gone via another path: stop listening.

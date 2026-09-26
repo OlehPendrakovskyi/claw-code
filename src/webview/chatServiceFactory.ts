@@ -53,8 +53,8 @@ export class ChatServiceFactory {
     if (!token) {
       if (settings.transport === 'gateway') {
         this.onStatus?.('gateway', false);
-        // Cached via the shared gateway slot: a later token rebuilds and
-        // disposes this tokenless client (token comparison in
+        // Cached via the shared gateway slot: a later token updates this
+        // tokenless client in place (credential comparison in
         // getOrCreateGateway), so no per-call instances leak.
         return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
       }
@@ -96,16 +96,16 @@ export class ChatServiceFactory {
   }
 
   private getOrCreateGateway(url: string, token: string): GatewayChatService {
-    // Recreate when url/token changed so a saved token takes effect without
-    // an extension reload.
-    if (!this.gatewayService || this.cachedUrl !== url || this.cachedToken !== token) {
-      if (this.gatewayService) {
-        this.gatewayService.dispose();
-      }
+    if (!this.gatewayService) {
       this.gatewayService = new GatewayChatService({ url, token });
-      this.cachedUrl = url;
-      this.cachedToken = token;
+    } else if (this.cachedUrl !== url || this.cachedToken !== token) {
+      // Update credentials in place: threads keep a reference to this
+      // instance for lifecycle actions, so dispose-and-recreate would sever
+      // in-flight runs on url/token change.
+      this.gatewayService.updateConnection(url, token);
     }
+    this.cachedUrl = url;
+    this.cachedToken = token;
     return this.gatewayService;
   }
 

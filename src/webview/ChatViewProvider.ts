@@ -760,7 +760,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const choice = await this.resolveServiceForSend(this.backendFor(thread));
         thread.transportBackend = choice.service;
-        let runEpoch = 0;
+        let runEpoch: number | undefined;
         if (choice.service instanceof GatewayChatService) {
             // Bind a session key to the thread before every gateway send: an
             // unbound thread must never read the shared gateway's mutable
@@ -793,6 +793,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // this thread: a late `done` from an aborted/rebound run must
             // never commit stale pending text into the current run.
             thread.eventEpoch += 1;
+            // Non-gateway (acpx) sends leave runEpoch undefined: handleChatEvent
+            // then skips epoch scoping, since the epoch counter only tracks
+            // gateway runs and would otherwise drop every acpx event after
+            // the thread has ever used the gateway transport.
             runEpoch = thread.eventEpoch;
         }
         choice.service.sendMessage(

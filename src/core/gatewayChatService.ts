@@ -182,8 +182,8 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
  * with per-request ids and timeouts.
  */
 export class GatewayChatService {
-  private readonly url: string;
-  private readonly token: string;
+  private url: string;
+  private token: string;
   private readonly logger: Logger;
   private readonly wsFactory: WebSocketFactory;
   private readonly baseDelayMs: number;
@@ -256,6 +256,26 @@ export class GatewayChatService {
   /** Whether the socket is currently open and handshook. */
   get isRunning(): boolean {
     return this.connected;
+  }
+
+  /** Update gateway credentials in place instead of replacing the client:
+   *  threads hold this instance for lifecycle actions (abort/cancel), so a
+   *  dispose-and-recreate on url/token change would sever in-flight runs.
+   *  Closing the socket routes the switch through the normal reconnect path
+   *  (pending RPCs are rejected, transcript sinks re-subscribe). */
+  updateConnection(url: string, token: string): void {
+    if (this.url === url && this.token === token) { return; }
+    this.url = url;
+    this.token = token;
+    this.connectPromise = null;
+    if (this.ws) {
+      const oldWs = this.ws;
+      this.ws = null;
+      this.connected = false;
+      this.rejectAllPending('gateway credentials changed');
+      try { oldWs.close(); } catch { /* already closed */ }
+      this.scheduleReconnect();
+    }
   }
 
   /**
