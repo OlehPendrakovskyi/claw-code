@@ -7,15 +7,18 @@ const OPENCLAW_ONBOARD_DOCS_URL = 'https://docs.openclaw.ai/start/wizard';
 const OPENCLAW_UPDATE_DOCS_URL = 'https://docs.openclaw.ai/install/updating';
 const OPENCLAW_SECURITY_DOCS_URL = 'https://docs.openclaw.ai/gateway/security';
 
+/** Copy the npm install command to the clipboard. */
 export async function copyInstallCommand() {
     await vscode.env.clipboard.writeText(OPENCLAW_NPM_INSTALL);
     vscode.window.showInformationMessage('Install command copied to clipboard.');
 }
 
+/** Open the OpenClaw documentation site. */
 export async function openDocs() {
     await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_DOCS_URL));
 }
 
+/** Open the onboarding wizard documentation. */
 export async function openOnboardDocs() {
     await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_ONBOARD_DOCS_URL));
 }
@@ -41,14 +44,17 @@ export async function openDashboard() {
     await vscode.env.openExternal(uri);
 }
 
+/** Open the update documentation. */
 export async function openUpdateDocs() {
     await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_UPDATE_DOCS_URL));
 }
 
+/** Open the gateway security documentation. */
 export async function openSecurityDocs() {
     await vscode.env.openExternal(vscode.Uri.parse(OPENCLAW_SECURITY_DOCS_URL));
 }
 
+/** Open the node setup documentation. */
 export async function openNodeDocs() {
     await vscode.env.openExternal(vscode.Uri.parse('https://nodejs.org/en/download'));
 }
