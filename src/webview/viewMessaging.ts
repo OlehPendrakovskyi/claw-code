@@ -40,6 +40,8 @@ export type ChatThreadState = {
     service: ChatService;
     /** Backend transport of the most recent send (legacy or gateway); lifecycle actions target it. */
     transportBackend?: ChatService | GatewayChatService;
+    /** Gateway session key bound to this thread (agent/session picker); scopes lifecycle actions. */
+    sessionKey?: string;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */

@@ -197,14 +197,11 @@ export class GatewayChatService {
   private connectPromise: Promise<void> | null = null;
   /** Session key the last sendMessage targeted (falls back to default). */
   private activeSessionKey: string | null = null;
-  /** Whether the gateway reported an active run for the active session. */
-  private hasActiveRun = false;
-  /** Event sink of the in-flight run (deltas/usage/done routing). */
-  private activeRunEventSink: ((event: ChatEvent) => void) | null = null;
-  /** Run sinks keyed by session so concurrent thread sends do not overwrite each other. */
+  /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
+   *  An entry also marks that session as having an active run (queue-mode selection). */
   private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
-  /** Latest transcript subscriber (run or resume); re-subscribed after reconnect. */
-  private transcriptSink: ((event: ChatEvent) => void) | null = null;
+  /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect. */
+  private transcriptSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
@@ -438,7 +435,7 @@ export class GatewayChatService {
    */
   resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
     this.activeSessionKey = sessionKey;
-    this.transcriptSink = onEvent;
+    this.transcriptSinksBySession.set(sessionKey, onEvent);
     this.subscribeSessionMessages(sessionKey, onEvent);
   }
 
@@ -492,18 +489,11 @@ export class GatewayChatService {
         }
       }
     }
-    if (evt.event === GatewayEvents.sessionStart) {
-      this.hasActiveRun = true;
-    }
     if (evt.event === GatewayEvents.sessionEnd) {
-      this.hasActiveRun = false;
       const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
       const endKey = String(endPayload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY);
       const endSink = this.runSinksBySession.get(endKey);
       this.runSinksBySession.delete(endKey);
-      if (this.activeRunEventSink === endSink) {
-        this.activeRunEventSink = null;
-      }
       if (endSink) {
         endSink({ type: 'done' });
       }
@@ -553,24 +543,19 @@ export class GatewayChatService {
       return;
     }
     const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-    const queueMode = this.hasActiveRun ? 'steer' : 'enqueue';
-    this.activeRunEventSink = _onEvent;
+    const queueMode = this.runSinksBySession.has(sessionKey) ? 'steer' : 'enqueue';
+    this.runSinksBySession.set(sessionKey, _onEvent);
     void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
-        this.activeRunEventSink = _onEvent;
-        this.transcriptSink = _onEvent;
         this.runSinksBySession.set(key, _onEvent);
+        if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {
+          this.runSinksBySession.delete(sessionKey);
+        }
         this.subscribeSessionMessages(key, _onEvent);
       })
       .catch((err: Error) => {
-        if (this.activeRunEventSink === _onEvent) {
-          this.activeRunEventSink = null;
-        }
-        if (this.transcriptSink === _onEvent) {
-          this.transcriptSink = null;
-        }
         if (this.runSinksBySession.get(sessionKey) === _onEvent) {
           this.runSinksBySession.delete(sessionKey);
         }
@@ -579,26 +564,25 @@ export class GatewayChatService {
       });
   }
 
-  /** Route a session event to its session-keyed sink; fall back to the active run sink. */
+  /** Route a session event to its session-keyed run sink. */
   private sinkForSession(sessionKey: unknown): ((event: ChatEvent) => void) | null {
-    if (sessionKey !== undefined && sessionKey !== null) {
-      const sink = this.runSinksBySession.get(String(sessionKey));
-      if (sink) return sink;
+    if (sessionKey === undefined || sessionKey === null) {
+      return null;
     }
-    return this.activeRunEventSink;
+    return this.runSinksBySession.get(String(sessionKey)) ?? null;
   }
 
-  /** Re-issue transcript subscription and catch-up after reconnect (subscriptions are connection-scoped). */
+  /** Re-issue transcript subscriptions after reconnect (subscriptions are connection-scoped). */
   private resubscribeActiveSession(): void {
-    const sink = this.transcriptSink;
-    if (!sink) return;
-    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-    this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
-    this.subscribeSessionMessages(sessionKey, sink);
+    for (const [sessionKey, sink] of this.transcriptSinksBySession) {
+      this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
+      this.subscribeSessionMessages(sessionKey, sink);
+    }
   }
 
   /** Subscribe to transcript events for a session key (soft method check). */
   private subscribeSessionMessages(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    this.transcriptSinksBySession.set(sessionKey, onEvent);
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
       this.logger.warn(
         `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
@@ -672,13 +656,20 @@ export class GatewayChatService {
     return methods.includes(method);
   }
 
-  /** Abort the active run: RPC `chat.abort` for the active session. */
-  abort(): void {
-    if (!this.connected || !this.activeSessionKey) {
+  /** Abort the run for one session: RPC `chat.abort` targeted at the given
+   *  session key (falls back to the last active session); completes that
+   *  session's sink. A session key from the calling thread avoids aborting
+   *  another thread's run. */
+  abort(sessionKey?: string): void {
+    if (!this.connected) {
       return;
     }
-    const sink = this.activeRunEventSink;
-    void this.send(GatewayRpcMethods.chatAbort, { sessionKey: this.activeSessionKey })
+    const key = sessionKey ?? this.activeSessionKey;
+    if (!key) {
+      return;
+    }
+    const sink = this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
+    void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
       .catch((err: Error) => {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
@@ -686,10 +677,7 @@ export class GatewayChatService {
         if (sink) {
           sink({ type: 'done' });
         }
-        if (this.activeRunEventSink === sink) {
-          this.activeRunEventSink = null;
-        }
-        this.hasActiveRun = false;
+        this.runSinksBySession.delete(key);
       });
   }
 

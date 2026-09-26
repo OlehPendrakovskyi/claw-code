@@ -75,7 +75,7 @@ export async function migrateLegacyGatewayToken(
   const config = vscode.workspace.getConfiguration('openclaw');
   const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
   const legacy =
-    inspection?.globalValue ?? inspection?.workspaceValue ?? inspection?.workspaceFolderValue;
+    inspection?.workspaceFolderValue ?? inspection?.workspaceValue ?? inspection?.globalValue;
   if (!legacy) {
     return false;
   }

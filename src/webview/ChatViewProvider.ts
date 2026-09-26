@@ -233,7 +233,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'cancel':
                     if (thread) {
-                        this.backendFor(thread).abort();
+                        const backend = this.backendFor(thread);
+                        if (backend instanceof GatewayChatService) {
+                            backend.abort(thread.sessionKey);
+                        } else {
+                            backend.abort();
+                        }
                         thread.isStreaming = false;
                         thread.status = 'cancelled';
                         this.emitState();
@@ -434,7 +439,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private resetThread(thread: ChatThreadState): void {
-        this.backendFor(thread).abort();
+        const backend = this.backendFor(thread);
+        if (backend instanceof GatewayChatService) {
+            backend.abort(thread.sessionKey);
+        } else {
+            backend.abort();
+        }
         thread.messages = [];
         thread.pendingAssistantText = '';
         thread.pendingAttachments = [];
@@ -487,8 +497,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         let changed = false;
 
         for (const item of items) {
-            const filePath = typeof item === 'string' ? item : item.path;
-            if (!filePath || thread.pendingAttachments.some(a => a.path === filePath)) {
+            const isMention = typeof item !== 'string';
+            const filePath = isMention ? item.path : item;
+            const rangeStart = isMention ? item.lineStart : undefined;
+            const rangeEnd = rangeStart === undefined ? undefined : (isMention ? (item.lineEnd ?? item.lineStart) : undefined);
+            const duplicate = thread.pendingAttachments.some(a =>
+                a.path === filePath && a.lineStart === rangeStart && a.lineEnd === rangeEnd
+            );
+            if (!filePath || duplicate) {
                 continue;
             }
 
@@ -964,6 +980,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
+        const activeThread = this.getActiveThread();
+        if (activeThread) {
+            activeThread.sessionKey = sessionKey;
+        }
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
             type: 'agentSelected',
             sessionKey,
@@ -982,6 +1002,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
+        thread.sessionKey = sessionKey;
 
         let label = sessionKey;
         try {
@@ -1011,10 +1032,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.messages.push({ role: msg.role, content: msg.content });
             }
             thread.status = 'idle';
-        } else {
-            thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
-            gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         }
+        gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         this.emitState();
     }
 
