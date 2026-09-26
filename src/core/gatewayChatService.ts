@@ -230,6 +230,11 @@ export class GatewayChatService {
    *  grow memory unbounded. Keyed per session: messageIds are only unique
    *  within one session's transcript. */
   private seenMessageIdsBySession = new Map<string, Set<string>>();
+  /** Sessions with a `chat.abort` RPC in flight. Events for these keys are
+   *  suppressed until the abort completes: the gateway may keep emitting
+   *  deltas until it processes the abort, and those late events would
+   *  otherwise repopulate a cancelled thread through a re-bound sink. */
+  private abortingSessions = new Set<string>();
   private static readonly SEEN_MESSAGE_LIMIT = 500;
 
   /** Record a messageId as seen for one session (oldest entry evicted at the cap). */
@@ -634,6 +639,15 @@ export class GatewayChatService {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
       const routed = this.sinkForSession(payload.sessionKey);
       if (routed) {
+        // Late deltas from a run being aborted (chat.abort still in flight)
+        // must not repopulate the cancelled thread; drop them while the
+        // abort is pending.
+        if (this.abortingSessions.has(routed.key)) {
+          if (typeof payload.messageId === 'string') {
+            this.rememberSeen(routed.key, payload.messageId);
+          }
+          return;
+        }
         const chatEvents = mapSessionEventToChatEvent(evt);
         if (chatEvents.length > 0) {
           // Live delivery counts as seen: record the id so the next reconnect's
@@ -768,6 +782,13 @@ export class GatewayChatService {
       // silently receives all subsequent events.
       existingSink({ type: 'done' });
     }
+    // Subscribe BEFORE the send RPC: a gateway can emit the first
+    // `session.message` delta as soon as it accepts the run, before the send
+    // acknowledgement returns. Subscribing after the ack would race that
+    // delivery and drop the initial tokens/tool events. The resolved key is
+    // reconciled below; until then the requested key routes keyless frames.
+    this.addTranscriptSink(sessionKey, _onEvent);
+    this.subscribeSessionMessages(sessionKey);
     void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
@@ -801,8 +822,14 @@ export class GatewayChatService {
           return;
         }
         this.runSinksBySession.set(key, _onEvent);
-        if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {
-          this.runSinksBySession.delete(sessionKey);
+        if (key !== sessionKey) {
+          // Drop this send's pre-ack subscription on the requested key when
+          // the gateway resolved a different one; the resolved key above is
+          // now the routed transcript target.
+          if (this.runSinksBySession.get(sessionKey) === _onEvent) {
+            this.runSinksBySession.delete(sessionKey);
+          }
+          this.removeTranscriptSink(sessionKey, _onEvent);
         }
         this.addTranscriptSink(key, _onEvent);
         this.subscribeSessionMessages(key);
@@ -829,6 +856,7 @@ export class GatewayChatService {
         if (this.runSinksBySession.get(sessionKey) === _onEvent) {
           this.runSinksBySession.delete(sessionKey);
         }
+        this.removeTranscriptSink(sessionKey, _onEvent);
         _onEvent({ type: 'error', message: err.message });
         _onEvent({ type: 'done' });
       });
@@ -1031,11 +1059,13 @@ export class GatewayChatService {
       runSink?.({ type: 'done' });
       return;
     }
+    this.abortingSessions.add(key);
     void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
       .catch((err: Error) => {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
+        this.abortingSessions.delete(key);
         if (runSink) {
           runSink({ type: 'done' });
         }
