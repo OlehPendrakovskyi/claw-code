@@ -23,7 +23,7 @@ import {
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
-import { parseFileMentions, type FileMention } from './fileMentions';
+import { parseFileMentions, buildMention, type FileMention } from './fileMentions';
 import { ChatServiceFactory } from './chatServiceFactory';
 import { GatewayChatService, DEFAULT_SESSION_KEY } from '../core/gatewayChatService';
 import {
@@ -1212,11 +1212,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const editor = vscode.window.activeTextEditor;
         const sel = editor && !editor.selection.isEmpty ? editor.selection : undefined;
-        let mention = `@${context.filePath}`;
+        let mention: string;
         if (sel) {
-            const startLine = sel.start.line + 1;
             const endLine = sel.end.character === 0 ? sel.end.line : sel.end.line + 1;
-            mention = `@${context.filePath}#L${startLine}-${Math.max(startLine, endLine)}`;
+            mention = buildMention(context.filePath, sel.start.line + 1, endLine);
+        } else {
+            mention = buildMention(context.filePath);
         }
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
             type: 'insertMention',

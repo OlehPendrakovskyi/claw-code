@@ -141,21 +141,25 @@ export function escapeGlob(str: string): string {
     return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
 }
 
+export function escapeXmlAttr(str: string): string {
+    return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
     for (const att of attachments) {
         if (att.type === 'image') {
-            sections.push(`<image path="${att.path}" />`);
+            sections.push(`<image path="${escapeXmlAttr(att.path)}" />`);
             continue;
         }
         try {
             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(att.path));
             const content = new TextDecoder().decode(bytes);
-            sections.push(`<file path="${att.path}">\n${sliceLineRange(content, att.lineStart, att.lineEnd)}\n</file>`);
+            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${sliceLineRange(content, att.lineStart, att.lineEnd)}\n</file>`);
         } catch {
-            sections.push(`<file path="${att.path}">\n[Could not read file]\n</file>`);
+            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
         }
     }
 

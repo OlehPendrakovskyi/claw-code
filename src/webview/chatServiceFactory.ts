@@ -43,7 +43,7 @@ export class ChatServiceFactory {
    * Resolve the backend for the current settings. In `auto` mode a failed
    * or missing-token gateway connect falls back to acpx transparently.
    */
-  async resolve(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
+  async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
     const settings = getGatewaySettings();
     if (settings.transport === 'acpx') {
       this.onStatus?.('acpx', true);

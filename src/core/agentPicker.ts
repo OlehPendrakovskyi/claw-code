@@ -79,9 +79,6 @@ export function isMainAgentSession(row: SessionRow): boolean {
   if (!key) {
     return false;
   }
-  if (key.toLowerCase().includes('subagent')) {
-    return false;
-  }
   if (key === 'main') {
     return true;
   }
