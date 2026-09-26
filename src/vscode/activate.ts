@@ -35,6 +35,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBarItem);
     log.info('status bar created');
 
+    let chatViewProvider: ChatViewProvider | undefined;
+
     const commandRegistrations: Array<[string, (...args: never[]) => unknown]> = [
         ['openclaw.connect', () => connect()],
         ['openclaw.setup', () => runSetupFlow()],
@@ -70,13 +72,14 @@ export function activate(context: vscode.ExtensionContext) {
     void overviewProvider.refreshTools();
     log.info('overview tree view created');
 
-    const chatViewProvider = new ChatViewProvider(context.extensionUri, context);
+    const provider = new ChatViewProvider(context.extensionUri, context);
+    chatViewProvider = provider;
     void migrateLegacyGatewayToken(context).catch((err: unknown) => {
         log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
     });
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider),
-        chatViewProvider
+        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
+        provider
     );
     log.info('chat view provider registered');
 

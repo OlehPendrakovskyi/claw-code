@@ -200,7 +200,7 @@ describe('GatewayChatService', () => {
     const events: unknown[] = [];
     svc.sendMessage('p', '/tmp', 'm', 'chat', (e) => events.push(e));
     svc.dispose();
-    expect(events).toEqual([{ type: 'error', message: 'gateway not connected' }, { type: 'done' }]);
+    expect(events).toEqual([{ type: 'error', message: 'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.' }, { type: 'done' }]);
   });
 });
 describe('GatewayChatService sendMessage/abort', () => {

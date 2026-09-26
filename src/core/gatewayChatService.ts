@@ -415,7 +415,9 @@ export class GatewayChatService {
   /** Send an RPC request and resolve with the response payload. */
   send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     if (!this.ws || !this.connected) {
-      return Promise.reject(new Error('gateway not connected'));
+      return Promise.reject(
+        new Error('Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.')
+      );
     }
     const id = this.allocId();
     const frame: RpcRequestFrame = { type: 'req', id, method, params };
@@ -604,7 +606,11 @@ export class GatewayChatService {
     _onEvent: (event: ChatEvent) => void
   ): void {
     if (!this.connected) {
-      _onEvent({ type: 'error', message: 'gateway not connected' });
+      _onEvent({
+        type: 'error',
+        message:
+          'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.'
+      });
       _onEvent({ type: 'done' });
       return;
     }
