@@ -102,6 +102,12 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('openclaw.chat.pickAgent', () => {
+            void chatViewProvider?.showAgentPicker();
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('openclaw.chat.debug', () => {
             if (chatViewProvider) {
                 const panel = openDebugChatPanel(context.extensionUri);

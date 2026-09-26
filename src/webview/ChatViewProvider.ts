@@ -23,7 +23,8 @@ import {
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
 import { ChatServiceFactory } from './chatServiceFactory';
-import type { GatewayChatService } from '../core/gatewayChatService';
+import { GatewayChatService } from '../core/gatewayChatService';
+import { AgentPicker, buildAgentSessionItems } from '../core/agentPicker';
 
 // Re-export the moved interface so existing imports from this module keep working.
 export type { Recommendation } from './recommendations';
@@ -38,6 +39,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private selectionChangeDisposable: vscode.Disposable | undefined;
     private diagnosticChangeDisposable: vscode.Disposable | undefined;
     private globalState: vscode.Memento;
+    private readonly context: vscode.ExtensionContext;
+    private lastSessionKey: string | null = null;
     private threadCounter = 0;
     private readonly threads = new Map<string, ChatThreadState>();
     private visibleThreadIds: string[] = [];
@@ -46,6 +49,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly chatServiceFactory: ChatServiceFactory;
 
     constructor(private readonly extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
+        this.context = context;
         this.globalState = context.globalState;
         this.chatServiceFactory = new ChatServiceFactory(context, (transport, connected) => {
             const label = connected ? `${transport} · connected` : `${transport} · offline`;
@@ -169,6 +173,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             filePath?: string;
             filePaths?: string[];
             line?: string;
+            sessionKey?: string;
             chatType?: string;
             model?: string;
             dimension?: string;
@@ -247,6 +252,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 case 'closeThread':
                     if (thread) {
                         this.closeThread(thread.id);
+                    }
+                    break;
+                case 'requestAgents':
+                case 'requestSessions':
+                    await this.handleListSessions(msg.type === 'requestAgents');
+                    break;
+                case 'selectAgent':
+                    if (msg.sessionKey) {
+                        await this.handleSelectAgent(msg.sessionKey);
                     }
                     break;
                 case 'popOut':
@@ -839,6 +853,68 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], { type: 'onboardingDone' });
             }
         }, 100);
+    }
+
+    /** Resolve the gateway transport for session-list flows. */
+    private async resolveGateway(): Promise<GatewayChatService | null> {
+        const choice = await this.chatServiceFactory.resolve();
+        return choice.transport === 'gateway' && choice.service instanceof GatewayChatService
+            ? choice.service
+            : null;
+    }
+
+    /** List sessions for the webview picker (agents) or history list. */
+    private async handleListSessions(forPicker: boolean): Promise<void> {
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            return;
+        }
+        try {
+            const payload = await gateway.listSessions({});
+            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+                type: forPicker ? 'agentsList' : 'sessionsList',
+                sessions: buildAgentSessionItems(payload),
+            });
+        } catch (err) {
+            log.warn('sessions.list failed', err);
+        }
+    }
+
+    /** Bind the chosen agent session key to the active chat. */
+    private async handleSelectAgent(sessionKey: string): Promise<void> {
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            return;
+        }
+        gateway.setActiveSession(sessionKey);
+        this.lastSessionKey = sessionKey;
+        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+            type: 'agentSelected',
+            sessionKey,
+        });
+    }
+
+    /** Command-palette agent picker bound to the active chat. */
+    async showAgentPicker(): Promise<void> {
+        const gateway = await this.resolveGateway();
+        const picker = new AgentPicker(gateway, {
+            show: async (items) => {
+                const chosen = await vscode.window.showQuickPick(
+                    items.map(item => ({
+                        label: item.label,
+                        description: item.hasActiveRun ? 'running' : item.updatedAt ?? '',
+                        detail: item.sessionKey,
+                        item,
+                    })),
+                    { placeHolder: 'Select an agent session for this chat' }
+                );
+                return chosen?.item;
+            },
+        });
+        const chosen = await picker.pick();
+        if (chosen) {
+            await this.handleSelectAgent(chosen.sessionKey);
+        }
     }
 
     private async openFileInEditor(filePath: string, lineStr?: string): Promise<void> {

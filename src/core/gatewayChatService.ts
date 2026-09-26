@@ -416,6 +416,16 @@ export class GatewayChatService {
     return this.send(GatewayRpcMethods.sessionsList, params);
   }
 
+  /** Bind the active chat to a session key (agent picker). */
+  setActiveSession(sessionKey: string): void {
+    this.activeSessionKey = sessionKey;
+  }
+
+  /** Session key the next send will target (null → gateway default). */
+  getActiveSessionKey(): string | null {
+    return this.activeSessionKey;
+  }
+
   /** Wire runtime event handlers after the handshake promise settles. */
   private attachRuntimeHandlers(): void {
     const ws = this.ws;

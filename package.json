@@ -72,6 +72,10 @@
         "title": "OpenClaw: New Chat Session"
       },
       {
+        "command": "openclaw.chat.pickAgent",
+        "title": "OpenClaw: Pick Agent Session"
+      },
+      {
         "command": "openclaw.chat.debug",
         "title": "OpenClaw: Debug Chat Panel"
       },
