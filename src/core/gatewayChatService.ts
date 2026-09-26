@@ -880,7 +880,17 @@ export class GatewayChatService {
       })
       .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
-        this.retireTranscriptSinks(sessionKey);
+        // A transient subscribe rejection must not retire persistent resume
+        // sinks: they would vanish from transcriptSinksBySession and
+        // resubscribeActiveSession() could never restore them after
+        // reconnect. Retire only the run sink (its late `done` still
+        // finalizes the streaming row); the persistent sinks stay
+        // registered for the reconnect re-subscription.
+        const runSink = this.runSinksBySession.get(sessionKey);
+        this.runSinksBySession.delete(sessionKey);
+        if (runSink) {
+          runSink({ type: 'done' });
+        }
       });
   }
 

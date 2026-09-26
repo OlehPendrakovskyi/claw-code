@@ -67,13 +67,14 @@ describe('migrateLegacyGatewayToken', () => {
         expect(update).toHaveBeenCalledTimes(1);
     });
 
-    it('tolerates a failing scope update and still returns true', async () => {
+    it('stores the secret but reports an incomplete migration when a scope update fails', async () => {
         const store = secrets();
         const { update } = configWith({ workspaceValue: 'legacy-token' }, () =>
             Promise.reject(new Error('no folder open')),
         );
-        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(true);
+        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(false);
         expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'legacy-token');
         expect(update).toHaveBeenCalledWith('gateway.token', undefined, vscode.ConfigurationTarget.Workspace);
+        expect(vscode.window.showWarningMessage).toHaveBeenCalled();
     });
 });

@@ -1297,7 +1297,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 activeThread.bindingEpoch += 1;
                 if (!sharesLiveRun) {
                     gateway.abort(previousKey);
-                    gateway.clearSessionSink(previousKey);
+                    if (!this.otherThreadsOnKey(activeThread.id, previousKey)) {
+                        // Only clear the shared session sink when this thread
+                        // was its last subscriber: another thread that merely
+                        // resumed the previous session (idle) still holds a
+                        // valid transcript sink and must keep receiving.
+                        gateway.clearSessionSink(previousKey);
+                    }
                 }
                 activeThread.isStreaming = false;
                 // The rebind retires the previous conversation's in-flight
@@ -1312,6 +1318,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: 'agentSelected',
             sessionKey,
         });
+    }
+
+    /** Whether any other thread (or its suspended sink) is still bound to
+     *  the given session key: such threads keep valid transcript sinks that
+     *  a clearSessionSink call must not wipe. */
+    private otherThreadsOnKey(excludeThreadId: string, sessionKey: string): boolean {
+        for (const t of this.threads.values()) {
+            if (t.id !== excludeThreadId && t.sessionKey === sessionKey) {
+                return true;
+            }
+        }
+        for (const [threadId, suspended] of this.suspendedTranscriptSinks) {
+            if (threadId !== excludeThreadId && suspended.sessionKey === sessionKey) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Open a session: restore its transcript into the active thread.
@@ -1355,7 +1378,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.bindingEpoch += 1;
             if (!sharesLiveRun) {
                 gateway.abort(previousKey);
-                gateway.clearSessionSink(previousKey);
+                if (!this.otherThreadsOnKey(thread.id, previousKey)) {
+                    // Same guard as handleSelectAgent: idle resumed
+                    // subscribers on the previous session keep their sink.
+                    gateway.clearSessionSink(previousKey);
+                }
             }
             thread.isStreaming = false;
             thread.pendingAssistantText = '';

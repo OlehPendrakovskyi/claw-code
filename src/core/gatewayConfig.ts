@@ -93,6 +93,7 @@ export async function migrateLegacyGatewayToken(
   if (!existing && nonEmpty) {
     await setGatewayToken(context.secrets, nonEmpty);
   }
+  let cleanupFailed = false;
   for (const target of [
     vscode.ConfigurationTarget.Global,
     vscode.ConfigurationTarget.Workspace,
@@ -113,12 +114,24 @@ export async function migrateLegacyGatewayToken(
     try {
       await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
     } catch (err) {
+      cleanupFailed = true;
       log.warn(
         `legacy token cleanup failed for target ${target}: ${
           err instanceof Error ? err.message : String(err)
         }`
       );
     }
+  }
+  // A failed scope write leaves the plaintext token on disk while the
+  // caller proceeds as if migration succeeded — the SecretStorage-only
+  // guarantee would be silently violated. Report the incomplete state so
+  // callers can warn and retry on the next activation.
+  if (cleanupFailed) {
+    void vscode.window.showWarningMessage(
+      'Legacy plaintext gateway token could not be removed from settings. ' +
+      'Delete `openclaw.gateway.token` from settings.json manually.'
+    );
+    return false;
   }
   return true;
 }
