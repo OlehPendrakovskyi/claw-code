@@ -27,6 +27,16 @@ describe('SLASH_COMMANDS', () => {
     });
 });
 
+describe('plan and compact templates', () => {
+    it('includes plan and compact prompt templates', () => {
+        const plan = buildSlashPrompt('plan', 'add dark mode', {});
+        const compact = buildSlashPrompt('compact', '', {});
+        expect(plan).toContain('implementation plan');
+        expect(plan).toContain('add dark mode');
+        expect(compact).toContain('Summarize');
+    });
+});
+
 describe('findCommand', () => {
     it('returns matching command', () => {
         const cmd = findCommand('explain');
