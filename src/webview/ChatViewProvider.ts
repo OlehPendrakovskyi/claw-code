@@ -1084,9 +1084,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (row) {
                 label = row.label || row.agentId || sessionKey;
                 if (isColdSession(row)) {
-                        // A cold session has no transcript: drop any previous
-                        // thread content before showing its placeholder.
-                        thread.messages = [];
+                    // A cold session has no transcript: drop any previous
+                    // thread content and stale run state before showing
+                    // its placeholder.
+                    thread.messages = [];
+                    thread.status = 'idle';
                     thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
                     thread.title = label;
                     this.emitState();
@@ -1149,9 +1151,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // would pile up as one pending response).
             try {
                 const history = await gateway.getHistory(sessionKey);
-                const restored = mapHistoryMessages(history);
-                for (const msg of restored) {
-                    thread.messages.push({ role: msg.role, content: msg.content });
+                // Replace the transcript instead of appending: on a
+                // re-resume the thread may already hold in-memory
+                // messages that would otherwise duplicate restored
+                // history.
+                if (history !== null) {
+                    thread.messages = mapHistoryMessages(history).map((msg) => ({ role: msg.role, content: msg.content }));
                 }
                 thread.status = 'idle';
                 // Seed cursor/message dedupe from the restored transcript so

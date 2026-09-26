@@ -323,10 +323,11 @@ export const CONTENT_JS = `
                 }
             }
 
+            var TERMINAL_STATUSES = ['done', 'error', 'failed'];
+
             /** Group status: running while any entry is still non-terminal; error/failed
              *  win over done so failed groups are visible and never hidden as "done". */
             function getToolGroupStatus(entries) {
-                var TERMINAL_STATUSES = ['done', 'error', 'failed'];
                 if (entries.some(function(entry) {
                     return entry.status === 'error' || entry.status === 'failed';
                 })) { return 'error'; }
