@@ -73,3 +73,15 @@ describe('mention path scoping', () => {
         }
     });
 });
+
+describe('parseFileMentions dedupe by path+range', () => {
+    it('keeps same path with different ranges', () => {
+        const mentions = parseFileMentions('@a.ts#L1-5 and @a.ts#L10-12');
+        expect(mentions).toHaveLength(2);
+        expect(mentions[1]).toEqual({ path: 'a.ts', lineStart: 10, lineEnd: 12 });
+    });
+
+    it('deduplicates identical path+range', () => {
+        expect(parseFileMentions('@a.ts#L1-5 and @a.ts#L1-5')).toHaveLength(1);
+    });
+});

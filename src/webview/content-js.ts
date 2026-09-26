@@ -1829,8 +1829,7 @@ export const CONTENT_JS = `
             }
 
             function renderSessionsPanel(sessions) {
-                var existing = document.getElementById('claw-sessions-panel');
-                if (existing) { existing.remove(); }
+                dismissSessionsPanel();
                 if (!sessions || sessions.length === 0) {
                     return;
                 }
@@ -1860,14 +1859,27 @@ export const CONTENT_JS = `
                 });
                 document.body.appendChild(panel);
                 setTimeout(function() {
-                    document.addEventListener('click', function dismiss(ev) {
+                    sessionsPanelDismiss = function dismiss(ev) {
                         var p = document.getElementById('claw-sessions-panel');
                         if (p && !p.contains(ev.target)) {
-                            p.remove();
-                            document.removeEventListener('click', dismiss);
+                            dismissSessionsPanel();
+                        } else if (!p) {
+                            // Panel already gone via another path: stop listening.
+                            dismissSessionsPanel();
                         }
-                    });
+                    };
+                    document.addEventListener('click', sessionsPanelDismiss);
                 }, 0);
+            }
+
+            var sessionsPanelDismiss = null;
+            function dismissSessionsPanel() {
+                var p = document.getElementById('claw-sessions-panel');
+                if (p) { p.remove(); }
+                if (sessionsPanelDismiss) {
+                    document.removeEventListener('click', sessionsPanelDismiss);
+                    sessionsPanelDismiss = null;
+                }
             }
 
             function hasFileDrag(dataTransfer) {

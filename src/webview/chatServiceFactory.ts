@@ -31,6 +31,8 @@ const CONNECT_TIMEOUT_MS = 4000;
  */
 export class ChatServiceFactory {
   private gatewayService: GatewayChatService | null = null;
+  private cachedUrl = '';
+  private cachedToken = '';
 
   constructor(
     private readonly context: vscode.ExtensionContext,
@@ -51,7 +53,9 @@ export class ChatServiceFactory {
     if (!token) {
       if (settings.transport === 'gateway') {
         this.onStatus?.('gateway', false);
-        return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
+        // Uncached: never memoize a tokenless gateway client; a later token
+        // must build a fresh, authenticated service.
+        return { service: new GatewayChatService({ url: settings.url, token: '' }), transport: 'gateway' };
       }
       this.onStatus?.('acpx', true);
       return { service: new ChatService(), transport: 'acpx' };
@@ -76,11 +80,20 @@ export class ChatServiceFactory {
   dispose(): void {
     this.gatewayService?.dispose();
     this.gatewayService = null;
+    this.cachedUrl = '';
+    this.cachedToken = '';
   }
 
   private getOrCreateGateway(url: string, token: string): GatewayChatService {
-    if (!this.gatewayService) {
+    // Recreate when url/token changed so a saved token takes effect without
+    // an extension reload.
+    if (!this.gatewayService || this.cachedUrl !== url || this.cachedToken !== token) {
+      if (this.gatewayService) {
+        this.gatewayService.dispose();
+      }
       this.gatewayService = new GatewayChatService({ url, token });
+      this.cachedUrl = url;
+      this.cachedToken = token;
     }
     return this.gatewayService;
   }

@@ -13,8 +13,10 @@ import * as vscode from 'vscode';
 /** SecretStorage key under which the gateway token is stored. */
 export const GATEWAY_TOKEN_SECRET_KEY = 'openclaw.gateway.token';
 
-/** Legacy plaintext configuration key migrated into SecretStorage once. */
-export const LEGACY_GATEWAY_TOKEN_SETTING = 'openclaw.gateway.token';
+/** Legacy plaintext configuration key migrated into SecretStorage once.
+ *  Relative to the `openclaw` configuration section (full setting id is
+ *  `openclaw.gateway.token`); sectioned config lookups need the relative key. */
+export const LEGACY_GATEWAY_TOKEN_SETTING = 'gateway.token';
 
 /** Transport selection for the chat backend. */
 export type GatewayTransport = 'gateway' | 'acpx' | 'auto';

@@ -480,12 +480,16 @@ export class GatewayChatService {
     }
     const evt = frame as SessionEvent;
     this.onSessionEvent(evt);
+    let routedChatEvent: ChatEvent | null = null;
     if (evt.event === GatewayEvents.sessionMessage) {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown };
       const sink = this.sinkForSession(payload.sessionKey);
       if (sink) {
         const chatEvent = mapSessionEventToChatEvent(evt);
-        if (chatEvent) sink(chatEvent);
+        if (chatEvent) {
+          routedChatEvent = chatEvent;
+          sink(chatEvent);
+        }
       }
     }
     if (evt.event === GatewayEvents.sessionStart) {
@@ -504,8 +508,12 @@ export class GatewayChatService {
         endSink({ type: 'done' });
       }
     }
-    const chatEvent = mapSessionEventToChatEvent(evt);
-    if (chatEvent) this.onEvent(chatEvent);
+    // When a run sink already consumed a session message, do not emit it a
+    // second time through the global onEvent (same consumer, double delivery).
+    if (!routedChatEvent) {
+      const chatEvent = mapSessionEventToChatEvent(evt);
+      if (chatEvent) this.onEvent(chatEvent);
+    }
   }
 
   /** Reject and clear every in-flight request (socket closed / disposed). */

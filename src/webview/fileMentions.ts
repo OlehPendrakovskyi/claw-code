@@ -24,14 +24,18 @@ export function parseFileMentions(text: string): FileMention[] {
     let match: RegExpExecArray | null;
     while ((match = mentionRegex.exec(text)) !== null) {
         const path = match[1];
-        if (!path || seen.has(path)) {
+        if (!path) {
             continue;
         }
-        seen.add(path);
-
         const lineStart = match[2] ? parseInt(match[2], 10) : undefined;
         const lineEndRaw = match[3] ? parseInt(match[3], 10) : undefined;
         const lineEnd = lineEndRaw ?? lineStart;
+        // Dedupe on path + range so the same file with different ranges is kept.
+        const key = `${path}#${lineStart ?? ''}-${lineEnd ?? ''}`;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
         mentions.push({
             path,
             ...(lineStart ? { lineStart, lineEnd } : {})
