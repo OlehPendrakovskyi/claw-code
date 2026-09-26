@@ -416,4 +416,16 @@ describe('GatewayChatService sendMessage/abort', () => {
     expect(texts.filter((t) => t.text === 'cached')).toHaveLength(1);
     svc.dispose();
   });
+
+
+  it('drops unroutable keyless session.message frames instead of leaking via onEvent', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const globalEvents: unknown[] = [];
+    svc.onEvent = (e) => globalEvents.push(e);
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'session.message', payload: { role: 'assistant', text: 'leak' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(globalEvents).toEqual([]);
+    svc.dispose();
+  });
 });

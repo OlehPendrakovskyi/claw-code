@@ -1207,15 +1207,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const candidates = parseFileMentions(text)
             .map(mention => ({ ...mention, path: path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path) }))
             .map(mention => ({ ...mention, path: path.resolve(mention.path) }));
+        // Resolve all mention targets concurrently; each is independent fs I/O
+        // and a slow disk should not multiply per-mention send latency.
+        const reals = await Promise.all(
+            candidates.map(mention => fs.promises.realpath(mention.path).catch(() => null))
+        );
         const accepted: FileMention[] = [];
-        for (const mention of candidates) {
-            const real = await fs.promises.realpath(mention.path).catch(() => null);
+        for (let i = 0; i < candidates.length; i++) {
+            const real = reals[i];
             if (!real) {
                 continue;
             }
             const rel = path.relative(realCwd, real);
             if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-                accepted.push(mention);
+                accepted.push(candidates[i]);
             }
         }
         return accepted;

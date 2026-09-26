@@ -541,7 +541,8 @@ export class GatewayChatService {
     const evt = frame as SessionEvent;
     this.onSessionEvent(evt);
     let routedChatEvent: ChatEvent | null = null;
-    if (evt.event === GatewayEvents.sessionMessage) {
+    let isSessionMessage = evt.event === GatewayEvents.sessionMessage;
+    if (isSessionMessage) {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
       const routed = this.sinkForSession(payload.sessionKey);
       if (routed) {
@@ -555,6 +556,10 @@ export class GatewayChatService {
           routedChatEvent = chatEvents[0];
           for (const chatEvent of chatEvents) routed.sink(chatEvent);
         }
+      } else {
+        // Unroutable session.message frames (e.g. ambiguous keyless frames in
+        // multi-session mode) are dropped by design in sinkForSession; emitting
+        // them on the global onEvent would leak another session's content.
       }
     }
     if (evt.event === GatewayEvents.sessionEnd) {
@@ -569,9 +574,9 @@ export class GatewayChatService {
         endSink({ type: 'done' });
       }
     }
-    // When a run sink already consumed a session message, do not emit it a
-    // second time through the global onEvent (same consumer, double delivery).
-    if (!routedChatEvent) {
+    // Global onEvent only carries non-session frames; session.message frames
+    // are either routed to a sink above or dropped, never leaked globally.
+    if (!routedChatEvent && !isSessionMessage) {
       const chatEvents = mapSessionEventToChatEvent(evt);
       for (const chatEvent of chatEvents) this.onEvent(chatEvent);
     }

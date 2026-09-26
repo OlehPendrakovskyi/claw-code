@@ -145,6 +145,13 @@ export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
+/** Escape file body text embedded inside a <file> block so content containing
+ *  `</file>` (or other markup) cannot break the prompt structure. Escapes the
+ *  minimum set (&, <, >) that terminates or opens tags; text stays readable. */
+export function escapeXmlBody(str: string): string {
+    return str.replace(/[&<>]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+}
+
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
@@ -157,7 +164,7 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         try {
             const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(att.path));
             const content = new TextDecoder().decode(bytes);
-            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${sliceLineRange(content, att.lineStart, att.lineEnd)}\n</file>`);
+            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
         } catch {
             sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
         }
