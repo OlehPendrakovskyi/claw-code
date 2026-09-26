@@ -888,7 +888,13 @@ export class GatewayChatService {
         // registered for the reconnect re-subscription.
         const runSink = this.runSinksBySession.get(sessionKey);
         this.runSinksBySession.delete(sessionKey);
+        // The run sink was also registered in the transcript set at send
+        // time; leaving it there would let later session events or reconnect
+        // catch-up keep delivering into a failed run callback. Persistent
+        // resume sinks (no run entry) stay registered for the reconnect
+        // re-subscription.
         if (runSink) {
+          this.removeTranscriptSink(sessionKey, runSink);
           runSink({ type: 'done' });
         }
       });
@@ -925,6 +931,7 @@ export class GatewayChatService {
       if (cursor !== undefined && cursor !== null) {
         this.deltaCursorBySession.set(sessionKey, cursor);
       }
+      let lastRowFinalized = false;
       for (const row of payload.messages) {
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
         if (messageId && this.hasSeen(sessionKey, messageId)) {
@@ -956,6 +963,22 @@ export class GatewayChatService {
           for (const sink of sinks) {
             sink({ type: 'done' });
           }
+          lastRowFinalized = true;
+        } else if (mapped.length > 0) {
+          lastRowFinalized = false;
+        }
+      }
+      // Retire the run sink only when the replayed tail ends on a completed
+      // assistant row (both roles, like the sessionEnd path): the run is
+      // over, and leaving it in runSinksBySession would make the next send
+      // select queueMode 'steer' against a finished run and keep routing
+      // future deltas into the old callback. A final row followed by further
+      // deltas means the stream continued, so the run sink must stay.
+      if (lastRowFinalized) {
+        const runSink = this.runSinksBySession.get(sessionKey);
+        if (runSink) {
+          this.runSinksBySession.delete(sessionKey);
+          this.removeTranscriptSink(sessionKey, runSink);
         }
       }
     } catch (err) {

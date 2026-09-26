@@ -174,11 +174,24 @@ async function safeCanonicalPath(p: string): Promise<string | null> {
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
  *
  *  TOCTOU hardening: attachments carry canonical paths validated at mention
- *  time, but the filesystem can change before this read. Re-verify realpath
- *  here (a changed path means a symlink was swapped in — reject) and open the
- *  final component with O_NOFOLLOW so a last-instant leaf swap cannot redirect
- *  the read outside the workspace. Intermediate-directory swaps are caught by
- *  the realpath-inequality check. */
+ *  time, but the filesystem can change before this read, so every read goes
+ *  through an opened handle instead of a re-opened path string:
+ *  1. Re-verify realpath up front — a changed path means a symlink was
+ *     swapped in since validation (reject).
+ *  2. Open the final component with O_NOFOLLOW (POSIX) so a last-instant
+ *     leaf swap cannot redirect the read outside the workspace.
+ *  3. Compare the opened handle's identity (dev/ino) against a fresh lstat
+ *     of the path. This covers Windows too, where O_NOFOLLOW is unavailable:
+ *     a symlink/junction swapped in at the final component yields a mismatch
+ *     instead of foreign content.
+ *  4. Re-canonicalize the path after the read and discard on any drift, which
+ *     catches an intermediate-directory swap that happened after realpath but
+ *     before open.
+ *  The residual window — a swap that lands before open and reverts between
+ *  the identity check and post-read re-canonicalization — is not closable
+ *  from userspace without directory-handle (openat) support; every other
+ *  interleaving above is detected and the content is discarded.
+ */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
@@ -213,8 +226,17 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
             const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
             const handle = await fsp.open(real, fsConstants.O_RDONLY | noFollow);
             try {
+                const opened = await handle.stat();
+                const current = await fsp.lstat(real);
+                if (opened.dev !== current.dev || opened.ino !== current.ino) {
+                    throw new Error('attachment path changed during read');
+                }
                 const bytes = await handle.readFile();
                 const content = new TextDecoder().decode(bytes);
+                const realAfter = await fsp.realpath(real);
+                if (realAfter !== real) {
+                    throw new Error('attachment path changed during read');
+                }
                 sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
             } finally {
                 await handle.close();
