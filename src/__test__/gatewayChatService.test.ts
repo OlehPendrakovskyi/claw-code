@@ -195,9 +195,11 @@ describe('GatewayChatService', () => {
     await expect(svc.send('sessions.list')).rejects.toThrow('not connected');
   });
 
-  it('throws on unimplemented sendMessage (skeleton contract)', () => {
+  it('emits error+done via onEvent when sendMessage is called while disconnected', () => {
     const svc = makeService(createMockWs(), { lines: [] });
-    expect(() => svc.sendMessage('p', '/tmp', 'm', 'chat', () => {})).toThrow('not implemented');
+    const events: unknown[] = [];
+    svc.sendMessage('p', '/tmp', 'm', 'chat', (e) => events.push(e));
     svc.dispose();
+    expect(events).toEqual([{ type: 'error', message: 'gateway not connected' }, { type: 'done' }]);
   });
 });

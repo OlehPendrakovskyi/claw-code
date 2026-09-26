@@ -62,6 +62,20 @@ type PendingRequest = {
 
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
+/** Session key used when the gateway does not echo one back. */
+const DEFAULT_SESSION_KEY = 'main';
+
+/** Extract a `sessionKey` from an RPC payload, when present. */
+function extractSessionKey(payload: unknown): string | null {
+  if (payload && typeof payload === 'object') {
+    const key = (payload as { sessionKey?: unknown; session?: { key?: unknown } }).sessionKey ??
+      (payload as { session?: { key?: unknown } }).session?.key;
+    if (typeof key === 'string' && key) {
+      return key;
+    }
+  }
+  return null;
+}
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
@@ -162,6 +176,12 @@ export class GatewayChatService {
   private connected = false;
   /** In-flight connect() (serialized: concurrent calls share the attempt). */
   private connectPromise: Promise<void> | null = null;
+  /** Session key the last sendMessage targeted (falls back to default). */
+  private activeSessionKey: string | null = null;
+  /** Whether the gateway reported an active run for the active session. */
+  private hasActiveRun = false;
+  /** Event sink of the in-flight run (deltas/usage/done routing). */
+  private activeRunEventSink: ((event: ChatEvent) => void) | null = null;
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
@@ -393,6 +413,27 @@ export class GatewayChatService {
     }
     const evt = frame as SessionEvent;
     this.onSessionEvent(evt);
+    if (evt.event === GatewayEvents.sessionMessage) {
+      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown };
+      if (
+        this.activeRunEventSink &&
+        (!payload.sessionKey || payload.sessionKey === this.activeSessionKey)
+      ) {
+        const chatEvent = mapSessionEventToChatEvent(evt);
+        if (chatEvent) this.activeRunEventSink(chatEvent);
+      }
+    }
+    if (evt.event === GatewayEvents.sessionStart) {
+      this.hasActiveRun = true;
+    }
+    if (evt.event === GatewayEvents.sessionEnd) {
+      this.hasActiveRun = false;
+      const sink = this.activeRunEventSink;
+      this.activeRunEventSink = null;
+      if (sink) {
+        sink({ type: 'done' });
+      }
+    }
     const chatEvent = mapSessionEventToChatEvent(evt);
     if (chatEvent) this.onEvent(chatEvent);
   }
@@ -418,19 +459,84 @@ export class GatewayChatService {
     }, delay);
   }
 
-  /** ChatService-compatible send entry point (skeleton, no dispatch yet). */
+  /** ChatService-compatible send entry point: RPC `chat.send` with
+   * queue-mode selection (steer during an active run, enqueue otherwise),
+   * then subscription to per-session message events streamed into onEvent. */
   sendMessage(
-    _prompt: string,
+    prompt: string,
     _cwd: string,
     _model: string,
     _chatType: string,
     _onEvent: (event: ChatEvent) => void
   ): void {
-    throw new Error('GatewayChatService.sendMessage not implemented yet (sprint 0 skeleton)');
+    if (!this.connected) {
+      _onEvent({ type: 'error', message: 'gateway not connected' });
+      _onEvent({ type: 'done' });
+      return;
+    }
+    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+    const queueMode = this.hasActiveRun ? 'steer' : 'enqueue';
+    this.activeRunEventSink = _onEvent;
+    void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
+      .then((payload) => {
+        const key = extractSessionKey(payload) ?? sessionKey;
+        this.activeSessionKey = key;
+        this.activeRunEventSink = _onEvent;
+        this.subscribeSessionMessages(key, _onEvent);
+      })
+      .catch((err: Error) => {
+        if (this.activeRunEventSink === _onEvent) {
+          this.activeRunEventSink = null;
+        }
+        _onEvent({ type: 'error', message: err.message });
+        _onEvent({ type: 'done' });
+      });
   }
 
+  /** Subscribe to transcript events for a session key (soft method check). */
+  private subscribeSessionMessages(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
+      this.logger.warn(
+        `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
+      );
+      onEvent({ type: 'done' });
+      return;
+    }
+    void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
+      .catch((err: Error) => {
+        this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
+        onEvent({ type: 'done' });
+      });
+  }
+
+  /** Whether hello-ok advertises the given RPC method (unknown-tolerant). */
+  private methodAdvertised(method: string): boolean {
+    const methods = this.hello?.features?.methods;
+    if (!Array.isArray(methods)) {
+      return true;
+    }
+    return methods.includes(method);
+  }
+
+  /** Abort the active run: RPC `chat.abort` for the active session. */
   abort(): void {
-    // Sprint 0 skeleton: nothing to abort over the gateway yet.
+    if (!this.connected || !this.activeSessionKey) {
+      return;
+    }
+    const sink = this.activeRunEventSink;
+    void this.send(GatewayRpcMethods.chatAbort, { sessionKey: this.activeSessionKey })
+      .catch((err: Error) => {
+        this.logger.warn(`chat.abort failed ${err.message}`);
+      })
+      .finally(() => {
+        if (sink) {
+          sink({ type: 'done' });
+        }
+        if (this.activeRunEventSink === sink) {
+          this.activeRunEventSink = null;
+        }
+        this.hasActiveRun = false;
+      });
   }
 
   dispose(): void {
