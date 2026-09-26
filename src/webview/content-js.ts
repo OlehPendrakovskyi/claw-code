@@ -1854,6 +1854,13 @@ export const CONTENT_JS = `
                     if (session.cold) { label = '\u2744 ' + label; }
                     row.textContent = label;
                     row.title = session.sessionKey || '';
+                    // The panel lives on document.body, outside paneGrid, so
+                    // the pane-level click delegation never sees these rows:
+                    // each row carries its own handler posting openSession.
+                    row.addEventListener('click', function(ev) {
+                        ev.stopPropagation();
+                        vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '' });
+                    });
                     panel.appendChild(row);
                 });
                 document.body.appendChild(panel);

@@ -1035,6 +1035,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.persistLastSessionKey(sessionKey);
         const activeThread = this.getActiveThread();
         if (activeThread) {
+            // Selecting another agent rebinds the thread: retire any run on
+            // the previous session first so its late events cannot leak into
+            // the newly selected conversation and Cancel targets the new key.
+            if (activeThread.sessionKey && activeThread.sessionKey !== sessionKey) {
+                gateway.abort(activeThread.sessionKey);
+                gateway.clearSessionSink(activeThread.sessionKey);
+                activeThread.isStreaming = false;
+            }
             activeThread.sessionKey = sessionKey;
         }
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {

@@ -537,17 +537,17 @@ export class GatewayChatService {
     let routedChatEvent: ChatEvent | null = null;
     if (evt.event === GatewayEvents.sessionMessage) {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
-      const sink = this.sinkForSession(payload.sessionKey);
-      if (sink) {
+      const routed = this.sinkForSession(payload.sessionKey);
+      if (routed) {
         const chatEvent = mapSessionEventToChatEvent(evt);
         if (chatEvent) {
           // Live delivery counts as seen: record the id so the next reconnect's
           // catch-up replay does not surface this message a second time.
           if (typeof payload.messageId === 'string') {
-            this.rememberSeen(String(payload.sessionKey ?? this.activeSessionKey ?? DEFAULT_SESSION_KEY), payload.messageId);
+            this.rememberSeen(routed.key, payload.messageId);
           }
           routedChatEvent = chatEvent;
-          sink(chatEvent);
+          routed.sink(chatEvent);
         }
       }
     }
@@ -608,8 +608,15 @@ export class GatewayChatService {
       return;
     }
     const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-    const queueMode = this.runSinksBySession.has(sessionKey) ? 'steer' : 'enqueue';
+    const existingSink = this.runSinksBySession.get(sessionKey);
+    const queueMode = existingSink ? 'steer' : 'enqueue';
     this.runSinksBySession.set(sessionKey, _onEvent);
+    if (existingSink && existingSink !== _onEvent) {
+      // A different thread still owns a run on this shared session: end its
+      // stream cleanly instead of letting it hang while the replacement sink
+      // silently receives all subsequent events.
+      existingSink({ type: 'done' });
+    }
     void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
@@ -629,17 +636,25 @@ export class GatewayChatService {
       });
   }
 
-  /** Route a session event to its session-keyed run sink. */
-  private sinkForSession(sessionKey: unknown): ((event: ChatEvent) => void) | null {
+  /** Route a session event to its session-keyed run sink.
+   *
+   *  Keyless frames are ambiguous: with several sessions in flight they are
+   *  dropped instead of guessed, because whichever send acknowledgement ran
+   *  last would otherwise claim them. Returns the sink together with its
+   *  resolved session key so callers can bookkeep per session. */
+  private sinkForSession(sessionKey: unknown): { sink: (event: ChatEvent) => void; key: string } | null {
     if (sessionKey === undefined || sessionKey === null) {
-      // Frames without a session key belong to the bound active session:
-      // prefer the in-flight run sink, then the transcript sink, mirroring
-      // the keyed path so streaming is not dropped between frames.
-      const fallbackKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-      return this.runSinksBySession.get(fallbackKey) ?? this.transcriptSinksBySession.get(fallbackKey) ?? null;
+      const keys = new Set<string>([...this.runSinksBySession.keys(), ...this.transcriptSinksBySession.keys()]);
+      if (keys.size !== 1) {
+        return null;
+      }
+      const fallbackKey = [...keys][0];
+      const sink = this.runSinksBySession.get(fallbackKey) ?? this.transcriptSinksBySession.get(fallbackKey);
+      return sink ? { sink, key: fallbackKey } : null;
     }
     const key = String(sessionKey);
-    return this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
+    const sink = this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
+    return sink ? { sink, key } : null;
   }
 
   /** Re-issue transcript subscriptions after reconnect (subscriptions are connection-scoped). */
@@ -752,16 +767,18 @@ export class GatewayChatService {
     }
     const runSink = this.runSinksBySession.get(key);
     const sink = runSink ?? this.transcriptSinksBySession.get(key) ?? null;
+    // Retire the run sink synchronously: the abort RPC settles later, and
+    // events from the old session arriving in between must not reach the
+    // caller after it rebinds the thread. Retire only the entry this abort
+    // started with — a newer send may have replaced the map entry.
+    if (runSink && this.runSinksBySession.get(key) === runSink) {
+      this.runSinksBySession.delete(key);
+    }
     void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
       .catch((err: Error) => {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
-        // Retire only the entry this abort started with: a newer send may have
-        // replaced the map entry, and its run must keep its sink and state.
-        if (runSink && this.runSinksBySession.get(key) === runSink) {
-          this.runSinksBySession.delete(key);
-        }
         if (sink) {
           sink({ type: 'done' });
         }
