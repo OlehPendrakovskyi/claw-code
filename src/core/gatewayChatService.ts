@@ -638,6 +638,13 @@ export class GatewayChatService {
         const runSink = this.runSinksBySession.get(endKey);
         const endSinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(endKey) ?? [])];
         this.runSinksBySession.delete(endKey);
+        // Retire the completed run sink from the transcript set as well;
+        // leaving it there retains the callback forever and replays catch-up
+        // deliveries into it after the run has ended. Sinks registered only
+        // by resumeSession (no run entry) stay subscribed.
+        if (runSink) {
+            this.removeTranscriptSink(endKey, runSink);
+        }
         for (const endSink of endSinks) {
           endSink({ type: 'done' });
         }

@@ -38,6 +38,15 @@ describe('parseFileMentions', () => {
         expect(parseFileMentions('email user@example.com')).toEqual([]);
     });
 
+    it('parses a range followed by punctuation', () => {
+        expect(parseFileMentions('look at @src/app.ts#L5,')).toEqual([
+            { path: 'src/app.ts', lineStart: 5, lineEnd: 5 }
+        ]);
+        expect(parseFileMentions('see @src/app.ts#L5-10.')).toEqual([
+            { path: 'src/app.ts', lineStart: 5, lineEnd: 10 }
+        ]);
+    });
+
     it('trims trailing punctuation from prose', () => {
         expect(parseFileMentions('see @src/a.ts, then continue')[0]).toEqual({ path: 'src/a.ts' });
     });

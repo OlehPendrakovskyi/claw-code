@@ -770,6 +770,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const choice = await this.resolveServiceForSend(this.backendFor(thread));
+        // The await above may take seconds (token lookup, connect probe).
+        // Cancel/Clear/Close may have run meanwhile: a deleted thread or one
+        // no longer running must not be resurrected by the continuation.
+        if (!this.threads.has(thread.id) || thread.status !== 'running') {
+            if (choice.service !== thread.service &&
+                !(choice.service instanceof GatewayChatService) &&
+                thread.transportBackend !== choice.service) {
+                choice.service.dispose();
+            }
+            return;
+        }
         thread.transportBackend = choice.service;
         let runEpoch: number | undefined;
         if (choice.service instanceof GatewayChatService) {

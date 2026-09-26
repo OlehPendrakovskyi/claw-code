@@ -17,7 +17,7 @@ export function parseFileMentions(text: string): FileMention[] {
         return [];
     }
 
-    const mentionRegex = /(?:^|\s)@([^\s@]+?)(?:#L(\d+)(?:-(\d+))?)?(?=\s|$)/g;
+    const mentionRegex = /(?:^|\s)@([^#\s@]+?)(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
     const mentions: FileMention[] = [];
     const seen = new Set<string>();
 
