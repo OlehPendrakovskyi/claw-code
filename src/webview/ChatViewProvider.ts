@@ -57,7 +57,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly threads = new Map<string, ChatThreadState>();
     /** Live transcript callback per resumed session, so reopening a session
      *  replaces the previous sink instead of duplicating event delivery. */
-    private transcriptCallbacks = new Map<string, (event: ChatEvent) => void>();
+    private transcriptCallbacks = new Map<string, { sessionKey: string; cb: (event: ChatEvent) => void }>();
     private visibleThreadIds: string[] = [];
     private activeThreadId = '';
 
@@ -468,7 +468,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // it: that thread may own the active run, and resetting an idle
             // thread must not cancel the other thread's run.
             const shared = [...this.threads.values()].some(
-                t => t.id !== thread.id && t.sessionKey === thread.sessionKey
+                t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
             );
             if (thread.sessionKey) {
                 if (!shared) {
@@ -511,6 +511,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const backend = this.backendFor(thread);
+        // Retire this thread's persistent transcript callback before closing:
+        // the deleted thread's sink must not linger in the gateway's fan-out
+        // set (its events would be dropped by the epoch guard anyway, but the
+        // callback would still be retained by the shared service).
+        const ownCallback = this.transcriptCallbacks.get(threadId);
+        if (ownCallback) {
+            this.transcriptCallbacks.delete(threadId);
+            if (thread.sessionKey === ownCallback.sessionKey && backend instanceof GatewayChatService) {
+                backend.removeTranscriptSink(thread.sessionKey, ownCallback.cb);
+            }
+        }
         if (backend instanceof GatewayChatService) {
             backend.abort(thread.sessionKey);
             // Drop the thread's transcript sink if no surviving thread still
@@ -901,7 +912,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.chatServiceFactory.resolve(existing);
     }
 
-    private async handleChatEvent(threadId: string, event: ChatEvent, eventEpoch?: number): Promise<void> {
+    private async handleChatEvent(threadId: string, event: ChatEvent, eventEpoch?: number, epochScope: 'run' | 'binding' = 'run'): Promise<void> {
         const thread = this.threads.get(threadId);
         if (!thread) {
             log.warn(`handleChatEvent: thread ${threadId} not found`);
@@ -909,8 +920,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         // A sink captured by an earlier run (aborted then rebound) is stale:
         // its late events belong to the previous session, not this thread.
-        if (eventEpoch !== undefined && thread.eventEpoch !== eventEpoch) {
-            log.info(`handleChatEvent: dropping stale epoch-${eventEpoch} event (current ${thread.eventEpoch}), thread=${threadId}`);
+        // Persistent resume sinks validate against `bindingEpoch` (bumped only
+        // on rebind/reset/close), while per-run run-sinks use `eventEpoch`
+        // (bumped before every gateway send).
+        const currentEpoch = epochScope === 'binding' ? thread.bindingEpoch : thread.eventEpoch;
+        if (eventEpoch !== undefined && currentEpoch !== eventEpoch) {
+            log.info(`handleChatEvent: dropping stale ${epochScope}-epoch-${eventEpoch} event (current ${currentEpoch}), thread=${threadId}`);
             return;
         }
         log.info(`handleChatEvent: type=${event.type}, thread=${threadId}`);
@@ -1314,13 +1329,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Resume a session for a thread, replacing any previous transcript
      *  callback for that session so reopen cannot deliver events twice. */
     private resumeSessionForThread(gateway: GatewayChatService, thread: ChatThreadState, sessionKey: string): void {
-        const prior = this.transcriptCallbacks.get(sessionKey);
+        // Track callbacks per thread: opening/resuming the same session in a
+        // second thread must not evict this thread's callback from the
+        // gateway's fan-out sink set.
+        const prior = this.transcriptCallbacks.get(thread.id);
         if (prior) {
-            gateway.removeTranscriptSink(sessionKey, prior);
+            gateway.removeTranscriptSink(prior.sessionKey, prior.cb);
         }
         const resumeEpoch = thread.bindingEpoch;
-        const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, resumeEpoch); };
-        this.transcriptCallbacks.set(sessionKey, cb);
+        const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, resumeEpoch, 'binding'); };
+        this.transcriptCallbacks.set(thread.id, { sessionKey, cb });
         gateway.resumeSession(sessionKey, cb);
     }
 
