@@ -934,24 +934,17 @@ export class GatewayChatService {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
-    // Abort retires the union of the run sink and all transcript sinks:
-    // keeping only the run sink would leave transcript-only subscribers
-    // registered, still receiving late events after the cancellation.
-    const retired = new Set(this.transcriptSinksBySession.get(key) ?? []);
-    if (runSink) {
-      retired.add(runSink);
-    }
     this.runSinksBySession.delete(key);
-    // Retire both sink roles for these callbacks: a lingering transcript
-    // sink would keep routing late session.message events (and reconnect
-    // resubscriptions) into the cancelled thread after its `done`.
-    for (const sink of retired) {
-      this.removeTranscriptSink(key, sink);
+    // Retire only the aborted run's sink, from both sink roles: the run
+    // sink also lives in the transcript set, so removing it stops late
+    // events for the cancelled run. Persistent resume sinks owned by other
+    // threads subscribed to this session must survive — retiring them would
+    // silently cut those threads off from later messages and catch-up.
+    if (runSink) {
+      this.removeTranscriptSink(key, runSink);
     }
     if (!this.connected) {
-      for (const sink of retired) {
-        sink({ type: 'done' });
-      }
+      runSink?.({ type: 'done' });
       return;
     }
     void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
@@ -959,8 +952,8 @@ export class GatewayChatService {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
-        for (const sink of retired) {
-          sink({ type: 'done' });
+        if (runSink) {
+          runSink({ type: 'done' });
         }
       });
   }

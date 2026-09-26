@@ -319,7 +319,7 @@ describe('GatewayChatService session selection and resume', () => {
     svc.dispose();
   });
 
-  it('abort retires the union of the run sink and transcript subscribers', async () => {
+  it('abort retires only the run sink and keeps other threads\' transcript subscribers', async () => {
     const log = { lines: [] as string[] };
     const { svc, ws, ready } = makeConnected(log);
     await ready;
@@ -348,9 +348,18 @@ describe('GatewayChatService session selection and resume', () => {
     rpcPayload(ws, req.id, {});
     await new Promise((r) => setTimeout(r, 0));
 
-    // Both the run sink and the transcript-only subscriber are retired with done.
+    // The run sink is retired with done; the transcript-only subscriber of
+    // another thread on the same session keeps receiving later events.
     expect(runEvents.some((e) => e.type === 'done')).toBe(true);
-    expect(transcriptEvents.some((e) => e.type === 'done')).toBe(true);
+    expect(transcriptEvents.some((e) => e.type === 'done')).toBe(false);
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'agent:main:main', role: 'assistant', delta: 'live' },
+    }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(transcriptEvents.some((e) => e.type === 'text' && e.text === 'live')).toBe(true);
+    expect(runEvents.some((e) => e.type === 'text' && e.text === 'live')).toBe(false);
     svc.dispose();
   });
 

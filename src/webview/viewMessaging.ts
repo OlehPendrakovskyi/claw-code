@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { promises as fsp, constants as fsConstants } from 'fs';
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
@@ -159,7 +160,14 @@ export function escapeXmlBody(str: string): string {
     return str.replace(/<\/file/gi, '&lt;/file');
 }
 
-/** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
+/** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
+ *
+ *  TOCTOU hardening: attachments carry canonical paths validated at mention
+ *  time, but the filesystem can change before this read. Re-verify realpath
+ *  here (a changed path means a symlink was swapped in — reject) and open the
+ *  final component with O_NOFOLLOW so a last-instant leaf swap cannot redirect
+ *  the read outside the workspace. Intermediate-directory swaps are caught by
+ *  the realpath-inequality check. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
@@ -169,9 +177,20 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
             continue;
         }
         try {
-            const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(att.path));
-            const content = new TextDecoder().decode(bytes);
-            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
+            const real = await fsp.realpath(att.path);
+            if (real !== att.path) {
+                sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
+                continue;
+            }
+            const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+            const handle = await fsp.open(real, fsConstants.O_RDONLY | noFollow);
+            try {
+                const bytes = await handle.readFile();
+                const content = new TextDecoder().decode(bytes);
+                sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
+            } finally {
+                await handle.close();
+            }
         } catch {
             sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
         }
