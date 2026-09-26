@@ -258,6 +258,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                                 backend.abort(thread.sessionKey);
                             }
                         } else {
+                            // Epoch bump before abort: the acpx close fires
+                            // asynchronously and must not deliver late events
+                            // into a thread that already cancelled.
+                            thread.eventEpoch += 1;
                             backend.abort();
                         }
                         thread.isStreaming = false;
@@ -899,16 +903,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // this thread: a late `done` from an aborted/rebound run must
             // never commit stale pending text into the current run.
             thread.eventEpoch += 1;
-            // Non-gateway (acpx) sends leave runEpoch undefined: handleChatEvent
-            // then skips epoch scoping, since the epoch counter only tracks
-            // gateway runs and would otherwise drop every acpx event after
-            // the thread has ever used the gateway transport.
+            // Non-gateway (acpx) sends capture the bumped run epoch below:
+            // handleChatEvent then validates acpx events per run, so events
+            // from a superseded acpx run cannot outlive its replacement.
             runEpoch = thread.eventEpoch;
             // A resumed thread's persistent transcript callback is still in
             // the gateway's fan-out set; the per-run sink would deliver every
             // live event twice to the same thread. Suspend it for the run and
             // restore it when the run ends.
             this.suspendThreadTranscriptSink(choice.service, thread);
+        } else {
+            // Acpx runs get the same per-run generation guard: bumping the
+            // epoch before capture invalidates the previous run's callback,
+            // so its asynchronous close cannot deliver a late done/text
+            // event into the new run after a transport switch.
+            thread.eventEpoch += 1;
+            runEpoch = thread.eventEpoch;
         }
         choice.service.sendMessage(
             fullPrompt,
@@ -1382,6 +1392,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
                     thread.title = label;
                     this.emitState();
+                    // The cold branch returns before the final agentSelected
+                    // post below; the webview only dismisses the sessions
+                    // panel on that message, so it must fire here too.
+                    postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+                        type: 'agentSelected',
+                        sessionKey,
+                    });
                     this.resumeSessionForThread(gateway, thread, sessionKey);
                     return;
                 }
