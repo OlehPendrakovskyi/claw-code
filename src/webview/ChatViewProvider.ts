@@ -827,13 +827,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const config = vscode.workspace.getConfiguration('openclaw');
             const dimension = config.get<string>('chat.dimension', '1x1');
             const collapseCompleted = config.get<boolean>('chat.collapseCompleted', true);
+            const hideToolActivity = config.get<boolean>('chat.hideToolActivity', false);
             const base = {
                 type: 'state',
                 activeThreadId: this.activeThreadId,
                 visibleThreadIds: this.visibleThreadIds,
                 models: this.getAvailableModels(),
                 dimension,
-                collapseCompleted
+                collapseCompleted,
+                hideToolActivity
             };
             const threads = buildThreadSnapshots(this.threads, this.visibleThreadIds);
             const totalMessages = threads.reduce((sum, t) => sum + t.messages.length, 0);

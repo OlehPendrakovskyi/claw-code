@@ -200,6 +200,11 @@
           "default": true,
           "description": "Automatically collapse completed chats in 1x1 multichat view. Collapsed threads show only their header and can be expanded by clicking."
         },
+        "openclaw.chat.hideToolActivity": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide completed tool-call groups in chat entirely (running groups stay visible)"
+        },
         "openclaw.chat.dimension": {
           "type": "string",
           "enum": [

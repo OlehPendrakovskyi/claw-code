@@ -266,6 +266,20 @@ describe('error handling and fallback', () => {
         expect(html).toContain("_showCrash('Message handler crashed");
     });
 
+    it('supports hiding completed tool groups via hideToolActivity', () => {
+        const html = renderHTML();
+        expect(html).toContain('hideToolActivity');
+        expect(html).toContain("getToolGroupStatus(toolEntries) === 'done'");
+    });
+
+    it('renders tool statuses with check/cross/spinner symbols', () => {
+        const html = renderHTML();
+        expect(html).toContain('getToolStatusSymbol');
+        expect(html).toContain('\u2713');
+        expect(html).toContain('\u2717');
+        expect(html).toContain('\u27F3');
+    });
+
     it('wraps initial render and state request in try/catch', () => {
         const html = renderHTML();
         expect(html).toContain("_showCrash('Initial render failed");

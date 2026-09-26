@@ -497,6 +497,24 @@ export const CONTENT_CSS = `
             font-size: 10px;
         }
 
+        .message-tool-status.tool-ok,
+        .message-tool-entry-status.tool-ok {
+            color: var(--vscode-testing-iconPassed, #73c991);
+            opacity: 0.9;
+        }
+
+        .message-tool-status.tool-fail,
+        .message-tool-entry-status.tool-fail {
+            color: var(--vscode-errorForeground, #f48771);
+            opacity: 0.9;
+        }
+
+        .message-tool-status.tool-run,
+        .message-tool-entry-status.tool-run {
+            color: var(--vscode-charts-yellow, #cca700);
+            opacity: 0.9;
+        }
+
         .message-tool-body {
             display: flex;
             flex-direction: column;
