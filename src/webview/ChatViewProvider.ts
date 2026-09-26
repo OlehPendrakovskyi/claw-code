@@ -1425,6 +1425,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             thread.status = 'idle';
         }
+        // Dismiss the sessions panel in every webview surface: opening a
+        // row is a selection, so the panel must close the same way it does
+        // for selectAgent.
+        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+            type: 'agentSelected',
+            sessionKey,
+        });
         this.resumeSessionForThread(gateway, thread, sessionKey);
         this.emitState();
     }
