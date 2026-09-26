@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { TextEncoder } from 'util';
@@ -472,6 +473,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
+        const backend = this.backendFor(thread);
+        if (backend instanceof GatewayChatService) {
+            backend.abort(thread.sessionKey);
+        } else {
+            backend.abort();
+        }
         thread.service.dispose();
         this.threads.delete(threadId);
         this.visibleThreadIds = this.visibleThreadIds.filter(id => id !== threadId);
@@ -679,7 +686,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
 
-        const mentions = this.resolveMentions(text);
+        const mentions = await this.resolveMentions(text);
         const mentionPaths = mentions.map(m => m.path);
         if (mentions.length > 0) {
             await this.addAttachments(thread, mentions);
@@ -719,8 +726,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const choice = await this.resolveServiceForSend();
+        const choice = await this.resolveServiceForSend(thread.service);
         thread.transportBackend = choice.service;
+        // Rebind the shared gateway to this thread's session before each send
+        // so one thread's prompt/stream cannot leak into another session.
+        if (choice.service instanceof GatewayChatService && thread.sessionKey) {
+            choice.service.setActiveSession(thread.sessionKey);
+        }
         choice.service.sendMessage(
             fullPrompt,
             cwd,
@@ -732,9 +744,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
     }
 
-    /** Resolve the configured chat backend for one send (gateway/acpx). */
-    private resolveServiceForSend(): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
-        return this.chatServiceFactory.resolve();
+    /** Resolve the configured chat backend for one send, reusing the thread's
+     *  legacy service so per-run lifecycle (abort/cancel) stays intact. */
+    private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
+        return this.chatServiceFactory.resolve(existing);
     }
 
     private async handleChatEvent(threadId: string, event: ChatEvent): Promise<void> {
@@ -1057,6 +1070,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway.setActiveSession(sessionKey);
         const thread = this.getActiveThread();
         if (thread) {
+            // Carry the persisted key onto the thread so later cancel/reset
+            // aborts target this resumed session, not the shared fallback.
+            thread.sessionKey = sessionKey;
             gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         }
     }
@@ -1071,23 +1087,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Resolve @file mentions in a draft to workspace-scoped paths; mentions escaping the workspace are rejected. */
-    private resolveMentions(text: string): FileMention[] {
+    /** Resolve @file mentions to workspace-scoped real paths; symlink escapes
+     *  and unreadable targets are rejected before an attachment is accepted. */
+    private async resolveMentions(text: string): Promise<FileMention[]> {
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
             return [];
         }
-        return parseFileMentions(text)
+        const realCwd = await fs.promises.realpath(cwd).catch(() => cwd);
+        const candidates = parseFileMentions(text)
             .map(mention => ({ ...mention, path: path.isAbsolute(mention.path) ? mention.path : path.join(cwd, mention.path) }))
-            .map(mention => ({ ...mention, path: path.resolve(mention.path) }))
-            .filter(mention => {
-                const rel = path.relative(cwd, mention.path);
-                return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-            });
+            .map(mention => ({ ...mention, path: path.resolve(mention.path) }));
+        const accepted: FileMention[] = [];
+        for (const mention of candidates) {
+            const real = await fs.promises.realpath(mention.path).catch(() => null);
+            if (!real) {
+                continue;
+            }
+            const rel = path.relative(realCwd, real);
+            if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+                accepted.push(mention);
+            }
+        }
+        return accepted;
     }
 
     /** Workspace-scoped paths only, for callers that ignore mention line ranges. */
-    private resolveMentionPaths(text: string): string[] {
-        return this.resolveMentions(text).map(m => m.path);
+    private async resolveMentionPaths(text: string): Promise<string[]> {
+        return (await this.resolveMentions(text)).map(m => m.path);
     }
 
     /** Gather the current selection and insert an @file mention into the webview composer. */

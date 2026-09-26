@@ -479,11 +479,16 @@ export class GatewayChatService {
     this.onSessionEvent(evt);
     let routedChatEvent: ChatEvent | null = null;
     if (evt.event === GatewayEvents.sessionMessage) {
-      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown };
+      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
       const sink = this.sinkForSession(payload.sessionKey);
       if (sink) {
         const chatEvent = mapSessionEventToChatEvent(evt);
         if (chatEvent) {
+          // Live delivery counts as seen: record the id so the next reconnect's
+          // catch-up replay does not surface this message a second time.
+          if (typeof payload.messageId === 'string') {
+            this.seenMessageIds.add(payload.messageId);
+          }
           routedChatEvent = chatEvent;
           sink(chatEvent);
         }
@@ -668,16 +673,21 @@ export class GatewayChatService {
     if (!key) {
       return;
     }
-    const sink = this.runSinksBySession.get(key) ?? this.transcriptSinksBySession.get(key) ?? null;
+    const runSink = this.runSinksBySession.get(key);
+    const sink = runSink ?? this.transcriptSinksBySession.get(key) ?? null;
     void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
       .catch((err: Error) => {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
+        // Retire only the entry this abort started with: a newer send may have
+        // replaced the map entry, and its run must keep its sink and state.
+        if (runSink && this.runSinksBySession.get(key) === runSink) {
+          this.runSinksBySession.delete(key);
+        }
         if (sink) {
           sink({ type: 'done' });
         }
-        this.runSinksBySession.delete(key);
       });
   }
 

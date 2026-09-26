@@ -43,11 +43,11 @@ export class ChatServiceFactory {
    * Resolve the backend for the current settings. In `auto` mode a failed
    * or missing-token gateway connect falls back to acpx transparently.
    */
-  async resolve(): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
+  async resolve(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
     const settings = getGatewaySettings();
     if (settings.transport === 'acpx') {
       this.onStatus?.('acpx', true);
-      return { service: new ChatService(), transport: 'acpx' };
+      return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
     const token = await getGatewayToken(this.context.secrets);
     if (!token) {
@@ -58,7 +58,7 @@ export class ChatServiceFactory {
         return { service: new GatewayChatService({ url: settings.url, token: '' }), transport: 'gateway' };
       }
       this.onStatus?.('acpx', true);
-      return { service: new ChatService(), transport: 'acpx' };
+      return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
     const gateway = this.getOrCreateGateway(settings.url, token);
     try {
@@ -69,11 +69,18 @@ export class ChatServiceFactory {
       log.warn(`gateway connect failed; ${settings.transport === 'auto' ? 'falling back to acpx' : 'continuing without gateway'}`);
       if (settings.transport === 'auto') {
         this.onStatus?.('acpx', true);
-        return { service: new ChatService(), transport: 'acpx' };
+        return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
       }
       this.onStatus?.('gateway', false);
       return { service: gateway, transport: 'gateway' };
     }
+  }
+
+  /** Reuse the thread's live acpx service when present so the legacy
+   *  single-run lifecycle (abort/cancel reaching the original process)
+   *  survives multiple sends; otherwise create a fresh one. */
+  private reuseOrCreateAcpx(existing?: ChatService | GatewayChatService): ChatService {
+    return existing instanceof ChatService ? existing : new ChatService();
   }
 
   /** Dispose the cached gateway client (provider teardown). */
