@@ -160,6 +160,17 @@ export function escapeXmlBody(str: string): string {
     return str.replace(/<\/file/gi, '&lt;/file');
 }
 
+/** Returns the canonical attachment path only when it still resolves to the
+ *  validated location (rejects a post-validation symlink swap), or null. */
+async function safeCanonicalPath(p: string): Promise<string | null> {
+    try {
+        const real = await fsp.realpath(p);
+        return real === p ? real : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
  *
  *  TOCTOU hardening: attachments carry canonical paths validated at mention
@@ -172,8 +183,16 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
     const sections: string[] = [];
 
     for (const att of attachments) {
+        // Image paths are handed to a downstream reader, so the same
+        // re-canonicalization as text attachments applies before emitting: a
+        // path swapped for a symlink after mention validation is dropped.
         if (att.type === 'image') {
-            sections.push(`<image path="${escapeXmlAttr(att.path)}" />`);
+            const real = await safeCanonicalPath(att.path);
+            if (real === null) {
+                sections.push('[Could not read file]');
+                continue;
+            }
+            sections.push(`<image path="${escapeXmlAttr(real)}" />`);
             continue;
         }
         try {

@@ -1236,6 +1236,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // the newly selected conversation and Cancel targets the new key.
             if (activeThread.sessionKey && activeThread.sessionKey !== sessionKey) {
                 const previousKey = activeThread.sessionKey;
+                // Drop this thread's own callback (and any suspended one) for
+                // the retired key before rebinding: closeThread matches the
+                // callback against the thread's current key, so an orphaned
+                // sink would linger in the shared gateway's fan-out set.
+                const ownCallback = this.transcriptCallbacks.get(activeThread.id);
+                if (ownCallback && ownCallback.sessionKey === previousKey) {
+                    this.transcriptCallbacks.delete(activeThread.id);
+                    gateway.removeTranscriptSink(previousKey, ownCallback.cb);
+                }
+                const suspendedSink = this.suspendedTranscriptSinks.get(activeThread.id);
+                if (suspendedSink && suspendedSink.sessionKey === previousKey) {
+                    this.suspendedTranscriptSinks.delete(activeThread.id);
+                }
                 // Abort/clear only when no other thread still shares the
                 // previous session: sinks are keyed by session on the shared
                 // gateway client, so an unconditional teardown would also
