@@ -1272,26 +1272,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (suspendedSink && suspendedSink.sessionKey === previousKey) {
                     this.suspendedTranscriptSinks.delete(activeThread.id);
                 }
-                // Abort/clear only when no other thread still shares the
-                // previous session: sinks are keyed by session on the shared
-                // gateway client, so an unconditional teardown would also
-                // abort another thread's live run on the same key.
-                if (![...this.threads.values()].some(t => t.id !== activeThread.id && t.sessionKey === previousKey)) {
-                    // Epoch bump precedes abort: a disconnected gateway
-                    // completes the old sink synchronously, and the sink's
-                    // captured epoch must already be stale when it fires.
-                    activeThread.eventEpoch += 1;
-                    activeThread.bindingEpoch += 1;
+                // Abort/clear when no other thread still *runs* on the
+                // previous session: an idle resumed thread is only a
+                // transcript subscriber and must not keep this thread's own
+                // run alive, while a live run on the same key is not ours to
+                // cancel. Only the shared-live-run case skips the abort.
+                const sharesLiveRun = [...this.threads.values()].some(
+                    t => t.id !== activeThread.id && t.sessionKey === previousKey && t.status === 'running'
+                );
+                // Epoch bump precedes abort: a disconnected gateway
+                // completes the old sink synchronously, and the sink's
+                // captured epoch must already be stale when it fires.
+                activeThread.eventEpoch += 1;
+                activeThread.bindingEpoch += 1;
+                if (!sharesLiveRun) {
                     gateway.abort(previousKey);
                     gateway.clearSessionSink(previousKey);
-                }
-                // Invalidate sinks captured by the retired run: abort()
-                // completes the old callback asynchronously, and after the
-                // rebind it would otherwise deliver `done` (and commit stale
-                // pending text) into this same thread.
-                if (activeThread.sessionKey !== sessionKey && [...this.threads.values()].some(t => t.id !== activeThread.id && t.sessionKey === previousKey)) {
-                    activeThread.eventEpoch += 1;
-                    activeThread.bindingEpoch += 1;
                 }
                 activeThread.isStreaming = false;
                 // The rebind retires the previous conversation's in-flight
@@ -1330,7 +1326,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
             const previousKey = thread.sessionKey;
             // Same shared-session guard as handleSelectAgent: only tear down
-            // the previous session when no other thread is still bound to it.
+            // the previous session when no other thread still *runs* on it;
+            // an idle resumed subscriber must not keep this thread's run
+            // alive, and a live run on the same key is not ours to cancel.
             // The suspended entry (if the retired run had one) must go too:
             // a later restore would otherwise rebind the old session's
             // callback to this thread and deliver cross-session events.
@@ -1338,20 +1336,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (suspendedSink && suspendedSink.sessionKey === previousKey) {
                 this.suspendedTranscriptSinks.delete(thread.id);
             }
-            if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
-                // Epoch bump precedes abort: a disconnected gateway completes
-                // the old sink synchronously, and the sink's captured epoch
-                // must already be stale when it fires.
-                thread.eventEpoch += 1;
-                thread.bindingEpoch += 1;
+            const sharesLiveRun = [...this.threads.values()].some(
+                t => t.id !== thread.id && t.sessionKey === previousKey && t.status === 'running'
+            );
+            // Epoch bump precedes abort in both cases: the aborted run's
+            // async completion must not reach the rebound thread.
+            thread.eventEpoch += 1;
+            thread.bindingEpoch += 1;
+            if (!sharesLiveRun) {
                 gateway.abort(previousKey);
                 gateway.clearSessionSink(previousKey);
-            }
-            // Same generation guard as handleSelectAgent: the aborted run's
-            // async completion must not reach the rebound thread.
-            if ([...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
-                thread.eventEpoch += 1;
-                thread.bindingEpoch += 1;
             }
             thread.isStreaming = false;
             thread.pendingAssistantText = '';

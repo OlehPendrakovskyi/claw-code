@@ -708,8 +708,15 @@ export class GatewayChatService {
     if (typeof sessionKey === 'string' && sessionKey.length > 0) {
       return sessionKey;
     }
+    // Keyless ends prefer an unambiguous active run: transcript-only keys can
+    // belong to idle resumed sessions that no end would ever finalize, so a
+    // single run sink must not be masked by their presence.
+    const runKeys = [...this.runSinksBySession.keys()];
+    if (runKeys.length === 1) {
+      return runKeys[0];
+    }
     const sinkKeys = new Set<string>([
-      ...this.runSinksBySession.keys(),
+      ...runKeys,
       ...this.transcriptSinksBySession.keys()
     ]);
     if (sinkKeys.size === 1) {
@@ -848,7 +855,12 @@ export class GatewayChatService {
   private resubscribeActiveSession(): void {
     for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
       this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
-      this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: true });
+      // A session with a live run keeps its cursor-gated catch-up only: an
+      // unscoped history tail replayed into the run sink would emit `done`
+      // per historical row and prematurely finalize the streaming response.
+      this.subscribeSessionMessages(sessionKey, {
+        allowUnscopedCatchUp: !this.runSinksBySession.has(sessionKey),
+      });
     }
   }
 
