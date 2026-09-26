@@ -1627,6 +1627,17 @@ export const CONTENT_JS = `
                 if (message.type === 'onboardingDone') {
                     return;
                 }
+                if (message.type === 'transportStatus') {
+                    var badge = document.getElementById('claw-transport-status');
+                    if (!badge) {
+                        badge = document.createElement('div');
+                        badge.id = 'claw-transport-status';
+                        badge.style.cssText = 'position:fixed;top:4px;right:8px;font-size:10px;opacity:0.6;z-index:50;pointer-events:none';
+                        document.body.appendChild(badge);
+                    }
+                    badge.textContent = String(message.label || '');
+                    return;
+                }
                 if (message.type === 'textUpdate') {
                     // Lightweight incremental update — only touch the pending element
                     var tid = message.threadId;

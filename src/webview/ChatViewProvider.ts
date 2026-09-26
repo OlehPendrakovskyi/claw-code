@@ -22,6 +22,8 @@ import {
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
+import { ChatServiceFactory } from './chatServiceFactory';
+import type { GatewayChatService } from '../core/gatewayChatService';
 
 // Re-export the moved interface so existing imports from this module keep working.
 export type { Recommendation } from './recommendations';
@@ -41,8 +43,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private visibleThreadIds: string[] = [];
     private activeThreadId = '';
 
+    private readonly chatServiceFactory: ChatServiceFactory;
+
     constructor(private readonly extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this.globalState = context.globalState;
+        this.chatServiceFactory = new ChatServiceFactory(context, (transport, connected) => {
+            const label = connected ? `${transport} · connected` : `${transport} · offline`;
+            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+                type: 'transportStatus',
+                transport,
+                connected,
+                label,
+            });
+        });
         const initialThread = this.createThreadState();
         this.threads.set(initialThread.id, initialThread);
         this.visibleThreadIds = [initialThread.id];
@@ -142,6 +155,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.editorChangeDisposable?.dispose();
         this.selectionChangeDisposable?.dispose();
         this.diagnosticChangeDisposable?.dispose();
+        this.chatServiceFactory.dispose();
     }
 
     private setupWebviewListeners(webview: vscode.Webview): void {
@@ -629,7 +643,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        thread.service.sendMessage(
+        const choice = await this.resolveServiceForSend();
+        choice.service.sendMessage(
             fullPrompt,
             cwd,
             thread.currentModel,
@@ -638,6 +653,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 void this.handleChatEvent(thread.id, event);
             }
         );
+    }
+
+    /** Resolve the configured chat backend for one send (gateway/acpx). */
+    private resolveServiceForSend(): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
+        return this.chatServiceFactory.resolve();
     }
 
     private async handleChatEvent(threadId: string, event: ChatEvent): Promise<void> {
