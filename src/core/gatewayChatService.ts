@@ -565,14 +565,19 @@ export class GatewayChatService {
     if (evt.event === GatewayEvents.sessionEnd) {
       const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
       const endKey = this.resolveSessionEndKey(endPayload.sessionKey);
-      // A resumed session only carries a transcript sink (no run entry);
-      // its stream must still observe the run's end.
-      const endSink =
-        this.runSinksBySession.get(endKey) ?? this.transcriptSinksBySession.get(endKey) ?? null;
-      this.runSinksBySession.delete(endKey);
-      if (endSink) {
-        endSink({ type: 'done' });
+      if (endKey) {
+        // A resumed session only carries a transcript sink (no run entry);
+        // its stream must still observe the run's end.
+        const endSink =
+          this.runSinksBySession.get(endKey) ?? this.transcriptSinksBySession.get(endKey) ?? null;
+        this.runSinksBySession.delete(endKey);
+        if (endSink) {
+          endSink({ type: 'done' });
+        }
       }
+      // Keyless ends in multi-session mode are ambiguous and dropped:
+      // no sink is completed, so the run is cleaned up on its own
+      // lifecycle path (abort/reconnect/dispose) instead.
     }
     // Global onEvent only carries non-session frames; session.message frames
     // are either routed to a sink above or dropped, never leaked globally.
@@ -590,17 +595,23 @@ export class GatewayChatService {
     }
   }
 
-  /** Resolve the session key for a `session.end` frame. Non-string or empty
-   *  values fall back to the active session key, then to the default, so a
-   *  malformed frame can never mint a bogus key that misses the real sink. */
-  private resolveSessionEndKey(sessionKey: unknown): string {
+  /** Resolve the session key for a `session.end` frame. Valid keys pass
+   *  through; a keyless/ambiguous end is routed only when exactly one
+   *  session sink exists (the gateway's own default is unknown here), and
+   *  returns null otherwise so the caller drops the frame instead of
+   *  completing the wrong session's sink via the mutable activeSessionKey. */
+  private resolveSessionEndKey(sessionKey: unknown): string | null {
     if (typeof sessionKey === 'string' && sessionKey.length > 0) {
       return sessionKey;
     }
-    if (this.activeSessionKey) {
-      return this.activeSessionKey;
+    const sinkKeys = new Set<string>([
+      ...this.runSinksBySession.keys(),
+      ...this.transcriptSinksBySession.keys()
+    ]);
+    if (sinkKeys.size === 1) {
+      return sinkKeys.values().next().value ?? null;
     }
-    return DEFAULT_SESSION_KEY;
+    return null;
   }
 
   private scheduleReconnect(): void {

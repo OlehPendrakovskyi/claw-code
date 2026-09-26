@@ -42,6 +42,9 @@ export type ChatThreadState = {
     transportBackend?: ChatService | GatewayChatService;
     /** Gateway session key bound to this thread (agent/session picker); scopes lifecycle actions. */
     sessionKey?: string;
+    /** Monotonic generation for gateway event delivery: rebound/cancelled
+     *  threads bump it so sinks captured by an earlier run stop delivering. */
+    eventEpoch: number;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
