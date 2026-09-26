@@ -185,7 +185,8 @@ function formatContext(ctx: EditorContext, contextType: ContextType): string {
 export function buildSlashPrompt(
     commandName: string,
     userText: string,
-    context: EditorContext
+    context: EditorContext,
+    transcript?: string
 ): string {
     const cmd = SLASH_COMMANDS.find(c => c.name === commandName);
     if (!cmd) {
@@ -198,6 +199,12 @@ export function buildSlashPrompt(
     const sections: string[] = [];
     if (instruction) {
         sections.push(instruction);
+    }
+    if (transcript) {
+        // Compaction must see the conversation it summarizes: the acpx
+        // transport starts a fresh exec per send, so without this block the
+        // command has no prior turns to compress.
+        sections.push(`\n--- Conversation So Far ---\n${transcript}\n---`);
     }
     if (contextBlock) {
         sections.push(contextBlock);

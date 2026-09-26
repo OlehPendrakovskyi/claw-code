@@ -582,7 +582,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args));
-        const augmented = buildSlashPrompt(commandName, userText, context);
+        // /compact summarizes prior turns: include the thread transcript so the
+        // fresh per-send exec (both transports) has the conversation to compress.
+        const transcript = commandName === 'compact' && thread.messages.length > 0
+            ? thread.messages
+                .filter(m => m.role !== 'tool')
+                .map(m => {
+                    const label = m.role === 'user' ? 'User' : m.role === 'assistant' ? 'Assistant' : 'Error';
+                    return `${label}: ${m.content}`;
+                })
+                .join('\n\n')
+            : undefined;
+        const augmented = buildSlashPrompt(commandName, userText, context, transcript);
         const displayText = `/${commandName}${userText.trim() ? ' ' + userText.trim() : ''}`;
         const attachments = [...thread.pendingAttachments];
 
@@ -1180,6 +1191,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         thread.sessionKey = sessionKey;
+        // Bind the thread to the gateway transport right away: until the
+        // next send, cancel/clear/close call backendFor(thread), which must
+        // reach the gateway session actually opened here instead of the
+        // unused legacy ChatService.
+        thread.transportBackend = gateway;
 
         let label = sessionKey;
         try {
