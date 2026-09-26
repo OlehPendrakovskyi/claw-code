@@ -769,6 +769,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (!thread.sessionKey) {
                 thread.sessionKey = DEFAULT_SESSION_KEY;
             }
+            // Explicitly prevent concurrent runs on one gateway session: two
+            // unbound threads would otherwise both land on the shared default
+            // session, and the second send would replace the first thread's
+            // run sink, rendering its response in the wrong thread.
+            const busyThread = [...this.threads.values()].some(
+                t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
+            );
+            if (busyThread) {
+                thread.messages.push({
+                    role: 'error',
+                    content: `Session "${thread.sessionKey}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
+                });
+                thread.isStreaming = false;
+                thread.status = 'error';
+                this.emitState();
+                return;
+            }
             choice.service.setActiveSession(thread.sessionKey);
         }
         choice.service.sendMessage(
