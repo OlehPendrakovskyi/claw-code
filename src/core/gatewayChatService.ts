@@ -116,12 +116,14 @@ export function parseFrame(data: unknown): RpcInboundFrame | null {
 const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
 
 /**
- * Map a gateway `session.message` event to a UI ChatEvent.
+ * Map a gateway `session.message` event to zero or more UI ChatEvents.
  * Handles toolCall payloads, streaming text deltas, final text, and usage.
- * Returns null when the event carries none of those.
+ * Frames may carry several of these at once (e.g. toolCall alongside a delta
+ * and usage), so every present facet is emitted in order; returns [] when
+ * the event carries none of them.
  */
-export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null {
-  if (evt.event !== GatewayEvents.sessionMessage) return null;
+export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
+  if (evt.event !== GatewayEvents.sessionMessage) return [];
   const payload = (evt.payload ?? {}) as {
     role?: string;
     text?: unknown;
@@ -138,23 +140,24 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
         }
       | null;
   };
-  if (payload.role && payload.role !== 'assistant') return null;
+  if (payload.role && payload.role !== 'assistant') return [];
   const tc = payload.toolCall;
+  const events: ChatEvent[] = [];
   if (tc && typeof tc === 'object') {
     const rawStatus = typeof tc.status === 'string' ? tc.status : '';
     const status = TOOL_CALL_STATUSES.has(rawStatus) ? rawStatus : rawStatus ? 'running' : 'done';
-    return {
+    events.push({
       type: 'toolCall',
       title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
       status,
       details: '',
-    };
+    });
   }
   if (typeof payload.delta === 'string' && payload.delta.length > 0) {
-    return { type: 'text', text: payload.delta };
+    events.push({ type: 'text', text: payload.delta });
   }
   if (typeof payload.text === 'string' && payload.text.length > 0) {
-    return { type: 'text', text: payload.text };
+    events.push({ type: 'text', text: payload.text });
   }
   const u = payload.usage;
   const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
@@ -162,12 +165,12 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
     u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
   );
   if (u && (promptTokens || completionTokens)) {
-    return {
+    events.push({
       type: 'usage',
       usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
-    };
+    });
   }
-  return null;
+  return events;
 }
 
 /**
@@ -542,15 +545,15 @@ export class GatewayChatService {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
       const routed = this.sinkForSession(payload.sessionKey);
       if (routed) {
-        const chatEvent = mapSessionEventToChatEvent(evt);
-        if (chatEvent) {
+        const chatEvents = mapSessionEventToChatEvent(evt);
+        if (chatEvents.length > 0) {
           // Live delivery counts as seen: record the id so the next reconnect's
           // catch-up replay does not surface this message a second time.
           if (typeof payload.messageId === 'string') {
             this.rememberSeen(routed.key, payload.messageId);
           }
-          routedChatEvent = chatEvent;
-          routed.sink(chatEvent);
+          routedChatEvent = chatEvents[0];
+          for (const chatEvent of chatEvents) routed.sink(chatEvent);
         }
       }
     }
@@ -569,8 +572,8 @@ export class GatewayChatService {
     // When a run sink already consumed a session message, do not emit it a
     // second time through the global onEvent (same consumer, double delivery).
     if (!routedChatEvent) {
-      const chatEvent = mapSessionEventToChatEvent(evt);
-      if (chatEvent) this.onEvent(chatEvent);
+      const chatEvents = mapSessionEventToChatEvent(evt);
+      for (const chatEvent of chatEvents) this.onEvent(chatEvent);
     }
   }
 
@@ -754,8 +757,8 @@ export class GatewayChatService {
           event: GatewayEvents.sessionMessage,
           payload: row as Record<string, unknown>,
         });
-        if (mapped) {
-          onEvent(mapped);
+        for (const chatEvent of mapped) {
+          onEvent(chatEvent);
         }
       }
     } catch (err) {

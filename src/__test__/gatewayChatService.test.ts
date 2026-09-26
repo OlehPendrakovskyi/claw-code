@@ -70,23 +70,37 @@ describe('parseFrame', () => {
 describe('mapSessionEventToChatEvent', () => {
   it('maps assistant session.message text to a text ChatEvent', () => {
     const evt: SessionEvent = { event: 'session.message', payload: { role: 'assistant', text: 'hi' } };
-    expect(mapSessionEventToChatEvent(evt)).toEqual({ type: 'text', text: 'hi' });
+    expect(mapSessionEventToChatEvent(evt)).toEqual([{ type: 'text', text: 'hi' }]);
   });
   it('skips user-role messages and non-message events', () => {
     const user: SessionEvent = { event: 'session.message', payload: { role: 'user', text: 'yo' } };
-    expect(mapSessionEventToChatEvent(user)).toBeNull();
+    expect(mapSessionEventToChatEvent(user)).toEqual([]);
     const other: SessionEvent = { event: 'sessions.changed', payload: {} };
-    expect(mapSessionEventToChatEvent(other)).toBeNull();
+    expect(mapSessionEventToChatEvent(other)).toEqual([]);
   });
   it('maps usage payloads', () => {
     const evt: SessionEvent = {
       event: 'session.message',
       payload: { usage: { promptTokens: 5, completionTokens: 7 } },
     };
-    expect(mapSessionEventToChatEvent(evt)).toEqual({
-      type: 'usage',
-      usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 },
-    });
+    expect(mapSessionEventToChatEvent(evt)).toEqual([
+      { type: 'usage', usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 } },
+    ]);
+  });
+  it('emits toolCall together with delta and usage in the same frame', () => {
+    const evt: SessionEvent = {
+      event: 'session.message',
+      payload: {
+        toolCall: { name: 'shell', status: 'running' },
+        delta: 'partial',
+        usage: { promptTokens: 2, completionTokens: 3 },
+      },
+    };
+    expect(mapSessionEventToChatEvent(evt)).toEqual([
+      { type: 'toolCall', title: 'shell', status: 'running', details: '' },
+      { type: 'text', text: 'partial' },
+      { type: 'usage', usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 } },
+    ]);
   });
 });
 
