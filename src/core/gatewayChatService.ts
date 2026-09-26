@@ -113,15 +113,20 @@ export function parseFrame(data: unknown): RpcInboundFrame | null {
   }
 }
 
+const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
+
 /**
  * Map a gateway `session.message` event to a UI ChatEvent.
- * Returns null when the event carries no assistant text or usage.
+ * Handles toolCall payloads, streaming text deltas, final text, and usage.
+ * Returns null when the event carries none of those.
  */
 export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null {
   if (evt.event !== GatewayEvents.sessionMessage) return null;
   const payload = (evt.payload ?? {}) as {
     role?: string;
     text?: unknown;
+    delta?: unknown;
+    toolCall?: { name?: unknown; title?: unknown; status?: unknown } | null;
     usage?:
       | {
           promptTokens?: number;
@@ -134,6 +139,20 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent | null 
       | null;
   };
   if (payload.role && payload.role !== 'assistant') return null;
+  const tc = payload.toolCall;
+  if (tc && typeof tc === 'object') {
+    const rawStatus = typeof tc.status === 'string' ? tc.status : '';
+    const status = TOOL_CALL_STATUSES.has(rawStatus) ? rawStatus : rawStatus ? 'running' : 'done';
+    return {
+      type: 'toolCall',
+      title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
+      status,
+      details: '',
+    };
+  }
+  if (typeof payload.delta === 'string' && payload.delta.length > 0) {
+    return { type: 'text', text: payload.delta };
+  }
   if (typeof payload.text === 'string' && payload.text.length > 0) {
     return { type: 'text', text: payload.text };
   }
@@ -182,6 +201,11 @@ export class GatewayChatService {
   private hasActiveRun = false;
   /** Event sink of the in-flight run (deltas/usage/done routing). */
   private activeRunEventSink: ((event: ChatEvent) => void) | null = null;
+
+  /** Latest delta cursor per session key (for catch-up after reconnect). */
+  private deltaCursorBySession = new Map<string, unknown>();
+  /** Message ids already surfaced for the active session (dedup on resume). */
+  private seenMessageIds = new Set<string>();
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
@@ -503,10 +527,60 @@ export class GatewayChatService {
       return;
     }
     void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
+      .then(() => {
+        void this.catchUpHistory(sessionKey, onEvent);
+      })
       .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
         onEvent({ type: 'done' });
       });
+  }
+
+  /**
+   * Catch-up after reconnect: pull transcript tail with the stored delta
+   * cursor, deduplicating by messageId so resumed streams do not replay
+   * already-rendered messages. Never crashes on unknown payload shapes.
+   */
+  private async catchUpHistory(sessionKey: string, onEvent: (event: ChatEvent) => void): Promise<void> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return;
+    }
+    try {
+      const payload = (await this.send(GatewayRpcMethods.chatHistory, {
+        sessionKey,
+        deltaCursor: this.deltaCursorBySession.get(sessionKey),
+      })) as {
+        messages?: Array<Record<string, unknown>>;
+        deltaCursor?: unknown;
+        cursor?: unknown;
+      } | null;
+      if (!payload || !Array.isArray(payload.messages)) {
+        return;
+      }
+      const cursor = payload.deltaCursor ?? payload.cursor;
+      if (cursor !== undefined && cursor !== null) {
+        this.deltaCursorBySession.set(sessionKey, cursor);
+      }
+      for (const row of payload.messages) {
+        const messageId = typeof row.messageId === 'string' ? row.messageId : null;
+        if (messageId && this.seenMessageIds.has(messageId)) {
+          continue;
+        }
+        if (messageId) {
+          this.seenMessageIds.add(messageId);
+        }
+        const mapped = mapSessionEventToChatEvent({
+          event: GatewayEvents.sessionMessage,
+          payload: row as Record<string, unknown>,
+        });
+        if (mapped) {
+          onEvent(mapped);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`chat.history catch-up failed ${message}`);
+    }
   }
 
   /** Whether hello-ok advertises the given RPC method (unknown-tolerant). */

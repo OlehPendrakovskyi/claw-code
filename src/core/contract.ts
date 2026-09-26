@@ -200,6 +200,18 @@ export type SessionMessagePayload = {
   messageId?: string;
   role?: string;
   text?: string;
+  /** Streaming text delta (partial assistant chunk). */
+  delta?: string;
+  /** Tool invocation metadata attached to the message (additive). */
+  toolCall?: {
+    id?: string;
+    name?: string;
+    title?: string;
+    status?: string;
+    arguments?: unknown;
+    result?: unknown;
+    [key: string]: unknown;
+  };
   usage?: Partial<UsageInfo>;
   [key: string]: unknown;
 };

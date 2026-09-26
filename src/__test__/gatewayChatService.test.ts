@@ -47,7 +47,7 @@ const HELLO_OK = {
     type: 'hello-ok',
     protocol: 4,
     server: { version: '1.0.0', connId: 'conn-1' },
-    features: { methods: ['sessions.list', 'chat.send'], events: ['session.message'] },
+    features: { methods: ['sessions.list', 'chat.send', 'sessions.messages.subscribe', 'chat.history', 'chat.abort'], events: ['session.message'] },
     auth: { role: 'operator', scopes: ['operator.read', 'operator.write'] },
     policy: { maxPayload: 26214400, maxBufferedBytes: 52428800, tickIntervalMs: 15000 },
   },
@@ -201,5 +201,161 @@ describe('GatewayChatService', () => {
     svc.sendMessage('p', '/tmp', 'm', 'chat', (e) => events.push(e));
     svc.dispose();
     expect(events).toEqual([{ type: 'error', message: 'gateway not connected' }, { type: 'done' }]);
+  });
+});
+describe('GatewayChatService sendMessage/abort', () => {
+  async function connectService(ws: MockSocket, methods?: string[]): Promise<GatewayChatService> {
+    const svc = new GatewayChatService({
+      url: 'ws://gateway.test:18789',
+      token: 'secret-token-value',
+      logger: { info() {}, warn() {}, error() {} },
+      wsFactory: () => ws,
+    });
+    const pending = svc.connect();
+    ws.emit('open');
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const hello = JSON.parse(JSON.stringify(HELLO_OK)) as typeof HELLO_OK;
+    if (methods) {
+      (hello.payload as { features: { methods: string[] } }).features.methods = methods;
+    }
+    ws.emit('message', JSON.stringify(hello));
+    await pending;
+    return svc;
+  }
+
+  function sentRequests(ws: MockSocket): Array<{ method: string; id: string; params: Record<string, unknown> }> {
+    return ws.sent
+      .map((raw) => JSON.parse(raw) as { type: string; method: string; id: string; params: Record<string, unknown> })
+      .filter((f) => f.type === 'req');
+  }
+
+  it('sends chat.send with enqueue mode and subscribes to session messages', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    svc.sendMessage('hello', '/tmp', 'm', 'chat', () => {});
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send');
+    expect(send?.params).toMatchObject({ sessionKey: 'main', text: 'hello', queueMode: 'enqueue' });
+    ws.emit('message', JSON.stringify({ type: 'res', id: send!.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe');
+    expect(subscribe?.params).toEqual({ sessionKeys: ['main'] });
+    svc.dispose();
+  });
+
+  it('streams session.message deltas to the active sink and finishes on session_end', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', delta: 'he' },
+    }));
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', text: 'llo' },
+    }));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'session_end', payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(events).toContainEqual({ type: 'text', text: 'he' });
+    expect(events).toContainEqual({ type: 'text', text: 'llo' });
+    expect(events).toContainEqual({ type: 'done' });
+    svc.dispose();
+  });
+
+  it('abort sends chat.abort and emits done', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    svc.abort();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const abort = sentRequests(ws).find((r) => r.method === 'chat.abort');
+    expect(abort?.params).toEqual({ sessionKey: 'main' });
+    ws.emit('message', JSON.stringify({ type: 'res', id: abort!.id, ok: true, payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(events).toContainEqual({ type: 'done' });
+    svc.dispose();
+  });
+
+  it('warns instead of crashing when subscribe method is not advertised', async () => {
+    const ws = createMockWs();
+    const log = { lines: [] as string[] };
+    const svc = new GatewayChatService({
+      url: 'ws://gateway.test:18789',
+      token: 't',
+      logger: {
+        info: (m) => log.lines.push(m),
+        warn: (m) => log.lines.push(m),
+        error: (m) => log.lines.push(m),
+      },
+      wsFactory: () => ws,
+    });
+    const pending = svc.connect();
+    ws.emit('open');
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const hello = JSON.parse(JSON.stringify(HELLO_OK)) as typeof HELLO_OK;
+    (hello.payload as { features: { methods: string[] } }).features.methods = ['sessions.list'];
+    ws.emit('message', JSON.stringify(hello));
+    await pending;
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', () => {});
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(log.lines.join('\n')).toContain('does not advertise');
+    svc.dispose();
+  });
+
+  it('catches up via chat.history with deltaCursor and dedupes by messageId', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.onEvent = (e) => events.push(e);
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: subscribe.id, ok: true, payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const history = sentRequests(ws).find((r) => r.method === 'chat.history');
+    expect(history?.params).toMatchObject({ sessionKey: 'main' });
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history!.id,
+      ok: true,
+      payload: {
+        deltaCursor: 'cursor-42',
+        messages: [
+          { messageId: 'm1', role: 'assistant', text: 'cached' },
+          { messageId: 'm1', role: 'assistant', text: 'cached' },
+          { messageId: 'm2', role: 'assistant', delta: 'tail' },
+        ],
+      },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e): e is { type: string; text: string } =>
+      (e as { type?: string }).type === 'text'
+    );
+    expect(texts).toEqual(expect.arrayContaining([{ type: 'text', text: 'cached' }, { type: 'text', text: 'tail' }]));
+    expect(texts.filter((t) => t.text === 'cached')).toHaveLength(1);
+    svc.dispose();
   });
 });
