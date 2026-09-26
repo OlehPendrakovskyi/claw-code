@@ -24,7 +24,15 @@ import {
 import { buildRecommendations } from './recommendations';
 import { ChatServiceFactory } from './chatServiceFactory';
 import { GatewayChatService } from '../core/gatewayChatService';
-import { AgentPicker, buildAgentSessionItems } from '../core/agentPicker';
+import {
+    AgentPicker,
+    COLD_SESSION_PLACEHOLDER,
+    buildAgentSessionItems,
+    isColdSession,
+    mapHistoryMessages,
+    parseSessionRows,
+} from '../core/agentPicker';
+import type { SessionRow } from '../core/contract';
 
 // Re-export the moved interface so existing imports from this module keep working.
 export type { Recommendation } from './recommendations';
@@ -263,6 +271,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         await this.handleSelectAgent(msg.sessionKey);
                     }
                     break;
+                case 'openSession':
+                    if (msg.sessionKey) {
+                        await this.handleOpenSession(msg.sessionKey);
+                    }
+                    break;
                 case 'popOut':
                     this.popOut();
                     break;
@@ -457,6 +470,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         this.emitState();
     }
+
+    private static readonly LAST_SESSION_KEY = 'openclaw.lastSessionKey';
 
     private static readonly IMAGE_EXTENSIONS = new Set([
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif',
@@ -853,9 +868,33 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], { type: 'onboardingDone' });
             }
         }, 100);
+        void this.resumeLastSession();
     }
 
-    /** Resolve the gateway transport for session-list flows. */
+    /** Command-palette agent picker bound to the active chat. */
+    async showAgentPicker(): Promise<void> {
+        const gateway = await this.resolveGateway();
+        const picker = new AgentPicker(gateway, {
+            show: async (items) => {
+                const chosen = await vscode.window.showQuickPick(
+                    items.map(item => ({
+                        label: item.hasActiveRun ? '$(sync~spin) ' + item.label : item.label,
+                        description: item.hasActiveRun ? 'running' : item.updatedAt ?? '',
+                        detail: item.sessionKey,
+                        item,
+                    })),
+                    { placeHolder: 'Select an agent session for this chat' }
+                );
+                return chosen?.item;
+            },
+        });
+        const chosen = await picker.pick();
+        if (chosen) {
+            await this.handleSelectAgent(chosen.sessionKey);
+        }
+    }
+
+    /** Resolve the gateway transport for session-list/ history flows. */
     private async resolveGateway(): Promise<GatewayChatService | null> {
         const choice = await this.chatServiceFactory.resolve();
         return choice.transport === 'gateway' && choice.service instanceof GatewayChatService
@@ -880,40 +919,89 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Bind the chosen agent session key to the active chat. */
+    /** Bind the chosen agent session key to the active chat and persist it. */
     private async handleSelectAgent(sessionKey: string): Promise<void> {
         const gateway = await this.resolveGateway();
         if (!gateway) {
             return;
         }
         gateway.setActiveSession(sessionKey);
-        this.lastSessionKey = sessionKey;
+        await this.persistLastSessionKey(sessionKey);
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
             type: 'agentSelected',
             sessionKey,
         });
     }
 
-    /** Command-palette agent picker bound to the active chat. */
-    async showAgentPicker(): Promise<void> {
+    /** Open a session: restore its transcript into the active thread. */
+    private async handleOpenSession(sessionKey: string): Promise<void> {
         const gateway = await this.resolveGateway();
-        const picker = new AgentPicker(gateway, {
-            show: async (items) => {
-                const chosen = await vscode.window.showQuickPick(
-                    items.map(item => ({
-                        label: item.label,
-                        description: item.hasActiveRun ? 'running' : item.updatedAt ?? '',
-                        detail: item.sessionKey,
-                        item,
-                    })),
-                    { placeHolder: 'Select an agent session for this chat' }
-                );
-                return chosen?.item;
-            },
-        });
-        const chosen = await picker.pick();
-        if (chosen) {
-            await this.handleSelectAgent(chosen.sessionKey);
+        if (!gateway) {
+            return;
+        }
+        const thread = this.getActiveThread();
+        if (!thread) {
+            return;
+        }
+        gateway.setActiveSession(sessionKey);
+        await this.persistLastSessionKey(sessionKey);
+
+        let label = sessionKey;
+        try {
+            const payload = await gateway.listSessions({});
+            const rows = parseSessionRows(payload).rows as SessionRow[];
+            const row = rows.find(r => r.key === sessionKey);
+            if (row) {
+                label = row.label || row.agentId || sessionKey;
+                if (isColdSession(row)) {
+                    thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
+                    thread.title = label;
+                    this.emitState();
+                    gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
+                    return;
+                }
+            }
+        } catch (err) {
+            log.warn('sessions.list during open failed', err);
+        }
+
+        const history = await gateway.getHistory(sessionKey);
+        const restored = mapHistoryMessages(history);
+        thread.title = label;
+        if (restored.length > 0) {
+            thread.messages = [];
+            for (const msg of restored) {
+                thread.messages.push({ role: msg.role, content: msg.content });
+            }
+            thread.status = 'idle';
+        } else {
+            thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
+            gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
+        }
+        this.emitState();
+    }
+
+    /** Persist the last selected session key for window-restart resume. */
+    private async persistLastSessionKey(sessionKey: string): Promise<void> {
+        this.lastSessionKey = sessionKey;
+        await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, sessionKey);
+    }
+
+    /** Resume the persisted session after a window restart (catch-up). */
+    private async resumeLastSession(): Promise<void> {
+        const sessionKey = this.context.workspaceState.get<string>(ChatViewProvider.LAST_SESSION_KEY);
+        if (!sessionKey) {
+            return;
+        }
+        this.lastSessionKey = sessionKey;
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            return;
+        }
+        gateway.setActiveSession(sessionKey);
+        const thread = this.getActiveThread();
+        if (thread) {
+            gateway.resumeSession(sessionKey, (event) => { void this.handleChatEvent(thread.id, event); });
         }
     }
 

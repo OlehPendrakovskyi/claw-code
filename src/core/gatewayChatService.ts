@@ -426,6 +426,33 @@ export class GatewayChatService {
     return this.activeSessionKey;
   }
 
+  /**
+   * Resume a session after a window restart: bind the session key and
+   * subscribe to its transcript events; the deltaCursor catch-up then
+   * replays only messages the UI has not seen yet (deduped by messageId).
+   */
+  resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    this.activeSessionKey = sessionKey;
+    this.subscribeSessionMessages(sessionKey, onEvent);
+  }
+
+  /**
+   * Fetch a transcript tail for a session (`chat.history`, no delta cursor)
+   * for UI-side history restore. Returns null on transport/RPC failure.
+   */
+  async getHistory(sessionKey: string): Promise<unknown> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return null;
+    }
+    try {
+      return await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`chat.history fetch failed ${message}`);
+      return null;
+    }
+  }
+
   /** Wire runtime event handlers after the handshake promise settles. */
   private attachRuntimeHandlers(): void {
     const ws = this.ws;

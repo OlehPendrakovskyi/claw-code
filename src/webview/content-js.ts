@@ -731,6 +731,7 @@ export const CONTENT_JS = `
                             (currentDimension === '1x1' && state.threads.length > 1
                                 ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + thread.id + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
                                 : '') +
+                            '<button class="pane-btn" data-action="sessions" data-thread-id="' + thread.id + '">Sessions</button>' +
                             '<button class="pane-btn" data-action="export" data-thread-id="' + thread.id + '">Export</button>' +
                             '<button class="pane-btn" data-action="clear" data-thread-id="' + thread.id + '">Clear</button>' +
                             (state.threads.length > 1
@@ -1246,6 +1247,14 @@ export const CONTENT_JS = `
                     renderState(captureComposerFocus());
                     return;
                 }
+                if (action === 'sessions') {
+                    vscode.postMessage({ type: 'requestSessions' });
+                    return;
+                }
+                if (action === 'open-session') {
+                    vscode.postMessage({ type: 'openSession', sessionKey: actionEl.getAttribute('data-session-key') });
+                    return;
+                }
                 if (action === 'clear') {
                     vscode.postMessage({ type: 'clearThread', threadId: threadId });
                     return;
@@ -1627,6 +1636,15 @@ export const CONTENT_JS = `
                 if (message.type === 'onboardingDone') {
                     return;
                 }
+                if (message.type === 'sessionsList') {
+                    renderSessionsPanel(message.sessions || []);
+                    return;
+                }
+                if (message.type === 'agentSelected') {
+                    var panel = document.getElementById('claw-sessions-panel');
+                    if (panel) { panel.remove(); }
+                    return;
+                }
                 if (message.type === 'transportStatus') {
                     var badge = document.getElementById('claw-transport-status');
                     if (!badge) {
@@ -1722,6 +1740,43 @@ export const CONTENT_JS = `
                         }
                     }
                 }
+            }
+
+            function renderSessionsPanel(sessions) {
+                var existing = document.getElementById('claw-sessions-panel');
+                if (existing) { existing.remove(); }
+                if (!sessions || sessions.length === 0) {
+                    return;
+                }
+                var panel = document.createElement('div');
+                panel.id = 'claw-sessions-panel';
+                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:#252526;border:1px solid #454545;padding:6px;z-index:60;min-width:220px;font-size:12px';
+                var title = document.createElement('div');
+                title.textContent = 'Sessions';
+                title.style.cssText = 'opacity:0.7;margin-bottom:4px';
+                panel.appendChild(title);
+                sessions.forEach(function(session) {
+                    var row = document.createElement('div');
+                    row.setAttribute('data-action', 'open-session');
+                    row.setAttribute('data-session-key', session.sessionKey || '');
+                    row.style.cssText = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+                    var label = session.label || session.sessionKey || '';
+                    if (session.hasActiveRun) { label = '\u25CF ' + label; }
+                    if (session.cold) { label = '\u2744 ' + label; }
+                    row.textContent = label;
+                    row.title = session.sessionKey || '';
+                    panel.appendChild(row);
+                });
+                document.body.appendChild(panel);
+                setTimeout(function() {
+                    document.addEventListener('click', function dismiss(ev) {
+                        var p = document.getElementById('claw-sessions-panel');
+                        if (p && !p.contains(ev.target)) {
+                            p.remove();
+                            document.removeEventListener('click', dismiss);
+                        }
+                    });
+                }, 0);
             }
 
             function hasFileDrag(dataTransfer) {
