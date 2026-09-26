@@ -1283,7 +1283,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             const rel = path.relative(realCwd, real);
             if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-                accepted.push(candidates[i]);
+                // Store the canonical path: a symlink could be swapped between
+                // this check and the later read, so reading the original path
+                // would bypass the workspace guard (TOCTOU).
+                accepted.push({ ...candidates[i], path: real });
             }
         }
         return accepted;

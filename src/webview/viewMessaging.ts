@@ -148,11 +148,11 @@ export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-/** Escape file body text embedded inside a <file> block so content containing
- *  `</file>` (or other markup) cannot break the prompt structure. Escapes the
- *  minimum set (&, <, >) that terminates or opens tags; text stays readable. */
+/** Neutralize only the closing-tag sequence `</file` so file bodies stay
+ *  byte-faithful (comparisons, HTML etc. are not rewritten) while the prompt
+ *  wrapper structure cannot be broken by file content. */
 export function escapeXmlBody(str: string): string {
-    return str.replace(/[&<>]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    return str.replace(/<\/file/gi, '&lt;/file');
 }
 
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges. */
