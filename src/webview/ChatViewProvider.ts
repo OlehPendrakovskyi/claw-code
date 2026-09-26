@@ -1431,6 +1431,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (this.getActiveThread()?.id !== thread.id) {
             return;
         }
+        if (thread.sessionKey !== undefined && thread.sessionKey !== sessionKey) {
+            // A concurrent openSession re-pointed this thread while the
+            // persist/await above was in flight: never clobber the newer
+            // selection with this stale key, and restore the newer key as
+            // the persisted last-session since our persist overwrote it.
+            await this.persistLastSessionKey(thread.sessionKey);
+            return;
+        }
         thread.sessionKey = sessionKey;
         // Bind the thread to the gateway transport right away: until the
         // next send, cancel/clear/close call backendFor(thread), which must
