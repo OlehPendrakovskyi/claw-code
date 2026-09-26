@@ -756,17 +756,25 @@ export class GatewayChatService {
   /** Abort the run for one session: RPC `chat.abort` targeted at the given
    *  session key (falls back to the last active session); completes that
    *  session's sink. A session key from the calling thread avoids aborting
-   *  another thread's run. */
+   *  another thread's run. Runs while disconnected still retire the local
+   *  sinks and complete the callback, so a later reconnect cannot re-subscribe
+   *  a cancelled run. */
   abort(sessionKey?: string): void {
-    if (!this.connected) {
-      return;
-    }
     const key = sessionKey ?? this.activeSessionKey;
     if (!key) {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
     const sink = runSink ?? this.transcriptSinksBySession.get(key) ?? null;
+    if (!this.connected) {
+      if (runSink && this.runSinksBySession.get(key) === runSink) {
+        this.runSinksBySession.delete(key);
+      }
+      if (sink) {
+        sink({ type: 'done' });
+      }
+      return;
+    }
     // Retire the run sink synchronously: the abort RPC settles later, and
     // events from the old session arriving in between must not reach the
     // caller after it rebinds the thread. Retire only the entry this abort

@@ -291,6 +291,24 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('abort while disconnected retires the sink and emits done without sending', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('close');
+    await new Promise<void>((r) => setTimeout(r, 0));
+    svc.abort();
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(events).toContainEqual({ type: 'done' });
+    expect(sentRequests(ws).filter((r) => r.method === 'chat.abort')).toHaveLength(0);
+    svc.dispose();
+  });
+
   it('warns instead of crashing when subscribe method is not advertised', async () => {
     const ws = createMockWs();
     const log = { lines: [] as string[] };
