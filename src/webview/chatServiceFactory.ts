@@ -53,9 +53,10 @@ export class ChatServiceFactory {
     if (!token) {
       if (settings.transport === 'gateway') {
         this.onStatus?.('gateway', false);
-        // Uncached: never memoize a tokenless gateway client; a later token
-        // must build a fresh, authenticated service.
-        return { service: new GatewayChatService({ url: settings.url, token: '' }), transport: 'gateway' };
+        // Cached via the shared gateway slot: a later token rebuilds and
+        // disposes this tokenless client (token comparison in
+        // getOrCreateGateway), so no per-call instances leak.
+        return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
       }
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };

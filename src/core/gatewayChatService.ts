@@ -598,6 +598,7 @@ export class GatewayChatService {
       this.logger.warn(
         `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
       );
+      this.retireSinks(sessionKey, onEvent);
       onEvent({ type: 'done' });
       return;
     }
@@ -607,8 +608,19 @@ export class GatewayChatService {
       })
       .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
+        this.retireSinks(sessionKey, onEvent);
         onEvent({ type: 'done' });
       });
+  }
+
+  /** Drop the run/transcript sinks for a session only when they still point at the given callback. */
+  private retireSinks(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+    if (this.runSinksBySession.get(sessionKey) === onEvent) {
+      this.runSinksBySession.delete(sessionKey);
+    }
+    if (this.transcriptSinksBySession.get(sessionKey) === onEvent) {
+      this.transcriptSinksBySession.delete(sessionKey);
+    }
   }
 
   /**

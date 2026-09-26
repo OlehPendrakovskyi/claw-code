@@ -694,10 +694,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const mentions = await this.resolveMentions(text);
-        const mentionPaths = mentions.map(m => m.path);
         if (mentions.length > 0) {
             await this.addAttachments(thread, mentions);
-            attachments.push(...thread.pendingAttachments.filter(a => mentionPaths.includes(a.path)));
+            // Mention dedupe keys on (path + range); attach only pending
+            // entries whose range matches an accepted mention, not every
+            // attachment of the same file.
+            const mentionKeys = new Set(mentions.map(mentionKey));
+            attachments.push(...thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
         }
 
         thread.messages.push({ role: 'user', content: text });
@@ -1112,7 +1115,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return editor.document.uri.fsPath;
     }
 
-    /** Resolve @file mentions in a draft to workspace-scoped paths; mentions escaping the workspace are rejected. */
     /** Resolve @file mentions to workspace-scoped real paths; symlink escapes
      *  and unreadable targets are rejected before an attachment is accepted. */
     private async resolveMentions(text: string): Promise<FileMention[]> {
@@ -1149,12 +1151,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!context.filePath) {
             return;
         }
-        const lineCount = context.selection ? context.selection.split('\n').length : 0;
+        const editor = vscode.window.activeTextEditor;
+        const sel = editor && !editor.selection.isEmpty ? editor.selection : undefined;
+        let mention = `@${context.filePath}`;
+        if (sel) {
+            const startLine = sel.start.line + 1;
+            const endLine = sel.end.character === 0 ? sel.end.line : sel.end.line + 1;
+            mention = `@${context.filePath}#L${startLine}-${Math.max(startLine, endLine)}`;
+        }
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
             type: 'insertMention',
-            mention: lineCount > 0
-                ? `@${context.filePath}#L1-${lineCount}`
-                : `@${context.filePath}`
+            mention
         });
     }
 
@@ -1181,3 +1188,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return undefined;
     }
 }
+
+/** Stable dedupe key for an attachment or mention: path plus 1-based range. */
+function attachmentKey(a: { path: string; lineStart?: number; lineEnd?: number }): string {
+    return `${a.path}\u0000${a.lineStart ?? ''}\u0000${a.lineEnd ?? a.lineStart ?? ''}`;
+}
+
+const mentionKey = attachmentKey;

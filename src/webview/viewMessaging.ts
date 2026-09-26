@@ -162,9 +162,10 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
     return sections.join('\n\n');
 }
 
-/** Slice a file body to a 1-based inclusive line range when the mention carries a #L range. */
+/** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.
+ *  A missing range returns the whole body; a non-positive start clamps to line 1. */
 function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
-    if (!lineStart) {
+    if (lineStart == null) {
         return content;
     }
     const lines = content.split('\n');
