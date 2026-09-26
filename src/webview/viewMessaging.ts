@@ -5,8 +5,10 @@ import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
 import { EditorContext, ContextType } from './slashCommands';
 
+/** Shared output channel for chat panel logging. */
 export const log = vscode.window.createOutputChannel('OpenClaw Chat', { log: true });
 
+/** A chat message rendered in the webview. */
 export type ChatMessage =
     | { role: 'user' | 'assistant' | 'error'; content: string; html?: string }
     | {
@@ -14,8 +16,10 @@ export type ChatMessage =
         entries: Array<{ title: string; status: string; details: string }>;
     };
 
+/** An attachment referenced by a chat thread. */
 export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string };
 
+/** Full mutable state of one chat thread. */
 export type ChatThreadState = {
     id: string;
     index: number;
@@ -35,6 +39,7 @@ export type ChatThreadState = {
     service: ChatService;
 };
 
+/** Serializable snapshot of a thread sent to the webview. */
 export type ThreadSnapshot = {
     id: string;
     index: number;
@@ -53,6 +58,7 @@ export type ThreadSnapshot = {
     lastUsage: UsageInfo | null;
 };
 
+/** Post a message to every live webview target. */
 export function postToAll(
     views: Array<vscode.Webview | undefined>,
     message: Record<string, unknown>
@@ -62,6 +68,7 @@ export function postToAll(
     }
 }
 
+/** Build webview snapshots for the given thread ids. */
 export function getThreadSnapshots(
     threads: Map<string, ChatThreadState>,
     visibleThreadIds: string[]
@@ -88,6 +95,7 @@ export function getThreadSnapshots(
         }));
 }
 
+/** Add preview URIs to thread attachments for webview rendering. */
 export function enrichAttachmentsForWebview(
     snapshots: ThreadSnapshot[],
     webview: vscode.Webview
@@ -105,6 +113,7 @@ export function enrichAttachmentsForWebview(
     }));
 }
 
+/** Convert markdown text to sanitized HTML for the webview. */
 export async function renderMarkdown(text: string): Promise<string> {
     try {
         return await markdownToHTML(text, { sanitize: true });
@@ -114,6 +123,7 @@ export async function renderMarkdown(text: string): Promise<string> {
     }
 }
 
+/** Escape HTML-significant characters in plain text. */
 export function escapeHtml(text: string): string {
     return text
         .replace(/&/g, '&amp;')
@@ -121,10 +131,12 @@ export function escapeHtml(text: string): string {
         .replace(/>/g, '&gt;');
 }
 
+/** Escape glob-significant characters in a search pattern. */
 export function escapeGlob(str: string): string {
     return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
 }
 
+/** Read attachment files into prompt-ready text blocks. */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
 
@@ -145,6 +157,7 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
     return sections.join('\n\n');
 }
 
+/** Append or update a tool-call message in a thread snapshot. */
 export function appendToolMessage(
     thread: ChatThreadState,
     entry: { title: string; status: string; details: string }
@@ -161,6 +174,7 @@ export function appendToolMessage(
     });
 }
 
+/** Handle a webview file-search request, preferring open editors then ripgrep. */
 export async function handleFileSearch(query: string, webview: vscode.Webview, cwd: string): Promise<void> {
     const limit = 15;
     type FileSearchResult = {name: string; path: string; relativePath: string};
@@ -181,7 +195,6 @@ export async function handleFileSearch(query: string, webview: vscode.Webview, c
                 }
             }
         } catch {
-            // tabGroups API unavailable
         }
 
         if (openFiles.length > 0) {
@@ -251,6 +264,7 @@ export async function handleFileSearch(query: string, webview: vscode.Webview, c
     webview.postMessage({ type: 'fileSearchResults', files: sortFiles(files).slice(0, limit) });
 }
 
+/** Gather editor context (selection, diagnostics, file) for slash commands. */
 export async function gatherEditorContext(
     contextType: ContextType,
     runGitFn: (args: string) => Promise<string>

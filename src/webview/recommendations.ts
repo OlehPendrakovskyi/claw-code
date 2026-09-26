@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
+/** A single suggested action shown in the chat empty state. */
 export interface Recommendation {
     label: string;
     command: string;
     icon: string;
 }
 
+/** Build the list of contextual recommendations for the chat panel. */
 export function buildRecommendations(): Recommendation[] {
     const editor = vscode.window.activeTextEditor;
     const recs: Recommendation[] = [];

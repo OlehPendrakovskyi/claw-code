@@ -28,6 +28,7 @@ import { execFileAsync } from './shared';
 import { getHardeningTerminal, getOverviewProvider } from './terminals';
 import { isCommandAvailable, showMissingNodeMessage, runSetupFlow } from './setup';
 
+/** Run the complete hardening flow (check readiness, then execute). */
 export async function runHardeningFlow() {
     const readiness = await ensureHardeningCommandReady();
     if (!readiness) {
@@ -55,6 +56,7 @@ export async function runHardeningFlow() {
     vscode.window.showInformationMessage('OpenClaw hardening commands sent. Review the terminal output.');
 }
 
+/** Run the hardening status check in a terminal. */
 export async function runHardeningStatusCheck() {
     const readiness = await ensureHardeningCommandReady();
     if (!readiness) {
@@ -66,6 +68,7 @@ export async function runHardeningStatusCheck() {
     vscode.window.showInformationMessage('Running OpenClaw status --all.');
 }
 
+/** Build and display the hardening access summary document. */
 export async function showHardeningAccessSummary() {
     const readiness = await ensureHardeningCommandReady();
     if (!readiness) {
@@ -128,6 +131,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
     }
 }
 
+/** Toggle a tool entry's enabled flag in the config. */
 export async function toggleToolEntry(tool: ToolEntry) {
     const { config, error, path: configPath } = await loadOpenClawConfigRecord();
     if (!config) {
@@ -163,6 +167,7 @@ export async function toggleToolEntry(tool: ToolEntry) {
     );
 }
 
+/** Uninstall a tool entry described in the config. */
 export async function uninstallToolEntry(tool: ToolEntry) {
     const { config, error, path: configPath } = await loadOpenClawConfigRecord();
     if (!config) {
@@ -196,6 +201,7 @@ export async function uninstallToolEntry(tool: ToolEntry) {
     vscode.window.showInformationMessage(`Removed tool "${tool.label}".`);
 }
 
+/** Ensure the hardening command is usable, prompting for setup when missing. */
 export async function ensureHardeningCommandReady(): Promise<{ prefix: string; mode: HardeningMode } | null> {
     const prefix = getHardeningCommandPrefix();
     if (!prefix) {

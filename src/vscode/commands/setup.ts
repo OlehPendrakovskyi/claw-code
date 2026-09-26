@@ -41,6 +41,7 @@ export async function isCommandAvailable(command: string) {
     }
 }
 
+/** Connect the extension to the OpenClaw gateway, with reconnect and legacy migration handling. */
 export async function connect() {
     if (isConnecting) {
         vscode.window.showInformationMessage('OpenClaw connection is already in progress.');
@@ -132,6 +133,7 @@ export async function connect() {
     }
 }
 
+/** Run the guided OpenClaw setup flow. */
 export async function runSetupFlow() {
     const options = getInstallOptions();
     const pick = await vscode.window.showQuickPick(options, {
@@ -164,6 +166,7 @@ export async function runSetupFlow() {
     await runInstallCommand(pick.command);
 }
 
+/** Run the interactive model/provider setup wizard. */
 export async function runModelSetupWizard() {
     const hasOpenClaw = await isCommandAvailable('openclaw');
     if (!hasOpenClaw) {
@@ -224,6 +227,7 @@ export async function runModelSetupWizard() {
     await runPostSetupChecks();
 }
 
+/** Run the guided node installation flow. */
 export async function runNodeSetupFlow() {
     const options = getNodeInstallOptions();
     const pick = await vscode.window.showQuickPick(options, {
@@ -277,6 +281,7 @@ async function runSetupCommand(command: string) {
     terminalInstance.sendText(command);
 }
 
+/** Run a CLI command in a terminal after confirming availability. */
 export async function runCliInTerminal(command: string, message: string) {
     const executable = command.split(/\s+/)[0];
     if (executable === 'openclaw' || executable === 'openclaw.exe') {
@@ -443,6 +448,7 @@ async function runPostSetupChecks() {
     vscode.window.showInformationMessage('Running OpenClaw doctor and gateway status checks.');
 }
 
+/** Show the message asking the user to install the Node runtime. */
 export async function showMissingNodeMessage() {
     const installCommand = getNodeInstallCommandForPlatform();
     const action = await vscode.window.showErrorMessage(
@@ -467,6 +473,7 @@ export async function showMissingNodeMessage() {
     }
 }
 
+/** Persist the OpenClaw command override in the extension settings. */
 export async function updateOpenClawCommandSetting(command: string) {
     const config = vscode.workspace.getConfiguration('openclaw');
     await config.update('command', command, vscode.ConfigurationTarget.Global);
