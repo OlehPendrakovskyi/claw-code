@@ -776,10 +776,22 @@ export class GatewayChatService {
         }
         const existingKeySink = this.runSinksBySession.get(key);
         if (existingKeySink && existingKeySink !== _onEvent) {
-          // Another thread still owns a run on the resolved key: end its
-          // stream cleanly before replacing it, mirroring the existingSink
-          // handling for the initially requested sessionKey.
-          existingKeySink({ type: 'done' });
+          // The gateway resolved this send to a session whose run is still
+          // owned by another thread. The pre-send busy check could not cover
+          // this (resolution happens after the RPC), and replacing that sink
+          // would steal the other thread's live response: its subsequent
+          // deltas would be routed here while the original chat loses its
+          // stream. Treat the occupied resolved key as a conflict: fail this
+          // send and let the caller retry once the other run finishes.
+          if (this.runSinksBySession.get(sessionKey) === _onEvent) {
+            this.runSinksBySession.delete(sessionKey);
+          }
+          _onEvent({
+            type: 'error',
+            message: `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
+          });
+          _onEvent({ type: 'done' });
+          return;
         }
         this.runSinksBySession.set(key, _onEvent);
         if (key !== sessionKey && this.runSinksBySession.get(sessionKey) === _onEvent) {

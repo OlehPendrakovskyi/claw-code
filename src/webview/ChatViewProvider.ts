@@ -1308,6 +1308,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const previousKey = thread.sessionKey;
             // Same shared-session guard as handleSelectAgent: only tear down
             // the previous session when no other thread is still bound to it.
+            // The suspended entry (if the retired run had one) must go too:
+            // a later restore would otherwise rebind the old session's
+            // callback to this thread and deliver cross-session events.
+            const suspendedSink = this.suspendedTranscriptSinks.get(thread.id);
+            if (suspendedSink && suspendedSink.sessionKey === previousKey) {
+                this.suspendedTranscriptSinks.delete(thread.id);
+            }
             if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === previousKey)) {
                 // Epoch bump precedes abort: a disconnected gateway completes
                 // the old sink synchronously, and the sink's captured epoch

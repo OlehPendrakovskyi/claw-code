@@ -286,6 +286,34 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('fails the send as a conflict when the resolved session is owned by another run', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    // Thread B owns a live run on session 'other'.
+    const bEvents: unknown[] = [];
+    svc.setActiveSession('other');
+    svc.sendMessage('b', '/tmp', 'm', 'chat', (e) => bEvents.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const bSend = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: bSend.id, ok: true, payload: { sessionKey: 'other' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Thread A sends on 'main'; the gateway resolves the send to 'other',
+    // whose run sink still belongs to thread B.
+    const aEvents: unknown[] = [];
+    svc.setActiveSession('main');
+    svc.sendMessage('a', '/tmp', 'm', 'chat', (e) => aEvents.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const aSend = sentRequests(ws).filter((r) => r.method === 'chat.send').pop()!;
+    expect(aSend.params).toMatchObject({ sessionKey: 'main', queueMode: 'enqueue' });
+    ws.emit('message', JSON.stringify({ type: 'res', id: aSend.id, ok: true, payload: { sessionKey: 'other' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Thread B's stream must stay untouched; thread A gets a conflict error.
+    expect(bEvents).toEqual([]);
+    expect(aEvents).toContainEqual(expect.objectContaining({ type: 'error' }));
+    expect(aEvents[aEvents.length - 1]).toEqual({ type: 'done' });
+    svc.dispose();
+  });
+
   it('abort sends chat.abort and emits done', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);
