@@ -5,6 +5,7 @@ import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
+import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 import {
     log,
     connect,
@@ -69,11 +70,18 @@ export function activate(context: vscode.ExtensionContext) {
     log.info('overview tree view created');
 
     const chatViewProvider = new ChatViewProvider(context.extensionUri, context);
+    void migrateLegacyGatewayToken(context);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, chatViewProvider),
         chatViewProvider
     );
     log.info('chat view provider registered');
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('openclaw.chat.connectGateway', () => {
+            void promptForGatewayToken(context);
+        })
+    );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('openclaw.chat.open', () => {

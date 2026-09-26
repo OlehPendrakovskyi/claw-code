@@ -74,6 +74,10 @@
       {
         "command": "openclaw.chat.debug",
         "title": "OpenClaw: Debug Chat Panel"
+      },
+      {
+        "command": "openclaw.chat.connectGateway",
+        "title": "OpenClaw: Connect to Gateway"
       }
     ],
     "viewsContainers": {
@@ -208,6 +212,26 @@
           "type": "string",
           "default": "http://127.0.0.1:18789/",
           "description": "OpenClaw gateway dashboard URL to open (default: local gateway address)"
+        },
+        "openclaw.gateway.url": {
+          "type": "string",
+          "default": "ws://127.0.0.1:18789",
+          "description": "OpenClaw Gateway WebSocket URL for the chat transport"
+        },
+        "openclaw.gateway.transport": {
+          "type": "string",
+          "enum": [
+            "gateway",
+            "acpx",
+            "auto"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Always use the OpenClaw Gateway WebSocket transport",
+            "Always use the local acpx CLI transport",
+            "Use the Gateway when reachable, fall back to acpx"
+          ],
+          "description": "Chat transport backend"
         }
       }
     }
