@@ -1840,7 +1840,7 @@ export const CONTENT_JS = `
                 }
                 var panel = document.createElement('div');
                 panel.id = 'claw-sessions-panel';
-                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:#252526;border:1px solid #454545;padding:6px;z-index:60;min-width:220px;font-size:12px';
+                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:var(--vscode-editorWidget-background, #252526);border:1px solid var(--vscode-editorWidget-border, #454545);color:var(--vscode-editor-foreground, inherit);padding:6px;z-index:60;min-width:220px;font-size:12px';
                 var title = document.createElement('div');
                 title.textContent = 'Sessions';
                 title.style.cssText = 'opacity:0.7;margin-bottom:4px';
@@ -1866,6 +1866,10 @@ export const CONTENT_JS = `
                 });
                 document.body.appendChild(panel);
                 setTimeout(function() {
+                    // Panel may have been removed (e.g. agentSelected) before
+                    // this deferred registration runs: do not then leave a
+                    // dangling document listener.
+                    if (!document.getElementById('claw-sessions-panel')) { return; }
                     sessionsPanelDismiss = function dismiss(ev) {
                         var p = document.getElementById('claw-sessions-panel');
                         if (p && !p.contains(ev.target)) {
