@@ -309,6 +309,32 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('abort retires the transcript sink so late session.message events are not delivered', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    svc.abort();
+    const abort = sentRequests(ws).find((r) => r.method === 'chat.abort')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: abort.id, ok: true, payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const doneCount = events.filter((e) => (e as { type: string }).type === 'done').length;
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', delta: 'late tail' },
+    }));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'session_end', payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(events).not.toContainEqual({ type: 'text', text: 'late tail' });
+    expect(events.filter((e) => (e as { type: string }).type === 'done')).toHaveLength(doneCount);
+    svc.dispose();
+  });
+
   it('warns instead of crashing when subscribe method is not advertised', async () => {
     const ws = createMockWs();
     const log = { lines: [] as string[] };

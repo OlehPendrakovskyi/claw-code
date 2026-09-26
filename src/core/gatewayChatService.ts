@@ -766,21 +766,17 @@ export class GatewayChatService {
     }
     const runSink = this.runSinksBySession.get(key);
     const sink = runSink ?? this.transcriptSinksBySession.get(key) ?? null;
+    if (sink) {
+      // Retire both sink roles for this callback: a lingering transcript sink
+      // would keep routing late session.message events (and reconnect
+      // resubscriptions) into the cancelled thread after its `done`.
+      this.retireSinks(key, sink);
+    }
     if (!this.connected) {
-      if (runSink && this.runSinksBySession.get(key) === runSink) {
-        this.runSinksBySession.delete(key);
-      }
       if (sink) {
         sink({ type: 'done' });
       }
       return;
-    }
-    // Retire the run sink synchronously: the abort RPC settles later, and
-    // events from the old session arriving in between must not reach the
-    // caller after it rebinds the thread. Retire only the entry this abort
-    // started with — a newer send may have replaced the map entry.
-    if (runSink && this.runSinksBySession.get(key) === runSink) {
-      this.runSinksBySession.delete(key);
     }
     void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
       .catch((err: Error) => {
