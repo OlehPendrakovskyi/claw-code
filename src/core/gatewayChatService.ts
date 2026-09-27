@@ -799,6 +799,59 @@ export class GatewayChatService {
     this.activeSessionKey = sessionKey;
   }
 
+  /** Snapshot one session's catch-up state so a caller that clears the
+   *  sink (and with it the cursor, seen IDs, and seeded boundary) can
+   *  restore an identical catch-up boundary when the teardown is later
+   *  rolled back (e.g. an abandoned rebind): without the snapshot the
+   *  replay boundary is gone and events missed while no sink was
+   *  registered are permanently lost. Returns null when there is
+   *  nothing to preserve. */
+  captureSessionState(sessionKey: string): {
+    seenMessageIds?: Set<string>;
+    deltaCursor?: unknown;
+    seededCatchUpFingerprints?: string[];
+  } | null {
+    const seenMessageIds = this.seenMessageIdsBySession.get(sessionKey);
+    const deltaCursor = this.deltaCursorBySession.get(sessionKey);
+    const seededCatchUpFingerprints = this.seededCatchUpFingerprints.get(sessionKey);
+    if (!seenMessageIds && deltaCursor === undefined && !seededCatchUpFingerprints) {
+      return null;
+    }
+    return {
+      seenMessageIds: seenMessageIds ? new Set(seenMessageIds) : undefined,
+      deltaCursor: deltaCursor === undefined ? undefined : deltaCursor,
+      seededCatchUpFingerprints: seededCatchUpFingerprints
+        ? [...seededCatchUpFingerprints]
+        : undefined,
+    };
+  }
+
+  /** Restore a captureSessionState snapshot for one session: the entries
+   *  re-establish the pre-clear catch-up boundary so the next (re)
+   *  subscription replays exactly the rows missed after the snapshot.
+   *  A null snapshot is a no-op. */
+  restoreSessionState(
+    sessionKey: string,
+    snapshot: {
+      seenMessageIds?: Set<string>;
+      deltaCursor?: unknown;
+      seededCatchUpFingerprints?: string[];
+    } | null
+  ): void {
+    if (!snapshot) {
+      return;
+    }
+    if (snapshot.seenMessageIds) {
+      this.seenMessageIdsBySession.set(sessionKey, snapshot.seenMessageIds);
+    }
+    if (snapshot.deltaCursor !== undefined) {
+      this.deltaCursorBySession.set(sessionKey, snapshot.deltaCursor);
+    }
+    if (snapshot.seededCatchUpFingerprints) {
+      this.seededCatchUpFingerprints.set(sessionKey, snapshot.seededCatchUpFingerprints);
+    }
+  }
+
   /** Drop one session's transcript sink (thread teardown): stops routing that
    *  session's live events to a callback for a thread that no longer exists. */
   clearSessionSink(sessionKey: string): void {

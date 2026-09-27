@@ -2199,6 +2199,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         let abandonedPreviousKey: string | null = null;
         let abandonedSuspendedSink: { gateway: GatewayChatService; sessionKey: string } | null = null;
+        // Catch-up state of the previous key, captured before the teardown
+        // below clears it: when this rebind is abandoned the restore must
+        // rebuild the same replay boundary, or events missed while the
+        // sink was cleared are permanently lost.
+        let abandonedStateSnapshot: ReturnType<GatewayChatService['captureSessionState']> = null;
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
             const previousKey = thread.sessionKey;
             abandonedPreviousKey = previousKey;
@@ -2217,6 +2222,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     gateway.abort(previousKey);
                 }
                 if (!this.otherThreadsOnKey(thread.id, previousKey)) {
+                    abandonedStateSnapshot = gateway.captureSessionState(previousKey);
                     gateway.clearSessionSink(previousKey);
                 }
             }
@@ -2229,6 +2235,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 return;
             }
             if (abandonedSuspendedSink) {
+                abandonedSuspendedSink.gateway.restoreSessionState(abandonedSuspendedSink.sessionKey, abandonedStateSnapshot);
                 this.suspendedTranscriptSinks.set(thread.id, abandonedSuspendedSink);
                 this.restoreSuspendedTranscriptSink(thread);
                 return;
@@ -2239,6 +2246,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 !(gatewayBackend instanceof GatewayChatService)) {
                 return;
             }
+            gatewayBackend.restoreSessionState(persistent.sessionKey, abandonedStateSnapshot);
             this.transcriptCallbacks.delete(thread.id);
             gatewayBackend.removeTranscriptSink(persistent.sessionKey, persistent.cb);
             const rebindEpoch = thread.bindingEpoch;
@@ -2281,6 +2289,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.sessionKey = sessionKey;
 
         if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {
+            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+                type: 'agentSelected',
+                sessionKey,
+            });
             return;
         }
 
