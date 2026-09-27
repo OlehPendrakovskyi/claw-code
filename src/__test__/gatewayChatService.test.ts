@@ -594,23 +594,18 @@ describe('GatewayChatService sendMessage/abort', () => {
     const svc = await connectService(ws);
     const events: unknown[] = [];
     svc.onEvent = (e) => events.push(e);
-    // Catch-up runs only on a cursor/resume path: seed a delta cursor first
-    // (the initial send itself must not replay an unscoped history tail).
+    // Catch-up runs only on a cursor/resume path: seed a delta cursor first.
+    // The replay goes to a transcript-only resume sink: a run sink (including
+    // one present at catch-up start) is excluded from replay delivery, since
+    // replayed history and its finalizing done must not reach a live run.
     svc.seedHistory('main', { deltaCursor: 'cursor-42', messages: [] });
-    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
-    await new Promise<void>((r) => setTimeout(r, 0));
-    answerSubscribe(ws);
-    await new Promise<void>((r) => setTimeout(r, 0));
-    answerPreSendHistory(ws);
-    await new Promise<void>((r) => setTimeout(r, 0));
-    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
-    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    svc.resumeSession('main', (e) => events.push(e), { historyRendered: true });
     await new Promise<void>((r) => setTimeout(r, 0));
     const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: subscribe.id, ok: true, payload: {} }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const history = sentRequests(ws).find((r) => r.method === 'chat.history');
-    expect(history?.params).toMatchObject({ sessionKey: 'main' });
+    expect(history?.params).toMatchObject({ sessionKey: 'main', deltaCursor: 'cursor-42' });
     ws.emit('message', JSON.stringify({
       type: 'res',
       id: history!.id,
@@ -630,6 +625,43 @@ describe('GatewayChatService sendMessage/abort', () => {
     );
     expect(texts).toEqual(expect.arrayContaining([{ type: 'text', text: 'cached' }, { type: 'text', text: 'tail' }]));
     expect(texts.filter((t) => t.text === 'cached')).toHaveLength(1);
+    svc.dispose();
+  });
+
+  it('does not deliver replayed catch-up history to the run sink present at catch-up start', async () => {
+    // Reconnect/resume catch-up with a live run: the run sink exists when
+    // catchUpHistory starts and its send has already settled, so neither the
+    // pre-ack nor the raced check matches — the start sink itself must be
+    // excluded from replay delivery and replay finalization, or a replayed
+    // final row would emit done and retire the run before its own response
+    // arrives.
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.onEvent = (e) => events.push(e);
+    svc.seedHistory('main', { deltaCursor: 'cursor-42', messages: [] });
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const history = sentRequests(ws).filter((r) => r.method === 'chat.history').pop()!;
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history.id,
+      ok: true,
+      payload: {
+        deltaCursor: 'cursor-42',
+        messages: [{ messageId: 'm1', role: 'assistant', text: 'replayed' }],
+      },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(events.filter((e) => (e as { type?: string }).type === 'text')).toHaveLength(0);
+    expect(events.filter((e) => (e as { type?: string }).type === 'done')).toHaveLength(0);
     svc.dispose();
   });
 
