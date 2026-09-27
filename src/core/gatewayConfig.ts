@@ -64,6 +64,107 @@ export async function setGatewayToken(secrets: vscode.SecretStorage, token: stri
   }
 }
 
+/** Strip JSONC comments and trailing commas from a settings.json payload so
+ *  the result parses with JSON.parse: line and block comments outside
+ *  strings are removed, and a comma directly before a closing brace or
+ *  bracket is dropped. */
+function stripJsonc(text: string): string {
+  let out = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      out += ch;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      while (i < text.length && text[i] !== '\n') i++;
+      out += '\n';
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      i += 2;
+      while (i < text.length && !(text[i] === '*' && text[i + 1] === '/')) i++;
+      i++;
+      continue;
+    }
+    if (ch === ',') {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] === '}' || text[j] === ']') continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/** A language override discovered on disk, with a scoped configuration for
+ *  inspecting and clearing that language's settings. */
+type LanguageOverride = {
+  languageId: string;
+  config: vscode.WorkspaceConfiguration;
+  inspection:
+    | {
+        globalLanguageValue?: string;
+        workspaceLanguageValue?: string;
+        workspaceFolderLanguageValue?: string;
+      }
+    | undefined;
+};
+
+/** List language overrides configured via `[language]` sections in the raw
+ *  settings.json files of the workspace folders and workspace file.
+ *
+ *  VS Code's `inspect()` exposes language-scoped fields only for the
+ *  language of the inspected context, so a plaintext token hidden under
+ *  another language's override stays invisible to the normal inspection.
+ *  The configured languages must be discovered from disk and inspected per
+ *  language ({@link vscode.ConfigurationScope} supports a bare `languageId`)
+ *  so migration covers every override. */
+async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
+  const uris: vscode.Uri[] = [];
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    uris.push(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json'));
+  }
+  if (vscode.workspace.workspaceFile) {
+    uris.push(vscode.workspace.workspaceFile);
+  }
+  const languageIds = new Set<string>();
+  for (const uri of uris) {
+    try {
+      const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      const parsed = JSON.parse(stripJsonc(text)) as Record<string, unknown>;
+      for (const key of Object.keys(parsed)) {
+        const match = /^\[(.+)\]$/.exec(key.trim());
+        if (match && typeof parsed[key] === 'object' && parsed[key] !== null) {
+          languageIds.add(match[1]);
+        }
+      }
+    } catch {
+      // Missing or unreadable settings files hold no discoverable overrides.
+    }
+  }
+  return [...languageIds].map((languageId) => {
+    const config = vscode.workspace.getConfiguration('openclaw', {
+      languageId,
+    } as vscode.ConfigurationScope);
+    return { languageId, config, inspection: config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING) };
+  });
+}
+
 /**
  * One-time migration: if a legacy plaintext `openclaw.gateway.token`
  * setting exists, move it into SecretStorage and clear the plaintext
@@ -75,13 +176,14 @@ export async function migrateLegacyGatewayToken(
 ): Promise<boolean> {
   const config = vscode.workspace.getConfiguration('openclaw');
   const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
+  // VS Code stores language-scoped values (`[lang]` overrides), and `inspect`
+  // only exposes the language fields for the inspected context's language:
+  // a legacy token hidden under another language's override stays plaintext
+  // forever unless every configured language is inspected and cleared too.
+  const languageOverrides = await discoverLanguageOverrides();
   // An explicitly empty value in one scope must not shadow a non-empty
   // token in another: pick the first non-empty scoped value, falling back
   // to any defined value only for cleanup bookkeeping.
-  // VS Code also stores language-scoped values (`[lang]` overrides). A
-  // legacy token hidden there stays plaintext forever unless the language
-  // values are included in both selection and cleanup, so inspect them and
-  // clear each scope with overrideInLanguage=true below.
   const nonEmptyScopes = [
     inspection?.workspaceFolderValue,
     inspection?.workspaceValue,
@@ -89,6 +191,11 @@ export async function migrateLegacyGatewayToken(
     inspection?.workspaceFolderLanguageValue,
     inspection?.workspaceLanguageValue,
     inspection?.globalLanguageValue,
+    ...languageOverrides.flatMap((entry) => [
+      entry.inspection?.workspaceFolderLanguageValue,
+      entry.inspection?.workspaceLanguageValue,
+      entry.inspection?.globalLanguageValue,
+    ]),
   ] as (string | undefined)[];
   const nonEmpty = nonEmptyScopes.find((v) => typeof v === 'string' && v) ?? '';
   const legacyDefined = nonEmptyScopes.some((v) => v !== undefined);
@@ -149,6 +256,34 @@ export async function migrateLegacyGatewayToken(
           err instanceof Error ? err.message : String(err)
         }`
       );
+    }
+  }
+  // Clean every configured language override as well: the loop above covers
+  // only the inspected context's language fields, while the discovered
+  // overrides may hold the legacy token in any target.
+  for (const entry of languageOverrides) {
+    const hadLanguageValue =
+      entry.inspection?.globalLanguageValue !== undefined ||
+      entry.inspection?.workspaceLanguageValue !== undefined ||
+      entry.inspection?.workspaceFolderLanguageValue !== undefined;
+    if (!hadLanguageValue) {
+      continue;
+    }
+    for (const target of [
+      vscode.ConfigurationTarget.Global,
+      vscode.ConfigurationTarget.Workspace,
+      vscode.ConfigurationTarget.WorkspaceFolder,
+    ]) {
+      try {
+        await entry.config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target, true);
+      } catch (err) {
+        cleanupFailed = true;
+        log.warn(
+          `legacy token cleanup failed for language "${entry.languageId}" target ${target}: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
     }
   }
   // A failed scope write leaves the plaintext token on disk while the

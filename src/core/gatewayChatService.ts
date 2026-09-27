@@ -305,8 +305,11 @@ export class GatewayChatService {
   private pendingSubscribeBySession = new Map<string, Promise<boolean>>();
   // Keyed session.message frames that arrived for an unknown session while a
   // pre-ack send was in flight: buffered until the acknowledgement resolves
-  // the actual session key, then re-routed (drainPreAckBufferedFrames).
-  private preAckBufferedFrames: Array<SessionEvent> = [];
+  // the actual session key, then re-routed (drainPreAckBufferedFrames). Each
+  // frame records the pre-ack sends in flight at arrival — a settled send's
+  // frames must be attributable to it so its failure can discard them instead
+  // of draining them into another run's sink.
+  private preAckBufferedFrames: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
   /** Sessions with a live transcript subscription on the current socket.
    *  Cleared whenever the socket drops: every subscriber must re-subscribe
    *  after a reconnect. */
@@ -878,7 +881,7 @@ export class GatewayChatService {
         // acknowledgement registers the sink under the resolved key. Buffer
         // them and re-route after the ack instead of dropping the run's
         // initial deltas/tool events.
-        this.preAckBufferedFrames.push(evt);
+        this.preAckBufferedFrames.push({ evt, sends: new Set(this.preAckSendKeys) });
       } else {
         // Unroutable session.message frames (e.g. ambiguous keyless frames in
         // multi-session mode) are dropped by design in sinkForSession; emitting
@@ -1104,13 +1107,11 @@ export class GatewayChatService {
           // ack's drainPreAckBufferedFrames would route them into a new
           // send's sink, leaking the abandoned run's output.
           this.removeTranscriptSink(sessionKey, _onEvent);
-          if (this.preAckSendKeys.size === 0) {
-            this.preAckBufferedFrames = [];
-          } else {
-            this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
-              (evt) => (evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
-            );
-          }
+          this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
+            (buffered) =>
+              !buffered.sends.has(sessionKey) ||
+              (buffered.evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
+          );
           _onEvent({
             type: 'error',
             message: `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
@@ -1157,9 +1158,15 @@ export class GatewayChatService {
           this.runSinksBySession.delete(sessionKey);
         }
         this.removeTranscriptSink(sessionKey, _onEvent);
-        // The send failed: buffered pre-ack frames cannot route to this
-        // send's sinks. Drop leftovers when no other send is pre-ack.
-        this.drainPreAckBufferedFrames();
+        // The send failed: frames buffered while it was in flight may be its
+        // own (its resolved key is unknowable without the acknowledgement),
+        // so discard them before draining the remainder for other sends.
+        if (this.preAckSendKeys.size === 0) {
+          this.preAckBufferedFrames = [];
+        } else {
+          this.discardPreAckFramesForSend(sessionKey);
+          this.drainPreAckBufferedFrames();
+        }
         _onEvent({ type: 'error', message: err.message });
         _onEvent({ type: 'done' });
       });
@@ -1196,6 +1203,22 @@ export class GatewayChatService {
     });
   }
 
+  /** Discard every frame buffered while the send for `key` was in flight.
+   *
+   *  A send that settles without an acknowledgement (RPC failure or abort)
+   *  never reveals its resolved session key, so its buffered frames cannot be
+   *  identified by key. Frames tagged with the send's requested key are
+   *  dropped wholesale rather than left for a later drain, where they could
+   *  be routed into a different run's sink and leak the abandoned run's
+   *  output. A surviving send loses at most its initial pre-ack deltas: its
+   *  completion frame still arrives live and history catch-up recovers the
+   *  rows on the next reconnect, so no content is permanently lost. */
+  private discardPreAckFramesForSend(key: string): void {
+    this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
+      (buffered) => !buffered.sends.has(key)
+    );
+  }
+
   /** Re-route frames buffered while a send was pre-ack: the acknowledgement
    *  (or failure) has settled the send's sink registrations, so unmatched
    *  frames stay buffered while another send is still pre-ack and are
@@ -1206,15 +1229,15 @@ export class GatewayChatService {
     }
     const frames = this.preAckBufferedFrames;
     this.preAckBufferedFrames = [];
-    const leftover: Array<SessionEvent> = [];
-    for (const evt of frames) {
-      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
+    const leftover: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
+    for (const buffered of frames) {
+      const payload = (buffered.evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
       const routed = this.sinkForSession(payload.sessionKey);
       if (!routed) {
-        leftover.push(evt);
+        leftover.push(buffered);
         continue;
       }
-      const chatEvents = mapSessionEventToChatEvent(evt);
+      const chatEvents = mapSessionEventToChatEvent(buffered.evt);
       if (chatEvents.length > 0) {
         if (!this.claimCompleteFrame(routed.key, payload)) {
           continue;
@@ -1495,9 +1518,7 @@ export class GatewayChatService {
       // that can no longer be acknowledged, keyed or not.
       this.preAckBufferedFrames = [];
     } else {
-      this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
-        (evt) => (evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
-      );
+      this.discardPreAckFramesForSend(key);
     }
     // Retire only the aborted run's sink, from both sink roles: the run
     // sink also lives in the transcript set, so removing it stops late

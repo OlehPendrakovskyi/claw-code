@@ -57,6 +57,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  detects that a newer selection superseded it and aborts instead of
      *  rebinding the stale key or re-persisting an obsolete session key. */
     private selectGeneration = 0;
+    /** Monotonic persist generation and write chain for the durable last-
+     *  session-key commit: two selections can overlap inside their persist
+     *  awaits, and whichever workspaceState.update resolves last would
+     *  otherwise win — persisting a stale key that resumes after a restart
+     *  even though the in-memory generation checks rejected that request.
+     *  Writes are serialized and each commit re-verifies it is still the
+     *  newest request before touching workspace state. */
+    private persistGeneration = 0;
+    private persistLastSessionKeyWrite: Promise<void> = Promise.resolve();
     /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
     private threadCounter = 0;
@@ -2023,10 +2032,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway.resumeSession(sessionKey, cb);
     }
 
-    /** Persist the last selected session key for window-restart resume. */
+    /** Persist the last selected session key for window-restart resume.
+     *
+     *  handleSelectAgent and handleOpenSession can overlap, so the durable
+     *  write is serialized through a single chain and each write commits
+     *  only if no newer persist was requested while it waited: an older
+     *  selection's late write must not overwrite a newer selection's key,
+     *  which the in-memory generation checks would then reject while the
+     *  stale key still resumes after a restart. */
     private async persistLastSessionKey(sessionKey: string): Promise<void> {
+        const gen = ++this.persistGeneration;
         this.lastSessionKey = sessionKey;
-        await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, sessionKey);
+        const write = this.persistLastSessionKeyWrite.then(async () => {
+            if (gen !== this.persistGeneration) {
+                return;
+            }
+            await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, sessionKey);
+        });
+        this.persistLastSessionKeyWrite = write.catch(() => undefined);
+        await write;
     }
 
     /** Resume the persisted session after a window restart (catch-up). */
