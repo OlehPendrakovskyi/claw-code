@@ -255,7 +255,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                             // the incremented epoch must already be in place or
                             // the stale completion is treated as current.
                             thread.eventEpoch += 1;
-                            if (thread.sessionKey && !shared) {
+                            // Same ownership guard as resetThread/closeThread:
+                            // cancelling an idle resumed thread must not send
+                            // chat.abort for a run owned by the gateway or
+                            // another client.
+                            if (thread.sessionKey && !shared && thread.status === 'running') {
                                 backend.abort(thread.sessionKey);
                             }
                         } else {
@@ -659,6 +663,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (isMention && !(await this.isWorkspaceScoped(canonical))) {
                     continue;
                 }
+                // The workspace-scope await is a further suspension point: a
+                // cancel/clear landing during it must stop this continuation
+                // before the attachment is appended.
+                if (options?.guard?.() === false) {
+                    return;
+                }
                 const ext = path.extname(canonical).toLowerCase();
                 thread.pendingAttachments.push({
                     name: path.basename(canonical),
@@ -749,7 +759,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             fullPrompt = `${await readAttachments(attachments)}\n\n${fullPrompt}`;
         }
 
-        await this.sendPrompt(thread, fullPrompt);
+        await this.sendPrompt(thread, fullPrompt, sendEpoch);
         } catch (err) {
             // Early in-flight marking must not strand the thread in a
             // streaming state when resolution or prompt assembly throws.
@@ -957,7 +967,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 fullPrompt = `${await readAttachments(attachments)}\n\n${text}`;
             }
 
-            await this.sendPrompt(thread, fullPrompt);
+            await this.sendPrompt(thread, fullPrompt, sendEpoch);
         } catch (err) {
             // The early in-flight marking must never strand the thread in a
             // streaming state if attachment resolution throws.
@@ -973,7 +983,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return thread.transportBackend ?? thread.service;
     }
 
-    private async sendPrompt(thread: ChatThreadState, fullPrompt: string): Promise<void> {
+    private async sendPrompt(thread: ChatThreadState, fullPrompt: string, sendEpoch: number): Promise<void> {
+        // A cancel/clear during attachment resolution or a superseding send
+        // bumps the epoch: this continuation must not resurrect the thread
+        // or route the stale prompt into a newer run.
+        if (thread.eventEpoch !== sendEpoch) {
+            return;
+        }
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
             const errMsg = 'No workspace folder open. Open a folder to use chat.';
@@ -988,7 +1004,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // The await above may take seconds (token lookup, connect probe).
         // Cancel/Clear/Close may have run meanwhile: a deleted thread or one
         // no longer running must not be resurrected by the continuation.
-        if (!this.threads.has(thread.id) || thread.status !== 'running') {
+        if (!this.threads.has(thread.id) ||
+            thread.status !== 'running' ||
+            thread.eventEpoch !== sendEpoch) {
             if (choice.service !== thread.service &&
                 !(choice.service instanceof GatewayChatService) &&
                 thread.transportBackend !== choice.service) {
@@ -1504,7 +1522,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         try {
             await this.persistLastSessionKey(sessionKey);
         } finally {
-            if (pendingOpenThread && pendingOpenThread.openInFlightGen === pendingOpenThread.openGeneration) {
+            if (pendingOpenThread && pendingOpenThread.openInFlightGen === selectionGen) {
                 pendingOpenThread.openInFlightGen = null;
             }
         }

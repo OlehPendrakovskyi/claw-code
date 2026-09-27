@@ -267,6 +267,12 @@ export class GatewayChatService {
       seen = new Set<string>();
       this.seenMessageIdsBySession.set(sessionKey, seen);
     }
+    // An already-seen ID must not evict an older entry: repeated delivery
+    // would otherwise churn unrelated IDs out of the capped set and let old
+    // history rows replay after reconnect.
+    if (seen.has(messageId)) {
+      return;
+    }
     if (seen.size >= GatewayChatService.SEEN_MESSAGE_LIMIT) {
       const oldest = seen.values().next().value;
       if (oldest !== undefined) {
