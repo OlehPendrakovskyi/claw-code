@@ -1147,6 +1147,14 @@ export class GatewayChatService {
         }
         this.runSinksBySession.set(key, _onEvent);
         this.drainPreAckBufferedFrames();
+        // Retire the attribution keys once no pre-ack send remains: keys that
+        // outlive their drain would let a later pre-ack send admit a stale
+        // late frame from an already-finished run into a live sink. With no
+        // send in flight the gate is moot, so clearing is safe; while other
+        // sends are still pre-ack the keys must stay for their own drains.
+        if (this.preAckSendKeys.size === 0) {
+          this.preAckSettledKeys.clear();
+        }
         if (key !== sessionKey) {
           if (this.runSinksBySession.get(sessionKey) === _onEvent) {
             this.runSinksBySession.delete(sessionKey);
