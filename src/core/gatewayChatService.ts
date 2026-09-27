@@ -963,7 +963,16 @@ export class GatewayChatService {
     if (isSessionMessage) {
       const payload = (evt.payload ?? {}) as { sessionKey?: unknown; role?: unknown; messageId?: unknown };
       const routed = this.sinkForSession(payload.sessionKey);
-      if (routed) {
+      if (routed && this.preAckSendKeys.has(routed.key)) {
+        // A session.message for the requested key that arrives between run-sink
+        // registration and the chat.send acknowledgement cannot belong to this
+        // prompt yet: the key is bound to the sink pre-ack, so normal routing
+        // would commit a residual/external run's frame as this prompt's
+        // response. Buffering defers delivery until the acknowledgement adds
+        // the key to preAckSettledKeys and the drain re-routes it (or the
+        // send's failure path discards it wholesale).
+        this.preAckBufferedFrames.push({ evt, sends: new Set(this.preAckSendKeys) });
+      } else if (routed) {
         if (this.abortingSessions.has(routed.key)) {
           if (this.isCompleteAssistantFrame(payload)) {
             this.rememberSeen(routed.key, payload.messageId as string);
@@ -1576,6 +1585,30 @@ export class GatewayChatService {
         // dedupe).
         if (seeded && cursorless && seededSkip > 0) {
           seededSkip--;
+          // A boundary-skipped row can be the in-flight response that was
+          // still streaming when the post-ack seed was taken: the run's live
+          // final frame may never arrive (e.g. the socket dropped mid-run),
+          // so skipping it silently would leave the thread streaming forever.
+          // Finalize it like the seen-row branch — but only while a run sink
+          // is registered (otherwise these are already-finalized rendered
+          // rows and a repeat done is pure noise), and never to the pre-ack
+          // or raced run sinks, whose live final frames must still claim
+          // the row.
+          const skippedIsFinalAssistantRow =
+            !(typeof rowPayload.role === 'string' && rowPayload.role !== 'assistant') &&
+            typeof rowPayload.text === 'string' &&
+            rowPayload.text.length > 0 &&
+            !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
+          if (skippedIsFinalAssistantRow && this.runSinksBySession.has(sessionKey)) {
+            const skippedSinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
+            for (const skippedSink of skippedSinks) {
+              if (isPreAckRunSink(skippedSink) || isRacedRunSink(skippedSink)) {
+                continue;
+              }
+              skippedSink({ type: 'done' });
+            }
+            lastRowFinalized = true;
+          }
           continue;
         }
         const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
