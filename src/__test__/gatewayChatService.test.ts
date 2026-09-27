@@ -365,8 +365,45 @@ describe('GatewayChatService sendMessage/abort', () => {
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
     // Delta 'he', then a mixed frame carrying both a delta and the
-    // cumulative text, then the normal full-text completion frame: the
-    // stale delta prefix must not duplicate the tail.
+    // cumulative text ('he' + 'llo' == 'hello'), then the normal
+    // full-text completion frame: the stale delta prefix must not
+    // duplicate the tail.
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', delta: 'he' },
+    }));
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', delta: 'llo', text: 'hello' },
+    }));
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', text: 'hello' },
+    }));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'session_end', payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e) => (e as { type: string }).type === 'text').map((e) => (e as { text: string }).text);
+    expect(texts).toEqual(['he', 'llo']);
+    svc.dispose();
+  });
+
+  it('delivers the final text when a divergent mixed frame precedes the completion', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Delta 'he', then a mixed frame whose full text does not extend the
+    // streamed prefix plus delta: the mixed frame's full text stays intact,
+    // the tracker keeps the accumulated delta prefix, and the later
+    // full-text completion frame must still deliver its text.
     ws.emit('message', JSON.stringify({
       type: 'event', event: 'session.message',
       payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', delta: 'he' },
@@ -382,7 +419,7 @@ describe('GatewayChatService sendMessage/abort', () => {
     ws.emit('message', JSON.stringify({ type: 'event', event: 'session_end', payload: { sessionKey: 'main' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
     const texts = events.filter((e) => (e as { type: string }).type === 'text').map((e) => (e as { text: string }).text);
-    expect(texts).toEqual(['he', 'x', 'hello']);
+    expect(texts).toEqual(['he', 'x', 'hello', 'hello']);
     svc.dispose();
   });
 

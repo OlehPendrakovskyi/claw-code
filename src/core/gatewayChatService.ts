@@ -272,16 +272,22 @@ export class GatewayChatService {
     if (fullText.length === 0) {
       return events;
     }
+    const prefix = (streamed ?? '') + (delta.length > 0 ? delta : '');
     if (delta.length === 0) {
       // Complete frame: the message is finalized, drop the record.
       this.forgetDeltaText(sessionKey, messageId);
-    } else if (fullText.length > 0) {
-      // Mixed frame: the adjusted events already emitted the cumulative
-      // text, so the tracked prefix must jump to it — keeping the stale
-      // delta prefix makes the later full-text completion frame re-emit
-      // the tail a second time.
+    } else if (fullText.startsWith(prefix)) {
+      // Mixed frame whose full text is the cumulative emitted text: the
+      // adjusted events already emitted the cumulative text, so the tracked
+      // prefix must jump to it — keeping the stale delta prefix makes the
+      // later full-text completion frame re-emit the tail a second time.
       this.deltaTextByMessage.set(sessionKey + '\u0000' + messageId, fullText);
     }
+    // A divergent mixed frame (full text does not extend the streamed prefix
+    // plus delta) is emitted intact and keeps the accumulated delta prefix:
+    // advancing the tracker to the full text would mark it as already
+    // emitted, so the later full-text completion frame would be reduced to
+    // an empty event and its final text lost.
     if (!streamed && delta.length === 0) {
       return events;
     }
@@ -290,7 +296,6 @@ export class GatewayChatService {
     // the delta event stays intact. Rewriting the delta event too would
     // drop a frame where delta equals the full text — e.g. a first frame
     // carrying delta "hello", text "hello" — and lose the first content.
-    const prefix = (streamed ?? '') + (delta.length > 0 ? delta : '');
     return events
       .map((e) => {
         if (e.type !== 'text') {

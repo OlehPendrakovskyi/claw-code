@@ -1669,6 +1669,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (selectionGen !== null && activeThread.openGeneration !== selectionGen) {
             return;
         }
+        // Capture the rebind BEFORE the key assignment: computed after it,
+        // the condition is trivially false and the mid-run resume below
+        // would never fire, leaving the rebound session's transcript
+        // unrouted.
+        const reboundFrom = activeThread.sessionKey && activeThread.sessionKey !== sessionKey
+            ? activeThread.sessionKey
+            : null;
         if (activeThread) {
             // An acpx run has no session key (and a gateway-fallback run can
             // still use an acpx backend): selecting another agent while such
@@ -1692,8 +1699,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Selecting another agent rebinds the thread: retire any run on
             // the previous session first so its late events cannot leak into
             // the newly selected conversation and Cancel targets the new key.
-            if (activeThread.sessionKey && activeThread.sessionKey !== sessionKey) {
-                const previousKey = activeThread.sessionKey;
+            if (reboundFrom) {
+                const previousKey = reboundFrom;
                 // Drop this thread's own callback (and any suspended one) for
                 // the retired key before rebinding: closeThread matches the
                 // callback against the thread's current key, so an orphaned
@@ -1762,17 +1769,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             sessionKey,
         });
         if (activeThread) {
-            // Same gateway bind/history/resume steps as openSessionRebinding:
-            // without them the old transcript stays displayed under the new
-            // key and the resumed session's catch-up has no transcript to
-            // dedupe against. A streaming run that was not rebound skips the
-            // resume: its per-run sink already delivers every event and the
-            // suspended transcript sink is restored at `done`, so subscribing
-            // here would duplicate this response (and later turns). A
-            // mid-run rebound thread still needs the sink on the new key.
-            const reboundFrom = activeThread.sessionKey && activeThread.sessionKey !== sessionKey
-                ? activeThread.sessionKey
-                : null;
+            // A streaming run that was not rebound skips the resume: its
+            // per-run sink already delivers every event and the suspended
+            // transcript sink is restored at `done`, so subscribing here
+            // would duplicate this response (and later turns). A mid-run
+            // rebound thread still needs the sink on the new key.
             if (!(activeThread.isStreaming || activeThread.status === 'running')) {
                 const historyEpoch = activeThread.eventEpoch;
                 const history = await gateway.getHistory(sessionKey);
