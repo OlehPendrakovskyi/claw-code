@@ -6,16 +6,23 @@ import { readAttachments } from '../webview/viewMessaging';
 
 describe('readAttachments FIFO rejection', () => {
     const posixOnly = process.platform === 'win32' ? it.skip : it;
+    const isWindows = process.platform === 'win32';
     let dir: string;
     let fifoPath: string;
 
     beforeEach(() => {
+        if (isWindows) {
+            return;
+        }
         dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-'));
         fifoPath = path.join(dir, 'pipe');
         execFileSync('mkfifo', [fifoPath]);
     });
 
     afterEach(() => {
+        if (isWindows) {
+            return;
+        }
         fs.rmSync(dir, { recursive: true, force: true });
     });
 
