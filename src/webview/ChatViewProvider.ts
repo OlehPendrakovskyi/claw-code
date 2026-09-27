@@ -629,6 +629,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // case-insensitive volume cannot smuggle a swap whose target
                 // is only case-different at read time.
                 const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
+                // A mention path was validated against the workspace boundary
+                // before this realpath ran; a symlink swap in between could
+                // make the canonicalization jump outside the workspace, so
+                // the boundary check is re-applied to the canonical target
+                // before the attachment is accepted.
+                if (isMention && !(await this.isWorkspaceScoped(canonical))) {
+                    continue;
+                }
                 const ext = path.extname(canonical).toLowerCase();
                 thread.pendingAttachments.push({
                     name: path.basename(canonical),
@@ -659,7 +667,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.handleSend(thread, userText);
             return;
         }
+        // The same busy/rebind guard handleSend applies: a stale webview
+        // slash-command message must not start a second run while another
+        // send or a session rebind is in flight, because the command would
+        // target the previous gateway key and its continuation could
+        // overwrite the newly opened conversation.
+        if (thread.isStreaming) {
+            return;
+        }
+        if (thread.openInFlightGen !== null) {
+            log.info('handleSlashCommand: openSession in flight, command rejected');
+            thread.status = 'error';
+            this.emitState();
+            return;
+        }
+        const sendEpoch = thread.eventEpoch;
+        thread.isStreaming = true;
 
+        try {
         const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args));
         // Slash commands resolve @mentions too: without this, `/review @src/a.ts#L5`
         // silently omits the requested file attachment.
@@ -682,6 +707,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const displayText = `/${commandName}${userText.trim() ? ' ' + userText.trim() : ''}`;
         const attachments = [...thread.pendingAttachments];
 
+        if (thread.eventEpoch !== sendEpoch) {
+            // Cancel/clear ran while editor context and mentions resolved: the
+            // command must not be committed after cancellation was honoured.
+            log.info(`handleSlashCommand: superseded during resolution, thread=${thread.id}`);
+            return;
+        }
+
         thread.messages.push({ role: 'user', content: displayText });
         thread.pendingAssistantText = '';
         thread.pendingAttachments = [];
@@ -696,6 +728,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         await this.sendPrompt(thread, fullPrompt);
+        } catch (err) {
+            // Early in-flight marking must not strand the thread in a
+            // streaming state when resolution or prompt assembly throws.
+            thread.isStreaming = false;
+            thread.status = 'error';
+            this.emitState();
+            throw err;
+        }
     }
 
     private runGit(args: string): Promise<string> {
@@ -1877,6 +1917,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
         return accepted;
+    }
+
+    /** Whether a canonical absolute path sits inside the workspace root.
+     *  Callers must pass an already-canonical path: resolving symlinks is
+     *  part of the boundary check, not left to the caller. */
+    private async isWorkspaceScoped(canonical: string): Promise<boolean> {
+        const cwd = this.getWorkspaceCwd();
+        if (!cwd) {
+            return false;
+        }
+        const realCwd = await fs.promises.realpath(cwd).catch(() => cwd);
+        const rel = path.relative(realCwd, canonical);
+        return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
     }
 
     /** Workspace-scoped paths only, for callers that ignore mention line ranges. */
