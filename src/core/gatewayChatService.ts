@@ -213,6 +213,11 @@ export class GatewayChatService {
   private connected = false;
   /** In-flight connect() (serialized: concurrent calls share the attempt). */
   private connectPromise: Promise<void> | null = null;
+  /** Monotonic connection generation: bumped by updateConnection and every
+   *  new connect() attempt so a superseded handshake cannot apply stale
+   *  hello/handlers to the current connection or clear a newer attempt's
+   *  connectPromise from its .finally. */
+  private connectGeneration = 0;
   /** Session key the last sendMessage targeted (falls back to default). */
   private activeSessionKey: string | null = null;
   /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
@@ -338,6 +343,10 @@ export class GatewayChatService {
     if (this.url === url && this.token === token) { return; }
     this.url = url;
     this.token = token;
+    // Invalidate any in-flight handshake: it authenticated with the old
+    // credentials, so its .then must not mark this client connected and its
+    // .finally must not clear the next attempt's connectPromise.
+    this.connectGeneration += 1;
     this.connectPromise = null;
     if (this.ws) {
       const oldWs = this.ws;
@@ -365,8 +374,16 @@ export class GatewayChatService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    const gen = ++this.connectGeneration;
     const attempt = this.openAndHandshake()
       .then((hello) => {
+        if (gen !== this.connectGeneration) {
+          // Superseded (credentials changed or a newer attempt started
+          // mid-handshake): do not mark this client connected with the
+          // stale hello or attach handlers to the retired socket.
+          this.logger.info('gateway handshake superseded by a newer connection attempt');
+          return;
+        }
         this.hello = hello;
         this.reconnectAttempt = 0;
         this.attachRuntimeHandlers();
@@ -374,7 +391,11 @@ export class GatewayChatService {
         this.logger.info(`gateway connected protocol=${hello.protocol}`);
       })
       .finally(() => {
-        this.connectPromise = null;
+        // Only this attempt's generation may clear the shared slot; a
+        // superseded attempt must not reset a newer attempt's promise.
+        if (gen === this.connectGeneration) {
+          this.connectPromise = null;
+        }
       });
     this.connectPromise = attempt;
     return attempt;

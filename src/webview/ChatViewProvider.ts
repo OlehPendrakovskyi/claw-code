@@ -435,7 +435,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             lastUsage: null,
             service: new ChatService(),
             eventEpoch: 0,
-            bindingEpoch: 0
+            bindingEpoch: 0,
+            openGeneration: 0
         };
     }
 
@@ -1379,6 +1380,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!thread) {
             return;
         }
+        // Open-generation marker for this request: a newer openSession on the
+        // same thread bumps the counter, so this continuation can detect it
+        // after every await (the session key alone cannot — it still holds
+        // the previous key until this request assigns the new one).
+        const openGen = ++thread.openGeneration;
         // Same acpx guard as handleSelectAgent: a streaming run without a
         // gateway session key (or on an acpx fallback backend) must be
         // retired before rebinding, or its late output lands in the newly
@@ -1431,12 +1437,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (this.getActiveThread()?.id !== thread.id) {
             return;
         }
-        if (thread.sessionKey !== undefined && thread.sessionKey !== sessionKey) {
-            // A concurrent openSession re-pointed this thread while the
+        if (thread.openGeneration !== openGen) {
+            // A newer openSession request superseded this one while the
             // persist/await above was in flight: never clobber the newer
             // selection with this stale key, and restore the newer key as
             // the persisted last-session since our persist overwrote it.
-            await this.persistLastSessionKey(thread.sessionKey);
+            await this.persistLastSessionKey(thread.sessionKey ?? sessionKey);
             return;
         }
         thread.sessionKey = sessionKey;

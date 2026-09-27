@@ -50,6 +50,11 @@ export type ChatThreadState = {
      *  rebind/reset only (never per run), so a session's transcript callback
      *  keeps delivering events across successive runs on the same binding. */
     bindingEpoch: number;
+    /** Monotonic generation of openSession requests on this thread: bumped on
+     *  every open, so an earlier async open continuation can detect that a
+     *  newer open superseded it (the session key alone cannot — it still
+     *  holds the previous key until the open assigns the new one). */
+    openGeneration: number;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
