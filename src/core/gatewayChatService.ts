@@ -868,7 +868,28 @@ export class GatewayChatService {
     // already-accepted send (gateway keeps running, no listener, UI shows a
     // completed turn with no response).
     this.addTranscriptSink(sessionKey, _onEvent);
-    const issueSend = (): void => {
+    const issueSend = async (): Promise<void> => {
+      // A fresh run has no delta cursor (only history/seed paths set one), so
+      // a reconnect before a post-ack snapshot seeds one would skip catch-up
+      // entirely and permanently lose the deltas missed while disconnected.
+      // Seed the cursor from a pre-send history snapshot instead: reconnect
+      // catch-up then always covers the run, and the snapshot's seen-ids keep
+      // the prior transcript out of the replay.
+      if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(sessionKey)) {
+        try {
+          const history = await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
+          // Cancel (abort) removed this send's sink during the snapshot
+          // await: never issue the send for a cancelled run.
+          if (this.runSinksBySession.get(sessionKey) !== _onEvent) {
+            this.removeTranscriptSink(sessionKey, _onEvent);
+            return;
+          }
+          this.seedHistory(sessionKey, history);
+        } catch {
+          // Snapshot failure leaves no cursor: the run still streams live,
+          // and the post-ack seed below retries once the send is accepted.
+        }
+      }
       void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
         this.preAckSendKeys.delete(sessionKey);
@@ -918,11 +939,10 @@ export class GatewayChatService {
         }
         this.addTranscriptSink(key, _onEvent);
         this.subscribeSessionMessages(key);
-        // A fresh run has no delta cursor (only history/seed paths set one),
-        // so a reconnect catch-up for this session would be skipped and
-        // deltas missed during the disconnect permanently lost. Fire a
-        // one-shot history snapshot to seed the cursor and seen-ids; nothing
-        // is replayed here — the cursor only enables the next catch-up.
+        // Fallback cursor seed for a gateway-resolved key change (the
+        // pre-send seed above keyed the requested session): a one-shot
+        // history snapshot seeds the cursor and seen-ids; nothing is
+        // replayed here — the cursor only enables the next catch-up.
         if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
           void this.send(GatewayRpcMethods.chatHistory, { sessionKey: key })
             .then((history) => this.seedHistory(key, history))
@@ -956,7 +976,7 @@ export class GatewayChatService {
           this.removeTranscriptSink(sessionKey, _onEvent);
           return;
         }
-        issueSend();
+        void issueSend();
         return;
       }
       // Subscription failed (or is unsupported): the gateway would run the
@@ -1121,6 +1141,11 @@ export class GatewayChatService {
       const protectedRunSink = this.preAckSendKeys.has(sessionKey)
         ? this.runSinksBySession.get(sessionKey)
         : undefined;
+      // The protected sink is excluded from ALL catch-up delivery below, not
+      // just the final `done`: replayed historical text/tool/usage events
+      // would otherwise flow into the new send's run callback, so the next
+      // response starts with the prior transcript appended to its
+      // pendingAssistantText.
       for (const row of payload.messages) {
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
         if (messageId && this.hasSeen(sessionKey, messageId)) {
@@ -1145,6 +1170,9 @@ export class GatewayChatService {
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of mapped) {
           for (const sink of sinks) {
+            if (sink === protectedRunSink) {
+              continue;
+            }
             sink(chatEvent);
           }
         }

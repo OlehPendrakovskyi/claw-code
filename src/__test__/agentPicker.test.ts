@@ -355,6 +355,12 @@ describe('GatewayChatService session selection and resume', () => {
     expect(req.method).toBe('sessions.messages.subscribe');
     rpcPayload(ws, req.id, {});
     await new Promise((r) => setTimeout(r, 0));
+    // The pre-send cursor seed for the requested (default) key: issueSend
+    // awaits this snapshot before issuing chat.send.
+    req = lastRequest(ws);
+    expect(req.method).toBe('chat.history');
+    rpcPayload(ws, req.id, {});
+    await new Promise((r) => setTimeout(r, 0));
     req = lastRequest(ws);
     expect(req.method).toBe('chat.send');
     // Resolve the acknowledgement; the gateway resolves the requested key,

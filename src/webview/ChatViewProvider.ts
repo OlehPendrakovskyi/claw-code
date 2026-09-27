@@ -436,7 +436,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             service: new ChatService(),
             eventEpoch: 0,
             bindingEpoch: 0,
-            openGeneration: 0
+            openGeneration: 0,
+            openInFlightGen: null
         };
     }
 
@@ -795,6 +796,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // and cancel/clear during the awaits must not be undone by the
         // continuation below (guarded by the send epoch check).
         if (thread.isStreaming) {
+            return;
+        }
+        if (thread.openInFlightGen !== null) {
+            // An openSession is rebinding this thread: the shared gateway
+            // session is already switched while the binding awaits
+            // persistence, so a send here would target the previous key and
+            // its callback would later deliver into the newly opened
+            // conversation. Fail the send instead of racing the rebind.
+            log.info('handleSend: openSession in flight, send rejected');
+            thread.status = 'error';
+            this.emitState();
             return;
         }
         const sendEpoch = thread.eventEpoch;
@@ -1331,9 +1343,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const pendingOpenThread = this.getActiveThread();
         if (pendingOpenThread) {
             pendingOpenThread.openGeneration += 1;
+            // Same send-rejection marker as handleOpenSession: the shared
+            // session is switched before the rebind and the persist await
+            // opens a window where a send would target the previous key.
+            pendingOpenThread.openInFlightGen = pendingOpenThread.openGeneration;
         }
         gateway.setActiveSession(sessionKey);
-        await this.persistLastSessionKey(sessionKey);
+        try {
+            await this.persistLastSessionKey(sessionKey);
+        } finally {
+            if (pendingOpenThread && pendingOpenThread.openInFlightGen === pendingOpenThread.openGeneration) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+        }
         const activeThread = this.getActiveThread();
         if (activeThread) {
             // An acpx run has no session key (and a gateway-fallback run can
@@ -1444,6 +1466,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // after every await (the session key alone cannot — it still holds
         // the previous key until this request assigns the new one).
         const openGen = ++thread.openGeneration;
+        // Send-rejection marker: the shared gateway session is switched below
+        // before the thread is rebound, and the rebinding awaits persistence,
+        // so a send accepted in that window would target the previous key and
+        // its callback would later deliver into the newly opened session.
+        // Cleared only while this open still owns the marker (a newer open
+        // supersedes it and owns the marker from then on).
+        thread.openInFlightGen = openGen;
+        try {
+            await this.openSessionRebinding(thread, sessionKey, gateway, openGen);
+        } finally {
+            if (thread.openInFlightGen === openGen) {
+                thread.openInFlightGen = null;
+            }
+        }
+    }
+
+    /** Continuation of handleOpenSession with the in-flight marker set: every
+     *  await below re-checks the active thread and the open generation so a
+     *  newer open (or thread switch) cannot be overwritten by this late
+     *  continuation. */
+    private async openSessionRebinding(
+        thread: ChatThreadState,
+        sessionKey: string,
+        gateway: GatewayChatService,
+        openGen: number
+    ): Promise<void> {
         // Same acpx guard as handleSelectAgent: a streaming run without a
         // gateway session key (or on an acpx fallback backend) must be
         // retired before rebinding, or its late output lands in the newly

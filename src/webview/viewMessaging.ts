@@ -55,6 +55,13 @@ export type ChatThreadState = {
      *  newer open superseded it (the session key alone cannot — it still
      *  holds the previous key until the open assigns the new one). */
     openGeneration: number;
+    /** Generation of the openSession currently rebinding this thread, or null
+     *  when no open is in flight. Sends are rejected while set: the shared
+     *  gateway session switches before the rebinding lands, so a concurrent
+     *  send would target the previous key and deliver into the newly opened
+     *  conversation. Ownership-checked on clear so a superseded open's
+     *  continuation cannot unset a newer open's marker. */
+    openInFlightGen: number | null;
 };
 
 /** Serializable snapshot of a thread sent to the webview. */
