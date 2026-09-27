@@ -129,6 +129,10 @@ type LanguageOverride = {
         globalLanguageValue?: string;
         workspaceLanguageValue?: string;
         workspaceFolderLanguageValue?: string;
+        /** Normal (non-language) folder value, present only for folder-
+         *  scoped entries; the unscoped inspection covers just the first
+         *  folder of a multi-root workspace. */
+        workspaceFolderValue?: string;
       }
     | undefined;
 };
@@ -209,8 +213,11 @@ async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
         continue;
       }
       seen.add(key);
+      // vscode.ConfigurationScope for a language-plus-resource scope uses
+      // a `uri` field, not `folderUri`: the uri must point into the owning
+      // folder so inspect/update reach that folder's language values.
       const scope = source.folderUri
-        ? ({ languageId, folderUri: source.folderUri } as vscode.ConfigurationScope)
+        ? ({ languageId, uri: source.folderUri } as vscode.ConfigurationScope)
         : ({ languageId } as vscode.ConfigurationScope);
       const config = vscode.workspace.getConfiguration('openclaw', scope);
       overrides.push({
@@ -256,6 +263,10 @@ export async function migrateLegacyGatewayToken(
     inspection?.workspaceLanguageValue,
     inspection?.globalLanguageValue,
     ...languageOverrides.flatMap((entry) => [
+      // Per-folder entries also expose that folder's normal (non-language)
+      // value: the unscoped inspect() above only covers the first folder of
+      // a multi-root workspace, leaving tokens in other folders unread.
+      ...(entry.folderUri !== undefined ? [entry.inspection?.workspaceFolderValue] : []),
       entry.inspection?.workspaceFolderLanguageValue,
       entry.inspection?.workspaceLanguageValue,
       entry.inspection?.globalLanguageValue,
@@ -325,7 +336,31 @@ export async function migrateLegacyGatewayToken(
   // Clean every configured language override as well: the loop above covers
   // only the inspected context's language fields, while the discovered
   // overrides may hold the legacy token in any target.
+  const cleanedFolderNormals = new Set<string>();
   for (const entry of languageOverrides) {
+    // A normal (non-language) token in a non-first workspace folder is only
+    // visible through that folder's own config: clean it once per folder.
+    if (
+      entry.folderUri !== undefined &&
+      entry.inspection?.workspaceFolderValue !== undefined &&
+      !cleanedFolderNormals.has(entry.folderUri.toString())
+    ) {
+      cleanedFolderNormals.add(entry.folderUri.toString());
+      try {
+        await entry.config.update(
+          LEGACY_GATEWAY_TOKEN_SETTING,
+          undefined,
+          vscode.ConfigurationTarget.WorkspaceFolder
+        );
+      } catch (err) {
+        cleanupFailed = true;
+        log.warn(
+          `legacy token cleanup failed for folder target: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
     const hadLanguageValue =
       entry.inspection?.globalLanguageValue !== undefined ||
       entry.inspection?.workspaceLanguageValue !== undefined ||

@@ -1420,7 +1420,25 @@ export class GatewayChatService {
           rowPayload.text.length > 0 &&
           typeof rowPayload.delta !== 'string';
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
-        if (messageId && this.hasSeen(sessionKey, messageId)) {
+        const seen = messageId != null && this.hasSeen(sessionKey, messageId);
+        if (messageId && isFinalAssistantRow && seen) {
+          // An already-seen complete assistant row still needs terminal
+          // recovery: the live stream may have delivered the full frame and
+          // then dropped before session_end, so sinks never got `done` and
+          // an active run would stay `running` forever. Skip the duplicate
+          // text delivery, but re-emit the finalization (repeat `done` is
+          // idempotent for consumers) unless a later row re-opens the tail.
+          const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
+          for (const sink of sinks) {
+            if (sink === protectedRunSink) {
+              continue;
+            }
+            sink({ type: 'done' });
+          }
+          lastRowFinalized = true;
+          continue;
+        }
+        if (messageId && seen) {
           continue;
         }
         // Only complete assistant rows may enter the seen-set: streaming
