@@ -193,6 +193,37 @@ async function safeCanonicalPath(p: string): Promise<string | null> {
     }
 }
 
+/** Prove an image attachment path still refers to the validated regular file.
+ *  Mirrors the text-attachment hardening: realpath must match the stored
+ *  spelling, the leaf must open with O_NOFOLLOW, and the opened identity
+ *  (dev/ino) must equal a fresh lstat of the path. Returns the verified
+ *  canonical spelling, or null when any check fails. */
+async function verifyStableImagePath(p: string): Promise<string | null> {
+    if (await safeCanonicalPath(p) === null) {
+        return null;
+    }
+    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+    let handle: fsp.FileHandle;
+    try {
+        handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow);
+    } catch {
+        return null;
+    }
+    try {
+        const opened = await handle.stat();
+        const current = await fsp.lstat(p);
+        if (opened.dev !== current.dev || opened.ino !== current.ino ||
+            (await fsp.realpath(p)) !== p) {
+            return null;
+        }
+    } catch {
+        return null;
+    } finally {
+        await handle.close();
+    }
+    return p;
+}
+
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
  *
  *  TOCTOU hardening: attachments carry canonical paths validated at mention
@@ -222,7 +253,14 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         // re-canonicalization as text attachments applies before emitting: a
         // path swapped for a symlink after mention validation is dropped.
         if (att.type === 'image') {
-            const real = await safeCanonicalPath(att.path);
+            // The emitted path is opened by a downstream reader, so this read
+            // must prove the leaf is still the validated file: open the final
+            // component with O_NOFOLLOW and compare the opened identity
+            // against the path (the same gate as text attachments), then
+            // re-canonicalize before emitting. A swap that lands between this
+            // verification and the downstream open is not closable from this
+            // side without a content/handle protocol change in the reader.
+            const real = await verifyStableImagePath(att.path);
             if (real === null) {
                 sections.push('[Could not read file]');
                 continue;

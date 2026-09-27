@@ -2135,6 +2135,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // the cleared session). Capture before the await, recheck after.
             const resumeEventEpoch = thread.eventEpoch;
             const resumeBindingEpoch = thread.bindingEpoch;
+            // An openSession that starts during resolveGateway()/getHistory()
+            // bumps openGeneration and (after its own generation check)
+            // assigns a newer sessionKey: this stale resume must not
+            // overwrite either — its key assignment happened before the
+            // await, so re-verify the binding, not just lastSessionKey.
+            const resumeOpenGen = thread.openGeneration;
             // Bind the resumed thread to the gateway transport immediately:
             // until the next send, backendFor(thread) must return the gateway
             // service or Cancel/Clear/Close abort the wrong (legacy) backend.
@@ -2151,6 +2157,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // messages live in the thread) must not be dropped either.
                 if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey ||
                     thread.eventEpoch !== resumeEventEpoch || thread.bindingEpoch !== resumeBindingEpoch ||
+                    thread.openGeneration !== resumeOpenGen || thread.sessionKey !== sessionKey ||
                     thread.isStreaming || thread.status === 'running') {
                     // A send started during the history await: subscribing the
                     // persistent transcript sink now would double-deliver the

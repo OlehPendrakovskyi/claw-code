@@ -179,6 +179,7 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     return [];
   }
   const out: HistoryMessage[] = [];
+  const seenIds = new Set<string>();
   for (const row of messages) {
     if (!row || typeof row !== 'object') {
       continue;
@@ -187,6 +188,14 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     const role = rec.role === 'user' ? 'user' : rec.role === 'assistant' ? 'assistant' : null;
     if (!role || typeof rec.text !== 'string' || !rec.text) {
       continue;
+    }
+    // Complete rows may repeat in chat.history (e.g. snapshot + tail overlap
+    // on restore); dedupe by messageId while retaining rows without an id.
+    if (typeof rec.messageId === 'string') {
+      if (seenIds.has(rec.messageId)) {
+        continue;
+      }
+      seenIds.add(rec.messageId);
     }
     out.push({
       role,
