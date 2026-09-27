@@ -524,8 +524,13 @@ export class GatewayChatService {
   /** Update gateway credentials in place instead of replacing the client:
    *  threads hold this instance for lifecycle actions (abort/cancel), so a
    *  dispose-and-recreate on url/token change would sever in-flight runs.
-   *  Closing the socket routes the switch through the normal reconnect path
-   *  (pending RPCs are rejected, transcript sinks re-subscribe). Any
+   *  Every transcript sink (including resume-only ones) is retired with
+   *  `done` instead of being carried into the new connection: a credential
+   *  change can point at a different gateway where the same session keys
+   *  name different sessions, so the provider must revalidate each key
+   *  against the new gateway's allowlist (isKnownMainSessionKey) before any
+   *  sink is re-registered. Streaming threads finalize; a later openSession
+   *  re-subscribes with a fresh catch-up seed after the allowlist check. Any
    *  in-flight handshake is invalidated: it authenticated with the old
    *  credentials, so its `.then` must not mark this client connected and its
    *  `.finally` must not clear the next attempt's connectPromise. */
@@ -540,13 +545,26 @@ export class GatewayChatService {
     // a credential change can point at a different endpoint that reuses the
     // same session keys, and stale cursors/seen-ids/delta records would skip
     // the next send's history seed, mis-dedupe its frames, or break reconnect
-    // catch-up with an invalid cursor. Transcript sinks stay registered —
-    // they are re-subscribed (with a fresh catch-up seed) after reconnect.
+    // catch-up with an invalid cursor. Transcript sinks are retired (with
+    // `done`) so no session key is silently re-subscribed against the new
+    // gateway: keys must pass the provider's identity-checked allowlist
+    // again (isKnownMainSessionKey) before any sink is re-registered.
     this.deltaCursorBySession.clear();
     this.seededCatchUpFingerprints.clear();
     this.seenMessageIdsBySession.clear();
     this.deltaTextByMessage.clear();
     this.deltaTextNoIdBySession.clear();
+    for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
+      if (this.connected && this.runSinksBySession.has(sessionKey)) {
+        this.abortingSessions.add(sessionKey);
+        void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
+          .catch((err: Error) => {
+            this.logger.warn(`chat.abort failed during credential switch ${err.message}`);
+          })
+          .finally(() => this.abortingSessions.delete(sessionKey));
+      }
+      this.retireTranscriptSinks(sessionKey);
+    }
     if (this.ws) {
       const oldWs = this.ws;
       this.ws = null;
