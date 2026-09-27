@@ -1380,8 +1380,9 @@ export class GatewayChatService {
         this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
       for (const row of payload.messages) {
         const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
+        const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
         const isFinalAssistantRow =
-          rowPayload.role === 'assistant' &&
+          isAssistantRole &&
           typeof rowPayload.text === 'string' &&
           rowPayload.text.length > 0 &&
           !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
@@ -1518,7 +1519,14 @@ export class GatewayChatService {
    *  references (abort/hasOwnedRun) — but an authenticated socket no longer
    *  lingers receiving transcript events after a transport switch to acpx.
    *  Sinks are retired with `done` so streaming threads finalize instead of
-   *  waiting on events that can no longer arrive. */
+   *  waiting on events that can no longer arrive. Only run sinks are
+   *  retired: persistent resume-only sinks stay registered so a later
+   *  resubscribeActiveSession() restores their subscriptions and resumed
+   *  threads keep receiving transcript events after the transport falls
+   *  back. Pre-ack send state is retired together with the buffers — the
+   *  pending sends are rejected while they wait for subscribe/history, so
+   *  their continuations never run and stale keys must not cause later
+   *  gateway events to be buffered for an abandoned send. */
   suspend(): void {
     this.suspended = true;
     this.connectPromise = null;
@@ -1527,20 +1535,14 @@ export class GatewayChatService {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    const sinks = new Set<(event: ChatEvent) => void>();
-    for (const [, set] of this.transcriptSinksBySession) {
-      for (const sink of set) sinks.add(sink);
-    }
-    for (const [, sink] of this.runSinksBySession) {
-      sinks.add(sink);
-    }
-    for (const sink of sinks) {
+    for (const [sessionKey, sink] of this.runSinksBySession) {
       sink({ type: 'done' });
+      this.removeTranscriptSink(sessionKey, sink);
     }
-    this.transcriptSinksBySession.clear();
     this.runSinksBySession.clear();
     this.subscribedSessions.clear();
     this.pendingSubscribeBySession.clear();
+    this.preAckSendKeys.clear();
     this.preAckBufferedFrames = [];
     this.rejectAllPending('gateway transport suspended');
     if (this.ws) {
