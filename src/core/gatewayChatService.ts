@@ -436,22 +436,31 @@ export class GatewayChatService {
     return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
   }
 
-  /** Gate a live session.message frame before dispatch: complete assistant
-   *  frames are claimed in the seen-set (first delivery) and duplicates are
-   *  rejected, so a complete frame replayed around a reconnect is not
-   *  appended twice. Deltas and textless frames pass through untouched —
-   *  only complete frames may enter the seen-set, otherwise a reconnect's
-   *  catch-up would skip the completed row (and its finalization) and leave
-   *  the thread streaming forever. */
-  private claimCompleteFrame(
+  /** Gate mapped frame events for dispatch: complete assistant frames are
+ *  claimed in the seen-set (first delivery) and duplicates are rejected, so a
+ *  complete frame replayed around a reconnect is not appended twice. Only the
+ *  text facet of a duplicate is rejected: a later frame that repeats a
+ *  completed text while carrying a tool lifecycle update or usage must still
+ *  deliver those non-text facets, or the tool row sticks at its earlier
+ *  status and the usage update is lost. Deltas and textless frames pass
+ *  through untouched — only complete frames may enter the seen-set, otherwise
+ *  a reconnect's catch-up would skip the completed row (and its
+ *  finalization) and leave the thread streaming forever. Returns the events
+ *  to deliver; on a first claim the caller still applies
+ *  adjustCompleteFrameEvents text bookkeeping, on a duplicate the returned
+ *  non-text events are delivered as-is. */
+  private filterDuplicateFrameEvents(
     sessionKey: string,
-    payload: { messageId?: unknown; text?: unknown; delta?: unknown }
-  ): boolean {
-    if (!this.isCompleteAssistantFrame(payload)) return true;
+    payload: { messageId?: unknown; text?: unknown; delta?: unknown },
+    events: ChatEvent[]
+  ): ChatEvent[] {
+    if (!this.isCompleteAssistantFrame(payload)) return events;
     const messageId = payload.messageId as string;
-    if (this.hasSeen(sessionKey, messageId)) return false;
+    if (this.hasSeen(sessionKey, messageId)) {
+      return events.filter((e) => e.type !== 'text');
+    }
     this.rememberSeen(sessionKey, messageId);
-    return true;
+    return events;
   }
 
   /** Latest hello-ok payload from the active connection, if any. */
@@ -820,7 +829,7 @@ export class GatewayChatService {
     }
     // Post-ack seeding happens while the run is still streaming: a snapshot
     // row may be the in-flight response itself, and pre-seeding its
-    // messageId would make claimCompleteFrame drop the live final frame.
+    // messageId would make the frame gate drop the live final frame as a duplicate.
     // Cursor-less replay dedupe is covered by the seeded fingerprint
     // boundary, and cursor-bearing catch-up never replays pre-cursor rows,
     // so the seen-set is not needed for these rows.
@@ -1007,13 +1016,15 @@ export class GatewayChatService {
         }
         const chatEvents = mapSessionEventToChatEvent(evt);
         if (chatEvents.length > 0) {
-          if (this.claimCompleteFrame(routed.key, payload)) {
-            const adjusted = this.adjustCompleteFrameEvents(routed.key, payload, chatEvents);
-            routedChatEvent = adjusted[0];
-            for (const chatEvent of adjusted) {
-              for (const sink of routed.sinks) {
-                sink(chatEvent);
-              }
+          const gated = this.filterDuplicateFrameEvents(routed.key, payload, chatEvents);
+          const adjusted =
+            gated === chatEvents
+              ? this.adjustCompleteFrameEvents(routed.key, payload, chatEvents)
+              : gated;
+          routedChatEvent = adjusted[0];
+          for (const chatEvent of adjusted) {
+            for (const sink of routed.sinks) {
+              sink(chatEvent);
             }
           }
         }
@@ -1449,14 +1460,18 @@ export class GatewayChatService {
       }
       const chatEvents = mapSessionEventToChatEvent(buffered.evt);
       if (chatEvents.length > 0) {
-        if (!this.claimCompleteFrame(routed.key, payload)) {
+        const gated = this.filterDuplicateFrameEvents(routed.key, payload, chatEvents);
+        if (gated.length === 0) {
           continue;
         }
-        const adjusted = this.adjustCompleteFrameEvents(
-          asNonEmptyString(payload.sessionKey) ?? DEFAULT_SESSION_KEY,
-          payload,
-          chatEvents
-        );
+        const adjusted =
+          gated === chatEvents
+            ? this.adjustCompleteFrameEvents(
+                asNonEmptyString(payload.sessionKey) ?? DEFAULT_SESSION_KEY,
+                payload,
+                chatEvents
+              )
+            : gated;
         for (const chatEvent of adjusted) {
           for (const sink of routed.sinks) {
             sink(chatEvent);
@@ -1791,9 +1806,8 @@ export class GatewayChatService {
         }
         // A complete unseen assistant row may be the in-flight response of a
         // local run (pre-ack send, raced send, or an active stream) whose
-        // live final frame must still claim the messageId — remembering it
-        // here would make that frame fail claimCompleteFrame and drop the
-        // response from the UI. Only rows processed while no local run owns
+        // live final frame must still claim the messageId — remembering it here would
+        // make the frame gate drop the response from the UI. Only rows processed while no local run owns
         // the session are known to belong to the catch-up boundary and may
         // enter the seen-set; cursor and fingerprint-boundary replay rules
         // already cover duplication for the skipped rows.
