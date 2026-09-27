@@ -93,11 +93,17 @@ export async function activate(context: vscode.ExtensionContext) {
             // configured: after a submitted token, resolve the chat gateway
             // transport (not the CLI connect flow) so the socket and the
             // transport badge reflect the new credentials immediately.
-            void promptForGatewayToken(context).then(async (saved) => {
-                if (saved) {
-                    await chatViewProvider?.connectGatewayTransport();
-                }
-            });
+            void promptForGatewayToken(context)
+                .then(async (saved) => {
+                    if (saved) {
+                        await chatViewProvider?.connectGatewayTransport();
+                    }
+                })
+                .catch(() => {
+                    void vscode.window.showErrorMessage(
+                        'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
+                    );
+                });
         })
     );
 
