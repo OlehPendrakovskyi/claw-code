@@ -151,24 +151,18 @@ export class GatewayChatService {
   /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
    *  An entry also marks that session as having an active run (queue-mode selection). */
   private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Streamed-delta prefixes for frames WITHOUT a messageId, keyed per
+   *  session: messageless streams ({delta: "he"} then {text: "hello"}) need
+   *  the same complete-frame dedup as identified ones, otherwise the final
+   *  full text appends on top of the already-rendered deltas. One record per
+   *  session is safe: only one run streams per session at a time, and a
+   *  finished stream's record is dropped by the finalize rule below. */
+  private deltaTextNoIdBySession = new Map<string, string>();
+
   /** Remember streamed delta text for one message so a later complete frame
    *  with the full text can emit only the unrendered remainder instead of
    *  duplicating the already-streamed deltas. */
-  private rememberDeltaText(sessionKey: string, messageId: string, delta: string): void {
-    const key = this.messageKey(sessionKey, messageId);
-    this.deltaTextByMessage.set(key, (this.deltaTextByMessage.get(key) ?? '') + delta);
-    if (this.deltaTextByMessage.size > DELTA_TRACK_LIMIT) {
-      const oldest = this.deltaTextByMessage.keys().next().value;
-      if (oldest !== undefined) {
-        this.deltaTextByMessage.delete(oldest);
-      }
-    }
-  }
 
-  /** Drop the streamed-delta record once the message is finalized. */
-  private forgetDeltaText(sessionKey: string, messageId: string): void {
-    this.deltaTextByMessage.delete(this.messageKey(sessionKey, messageId));
-  }
 
   /** Composite map key that scopes a messageId to its session. */
   private messageKey(sessionKey: string, messageId: string): string {
@@ -204,23 +198,35 @@ export class GatewayChatService {
     events: ChatEvent[]
   ): ChatEvent[] {
     const messageId = asNonEmptyString(payload.messageId);
-    if (!messageId) {
-      return events;
-    }
     const delta = asStringOr(payload.delta, '');
     const fullText = asStringOr(payload.text, '');
-    const streamed = this.deltaTextByMessage.get(this.messageKey(sessionKey, messageId));
+    if (!messageId && delta.length === 0 && fullText.length === 0) {
+      return events;
+    }
+    // No-ID fallback: frames without a messageId share one per-session
+    // record instead of being excluded from dedup entirely — a valid stream
+    // may never carry an ID, and the final full text must still emit only
+    // the unrendered remainder.
+    const key = messageId ? this.messageKey(sessionKey, messageId) : sessionKey;
+    const store = messageId ? this.deltaTextByMessage : this.deltaTextNoIdBySession;
+    const streamed = store.get(key);
     if (delta.length > 0) {
-      this.rememberDeltaText(sessionKey, messageId, delta);
+      store.set(key, (store.get(key) ?? '') + delta);
+      if (store.size > DELTA_TRACK_LIMIT) {
+        const oldest = store.keys().next().value;
+        if (oldest !== undefined) {
+          store.delete(oldest);
+        }
+      }
     }
     if (fullText.length === 0) {
       return events;
     }
     const prefix = (streamed ?? '') + (delta.length > 0 ? delta : '');
     if (delta.length === 0) {
-      this.forgetDeltaText(sessionKey, messageId);
+      store.delete(key);
     } else if (fullText.startsWith(prefix)) {
-      this.deltaTextByMessage.set(this.messageKey(sessionKey, messageId), fullText);
+      store.set(key, fullText);
     }
     if (!streamed && delta.length === 0) {
       return events;
@@ -260,7 +266,13 @@ export class GatewayChatService {
    *  callers (pre-send subscription and the send acknowledgement path) share
    *  one RPC instead of issuing duplicates whose independent failure handler
    *  could tear down the surviving stream. Resolved `true` on success,
-   *  `false` on rejection; cleared on completion. */
+   *  `false` on rejection; cleared on completion. Terminal delivery on
+   *  rejection stays in ONE path: the caller's `onFailure` emits error +
+   *  done (or, without an `onFailure`, the catch finalizes the run sink
+   *  with `done` alone, preserving the resume-path semantics). The catch
+   *  never emits both: a `done` here followed by a caller's error in its
+   *  continuation would deliver a terminal event before the failure,
+   *  leaving the error with no following `done`. */
   private pendingSubscribeBySession = new Map<string, Promise<boolean>>();
   /** Keyed session.message frames that arrived for an unknown session while a
    *  pre-ack send was in flight: buffered until the acknowledgement resolves
@@ -510,6 +522,7 @@ export class GatewayChatService {
     this.seededCatchUpFingerprints.clear();
     this.seenMessageIdsBySession.clear();
     this.deltaTextByMessage.clear();
+    this.deltaTextNoIdBySession.clear();
     if (this.ws) {
       const oldWs = this.ws;
       this.ws = null;
@@ -1321,6 +1334,7 @@ export class GatewayChatService {
               type: 'error',
               message: `Transcript subscription for "${key}" failed after the run was accepted: ${err.message}. The response may not appear in this thread.`
             });
+            _onEvent({ type: 'done' });
           }
         });
         if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
@@ -1336,7 +1350,15 @@ export class GatewayChatService {
         this.failPreAckSend(sessionKey, _onEvent, err.message, sendId);
       });
     };
-    void this.subscribeSessionMessages(sessionKey).then((subscribed: boolean) => {
+    void this.subscribeSessionMessages(sessionKey, {
+      onFailure: () => {
+        _onEvent({
+          type: 'error',
+          message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
+        });
+        _onEvent({ type: 'done' });
+      }
+    }).then((subscribed: boolean) => {
       if (subscribed) {
         if (this.runSinksBySession.get(sessionKey) !== _onEvent) {
           this.removeTranscriptSink(sessionKey, _onEvent);
@@ -1348,13 +1370,18 @@ export class GatewayChatService {
       if (this.runSinksBySession.get(sessionKey) === _onEvent) {
         this.runSinksBySession.delete(sessionKey);
       }
-      const unfinalized = this.transcriptSinksBySession.get(sessionKey)?.has(_onEvent);
+      // Terminal delivery belongs to the attempt's single failure path (our
+      // onFailure, or the joined attempt's owner): emit a terminal here only
+      // when that path never ran for this sink (e.g. the attempt was
+      // superseded and skipped its cleanup), never after an already-delivered
+      // done.
+      const stillListed = this.transcriptSinksBySession.get(sessionKey)?.has(_onEvent) ?? false;
       this.removeTranscriptSink(sessionKey, _onEvent);
-      _onEvent({
-        type: 'error',
-        message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
-      });
-      if (unfinalized) {
+      if (stillListed) {
+        _onEvent({
+          type: 'error',
+          message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
+        });
         _onEvent({ type: 'done' });
       }
     });
@@ -1532,6 +1559,7 @@ export class GatewayChatService {
             type: 'error',
             message: `Transcript subscription for "${sessionKey}" failed after reconnect: ${err.message}. The response may not appear in this thread.`
           });
+          runSink?.({ type: 'done' });
         },
       });
     }
@@ -1583,11 +1611,15 @@ export class GatewayChatService {
         this.runSinksBySession.delete(sessionKey);
         if (runSink) {
           this.removeTranscriptSink(sessionKey, runSink);
-          // Surface the failure before the terminal done: the caller may have
-          // an already-accepted remote run with no listener otherwise — the
-          // turn would appear finished with no response and no error.
-          opts?.onFailure?.(err);
-          runSink({ type: 'done' });
+          if (opts?.onFailure) {
+            // Terminal delivery belongs to the caller (error + done in one
+            // path); the catch only retires the sinks.
+            opts.onFailure(err);
+          } else {
+            // No failure callback (resume path): finalize the streaming row
+            // so an active run does not stay `running` forever.
+            runSink({ type: 'done' });
+          }
         }
         return false;
       })

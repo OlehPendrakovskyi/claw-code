@@ -1865,7 +1865,16 @@ export const CONTENT_JS = `
                     panel.appendChild(row);
                 });
                 document.body.appendChild(panel);
-                setTimeout(function() {
+                // Rapidly opening the panel twice before either deferred
+                // registration runs would leave the first callback
+                // untracked (both register document listeners, only the
+                // last is stored in sessionsPanelDismiss): the pending
+                // registration is cancelled before a new one is scheduled.
+                if (sessionsPanelPendingTimer !== null) {
+                    clearTimeout(sessionsPanelPendingTimer);
+                }
+                sessionsPanelPendingTimer = setTimeout(function() {
+                    sessionsPanelPendingTimer = null;
                     // Panel may have been removed (e.g. agentSelected) before
                     // this deferred registration runs: do not then leave a
                     // dangling document listener.
@@ -1884,7 +1893,12 @@ export const CONTENT_JS = `
             }
 
             var sessionsPanelDismiss = null;
+            var sessionsPanelPendingTimer = null;
             function dismissSessionsPanel() {
+                if (sessionsPanelPendingTimer !== null) {
+                    clearTimeout(sessionsPanelPendingTimer);
+                    sessionsPanelPendingTimer = null;
+                }
                 var p = document.getElementById('claw-sessions-panel');
                 if (p) { p.remove(); }
                 if (sessionsPanelDismiss) {
