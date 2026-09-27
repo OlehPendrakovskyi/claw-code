@@ -14,13 +14,27 @@
 import type {
   ClientHello,
   HelloOk,
-  RpcInboundFrame,
   RpcRequestFrame,
   RpcResponseFrame,
   SessionEvent,
 } from './contract';
 import { GatewayEvents, GatewayRpcMethods } from './contract';
+import { asNonEmptyString, asStringOr } from './typeGuards';
 import type { ChatEvent } from '../chat/ChatService';
+import {
+  DEFAULT_SESSION_KEY,
+  DELTA_TRACK_LIMIT,
+  extractSessionKey,
+  mapSessionEventToChatEvent,
+  parseFrame,
+} from './gatewayEventMapping';
+
+export {
+  DEFAULT_SESSION_KEY,
+  extractSessionKey,
+  mapSessionEventToChatEvent,
+  parseFrame,
+} from './gatewayEventMapping';
 
 /** Minimal logger seam; default is a silent no-op. */
 export type Logger = {
@@ -62,20 +76,6 @@ type PendingRequest = {
 
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
-/** Session key used when the gateway does not echo one back. */
-export const DEFAULT_SESSION_KEY = 'main';
-
-/** Extract a `sessionKey` from an RPC payload, when present. */
-function extractSessionKey(payload: unknown): string | null {
-  if (payload && typeof payload === 'object') {
-    const key = (payload as { sessionKey?: unknown; session?: { key?: unknown } }).sessionKey ??
-      (payload as { session?: { key?: unknown } }).session?.key;
-    if (typeof key === 'string' && key) {
-      return key;
-    }
-  }
-  return null;
-}
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
@@ -96,112 +96,6 @@ function defaultWsFactory(url: string): WebSocketLike {
     throw new Error('unable to resolve WebSocket constructor from the ws package');
   }
   return new WSCtor(url);
-}
-
-/** Extract frames from mixed WS message data (string/Buffer). */
-export function parseFrame(data: unknown): RpcInboundFrame | null {
-  const text = typeof data === 'string' ? data : data instanceof Buffer ? data.toString('utf8') : null;
-  if (!text) return null;
-  try {
-    const obj = JSON.parse(text) as Record<string, unknown>;
-    if (obj.type === 'res' || obj.type === 'event') {
-      return obj as unknown as RpcInboundFrame;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
-/** Cap for per-message streamed-delta tracking (oldest entry evicted). */
-const DELTA_TRACK_LIMIT = 200;
-
-/** Fallback details for tool-call frames that carry typed fields instead of a
- *  ready-made `details` string: serialize arguments/result so the UI still
- *  shows the call's inputs and outcome instead of an empty details block. */
-function serializeToolCallDetails(tc: { arguments?: unknown; result?: unknown }): string {
-  const parts: string[] = [];
-  if (tc.arguments !== undefined) {
-    parts.push(`arguments: ${JSON.stringify(tc.arguments, null, 2)}`);
-  }
-  if (tc.result !== undefined) {
-    parts.push(`result: ${JSON.stringify(tc.result, null, 2)}`);
-  }
-  return parts.join('\n');
-}
-
-/**
- * Map a gateway `session.message` event to zero or more UI ChatEvents.
- * Handles toolCall payloads, streaming text deltas, final text, and usage.
- * Frames may carry several of these at once (e.g. toolCall alongside a delta
- * and usage), so every present facet is emitted in order; returns [] when
- * the event carries none of them.
- */
-export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
-  if (evt.event !== GatewayEvents.sessionMessage) return [];
-  const payload = (evt.payload ?? {}) as {
-    role?: string;
-    text?: unknown;
-    delta?: unknown;
-    toolCall?: { id?: unknown; name?: unknown; title?: unknown; status?: unknown; details?: unknown; arguments?: unknown; result?: unknown } | null;
-    usage?:
-      | {
-          promptTokens?: number;
-          completionTokens?: number;
-          prompt_tokens?: number;
-          completion_tokens?: number;
-          input_tokens?: number;
-          output_tokens?: number;
-        }
-      | null;
-        messageId?: unknown;
-  };
-  const messageId = typeof payload.messageId === 'string' && payload.messageId ? payload.messageId : null;
-  if (payload.role && payload.role !== 'assistant') return [];
-  const tc = payload.toolCall;
-  const events: ChatEvent[] = [];
-  if (tc && typeof tc === 'object') {
-    const rawStatus = typeof tc.status === 'string' ? tc.status : '';
-    const status = TOOL_CALL_STATUSES.has(rawStatus) ? rawStatus : rawStatus ? 'running' : 'done';
-    events.push({
-      type: 'toolCall',
-      title: typeof tc.title === 'string' && tc.title ? tc.title : typeof tc.name === 'string' && tc.name ? tc.name : 'tool',
-      status,
-      details: typeof tc.details === 'string' && tc.details ? tc.details : serializeToolCallDetails(tc),
-      ...(typeof tc.id === 'string' && tc.id ? { id: tc.id } : {}),
-    });
-  }
-  const deltaText = typeof payload.delta === 'string' && payload.delta.length > 0 ? payload.delta : null;
-  const fullText = typeof payload.text === 'string' && payload.text.length > 0 ? payload.text : null;
-  // Mixed frames carry both the incremental delta and the full text of the
-  // same content. With a messageId the per-message dedupe in
-  // adjustCompleteFrameEvents keeps both events consistent; without one the
-  // provider would append both strings verbatim ({delta:"hello", text:"hello"}
-  // renders "hellohello"), so the full text is canonical: a snapshot cannot
-  // lose content, while a delta-only frame is preserved below.
-  if (!messageId && fullText !== null) {
-    events.push({ type: 'text', text: fullText });
-  } else {
-    if (deltaText !== null) {
-      events.push({ type: 'text', text: deltaText });
-    }
-    if (fullText !== null) {
-      events.push({ type: 'text', text: fullText });
-    }
-  }
-  const u = payload.usage;
-  const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
-  const completionTokens = Number(
-    u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
-  );
-  if (u && (promptTokens || completionTokens)) {
-    events.push({
-      type: 'usage',
-      usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
-    });
-  }
-  return events;
 }
 
 /**
@@ -243,7 +137,7 @@ export class GatewayChatService {
    *  with the full text can emit only the unrendered remainder instead of
    *  duplicating the already-streamed deltas. */
   private rememberDeltaText(sessionKey: string, messageId: string, delta: string): void {
-    const key = sessionKey + '\u0000' + messageId;
+    const key = this.messageKey(sessionKey, messageId);
     this.deltaTextByMessage.set(key, (this.deltaTextByMessage.get(key) ?? '') + delta);
     if (this.deltaTextByMessage.size > DELTA_TRACK_LIMIT) {
       const oldest = this.deltaTextByMessage.keys().next().value;
@@ -255,7 +149,12 @@ export class GatewayChatService {
 
   /** Drop the streamed-delta record once the message is finalized. */
   private forgetDeltaText(sessionKey: string, messageId: string): void {
-    this.deltaTextByMessage.delete(sessionKey + '\u0000' + messageId);
+    this.deltaTextByMessage.delete(this.messageKey(sessionKey, messageId));
+  }
+
+  /** Composite map key that scopes a messageId to its session. */
+  private messageKey(sessionKey: string, messageId: string): string {
+    return sessionKey + '\u0000' + messageId;
   }
 
   /** Per-message streamed-delta accumulation for complete-frame dedup. */
@@ -273,13 +172,13 @@ export class GatewayChatService {
     payload: { messageId?: unknown; text?: unknown; delta?: unknown },
     events: ChatEvent[]
   ): ChatEvent[] {
-    const messageId = typeof payload.messageId === 'string' ? payload.messageId : null;
+    const messageId = asNonEmptyString(payload.messageId);
     if (!messageId) {
       return events;
     }
-    const delta = typeof payload.delta === 'string' ? payload.delta : '';
-    const fullText = typeof payload.text === 'string' ? payload.text : '';
-    const streamed = this.deltaTextByMessage.get(sessionKey + '\u0000' + messageId);
+    const delta = asStringOr(payload.delta, '');
+    const fullText = asStringOr(payload.text, '');
+    const streamed = this.deltaTextByMessage.get(this.messageKey(sessionKey, messageId));
     if (delta.length > 0) {
       this.rememberDeltaText(sessionKey, messageId, delta);
     }
@@ -295,7 +194,7 @@ export class GatewayChatService {
       // adjusted events already emitted the cumulative text, so the tracked
       // prefix must jump to it — keeping the stale delta prefix makes the
       // later full-text completion frame re-emit the tail a second time.
-      this.deltaTextByMessage.set(sessionKey + '\u0000' + messageId, fullText);
+      this.deltaTextByMessage.set(this.messageKey(sessionKey, messageId), fullText);
     }
     // A divergent mixed frame (full text does not extend the streamed prefix
     // plus delta) is emitted intact and keeps the accumulated delta prefix:
@@ -792,7 +691,7 @@ export class GatewayChatService {
     }
     const data = payload as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
     const cursor = data.deltaCursor ?? data.cursor;
-    if (typeof cursor === 'string' && cursor) {
+    if (asNonEmptyString(cursor)) {
       this.deltaCursorBySession.set(sessionKey, cursor);
     }
     if (!Array.isArray(data.messages)) {
@@ -800,7 +699,7 @@ export class GatewayChatService {
     }
     for (const rowRaw of data.messages) {
       const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
-      const messageId = typeof row.messageId === 'string' ? row.messageId : null;
+      const messageId = asNonEmptyString(row.messageId);
       // Only complete assistant rows may enter the seen-set: history payloads
       // can contain streaming delta rows that share their messageId with the
       // later completed row. Seeding a delta row would make the resume
@@ -987,8 +886,8 @@ export class GatewayChatService {
    *  returns null otherwise so the caller drops the frame instead of
    *  completing the wrong session's sink via the mutable activeSessionKey. */
   private resolveSessionEndKey(sessionKey: unknown): string | null {
-    if (typeof sessionKey === 'string' && sessionKey.length > 0) {
-      return sessionKey;
+    if (asNonEmptyString(sessionKey)) {
+      return sessionKey as string;
     }
     // Keyless ends prefer an unambiguous active run: transcript-only keys can
     // belong to idle resumed sessions that no end would ever finalize, so a
@@ -1291,7 +1190,7 @@ export class GatewayChatService {
           continue;
         }
         const adjusted = this.adjustCompleteFrameEvents(
-          typeof payload.sessionKey === 'string' ? payload.sessionKey : DEFAULT_SESSION_KEY,
+          asNonEmptyString(payload.sessionKey) ?? DEFAULT_SESSION_KEY,
           payload,
           chatEvents
         );
@@ -1474,7 +1373,7 @@ export class GatewayChatService {
           typeof rowPayload.text === 'string' &&
           rowPayload.text.length > 0 &&
           typeof rowPayload.delta !== 'string';
-        const messageId = typeof row.messageId === 'string' ? row.messageId : null;
+        const messageId = asNonEmptyString(row.messageId);
         const seen = messageId != null && this.hasSeen(sessionKey, messageId);
         if (messageId && isFinalAssistantRow && seen) {
           // An already-seen complete assistant row still needs terminal
