@@ -253,9 +253,9 @@ export class GatewayConfigService {
 /** User-level settings.json locations across VS Code distributions: a
  *  plaintext token hidden under a `[language]` override in the global
  *  settings file must be discovered too, not only workspace-level ones.
- *  Insiders and VSCodium ship separate `User` directories from stable, so
- *  each distribution is probed independently — a token stored only in one
- *  product's settings file would otherwise stay plaintext forever. */
+ *  Insiders and VSCodium ship separate `User` directories from stable, but
+ *  only the running distribution's settings file is probed: cleanup writes
+ *  through the Configuration API, which cannot touch other products' files. */
 private static userSettingsUris(): vscode.Uri[] {
   const roots: string[] = [];
   if (process.platform === 'win32') {
@@ -266,10 +266,30 @@ private static userSettingsUris(): vscode.Uri[] {
     roots.push(path.join(os.homedir(), '.config'));
     roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
   }
-  const distros = ['Code', 'Code - Insiders', 'Code - OSS', 'VSCodium'];
+  const distros = [GatewayConfigService.currentDistroDir()];
   return roots.flatMap((root) =>
-    distros.map((d) => vscode.Uri.file(path.join(root, d, 'User', 'settings.json')))
+    distros
+      .filter((d): d is string => d !== null)
+      .map((d) => vscode.Uri.file(path.join(root, d, 'User', 'settings.json')))
   );
+}
+
+/** Resolve the settings directory of the distribution this extension runs
+ *  in. `config.update` with a Global target writes only the running
+ *  product's user settings, so discovering overrides from other
+ *  distributions' files (Insiders, OSS, VSCodium) would find plaintext
+ *  tokens the Configuration API can never clean up — migration must probe
+ *  only settings the current product can actually update. */
+private static currentDistroDir(): string | null {
+  const scheme = vscode.env.uriScheme ?? 'vscode';
+  if (scheme === 'vscode-insiders') {
+    return 'Code - Insiders';
+  }
+  if (scheme === 'vscode-vscodium') {
+    return 'VSCodium';
+  }
+  // The 'vscode' scheme covers both stable VS Code and Code - OSS builds.
+  return /\boss\b/i.test(vscode.env.appName ?? '') ? 'Code - OSS' : 'Code';
 }
 
 /** Collect `[language]` override keys from a parsed settings object. */
@@ -382,7 +402,19 @@ private static async discoverLanguageOverrides(): Promise<LanguageOverride[]> {
     }
     if (ch === ',') {
       let j = i + 1;
-      while (j < text.length && /\s/.test(text[j])) j++;
+      while (j < text.length) {
+        if (/\s/.test(text[j])) {
+          j++;
+        } else if (text[j] === '/' && text[j + 1] === '/') {
+          while (j < text.length && text[j] !== '\n') j++;
+        } else if (text[j] === '/' && text[j + 1] === '*') {
+          j += 2;
+          while (j < text.length && !(text[j] === '*' && text[j + 1] === '/')) j++;
+          j += 2;
+        } else {
+          break;
+        }
+      }
       if (text[j] === '}' || text[j] === ']') continue;
     }
     out += ch;

@@ -844,6 +844,13 @@ export class GatewayChatService {
     if (evt.event === GatewayEvents.sessionEnd) {
       const endPayload = (evt.payload ?? {}) as { sessionKey?: unknown };
       const endKey = this.resolveSessionEndKey(endPayload.sessionKey);
+      // A late `session.end` from a run being aborted must not finalize the
+      // transcript-only sinks: the abort flow itself delivers `done` when
+      // the abort RPC settles, mirroring the suppression of late
+      // `session.message` frames.
+      if (endKey && this.abortingSessions.has(endKey)) {
+        return;
+      }
       if (endKey) {
         const runSink = this.runSinksBySession.get(endKey);
         const transcript = [...(this.transcriptSinksBySession.get(endKey) ?? [])];
