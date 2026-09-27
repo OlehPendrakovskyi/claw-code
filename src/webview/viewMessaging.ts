@@ -204,6 +204,23 @@ async function safeCanonicalPath(p: string): Promise<string | null> {
     }
 }
 
+/** Resolve the location an opened handle actually refers to through
+ *  /proc/self/fd (Linux only; null elsewhere). Unlike realpath of the
+ *  stored path, the fd link is anchored to the opened inode, so a parent
+ *  directory swapped before open and restored afterwards still shows the
+ *  swap: the opened file's true path differs from the stored canonical
+ *  path and the content must be discarded. */
+async function openedHandlePath(handle: fsp.FileHandle): Promise<string | null> {
+    if (process.platform === 'win32') {
+        return null;
+    }
+    try {
+        return await fsp.realpath(`/proc/self/fd/${handle.fd}`);
+    } catch {
+        return null;
+    }
+}
+
 /** Prove an image attachment path still refers to the validated regular file.
  *  Mirrors the text-attachment hardening: realpath must match the stored
  *  spelling, the leaf must open with O_NOFOLLOW|O_NONBLOCK, and the opened
@@ -227,6 +244,10 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
         if (opened.dev !== current.dev || opened.ino !== current.ino ||
             !opened.isFile() || !current.isFile() ||
             (await fsp.realpath(p)) !== p) {
+            return null;
+        }
+        const fdPath = await openedHandlePath(handle);
+        if (fdPath !== null && fdPath !== p) {
             return null;
         }
     } catch {
@@ -253,13 +274,16 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
  *     of the path. This covers Windows too, where O_NOFOLLOW is unavailable:
  *     a symlink/junction swapped in at the final component yields a mismatch
  *     instead of foreign content.
- *  4. Re-canonicalize the path after the read and discard on any drift, which
- *     catches an intermediate-directory swap that happened after realpath but
- *     before open.
- *  The residual window — a swap that lands before open and reverts between
- *  the identity check and post-read re-canonicalization — is not closable
- *  from userspace without directory-handle (openat) support; every other
- *  interleaving above is detected and the content is discarded.
+ *  4. Verify the opened handle's own location via /proc/self/fd realpath
+ *     (POSIX): the fd link always resolves through the current directory
+ *     chain to the actual opened inode, so an intermediate-directory swap
+ *     that happened before open is exposed even if the attacker reverts
+ *     the directory before the later checks — the pre-open realpath and
+ *     the identity comparison both read live path state, but the fd link
+ *     is anchored to the opened handle.
+ *  5. Re-canonicalize the path after the read and discard on any drift.
+ *  On Windows /proc is unavailable, so the swap-revert window there relies
+ *  on the dev/ino comparison alone.
  */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
@@ -310,6 +334,10 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                 }
                 if (opened.dev !== current.dev || opened.ino !== current.ino) {
                     throw new Error('attachment path changed during read');
+                }
+                const fdPath = await openedHandlePath(handle);
+                if (fdPath !== null && fdPath !== real) {
+                    throw new Error('attachment opened outside its canonical path');
                 }
                 const bytes = await handle.readFile();
                 const content = new TextDecoder().decode(bytes);

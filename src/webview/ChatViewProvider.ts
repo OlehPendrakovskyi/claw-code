@@ -1929,6 +1929,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         activeThread.status = 'error';
                     }
                     this.resumeSessionForThread(gateway, activeThread, sessionKey, history !== null);
+                } else if (this.getActiveThread()?.id === activeThread.id &&
+                    (selectionGen === null || activeThread.openGeneration === selectionGen) &&
+                    !this.transcriptCallbacks.has(activeThread.id) &&
+                    !this.suspendedTranscriptSinks.has(activeThread.id) &&
+                    activeThread.sessionKey) {
+                    // Stale continuation on the same active thread and generation
+                    // (epoch/streaming drift, not a newer selection): without the
+                    // history check passing no callback is installed below, so the
+                    // rebound thread would sit idle and never receive gateway
+                    // events. Install a fresh callback for the key it is bound to.
+                    this.resumeSessionForThread(gateway, activeThread, activeThread.sessionKey, false);
                 }
             } else if (reboundFrom) {
                 this.resumeSessionForThread(gateway, activeThread, sessionKey, false);
@@ -2231,7 +2242,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.status = 'idle';
         }
         const restoreAbandonedRebind = (): void => {
-            if (!abandonedPreviousKey) {
+            // closeThread is authoritative: after it removed the thread and its
+            // sinks, a stale rebinding must not re-insert a callback (or a
+            // suspended sink) for a thread that no longer exists.
+            if (!abandonedPreviousKey || !this.threads.has(thread.id)) {
                 return;
             }
             if (abandonedSuspendedSink) {
