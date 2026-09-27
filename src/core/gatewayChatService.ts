@@ -237,6 +237,10 @@ export class GatewayChatService {
    *  could tear down the surviving stream. Resolved `true` on success,
    *  `false` on rejection; cleared on completion. */
   private pendingSubscribeBySession = new Map<string, Promise<boolean>>();
+  // Keyed session.message frames that arrived for an unknown session while a
+  // pre-ack send was in flight: buffered until the acknowledgement resolves
+  // the actual session key, then re-routed (drainPreAckBufferedFrames).
+  private preAckBufferedFrames: Array<SessionEvent> = [];
   /** Sessions with a live transcript subscription on the current socket.
    *  Cleared whenever the socket drops: every subscriber must re-subscribe
    *  after a reconnect. */
@@ -368,6 +372,7 @@ export class GatewayChatService {
       this.connected = false;
       this.subscribedSessions.clear();
       this.pendingSubscribeBySession.clear();
+      this.preAckBufferedFrames = [];
       this.rejectAllPending('gateway credentials changed');
       try { oldWs.close(); } catch { /* already closed */ }
       this.scheduleReconnect();
@@ -526,6 +531,7 @@ export class GatewayChatService {
         this.connected = false;
         this.subscribedSessions.clear();
         this.pendingSubscribeBySession.clear();
+        this.preAckBufferedFrames = [];
         if (!settled) settleError('gateway closed before handshake completed');
         if (challengeTimer) {
           clearTimeout(challengeTimer);
@@ -719,6 +725,17 @@ export class GatewayChatService {
             }
           }
         }
+      } else if (
+        this.preAckSendKeys.size > 0 &&
+        typeof (evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey === 'string' &&
+        (evt.payload as { sessionKey: string }).sessionKey
+      ) {
+        // A pre-ack send may resolve to a different session than requested:
+        // keyed frames for that resolved key can arrive before the
+        // acknowledgement registers the sink under the resolved key. Buffer
+        // them and re-route after the ack instead of dropping the run's
+        // initial deltas/tool events.
+        this.preAckBufferedFrames.push(evt);
       } else {
         // Unroutable session.message frames (e.g. ambiguous keyless frames in
         // multi-session mode) are dropped by design in sinkForSession; emitting
@@ -843,6 +860,19 @@ export class GatewayChatService {
     }
     const existingSink = this.runSinksBySession.get(sessionKey);
     const queueMode = existingSink ? 'steer' : 'enqueue';
+    // An abort RPC is still in flight for this session: it targets the
+    // session key, so a send issued now would race it — the new run's
+    // frames would be dropped as late-abort events and the old run's
+    // session_end could finalize the new sink. Fail the send until the
+    // abort settles.
+    if (this.abortingSessions.has(sessionKey)) {
+      _onEvent({
+        type: 'error',
+        message: 'The previous run on this session is still aborting; retry in a moment.'
+      });
+      _onEvent({ type: 'done' });
+      return;
+    }
     this.runSinksBySession.set(sessionKey, _onEvent);
     // Mark the pre-ack registration: a concurrent resume catch-up that
     // replays a missed completed assistant row must not finalize/retire
@@ -928,6 +958,9 @@ export class GatewayChatService {
           return;
         }
         this.runSinksBySession.set(key, _onEvent);
+        // The resolved key now has a sink: re-route any frames buffered while
+        // this send was pre-ack (initial deltas keyed with the resolved key).
+        this.drainPreAckBufferedFrames();
         if (key !== sessionKey) {
           // Drop this send's pre-ack subscription on the requested key when
           // the gateway resolved a different one; the resolved key above is
@@ -963,6 +996,9 @@ export class GatewayChatService {
           this.runSinksBySession.delete(sessionKey);
         }
         this.removeTranscriptSink(sessionKey, _onEvent);
+        // The send failed: buffered pre-ack frames cannot route to this
+        // send's sinks. Drop leftovers when no other send is pre-ack.
+        this.drainPreAckBufferedFrames();
         _onEvent({ type: 'error', message: err.message });
         _onEvent({ type: 'done' });
       });
@@ -997,6 +1033,41 @@ export class GatewayChatService {
         _onEvent({ type: 'done' });
       }
     });
+  }
+
+  /** Re-route frames buffered while a send was pre-ack: the acknowledgement
+   *  (or failure) has settled the send's sink registrations, so unmatched
+   *  frames stay buffered while another send is still pre-ack and are
+   *  dropped once none remains. */
+  private drainPreAckBufferedFrames(): void {
+    if (this.preAckBufferedFrames.length === 0) {
+      return;
+    }
+    const frames = this.preAckBufferedFrames;
+    this.preAckBufferedFrames = [];
+    const leftover: Array<SessionEvent> = [];
+    for (const evt of frames) {
+      const payload = (evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
+      const routed = this.sinkForSession(payload.sessionKey);
+      if (!routed) {
+        leftover.push(evt);
+        continue;
+      }
+      const chatEvents = mapSessionEventToChatEvent(evt);
+      if (chatEvents.length > 0) {
+        if (typeof payload.messageId === 'string') {
+          this.rememberSeen(routed.key, payload.messageId);
+        }
+        for (const chatEvent of chatEvents) {
+          for (const sink of routed.sinks) {
+            sink(chatEvent);
+          }
+        }
+      }
+    }
+    if (this.preAckSendKeys.size > 0) {
+      this.preAckBufferedFrames.push(...leftover);
+    }
   }
 
   /** Route a session event to its session-keyed run sink.

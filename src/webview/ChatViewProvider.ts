@@ -1492,6 +1492,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway: GatewayChatService,
         openGen: number
     ): Promise<void> {
+        const reboundFrom = thread.sessionKey && thread.sessionKey !== sessionKey ? thread.sessionKey : null;
         // Same acpx guard as handleSelectAgent: a streaming run without a
         // gateway session key (or on an acpx fallback backend) must be
         // retired before rebinding, or its late output lands in the newly
@@ -1625,6 +1626,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.messages.push({ role: msg.role, content: msg.content });
             }
             thread.status = 'idle';
+        } else if (reboundFrom) {
+            // A failed fetch after a session switch must not keep the
+            // previous session's transcript under the new key: the resume
+            // sink below would show the old transcript as the new session
+            // and append new-session events to it. Clear it and surface an
+            // explicit load error instead (a same-key reopen keeps its
+            // transcript on transport errors by design).
+            thread.messages = [];
+            thread.messages.push({
+                role: 'assistant',
+                content: 'Failed to load session history. Reopen the session to retry.'
+            });
+            thread.title = label;
+            thread.status = 'error';
         }
         // Dismiss the sessions panel in every webview surface: opening a
         // row is a selection, so the panel must close the same way it does
