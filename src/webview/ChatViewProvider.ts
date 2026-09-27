@@ -1096,6 +1096,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     /**
+     *  Connect the chat gateway transport right away (e.g. after saving a
+     *  token) instead of waiting for the next send: resolving through the
+     *  factory establishes the WebSocket and drives the transport status
+     *  badge. Falls back to acpx silently when the gateway is unreachable.
+     */
+    async connectGatewayTransport(): Promise<void> {
+        await this.resolveGateway();
+    }
+
+    /**
      *  A cancel/clear during attachment resolution or a superseding send
      *  bumps the epoch: this continuation must not resurrect the thread
      *  or route the stale prompt into a newer run.
