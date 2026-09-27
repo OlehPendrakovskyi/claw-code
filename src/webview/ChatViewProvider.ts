@@ -790,52 +790,78 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private async handleSend(thread: ChatThreadState, text: string): Promise<void> {
         log.info(`handleSend: thread=${thread.id}, text="${text.slice(0, 80)}"`);
-        const attachments = [...thread.pendingAttachments];
-        const accepted = new Set(attachments.map(attachmentKey));
-        const pushNew = (candidates: typeof attachments): void => {
-            for (const a of candidates) {
-                const key = attachmentKey(a);
-                if (!accepted.has(key)) {
-                    accepted.add(key);
-                    attachments.push(a);
-                }
-            }
-        };
-
-        const autoAttachPath = await this.getActiveEditorFilePath();
-        if (autoAttachPath) {
-            const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
-            if (autoAttach) {
-                await this.addAttachments(thread, [autoAttachPath]);
-                pushNew(thread.pendingAttachments.filter(a => a.path === autoAttachPath));
-            }
+        // Mark in-flight before async attachment resolution: while file
+        // resolution is in flight a second send must see the thread busy,
+        // and cancel/clear during the awaits must not be undone by the
+        // continuation below (guarded by the send epoch check).
+        if (thread.isStreaming) {
+            return;
         }
-
-        const mentions = await this.resolveMentions(text);
-        if (mentions.length > 0) {
-            await this.addAttachments(thread, mentions);
-            // Mention dedupe keys on (path + range); attach only pending
-            // entries whose range matches an accepted mention, not every
-            // attachment of the same file.
-            const mentionKeys = new Set(mentions.map(mentionKey));
-            pushNew(thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
-        }
-
-        thread.messages.push({ role: 'user', content: text });
-        thread.pendingAssistantText = '';
-        thread.pendingAttachments = [];
+        const sendEpoch = thread.eventEpoch;
         thread.isStreaming = true;
         thread.status = 'running';
-        this.maybeRenameThread(thread, text);
-        log.info(`handleSend: pushed user msg, now ${thread.messages.length} msgs`);
         this.emitState();
+        try {
+            const attachments = [...thread.pendingAttachments];
+            const accepted = new Set(attachments.map(attachmentKey));
+            const pushNew = (candidates: typeof attachments): void => {
+                for (const a of candidates) {
+                    const key = attachmentKey(a);
+                    if (!accepted.has(key)) {
+                        accepted.add(key);
+                        attachments.push(a);
+                    }
+                }
+            };
 
-        let fullPrompt = text;
-        if (attachments.length > 0) {
-            fullPrompt = `${await readAttachments(attachments)}\n\n${text}`;
+            const autoAttachPath = await this.getActiveEditorFilePath();
+            if (autoAttachPath) {
+                const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
+                if (autoAttach) {
+                    await this.addAttachments(thread, [autoAttachPath]);
+                    pushNew(thread.pendingAttachments.filter(a => a.path === autoAttachPath));
+                }
+            }
+
+            const mentions = await this.resolveMentions(text);
+            if (mentions.length > 0) {
+                await this.addAttachments(thread, mentions);
+                // Mention dedupe keys on (path + range); attach only pending
+                // entries whose range matches an accepted mention, not every
+                // attachment of the same file.
+                const mentionKeys = new Set(mentions.map(mentionKey));
+                pushNew(thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
+            }
+
+            if (thread.eventEpoch !== sendEpoch) {
+                // Cancel/clear ran during attachment resolution: the message
+                // must not be committed after cancellation was honoured.
+                log.info(`handleSend: superseded during attachment resolution, thread=${thread.id}`);
+                return;
+            }
+            thread.messages.push({ role: 'user', content: text });
+            thread.pendingAssistantText = '';
+            thread.pendingAttachments = [];
+            thread.isStreaming = true;
+            thread.status = 'running';
+            this.maybeRenameThread(thread, text);
+            log.info(`handleSend: pushed user msg, now ${thread.messages.length} msgs`);
+            this.emitState();
+
+            let fullPrompt = text;
+            if (attachments.length > 0) {
+                fullPrompt = `${await readAttachments(attachments)}\n\n${text}`;
+            }
+
+            await this.sendPrompt(thread, fullPrompt);
+        } catch (err) {
+            // The early in-flight marking must never strand the thread in a
+            // streaming state if attachment resolution throws.
+            thread.isStreaming = false;
+            thread.status = 'error';
+            this.emitState();
+            log.error(`handleSend failed: ${err instanceof Error ? err.message : String(err)}`);
         }
-
-        await this.sendPrompt(thread, fullPrompt);
     }
 
     /** Lifecycle backend for a thread: the transport of the last send, else the legacy service. */

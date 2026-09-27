@@ -490,6 +490,14 @@ export class GatewayChatService {
                 clearTimeout(handshakeTimer);
                 handshakeTimer = null;
               }
+              if (this.ws !== ws) {
+                // Retired socket: updateConnection() or a newer attempt
+                // replaced this.ws while this handshake was in flight. The
+                // stale hello-ok must not mark the client connected while
+                // this.ws is null or points at a different socket.
+                settleError('gateway handshake superseded: retired socket delivered hello-ok');
+                return;
+              }
               this.connected = true;
               resolve(payload as unknown as HelloOk);
             }
