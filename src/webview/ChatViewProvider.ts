@@ -599,7 +599,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif',
     ]);
 
-    private async addAttachments(thread: ChatThreadState, items: Array<string | FileMention>): Promise<void> {
+    private async addAttachments(thread: ChatThreadState, items: Array<string | FileMention>, options?: { guard?: () => boolean }): Promise<void> {
         let changed = false;
 
         for (const item of items) {
@@ -616,6 +616,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             try {
                 await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
+                // The awaited stat must not commit into a thread whose epoch
+                // moved on (cancel/clear/close) while resolution was pending:
+                // the caller's guard re-checked here prevents repopulating a
+                // reset thread with stale attachments.
+                if (options?.guard?.() === false) {
+                    return;
+                }
                 const ext = path.extname(filePath).toLowerCase();
                 thread.pendingAttachments.push({
                     name: path.basename(filePath),
@@ -830,14 +837,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (autoAttachPath) {
                 const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
                 if (autoAttach) {
-                    await this.addAttachments(thread, [autoAttachPath]);
+                    await this.addAttachments(thread, [autoAttachPath], { guard: () => thread.eventEpoch === sendEpoch });
                     pushNew(thread.pendingAttachments.filter(a => a.path === autoAttachPath));
                 }
             }
 
             const mentions = await this.resolveMentions(text);
             if (mentions.length > 0) {
-                await this.addAttachments(thread, mentions);
+                await this.addAttachments(thread, mentions, { guard: () => thread.eventEpoch === sendEpoch });
                 // Mention dedupe keys on (path + range); attach only pending
                 // entries whose range matches an accepted mention, not every
                 // attachment of the same file.
@@ -1678,6 +1685,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private async resumeLastSession(): Promise<void> {
         const sessionKey = this.context.workspaceState.get<string>(ChatViewProvider.LAST_SESSION_KEY);
         if (!sessionKey) {
+            return;
+        }
+        // The persisted key may come from an older version or stale workspace
+        // state: validate its shape before binding, so a subagent/foreign
+        // session key cannot bypass the main-session policy enforced by the
+        // picker for webview selections.
+        if (!isMainAgentSessionKey(sessionKey)) {
+            log.warn(`resumeLastSession: persisted key failed main-agent validation, ignoring: ${sessionKey}`);
+            this.lastSessionKey = null;
+            await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, undefined);
             return;
         }
         this.lastSessionKey = sessionKey;
