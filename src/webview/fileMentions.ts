@@ -12,21 +12,22 @@ export interface FileMention {
  * Parse `@path` / `@path#L5` / `@path#L5-10` mentions from a draft text.
  * Mentions start after whitespace (or at the start of the text) and stop at
  * whitespace; paths containing whitespace must be double-quoted (`@"my file.ts"`),
- * matching the encoding produced by buildMention.
+ * matching the encoding produced by buildMention; embedded double quotes are
+ * doubled (`""`) inside the quoted form so any POSIX path round-trips.
  */
 export function parseFileMentions(text: string): FileMention[] {
     if (!text) {
         return [];
     }
 
-    const mentionRegex = /(?:^|\s)@("([^"]+)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
+    const mentionRegex = /(?:^|\s)@("((?:[^"]|")*)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
     const mentions: FileMention[] = [];
     const seen = new Set<string>();
 
     let match: RegExpExecArray | null;
     while ((match = mentionRegex.exec(text)) !== null) {
         // Trailing sentence punctuation belongs to prose, not the path.
-        const path = match[1].startsWith('"') ? match[2] : match[1].replace(/[.,:;)}\]]+$/, '');
+        const path = match[1].startsWith('"') ? match[2].replace(/""/g, '"') : match[1].replace(/[.,:;)}\]]+$/, '');
         if (!path) {
             continue;
         }
@@ -53,9 +54,12 @@ export function parseFileMentions(text: string): FileMention[] {
  *  Non-positive starts clamp to line 1; reversed ranges collapse to the start line. */
 export function buildMention(filePath: string, lineStart?: number, lineEnd?: number): string {
     // Quote any path containing whitespace or parser delimiters: the raw
-    // (unquoted) form cannot express `#` or `@` in a filename, and raw paths
-    // cannot contain double quotes, so the quoted form is always unambiguous.
-    const pathPart = /[\s#@]/.test(filePath) ? `@"${filePath}"` : `@${filePath}`;
+    // (unquoted) form cannot express `#` or `@` in a filename.
+    // POSIX filenames may legally contain double quotes (e.g. `my "file.ts`),
+    // so a path carrying one is quoted too and embedded quotes are doubled
+    // (`""`) inside the quoted form; parseFileMentions un-doubles them, so
+    // every such path round-trips through a mention.
+    const pathPart = /[\s#@"]/.test(filePath) ? `@"${filePath.replace(/"/g, '""')}"` : `@${filePath}`;
     if (lineStart != null && lineEnd != null) {
         const start = Math.max(1, lineStart);
         const end = Math.max(start, lineEnd);

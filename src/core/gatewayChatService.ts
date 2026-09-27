@@ -249,6 +249,12 @@ export class GatewayChatService {
    *  frames must be attributable to it so its failure can discard them instead
    *  of draining them into another run's sink. */
   private preAckBufferedFrames: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
+  /** Session keys whose pre-ack send has settled successfully (requested and
+   *  resolved keys both recorded). Drain routes a buffered frame only when its
+   *  session key belongs to a settled send: a frame held for a send still in
+   *  flight must wait for that send's acknowledgement, or the first settled
+   *  send's sink would claim another thread's frames. */
+  private preAckSettledKeys = new Set<string>();
   /** Sessions with a live transcript subscription on the current socket.
    *  Cleared whenever the socket drops: every subscriber must re-subscribe
    *  after a reconnect. */
@@ -446,6 +452,7 @@ export class GatewayChatService {
       this.subscribedSessions.clear();
       this.pendingSubscribeBySession.clear();
       this.preAckBufferedFrames = [];
+      this.preAckSettledKeys.clear();
       this.rejectAllPending('gateway credentials changed');
       try { oldWs.close(); } catch { /* already closed */ }
       this.scheduleReconnect();
@@ -620,6 +627,7 @@ export class GatewayChatService {
         this.subscribedSessions.clear();
         this.pendingSubscribeBySession.clear();
         this.preAckBufferedFrames = [];
+        this.preAckSettledKeys.clear();
         if (!settled) settleError('gateway closed before handshake completed');
         if (challengeTimer) {
           clearTimeout(challengeTimer);
@@ -1090,6 +1098,8 @@ export class GatewayChatService {
       .then((payload) => {
         this.preAckSendKeys.delete(sessionKey);
         const key = extractSessionKey(payload) ?? sessionKey;
+        this.preAckSettledKeys.add(sessionKey);
+        this.preAckSettledKeys.add(key);
         this.activeSessionKey = key;
         const stillOwns = this.runSinksBySession.get(key) === _onEvent ||
           this.runSinksBySession.get(sessionKey) === _onEvent;
@@ -1141,6 +1151,7 @@ export class GatewayChatService {
         this.removeTranscriptSink(sessionKey, _onEvent);
         if (this.preAckSendKeys.size === 0) {
           this.preAckBufferedFrames = [];
+          this.preAckSettledKeys.clear();
         } else {
           this.discardPreAckFramesForSend(sessionKey);
           this.drainPreAckBufferedFrames();
@@ -1202,6 +1213,20 @@ export class GatewayChatService {
     const leftover: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
     for (const buffered of frames) {
       const payload = (buffered.evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
+      // Send attribution gate: with several pre-ack sends in flight, only
+      // frames whose session key belongs to an acknowledged send may route —
+      // routing every frame for a session with an installed sink would hand a
+      // frame held for a still-pre-ack send to the first acknowledged sink
+      // and display another thread's output in the wrong conversation. With
+      // no pre-ack send left, every survivor belongs to a settled send, so
+      // the gate is moot.
+      if (
+        this.preAckSendKeys.size > 0 &&
+        !(typeof payload.sessionKey === 'string' && this.preAckSettledKeys.has(payload.sessionKey))
+      ) {
+        leftover.push(buffered);
+        continue;
+      }
       const routed = this.sinkForSession(payload.sessionKey);
       if (!routed) {
         leftover.push(buffered);
@@ -1557,6 +1582,7 @@ export class GatewayChatService {
     this.preAckSendKeys.delete(key);
     if (this.preAckSendKeys.size === 0) {
       this.preAckBufferedFrames = [];
+      this.preAckSettledKeys.clear();
     } else {
       this.discardPreAckFramesForSend(key);
     }
@@ -1611,6 +1637,7 @@ export class GatewayChatService {
     this.pendingSubscribeBySession.clear();
     this.preAckSendKeys.clear();
     this.preAckBufferedFrames = [];
+    this.preAckSettledKeys.clear();
     this.rejectAllPending('gateway transport suspended');
     if (this.ws) {
       const oldWs = this.ws;

@@ -270,10 +270,12 @@ export type SessionMessageFrame = {
   usage?: {
     promptTokens?: number;
     completionTokens?: number;
+    totalTokens?: number;
     prompt_tokens?: number;
     completion_tokens?: number;
     input_tokens?: number;
     output_tokens?: number;
+    total_tokens?: number;
   } | null;
   [key: string]: unknown;
 };

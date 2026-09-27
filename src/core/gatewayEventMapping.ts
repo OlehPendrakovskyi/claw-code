@@ -91,7 +91,11 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
   const events: ChatEvent[] = [];
   if (tc && typeof tc === 'object') {
     const rawStatus = asStringOr(tc.status, '');
-    const status = TOOL_CALL_STATUSES.has(rawStatus) ? rawStatus : rawStatus ? 'running' : 'done';
+    // An omitted status is not terminal: like the acpx mapper, keep the
+    // invocation visible as running so hideToolActivity cannot hide it.
+    const status = TOOL_CALL_STATUSES.has(rawStatus)
+      ? rawStatus
+      : rawStatus || 'running';
     const id = asNonEmptyString(tc.id);
     events.push({
       type: 'toolCall',
@@ -120,10 +124,16 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
   const completionTokens = toFiniteTokenCount(
     u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens
   );
-  if (u && (promptTokens || completionTokens)) {
+  // A frame may carry only `totalTokens` (a valid `Partial<UsageInfo>` usage
+  // update): dropping it because neither alias is present would hide a real
+  // usage update from the composer indicator, so preserve it as a fallback.
+  const totalRaw = toFiniteTokenCount(u?.totalTokens ?? u?.total_tokens);
+  const hasTotal = u?.totalTokens != null || u?.total_tokens != null;
+  const totalTokens = hasTotal ? totalRaw : promptTokens + completionTokens;
+  if (u && (promptTokens || completionTokens || totalTokens)) {
     events.push({
       type: 'usage',
-      usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens },
+      usage: { promptTokens, completionTokens, totalTokens },
     });
   }
   return events;

@@ -172,13 +172,17 @@ export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-/** Frame a file section with a per-section unique closing tag. File data is
- *  embedded verbatim (byte-faithful): a `</file id="...">` sequence forged by
- *  file content cannot terminate the section because the random id is
- *  generated per section and never derived from file bytes. */
+/** Frame a file section with a per-section unique element name. File data is
+ *  embedded verbatim (byte-faithful): a forged close tag cannot terminate the
+ *  section because the random id is generated per section and never derived
+ *  from file bytes. The id is carried in the element name itself — closing
+ *  tags cannot carry attributes, so `</file id="...">` would be rejected by
+ *  any XML-conformant parser — and `file-<uuid>` is a valid XML NCName
+ *  (dashes are legal; the leading letter keeps the name from starting with a
+ *  digit). */
 function frameFileBody(path: string, content: string): string {
     const id = randomUUID();
-    return `<file path="${escapeXmlAttr(path)}" id="${id}">\n${content}\n</file id="${id}">`;
+    return `<file-${id} path="${escapeXmlAttr(path)}">\n${content}\n</file-${id}>`;
 }
 
 /** Returns the canonical attachment path only when it still resolves to the
