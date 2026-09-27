@@ -253,6 +253,24 @@ export class GatewayChatService {
    *  grow memory unbounded. Keyed per session: messageIds are only unique
    *  within one session's transcript. */
   private seenMessageIdsBySession = new Map<string, Set<string>>();
+  /** A session.message frame carries a complete assistant message only when
+   *  it has non-empty full `text` and no streaming `delta`. Delta frames and
+   *  textless tool/usage frames share the messageId with the final row, so
+   *  only complete frames may enter the seen-set: marking a delta seen would
+   *  make a reconnect's catch-up skip the completed history row (and its
+   *  finalization), leaving the thread streaming forever. */
+  private isCompleteAssistantFrame(payload: {
+    messageId?: unknown;
+    text?: unknown;
+    delta?: unknown;
+  }): boolean {
+    return (
+      typeof payload.messageId === 'string' &&
+      typeof payload.text === 'string' &&
+      payload.text.length > 0 &&
+      typeof payload.delta !== 'string'
+    );
+  }
   /** Sessions with a `chat.abort` RPC in flight. Events for these keys are
    *  suppressed until the abort completes: the gateway may keep emitting
    *  deltas until it processes the abort, and those late events would
@@ -734,17 +752,20 @@ export class GatewayChatService {
         // must not repopulate the cancelled thread; drop them while the
         // abort is pending.
         if (this.abortingSessions.has(routed.key)) {
-          if (typeof payload.messageId === 'string') {
-            this.rememberSeen(routed.key, payload.messageId);
+          if (this.isCompleteAssistantFrame(payload)) {
+            this.rememberSeen(routed.key, payload.messageId as string);
           }
           return;
         }
         const chatEvents = mapSessionEventToChatEvent(evt);
         if (chatEvents.length > 0) {
-          // Live delivery counts as seen: record the id so the next reconnect's
-          // catch-up replay does not surface this message a second time.
-          if (typeof payload.messageId === 'string') {
-            this.rememberSeen(routed.key, payload.messageId);
+          // Live delivery counts as seen — but only for complete frames:
+          // a streaming delta must not poison the dedupe set, otherwise a
+          // reconnect whose catch-up replays the completed row for the same
+          // messageId would skip it and never emit `done`, leaving the
+          // thread streaming forever after an interrupted delta stream.
+          if (this.isCompleteAssistantFrame(payload)) {
+            this.rememberSeen(routed.key, payload.messageId as string);
           }
           routedChatEvent = chatEvents[0];
           for (const chatEvent of chatEvents) {
@@ -1090,8 +1111,8 @@ export class GatewayChatService {
       }
       const chatEvents = mapSessionEventToChatEvent(evt);
       if (chatEvents.length > 0) {
-        if (typeof payload.messageId === 'string') {
-          this.rememberSeen(routed.key, payload.messageId);
+        if (this.isCompleteAssistantFrame(payload)) {
+          this.rememberSeen(routed.key, payload.messageId as string);
         }
         for (const chatEvent of chatEvents) {
           for (const sink of routed.sinks) {

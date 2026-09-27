@@ -52,6 +52,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private globalState: vscode.Memento;
     private readonly context: vscode.ExtensionContext;
     private lastSessionKey: string | null = null;
+    /** Monotonic selection generation: bumped by every handleSelectAgent so
+     *  an older selection's continuation (still inside its persist await)
+     *  detects that a newer selection superseded it and aborts instead of
+     *  rebinding the stale key or re-persisting an obsolete session key. */
+    private selectGeneration = 0;
     /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
     private threadCounter = 0;
@@ -1514,6 +1519,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!gateway) {
             return;
         }
+        const selectGen = ++this.selectGeneration;
         // Selecting an agent invalidates any pending openSession on the
         // active thread: its openGeneration-guarded continuation would
         // otherwise pass the stale-generation check after its history/list
@@ -1543,6 +1549,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // verify the captured target thread is still the active one and that
         // this selection was not superseded (a concurrent handleOpenSession
         // bumps openGeneration and must win the rebind race).
+        // A newer selection (same or different thread) also invalidates this
+        // continuation: its persist already wrote the newer lastSessionKey,
+        // and this stale rebind must not clobber the newer binding.
+        if (this.selectGeneration !== selectGen) {
+            return;
+        }
         const activeThread = pendingOpenThread;
         if (!activeThread || this.getActiveThread()?.id !== activeThread.id) {
             return;

@@ -78,14 +78,20 @@ export async function migrateLegacyGatewayToken(
   // An explicitly empty value in one scope must not shadow a non-empty
   // token in another: pick the first non-empty scoped value, falling back
   // to any defined value only for cleanup bookkeeping.
-  const nonEmpty =
-    [inspection?.workspaceFolderValue, inspection?.workspaceValue, inspection?.globalValue].find(
-      (v) => typeof v === 'string' && v
-    ) ?? '';
-  const legacyDefined =
-    inspection?.workspaceFolderValue !== undefined ||
-    inspection?.workspaceValue !== undefined ||
-    inspection?.globalValue !== undefined;
+  // VS Code also stores language-scoped values (`[lang]` overrides). A
+  // legacy token hidden there stays plaintext forever unless the language
+  // values are included in both selection and cleanup, so inspect them and
+  // clear each scope with overrideInLanguage=true below.
+  const nonEmptyScopes = [
+    inspection?.workspaceFolderValue,
+    inspection?.workspaceValue,
+    inspection?.globalValue,
+    inspection?.workspaceFolderLanguageValue,
+    inspection?.workspaceLanguageValue,
+    inspection?.globalLanguageValue,
+  ] as (string | undefined)[];
+  const nonEmpty = nonEmptyScopes.find((v) => typeof v === 'string' && v) ?? '';
+  const legacyDefined = nonEmptyScopes.some((v) => v !== undefined);
   if (!legacyDefined) {
     return false;
   }
@@ -104,15 +110,27 @@ export async function migrateLegacyGatewayToken(
     // no folder is open).
     const hadValue =
       inspection != null &&
-      ((target === vscode.ConfigurationTarget.Global && inspection.globalValue !== undefined) ||
-        (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceValue !== undefined) ||
+      ((target === vscode.ConfigurationTarget.Global &&
+        (inspection.globalValue !== undefined || inspection.globalLanguageValue !== undefined)) ||
+        (target === vscode.ConfigurationTarget.Workspace &&
+          (inspection.workspaceValue !== undefined || inspection.workspaceLanguageValue !== undefined)) ||
         (target === vscode.ConfigurationTarget.WorkspaceFolder &&
-          inspection.workspaceFolderValue !== undefined));
+          (inspection.workspaceFolderValue !== undefined ||
+            inspection.workspaceFolderLanguageValue !== undefined)));
     if (!hadValue) {
       continue;
     }
+    const isLanguageScope =
+      (target === vscode.ConfigurationTarget.Global && inspection.globalLanguageValue !== undefined) ||
+      (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceLanguageValue !== undefined) ||
+      (target === vscode.ConfigurationTarget.WorkspaceFolder &&
+        inspection.workspaceFolderLanguageValue !== undefined);
     try {
-      await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
+      if (isLanguageScope) {
+        await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target, true);
+      } else {
+        await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
+      }
     } catch (err) {
       cleanupFailed = true;
       log.warn(
