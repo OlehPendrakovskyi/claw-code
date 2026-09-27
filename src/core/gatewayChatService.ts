@@ -420,6 +420,24 @@ export class GatewayChatService {
     return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
   }
 
+  /** Gate a live session.message frame before dispatch: complete assistant
+   *  frames are claimed in the seen-set (first delivery) and duplicates are
+   *  rejected, so a complete frame replayed around a reconnect is not
+   *  appended twice. Deltas and textless frames pass through untouched —
+   *  only complete frames may enter the seen-set, otherwise a reconnect's
+   *  catch-up would skip the completed row (and its finalization) and leave
+   *  the thread streaming forever. */
+  private claimCompleteFrame(
+    sessionKey: string,
+    payload: { messageId?: unknown; text?: unknown; delta?: unknown }
+  ): boolean {
+    if (!this.isCompleteAssistantFrame(payload)) return true;
+    const messageId = payload.messageId as string;
+    if (this.hasSeen(sessionKey, messageId)) return false;
+    this.rememberSeen(sessionKey, messageId);
+    return true;
+  }
+
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
 
@@ -837,15 +855,16 @@ export class GatewayChatService {
           // a streaming delta must not poison the dedupe set, otherwise a
           // reconnect whose catch-up replays the completed row for the same
           // messageId would skip it and never emit `done`, leaving the
-          // thread streaming forever after an interrupted delta stream.
-          if (this.isCompleteAssistantFrame(payload)) {
-            this.rememberSeen(routed.key, payload.messageId as string);
-          }
-          const adjusted = this.adjustCompleteFrameEvents(routed.key, payload, chatEvents);
-          routedChatEvent = adjusted[0];
-          for (const chatEvent of adjusted) {
-            for (const sink of routed.sinks) {
-              sink(chatEvent);
+          // thread streaming forever after an interrupted delta stream. The
+          // claim also drops a duplicate complete frame (replayed around a
+          // reconnect) instead of dispatching it twice.
+          if (this.claimCompleteFrame(routed.key, payload)) {
+            const adjusted = this.adjustCompleteFrameEvents(routed.key, payload, chatEvents);
+            routedChatEvent = adjusted[0];
+            for (const chatEvent of adjusted) {
+              for (const sink of routed.sinks) {
+                sink(chatEvent);
+              }
             }
           }
         }
@@ -1197,14 +1216,14 @@ export class GatewayChatService {
       }
       const chatEvents = mapSessionEventToChatEvent(evt);
       if (chatEvents.length > 0) {
+        if (!this.claimCompleteFrame(routed.key, payload)) {
+          continue;
+        }
         const adjusted = this.adjustCompleteFrameEvents(
           typeof payload.sessionKey === 'string' ? payload.sessionKey : DEFAULT_SESSION_KEY,
           payload,
           chatEvents
         );
-        if (this.isCompleteAssistantFrame(payload)) {
-          this.rememberSeen(routed.key, payload.messageId as string);
-        }
         for (const chatEvent of adjusted) {
           for (const sink of routed.sinks) {
             sink(chatEvent);
