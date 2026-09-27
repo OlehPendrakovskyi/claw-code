@@ -370,8 +370,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         );
                     }
                     break;
-                case 'setSetting':
-                    if (msg.key && msg.value !== undefined) {
+                case 'setSetting': {
+                    const WRITABLE_SETTING_KEYS = new Set([
+                        'chat.thinkingLevel',
+                        'chat.temperature',
+                        'chat.maxTokens',
+                    ]);
+                    if (msg.key && WRITABLE_SETTING_KEYS.has(msg.key) && msg.value !== undefined) {
                         void vscode.workspace.getConfiguration('openclaw').update(
                             msg.key,
                             msg.value,
@@ -379,6 +384,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         );
                     }
                     break;
+                }
                 case 'attach':
                     if (thread) {
                         await this.handleAttach(thread);
