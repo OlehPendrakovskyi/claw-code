@@ -1247,6 +1247,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.openInFlightGen !== null) {
             if (thread.openInFlightGen !== null) {
                 log.info('sendPrompt: openSession in flight after backend resolve, send retired');
+                thread.isStreaming = false;
+                thread.status = 'error';
+                this.emitState();
             }
             if (choice.service !== thread.service &&
                 !(choice.service instanceof GatewayChatService) &&

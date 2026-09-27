@@ -119,6 +119,11 @@ export class GatewayChatService {
   private readonly pending = new Map<string, PendingRequest>();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** True while the client is deliberately parked (transport switched away
+   *  from gateway): the socket is closed and the reconnect loop stopped, but
+   *  lifecycle references stay valid until the next connect()/
+   *  updateConnection() resumes it. */
+  private suspended = false;
   private disposed = false;
   private connected = false;
   /** In-flight connect() (serialized: concurrent calls share the attempt). */
@@ -261,7 +266,9 @@ export class GatewayChatService {
    *  textless tool/usage frames share the messageId with the final row, so
    *  only complete frames may enter the seen-set: marking a delta seen would
    *  make a reconnect's catch-up skip the completed history row (and its
-   *  finalization), leaving the thread streaming forever. */
+   *  finalization), leaving the thread streaming forever. A stable-shape
+   *  empty `delta` (e.g. `delta: ''` on the final full-text row) counts as
+   *  absent: only a non-empty delta marks a streaming frame. */
   private isCompleteAssistantFrame(payload: {
     messageId?: unknown;
     text?: unknown;
@@ -271,7 +278,7 @@ export class GatewayChatService {
       typeof payload.messageId === 'string' &&
       typeof payload.text === 'string' &&
       payload.text.length > 0 &&
-      typeof payload.delta !== 'string'
+      !(typeof payload.delta === 'string' && payload.delta.length > 0)
     );
   }
   /** Sessions with a `chat.abort` RPC in flight. Events for these keys are
@@ -322,6 +329,7 @@ export class GatewayChatService {
     sinks.delete(onEvent);
     if (sinks.size === 0) {
       this.transcriptSinksBySession.delete(sessionKey);
+      this.releaseSubscription(sessionKey);
     }
   }
 
@@ -347,6 +355,7 @@ export class GatewayChatService {
     if (runSink) {
       retired.add(runSink);
     }
+    this.releaseSubscription(sessionKey);
     for (const sink of retired) {
       sink({ type: 'done' });
     }
@@ -409,6 +418,7 @@ export class GatewayChatService {
     if (this.url === url && this.token === token) { return; }
     this.url = url;
     this.token = token;
+    this.suspended = false;
     this.connectGeneration += 1;
     this.connectPromise = null;
     if (this.ws) {
@@ -443,6 +453,7 @@ export class GatewayChatService {
     if (this.connectPromise) {
       return this.connectPromise;
     }
+    this.suspended = false;
     if (this.connected && this.ws) {
       return Promise.resolve();
     }
@@ -660,12 +671,38 @@ export class GatewayChatService {
     this.activeSessionKey = sessionKey;
   }
 
-  /** Drop a session's transcript sink (thread teardown): stops routing that
+  /** Drop one session's transcript sink (thread teardown): stops routing that
    *  session's live events to a callback for a thread that no longer exists. */
   clearSessionSink(sessionKey: string): void {
     this.transcriptSinksBySession.delete(sessionKey);
     this.seenMessageIdsBySession.delete(sessionKey);
     this.deltaCursorBySession.delete(sessionKey);
+    this.releaseSubscription(sessionKey);
+  }
+
+  /** Release a session's connection-scoped subscription once the last sink
+   *  (transcript or run) for it is gone: the shared socket must not keep a
+   *  server-side subscription for every closed/rebound session for the
+   *  client's lifetime, and a stale subscribed entry would let a later
+   *  resume skip its catch-up and lose events delivered with no sink. The
+   *  entry is removed synchronously so a resume re-subscribes immediately;
+   *  the unsubscribe RPC is fire-and-forget and a no-op when the gateway
+   *  does not advertise it or the socket is already gone. */
+  private releaseSubscription(sessionKey: string): void {
+    if (this.runSinksBySession.has(sessionKey) || this.transcriptSinksBySession.has(sessionKey)) {
+      return;
+    }
+    if (!this.subscribedSessions.delete(sessionKey)) {
+      return;
+    }
+    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesUnsubscribe)) {
+      return;
+    }
+    void this.send(GatewayRpcMethods.sessionsMessagesUnsubscribe, { sessionKeys: [sessionKey] }).catch(
+      (err: Error) => {
+        this.logger.warn(`sessions.messages.unsubscribe failed ${err.message}`);
+      }
+    );
   }
 
   /** Session key the next send will target (null → gateway default). */
@@ -905,7 +942,7 @@ export class GatewayChatService {
   }
 
   private scheduleReconnect(): void {
-    if (this.disposed || this.reconnectTimer) return;
+    if (this.disposed || this.suspended || this.reconnectTimer) return;
     const attempt = this.reconnectAttempt++;
     const delay = Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs);
     this.logger.info(`gateway reconnect scheduled attempt=${attempt + 1} delayMs=${delay}`);
@@ -1347,7 +1384,7 @@ export class GatewayChatService {
           rowPayload.role === 'assistant' &&
           typeof rowPayload.text === 'string' &&
           rowPayload.text.length > 0 &&
-          typeof rowPayload.delta !== 'string';
+          !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
         const messageId = asNonEmptyString(row.messageId);
         const seen = messageId != null && this.hasSeen(sessionKey, messageId);
         if (messageId && isFinalAssistantRow && seen) {
@@ -1473,6 +1510,47 @@ export class GatewayChatService {
           runSink({ type: 'done' });
         }
       });
+  }
+
+  /** Suspend the shared client: close the socket, reject pending RPCs and
+   *  stop the reconnect loop until the next connect()/updateConnection().
+   *  Unlike dispose() the instance stays valid — threads keep lifecycle
+   *  references (abort/hasOwnedRun) — but an authenticated socket no longer
+   *  lingers receiving transcript events after a transport switch to acpx.
+   *  Sinks are retired with `done` so streaming threads finalize instead of
+   *  waiting on events that can no longer arrive. */
+  suspend(): void {
+    this.suspended = true;
+    this.connectPromise = null;
+    this.connectGeneration += 1;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const sinks = new Set<(event: ChatEvent) => void>();
+    for (const [, set] of this.transcriptSinksBySession) {
+      for (const sink of set) sinks.add(sink);
+    }
+    for (const [, sink] of this.runSinksBySession) {
+      sinks.add(sink);
+    }
+    for (const sink of sinks) {
+      sink({ type: 'done' });
+    }
+    this.transcriptSinksBySession.clear();
+    this.runSinksBySession.clear();
+    this.subscribedSessions.clear();
+    this.pendingSubscribeBySession.clear();
+    this.preAckBufferedFrames = [];
+    this.rejectAllPending('gateway transport suspended');
+    if (this.ws) {
+      const oldWs = this.ws;
+      this.ws = null;
+      this.connected = false;
+      try { oldWs.close(); } catch { /* already closed */ }
+    } else {
+      this.connected = false;
+    }
   }
 
   dispose(): void {

@@ -66,11 +66,19 @@ export class ChatServiceFactory {
   /**
    * Resolve the backend for the current settings. In `auto` mode a failed
    * or missing-token gateway connect falls back to acpx transparently.
+   *
+   * Switching away from the gateway transport (explicit `acpx` setting or
+   * a tokenless acpx fallback) suspends the shared gateway client: an
+   * authenticated socket must not linger receiving transcript events after
+   * the transport changed. The instance stays cached and valid, so a later
+   * gateway resolution resumes it in place without severing threads that
+   * hold lifecycle references.
    */
   async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
     await this.ensureMigrated();
     const settings = getGatewaySettings();
     if (settings.transport === 'acpx') {
+      this.suspendGateway();
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
@@ -83,6 +91,7 @@ export class ChatServiceFactory {
         // getOrCreateGateway), so no per-call instances leak.
         return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
       }
+      this.suspendGateway();
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
@@ -112,6 +121,16 @@ export class ChatServiceFactory {
    *  survives multiple sends; otherwise create a fresh one. */
   private reuseOrCreateAcpx(existing?: ChatService | GatewayChatService): ChatService {
     return existing instanceof ChatService ? existing : new ChatService();
+  }
+
+  /** Park the shared gateway client when the resolved transport is no longer
+   *  gateway (see resolve()): suspend keeps the instance — and every thread
+   *  lifecycle reference to it — valid while making sure the authenticated
+   *  socket stops receiving transcript events. */
+  private suspendGateway(): void {
+    if (this.gatewayService) {
+      this.gatewayService.suspend();
+    }
   }
 
   /** Dispose the cached gateway client (provider teardown). */
