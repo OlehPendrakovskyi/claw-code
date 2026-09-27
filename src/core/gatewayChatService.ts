@@ -1488,9 +1488,10 @@ export class GatewayChatService {
     }
     const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
     try {
+      const requestCursor = this.deltaCursorBySession.get(sessionKey);
       const payload = (await this.send(GatewayRpcMethods.chatHistory, {
         sessionKey,
-        deltaCursor: this.deltaCursorBySession.get(sessionKey),
+        deltaCursor: requestCursor,
       })) as {
         messages?: Array<Record<string, unknown>>;
         deltaCursor?: unknown;
@@ -1503,6 +1504,14 @@ export class GatewayChatService {
       if (cursor !== undefined && cursor !== null) {
         this.deltaCursorBySession.set(sessionKey, cursor);
       }
+      // The seeded fingerprint boundary is a cursor-less-only mechanism:
+      // with a cursor the gateway already restricts the payload to rows
+      // after the cursor, so consuming seeded fingerprints there could
+      // swallow a fresh keyless row that merely matches the first seeded
+      // row (e.g. two identical consecutive assistant replies).
+      const cursorless =
+        (requestCursor === undefined || requestCursor === null) &&
+        (cursor === undefined || cursor === null);
       let lastRowFinalized = false;
       const isPreAckRunSink = (sink: (event: ChatEvent) => void): boolean =>
         this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
@@ -1517,7 +1526,7 @@ export class GatewayChatService {
         // into the thread and must not be appended a second time (this is
         // what keeps a cursor-less history-backed resume from duplicating
         // keyless rows, which the messageId seen-set cannot dedupe).
-        if (seeded) {
+        if (seeded && cursorless) {
           if (
             seededIndex < seeded.length &&
             seeded[seededIndex] === GatewayChatService.rowFingerprint(row)

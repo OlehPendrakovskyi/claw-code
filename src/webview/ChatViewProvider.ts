@@ -1429,6 +1429,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  `done` re-flushes the resume binding afterwards. (The status is
      *  re-read widened: the pre-await check narrowed the union for TS.)
      */
+    /** Serialized chat-event processing per thread (see handleChatEvent). */
+    private chatEventQueueByThread = new Map<string, Promise<void>>();
+
     private async flushDeferredResume(thread: ChatThreadState): Promise<void> {
         const deferred = this.deferredResumes.get(thread.id);
         if (!deferred || thread.isStreaming || thread.status === 'running') {
@@ -1481,6 +1484,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const thread = this.threads.get(threadId);
         if (!thread) {
             log.warn(`handleChatEvent: thread ${threadId} not found`);
+            return;
+        }
+        // Serialize per thread: a `done` awaits markdown rendering, so a
+        // synchronously following `text` (e.g. replayed history rows) would
+        // otherwise be appended to the not-yet-committed pending text and
+        // coalesce two assistant rows into one message — and a second `done`
+        // could restore/retire a live sink before the first render commits.
+        const prev = this.chatEventQueueByThread.get(threadId);
+        const queued = (prev ?? Promise.resolve()).catch(() => undefined).then(() =>
+            this.processChatEvent(threadId, event, eventEpoch, epochScope)
+        );
+        this.chatEventQueueByThread.set(threadId, queued);
+        void queued.finally(() => {
+            if (this.chatEventQueueByThread.get(threadId) === queued) {
+                this.chatEventQueueByThread.delete(threadId);
+            }
+        });
+        await queued;
+    }
+
+    private async processChatEvent(threadId: string, event: ChatEvent, eventEpoch?: number, epochScope: 'run' | 'binding' = 'run'): Promise<void> {
+        const thread = this.threads.get(threadId);
+        if (!thread) {
             return;
         }
         const currentEpoch = epochScope === 'binding' ? thread.bindingEpoch : thread.eventEpoch;
