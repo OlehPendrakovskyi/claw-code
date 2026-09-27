@@ -540,7 +540,16 @@ export class GatewayChatService {
         settleError(`gateway error ${err.message}`);
       };
       const onClose = () => {
-        if (this.ws !== ws) return;
+        if (this.ws !== ws) {
+          // Retired socket: updateConnection() or a newer attempt replaced
+          // this.ws, so the shared-state cleanup below belongs to the current
+          // socket. This handshake's promise must still settle, though: the
+          // normal retirement path is a bare close event, and leaving the
+          // promise pending strands callers awaiting the retired connect()
+          // attempt (forced token/URL rotation would hang them forever).
+          if (!settled) settleError('gateway handshake superseded: retired socket closed');
+          return;
+        }
         this.connected = false;
         this.subscribedSessions.clear();
         this.pendingSubscribeBySession.clear();
@@ -929,6 +938,13 @@ export class GatewayChatService {
           }
           this.seedHistory(sessionKey, history);
         } catch {
+          // Snapshot failure must not bypass the cancelled-run check either:
+          // an abort that landed during this await removed the sink, and
+          // issuing the send now would run the prompt with no listener.
+          if (this.runSinksBySession.get(sessionKey) !== _onEvent) {
+            this.removeTranscriptSink(sessionKey, _onEvent);
+            return;
+          }
           // Snapshot failure leaves no cursor: the run still streams live,
           // and the post-ack seed below retries once the send is accepted.
         }

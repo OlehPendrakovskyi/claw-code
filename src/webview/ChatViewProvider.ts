@@ -497,7 +497,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const shared = [...this.threads.values()].some(
                     t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
                 );
-                if (!shared) {
+                // Only abort when this thread actually owns a run: an idle
+                // resumed thread holds no gateway run, and a chat.abort here
+                // would cancel a run owned by the gateway or another client.
+                if (!shared && thread.status === 'running') {
                     backend.abort(thread.sessionKey);
                 }
             }
@@ -568,7 +571,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.suspendedTranscriptSinks.delete(threadId);
         this.deferredResumes.delete(threadId);
         if (backend instanceof GatewayChatService) {
-            backend.abort(thread.sessionKey);
+            // Same ownership guard as resetThread: abort only a run this
+            // thread actually owned; an idle resumed thread must not cancel
+            // a run owned by the gateway or another client.
+            if (thread.status === 'running') {
+                backend.abort(thread.sessionKey);
+            }
             // Drop the thread's transcript sink if no surviving thread still
             // listens to this session, so the closed thread's callback is not
             // retained by the shared gateway service.
@@ -786,6 +794,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async handleAttach(thread: ChatThreadState): Promise<void> {
+        const sendEpoch = thread.eventEpoch;
         const uris = await vscode.window.showOpenDialog({
             canSelectMany: true,
             openLabel: 'Attach',
@@ -794,7 +803,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!uris || uris.length === 0) {
             return;
         }
-        await this.addAttachments(thread, uris.map(uri => uri.fsPath));
+        // Clear/Cancel may run while the dialog or the stat/realpath awaits
+        // inside addAttachments are pending: without the epoch guard the
+        // continuation would repopulate the reset thread's attachments.
+        await this.addAttachments(thread, uris.map(uri => uri.fsPath), { guard: () => thread.eventEpoch === sendEpoch });
     }
 
     private async handleExportThread(thread: ChatThreadState): Promise<void> {
@@ -1181,6 +1193,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!gateway) {
             return;
         }
+        // Re-check after the await: a send started while the gateway resolved
+        // owns the thread now, and registering the persistent transcript sink
+        // alongside that run sink would deliver every event twice (duplicated
+        // assistant text/tool rows). Retain the deferred entry so the run's
+        // `done` re-flushes the resume binding afterwards. (The status is
+        // re-read widened: the pre-await check narrowed the union for TS.)
+        const resumedStatus: string = thread.status;
+        if (!this.threads.has(thread.id) || thread.isStreaming || resumedStatus === 'running') {
+            this.deferredResumes.set(thread.id, deferred);
+            return;
+        }
+        if (thread.sessionKey !== deferred.sessionKey) {
+            return;
+        }
         this.resumeSessionForThread(gateway, thread, deferred.sessionKey);
         this.emitState();
     }
@@ -1552,7 +1578,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // unconditional abort here would cancel whatever other owner
                 // still runs on the stale binding key.
                 if (!sharesLiveRun && previousBackend instanceof GatewayChatService) {
-                    gateway.abort(previousKey);
+                    // Abort only a run this thread owned: an idle resumed
+                    // thread has no run on the previous key, and the abort
+                    // would cancel a run owned by the gateway or another
+                    // client (the shared-run guard alone does not cover
+                    // non-local owners).
+                    if (activeThread.status === 'running') {
+                        gateway.abort(previousKey);
+                    }
                     if (!this.otherThreadsOnKey(activeThread.id, previousKey)) {
                         // Only clear the shared session sink when this thread
                         // was its last subscriber: another thread that merely

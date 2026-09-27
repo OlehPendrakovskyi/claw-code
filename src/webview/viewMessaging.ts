@@ -180,16 +180,14 @@ function frameFileBody(path: string, content: string): string {
 async function safeCanonicalPath(p: string): Promise<string | null> {
     try {
         const real = await fsp.realpath(p);
-        // Case-insensitive filesystems (Windows, macOS) can canonicalize the
-        // spelling of a manually attached path, so an exact string comparison
-        // would reject valid files; apply the text-attachment comparison
-        // policy here as well. Any other mismatch still means the stored
-        // path now resolves elsewhere (e.g. a symlink swap) and is dropped.
-        const samePath =
-            process.platform === 'win32' || process.platform === 'darwin'
-                ? real.toLowerCase() === p.toLowerCase()
-                : real === p;
-        return samePath ? real : null;
+        // Attachments store the canonical realpath, so a still-valid file
+        // resolves to exactly the stored spelling on any filesystem. A
+        // case-folded comparison gated on process.platform would also accept
+        // a swap to a differently-spelled different file on case-sensitive
+        // volumes (e.g. macOS APFS case-sensitive), so any mismatch —
+        // including case-only — means the path now resolves elsewhere and is
+        // dropped.
+        return real === p ? real : null;
     } catch {
         return null;
     }
