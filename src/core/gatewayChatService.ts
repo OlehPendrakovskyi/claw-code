@@ -857,7 +857,27 @@ export class GatewayChatService {
   ): void {
     this.activeSessionKey = sessionKey;
     this.addTranscriptSink(sessionKey, onEvent);
-    this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: !opts?.historyRendered });
+    const allowUnscopedCatchUp = !opts?.historyRendered;
+    // Catch-up scheduling is per resume caller, independent of
+    // subscription-RPC deduplication: a second resume into an already
+    // subscribed (or still subscribing) session reuses the shared
+    // subscription, whose catch-up reflects only the first caller's opts —
+    // without its own catch-up a `historyRendered: false` caller would get
+    // an empty restored transcript after a history failure or cold resume.
+    // Duplicate catch-up is safe: seen-set and fingerprint-boundary rules
+    // dedupe replayed rows.
+    const pending = this.pendingSubscribeBySession.get(sessionKey);
+    if (pending) {
+      void pending.then((subscribed) => {
+        if (subscribed) {
+          void this.catchUpHistory(sessionKey, { allowUnscopedCatchUp });
+        }
+      });
+    } else if (this.subscribedSessions.has(sessionKey)) {
+      void this.catchUpHistory(sessionKey, { allowUnscopedCatchUp });
+    } else {
+      this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp });
+    }
   }
 
   /**
@@ -1519,6 +1539,11 @@ export class GatewayChatService {
         this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
       let seededIndex = 0;
       const seeded = this.seededCatchUpFingerprints.get(sessionKey);
+      // Locally seen messageIds within this catch-up payload: duplicate
+      // rows inside one snapshot must dedupe against each other even when
+      // the global seen-set is not advanced (see the rememberSeen guard
+      // below).
+      const catchUpSeen = new Set<string>();
       for (const row of payload.messages) {
         const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
         // Consume the seeded boundary in order: a replayed row that matches
@@ -1542,7 +1567,9 @@ export class GatewayChatService {
           rowPayload.text.length > 0 &&
           !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
         const messageId = asNonEmptyString(row.messageId);
-        const seen = messageId != null && this.hasSeen(sessionKey, messageId);
+        const seen =
+          messageId != null &&
+          (this.hasSeen(sessionKey, messageId) || catchUpSeen.has(messageId));
         if (messageId && isFinalAssistantRow && seen) {
           const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
           for (const sink of sinks) {
@@ -1557,8 +1584,19 @@ export class GatewayChatService {
         if (messageId && seen) {
           continue;
         }
+        // A complete unseen assistant row may be the in-flight response of a
+        // local run (pre-ack send, raced send, or an active stream) whose
+        // live final frame must still claim the messageId — remembering it
+        // here would make that frame fail claimCompleteFrame and drop the
+        // response from the UI. Only rows processed while no local run owns
+        // the session are known to belong to the catch-up boundary and may
+        // enter the seen-set; cursor and fingerprint-boundary replay rules
+        // already cover duplication for the skipped rows.
         if (messageId && isFinalAssistantRow) {
-          this.rememberSeen(sessionKey, messageId);
+          catchUpSeen.add(messageId);
+          if (!this.hasOwnedRun(sessionKey)) {
+            this.rememberSeen(sessionKey, messageId);
+          }
         }
         const mapped = mapSessionEventToChatEvent({
           event: GatewayEvents.sessionMessage,
