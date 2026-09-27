@@ -1307,6 +1307,43 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (!thread.sessionKey) {
                 thread.sessionKey = DEFAULT_SESSION_KEY;
             }
+            // The allowlist was built for the previous gateway identity and a
+            // URL/token change invalidates it: revalidate the thread's key
+            // before sending, so a binding learned from the previous gateway
+            // is never activated (nor its transcript sink rebound) against
+            // the new one. isKnownMainSessionKey refreshes the allowlist and
+            // fails closed when the refresh cannot verify the key.
+            const keyAllowed = await this.isKnownMainSessionKey(choice.service, thread.sessionKey);
+            if (thread.status !== 'running' || thread.eventEpoch !== sendEpoch) {
+                return;
+            }
+            if (!keyAllowed) {
+                const staleKey = thread.sessionKey;
+                thread.eventEpoch += 1;
+                thread.bindingEpoch += 1;
+                const ownCallback = this.transcriptCallbacks.get(thread.id);
+                if (ownCallback && ownCallback.sessionKey === staleKey) {
+                    this.transcriptCallbacks.delete(thread.id);
+                    choice.service.removeTranscriptSink(staleKey, ownCallback.cb);
+                }
+                const suspendedOwn = this.suspendedTranscriptSinks.get(thread.id);
+                if (suspendedOwn && suspendedOwn.sessionKey === staleKey) {
+                    this.suspendedTranscriptSinks.delete(thread.id);
+                }
+                if (!this.otherThreadsOnKey(thread.id, staleKey)) {
+                    choice.service.clearSessionSink(staleKey);
+                }
+                thread.sessionKey = DEFAULT_SESSION_KEY;
+                thread.pendingAssistantText = '';
+                thread.isStreaming = false;
+                thread.status = 'error';
+                thread.messages.push({
+                    role: 'error',
+                    content: `Session "${staleKey}" is not known to the current gateway. The thread was reset to the default session; reopen the session to retry.`
+                });
+                this.emitState();
+                return;
+            }
             const busyThread = [...this.threads.values()].some(
                 t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
             );
@@ -1958,8 +1995,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // (epoch/streaming drift, not a newer selection): without the
                     // history check passing no callback is installed below, so the
                     // rebound thread would sit idle and never receive gateway
-                    // events. Install a fresh callback for the key it is bound to.
-                    this.resumeSessionForThread(gateway, activeThread, activeThread.sessionKey, false);
+                    // events. Install a fresh callback for the key it is bound
+                    // to — but only after revalidating that key against the
+                    // current gateway: a binding learned from a previous
+                    // gateway identity must not get a fresh sink on the new
+                    // one (same stale-binding class as the send path). A
+                    // stale key here just leaves the thread idle without a
+                    // callback, matching the no-callback state this branch
+                    // was fixing up.
+                    if (await this.isKnownMainSessionKey(gateway, activeThread.sessionKey)) {
+                        this.resumeSessionForThread(gateway, activeThread, activeThread.sessionKey, false);
+                    }
                 }
             } else if (reboundFrom) {
                 this.resumeSessionForThread(gateway, activeThread, sessionKey, false);

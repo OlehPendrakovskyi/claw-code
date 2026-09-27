@@ -13,14 +13,17 @@ export interface FileMention {
  * Mentions start after whitespace (or at the start of the text) and stop at
  * whitespace; paths containing whitespace must be double-quoted (`@"my file.ts"`),
  * matching the encoding produced by buildMention; embedded double quotes are
- * doubled (`""`) inside the quoted form so any POSIX path round-trips.
+ * doubled (`""`) inside the quoted form so any POSIX path round-trips. The
+ * quoted alternative allows only non-quote characters or doubled quotes, so
+ * the closing quote is unambiguous and adjacent quoted mentions in one text
+ * cannot be merged into a single path.
  */
 export function parseFileMentions(text: string): FileMention[] {
     if (!text) {
         return [];
     }
 
-    const mentionRegex = /(?:^|\s)@("((?:[^"]|")*)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
+    const mentionRegex = /(?:^|\s)@("((?:[^"]|"")*)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
     const mentions: FileMention[] = [];
     const seen = new Set<string>();
 
