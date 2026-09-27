@@ -644,4 +644,43 @@ describe('GatewayChatService sendMessage/abort', () => {
     expect(globalEvents).toEqual([]);
     svc.dispose();
   });
+
+  it('replays post-history events on a cursor-less rendered resume without duplicating the seeded tail', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    // History rendered without a delta cursor: the seeded rows form the
+    // catch-up boundary. Events between this snapshot and the subscribe
+    // ack must still replay, and keyless seeded rows must not duplicate.
+    svc.seedHistory('main', {
+      messages: [
+        { role: 'user', text: 'hi' },
+        { role: 'assistant', text: 'done' },
+      ],
+    });
+    svc.resumeSession('main', (e) => events.push(e), { historyRendered: true });
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const history = sentRequests(ws).find((r) => r.method === 'chat.history');
+    expect(history?.params).toMatchObject({ sessionKey: 'main' });
+    expect(history?.params.deltaCursor).toBeUndefined();
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history!.id,
+      ok: true,
+      payload: {
+        messages: [
+          { role: 'user', text: 'hi' },
+          { role: 'assistant', text: 'done' },
+          { messageId: 'm9', role: 'assistant', text: 'fresh' },
+        ],
+      },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e): e is { type: string; text: string } =>
+      (e as { type?: string }).type === 'text'
+    );
+    expect(texts).toEqual([{ type: 'text', text: 'fresh' }]);
+    svc.dispose();
+  });
 });

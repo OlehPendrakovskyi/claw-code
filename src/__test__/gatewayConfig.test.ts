@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { migrateLegacyGatewayToken } from '../core/gatewayConfig';
+import { GatewayConfigService, migrateLegacyGatewayToken } from '../core/gatewayConfig';
 
 type Inspection = {
     globalValue?: string;
@@ -76,5 +76,26 @@ describe('migrateLegacyGatewayToken', () => {
         expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'legacy-token');
         expect(update).toHaveBeenCalledWith('gateway.token', undefined, vscode.ConfigurationTarget.Workspace);
         expect(vscode.window.showWarningMessage).toHaveBeenCalled();
+    });
+});
+
+describe('collectLanguageIds (chained override keys)', () => {
+    const collect = (parsed: Record<string, unknown>): string[] => {
+        const into = new Set<string>();
+        (GatewayConfigService as unknown as {
+            collectLanguageIds: (parsed: Record<string, unknown>, into: Set<string>) => void;
+        }).collectLanguageIds(parsed, into);
+        return [...into];
+    };
+
+    it('splits chained bracket groups into individual language ids', () => {
+        expect(collect({ '[typescript][javascript]': { 'openclaw.gateway.token': 'x' } })).toEqual([
+            'typescript',
+            'javascript',
+        ]);
+    });
+
+    it('keeps single-language overrides and ignores non-object values', () => {
+        expect(collect({ '[python]': {}, '[markdown]': 'not-an-object' })).toEqual(['python']);
     });
 });

@@ -292,12 +292,23 @@ private static currentDistroDir(): string | null {
   return /\boss\b/i.test(vscode.env.appName ?? '') ? 'Code - OSS' : 'Code';
 }
 
-/** Collect `[language]` override keys from a parsed settings object. */
+/** Collect the language ids addressed by `[language]` override keys.
+ *  Chained keys such as `[typescript][javascript]` must be split into
+ *  their individual bracket groups: VS Code indexes a chained override
+ *  under each of its identifiers (`overrideIdentifiersFromKey`), so a
+ *  configuration scope built from the raw inner text would match no
+ *  override at all and a legacy token stored under the chained key would
+ *  stay invisible to inspection and cleanup. */
 private static collectLanguageIds(parsed: Record<string, unknown>, into: Set<string>): void {
   for (const key of Object.keys(parsed)) {
-    const match = /^\[(.+)\]$/.exec(key.trim());
+    const match = key.trim().match(/\[([^\]]+)\]/g);
     if (match && typeof parsed[key] === 'object' && parsed[key] !== null) {
-      into.add(match[1]);
+      for (const group of match) {
+        const languageId = group.slice(1, -1).trim();
+        if (languageId) {
+          into.add(languageId);
+        }
+      }
     }
   }
 }

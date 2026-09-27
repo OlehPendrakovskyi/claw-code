@@ -256,6 +256,13 @@ export class GatewayChatService {
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
+  /** Ordered content fingerprints of the rows a `chat.history` payload
+   *  seeded per session. When the payload carried no delta cursor this is
+   *  the only catch-up boundary available: the replayed tail must skip
+   *  exactly these rows (in order) so an already-rendered history is not
+   *  appended a second time, while rows after the seeded tail still
+   *  replay. Keyed per session; overwritten by every seed. */
+  private seededCatchUpFingerprints = new Map<string, string[]>();
   /** Message ids already surfaced for the active session (dedup on resume). */
   /** Seen message IDs per session key, capped so long-lived sessions cannot
    *  grow memory unbounded. Keyed per session: messageIds are only unique
@@ -742,6 +749,16 @@ export class GatewayChatService {
         this.rememberSeen(sessionKey, messageId as string);
       }
     }
+    this.seededCatchUpFingerprints.set(
+      sessionKey,
+      (data.messages as unknown[]).map((rowRaw) => {
+        const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
+        const role = typeof row.role === 'string' ? row.role : '';
+        const delta = typeof row.delta === 'string' && row.delta.length > 0;
+        const text = typeof row.text === 'string' ? row.text : '';
+        return `${role}|${delta ? 'delta' : 'final'}|${text}`;
+      })
+    );
   }
 
   /**
@@ -753,11 +770,14 @@ export class GatewayChatService {
    * by messageId) is allowed even when no delta cursor was seeded yet —
    * but only when the provider has not already rendered `chat.history`
    * into the thread. A history-backed resume whose payload carried no
-   * cursor would otherwise re-fetch the full tail and append keyless
-   * assistant rows a second time (rows without messageId are not
-   * deduplicated); the provider therefore disables the unscoped replay
-   * for that path. A no-history resume (null RPC) keeps the unscoped
-   * catch-up so events missed while the window was closed still arrive.
+   * cursor no longer skips replay entirely: the seeded history rows are
+   * remembered as an ordered catch-up boundary, so the unscoped tail
+   * replay skips exactly those rows and only rows arriving after the
+   * history snapshot replay — events no longer get lost between the
+   * history snapshot and the subscription, and keyless seeded rows are
+   * not appended a second time. A no-history resume (null RPC) keeps
+   * the unscoped catch-up so events missed while the window was closed
+   * still arrive.
    */
   resumeSession(
     sessionKey: string,
@@ -1354,7 +1374,16 @@ export class GatewayChatService {
     if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
       return;
     }
-    if (!this.deltaCursorBySession.has(sessionKey) && !opts?.allowUnscopedCatchUp) {
+    // A cursor-less seeded history (gateway returned messages but no
+    // deltaCursor) still provides a catch-up boundary: the seeded row
+    // fingerprints skip the already-rendered tail while rows after it
+    // replay. Without a cursor AND without a seeded boundary the replay
+    // would be pure duplication, so it stays disabled there.
+    if (
+      !this.deltaCursorBySession.has(sessionKey) &&
+      !opts?.allowUnscopedCatchUp &&
+      !this.seededCatchUpFingerprints.has(sessionKey)
+    ) {
       return;
     }
     const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
@@ -1379,8 +1408,24 @@ export class GatewayChatService {
         this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
       const isRacedRunSink = (sink: (event: ChatEvent) => void): boolean =>
         this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
+      let seededIndex = 0;
+      const seeded = this.seededCatchUpFingerprints.get(sessionKey);
       for (const row of payload.messages) {
         const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
+        // Consume the seeded boundary in order: a replayed row that matches
+        // the next not-yet-consumed seeded fingerprint was already rendered
+        // into the thread and must not be appended a second time (this is
+        // what keeps a cursor-less history-backed resume from duplicating
+        // keyless rows, which the messageId seen-set cannot dedupe).
+        if (seeded) {
+          const role = typeof rowPayload.role === 'string' ? rowPayload.role : '';
+          const delta = typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0;
+          const text = typeof rowPayload.text === 'string' ? rowPayload.text : '';
+          if (seededIndex < seeded.length && seeded[seededIndex] === `${role}|${delta ? 'delta' : 'final'}|${text}`) {
+            seededIndex++;
+            continue;
+          }
+        }
         const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
         const isFinalAssistantRow =
           isAssistantRole &&
