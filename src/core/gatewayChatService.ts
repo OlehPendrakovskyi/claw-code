@@ -1537,8 +1537,31 @@ export class GatewayChatService {
         this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
       const isRacedRunSink = (sink: (event: ChatEvent) => void): boolean =>
         this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
-      let seededIndex = 0;
       const seeded = this.seededCatchUpFingerprints.get(sessionKey);
+      // Cursor-less boundary alignment: a history tail is a sliding
+      // window, so a new row can shift the seeded tail (e.g. [A,B,C] ->
+      // [B,C,D]) and a row-by-row prefix match would no longer find the
+      // boundary and replay already-rendered keyless rows a second time.
+      // Instead, align by the longest suffix of the seeded boundary that
+      // equals a prefix of the replayed rows and skip exactly that
+      // overlap; rows outside the overlap still replay.
+      let seededSkip = 0;
+      if (seeded && cursorless && payload.messages.length > 0) {
+        const replayed = payload.messages.map((row) => GatewayChatService.rowFingerprint(row));
+        for (let overlap = Math.min(seeded.length, replayed.length); overlap > 0; overlap--) {
+          let aligned = true;
+          for (let i = 0; i < overlap; i++) {
+            if (seeded[seeded.length - overlap + i] !== replayed[i]) {
+              aligned = false;
+              break;
+            }
+          }
+          if (aligned) {
+            seededSkip = overlap;
+            break;
+          }
+        }
+      }
       // Locally seen messageIds within this catch-up payload: duplicate
       // rows inside one snapshot must dedupe against each other even when
       // the global seen-set is not advanced (see the rememberSeen guard
@@ -1546,19 +1569,14 @@ export class GatewayChatService {
       const catchUpSeen = new Set<string>();
       for (const row of payload.messages) {
         const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
-        // Consume the seeded boundary in order: a replayed row that matches
-        // the next not-yet-consumed seeded fingerprint was already rendered
-        // into the thread and must not be appended a second time (this is
-        // what keeps a cursor-less history-backed resume from duplicating
-        // keyless rows, which the messageId seen-set cannot dedupe).
-        if (seeded && cursorless) {
-          if (
-            seededIndex < seeded.length &&
-            seeded[seededIndex] === GatewayChatService.rowFingerprint(row)
-          ) {
-            seededIndex++;
-            continue;
-          }
+        // Skip rows covered by the aligned seeded boundary: these were
+        // already rendered into the thread and must not be appended a
+        // second time (this keeps a cursor-less history-backed resume from
+        // duplicating keyless rows, which the messageId seen-set cannot
+        // dedupe).
+        if (seeded && cursorless && seededSkip > 0) {
+          seededSkip--;
+          continue;
         }
         const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
         const isFinalAssistantRow =
