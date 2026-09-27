@@ -740,13 +740,21 @@ export class GatewayChatService {
     if (!Array.isArray(data.messages)) {
       return;
     }
-    for (const row of data.messages) {
-      const messageId =
-        row && typeof row === 'object' && typeof (row as Record<string, unknown>).messageId === 'string'
-          ? ((row as Record<string, unknown>).messageId as string)
-          : null;
-      if (messageId) {
-        this.rememberSeen(sessionKey, messageId);
+    for (const rowRaw of data.messages) {
+      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
+      const messageId = typeof row.messageId === 'string' ? row.messageId : null;
+      // Only complete assistant rows may enter the seen-set: history payloads
+      // can contain streaming delta rows that share their messageId with the
+      // later completed row. Seeding a delta row would make the resume
+      // catch-up skip the completed row (and its finalization), leaving the
+      // resumed thread streaming forever — same contract as
+      // isCompleteAssistantFrame for live frames.
+      if (this.isCompleteAssistantFrame({
+        messageId: row.messageId,
+        text: row.text,
+        delta: row.delta,
+      })) {
+        this.rememberSeen(sessionKey, messageId as string);
       }
     }
   }

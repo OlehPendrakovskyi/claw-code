@@ -589,7 +589,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // thread actually owned; an idle resumed thread must not cancel
             // a run owned by the gateway or another client. The hasOwnedRun
             // gate also covers the pre-ack window before the run sink exists.
-            if (thread.sessionKey && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
+            // A shared key needs the same live-run exclusion as resetThread:
+            // hasOwnedRun proves only that the gateway holds a local run
+            // sink for the key, not that this thread owns it — two threads
+            // can share a session key, and closing this one must not abort
+            // the other's run.
+            const shared = [...this.threads.values()].some(
+                t => t.id !== threadId && t.sessionKey === thread.sessionKey && t.status === 'running'
+            );
+            if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                 backend.abort(thread.sessionKey);
             }
             // Drop the thread's transcript sink if no surviving thread still
@@ -1149,7 +1157,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // wrong key.
                     thread.eventEpoch += 1;
                     if (choice.service instanceof GatewayChatService) {
-                        choice.service.abort(resolvedKey);
+                        // The resolved key may host a run owned by another
+                        // client even though this service has no local sink
+                        // for it: gate the abort on local run ownership and
+                        // keep the sink cleanup separate.
+                        if (choice.service.hasOwnedRun(resolvedKey)) {
+                            choice.service.abort(resolvedKey);
+                        }
                         if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === resolvedKey)) {
                             choice.service.clearSessionSink(resolvedKey);
                         }
@@ -1650,11 +1664,51 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 activeThread.status = 'idle';
             }
             activeThread.sessionKey = sessionKey;
+            // Bind the thread to the gateway transport right away: until the
+            // next send, backendFor(thread) must reach the selected gateway
+            // session instead of the unused legacy ChatService (Cancel/Clear
+            // would otherwise call the wrong backend and drop gateway events).
+            activeThread.transportBackend = gateway;
         }
         postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
             type: 'agentSelected',
             sessionKey,
         });
+        if (activeThread) {
+            // Same gateway bind/history/resume steps as openSessionRebinding:
+            // without them the old transcript stays displayed under the new
+            // key and the resumed session's catch-up has no transcript to
+            // dedupe against. A streaming run on the selected key skips the
+            // restore (the live response must not be replaced) but still
+            // binds a sink so later events keep flowing.
+            if (!(activeThread.isStreaming || activeThread.status === 'running')) {
+                const historyEpoch = activeThread.eventEpoch;
+                const history = await gateway.getHistory(sessionKey);
+                if (this.getActiveThread()?.id === activeThread.id && activeThread.sessionKey === sessionKey &&
+                    activeThread.eventEpoch === historyEpoch && !activeThread.isStreaming) {
+                    if (history !== null) {
+                        gateway.seedHistory(sessionKey, history);
+                        activeThread.messages = mapHistoryMessages(history)
+                            .map(msg => ({ role: msg.role, content: msg.content }));
+                        activeThread.status = 'idle';
+                    } else {
+                        // A failed fetch after a session switch must not keep
+                        // the previous transcript under the new key (same
+                        // contract as openSessionRebinding).
+                        activeThread.messages = [];
+                        activeThread.messages.push({
+                            role: 'assistant',
+                            content: 'Failed to load session history. Reopen the session to retry.'
+                        });
+                        activeThread.status = 'error';
+                    }
+                    this.resumeSessionForThread(gateway, activeThread, sessionKey);
+                }
+            } else {
+                this.resumeSessionForThread(gateway, activeThread, sessionKey);
+            }
+        }
+        this.emitState();
     }
 
     /** Whether any other thread (or its suspended sink) is still bound to
@@ -1956,6 +2010,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Carry the persisted key onto the thread so later cancel/reset
             // aborts target this resumed session, not the shared fallback.
             thread.sessionKey = sessionKey;
+            // Same generation guard as openSessionRebinding: a clear/reset
+            // issued while the history await is in flight bumps these
+            // counters, and this late continuation must not restore the
+            // pre-clear transcript over the empty thread (or re-subscribe
+            // the cleared session). Capture before the await, recheck after.
+            const resumeEventEpoch = thread.eventEpoch;
+            const resumeBindingEpoch = thread.bindingEpoch;
             // Bind the resumed thread to the gateway transport immediately:
             // until the next send, backendFor(thread) must return the gateway
             // service or Cancel/Clear/Close abort the wrong (legacy) backend.
@@ -1971,6 +2032,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // a run the user started on this thread during the await (its
                 // messages live in the thread) must not be dropped either.
                 if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey ||
+                    thread.eventEpoch !== resumeEventEpoch || thread.bindingEpoch !== resumeBindingEpoch ||
                     thread.isStreaming || thread.status === 'running') {
                     // A send started during the history await: subscribing the
                     // persistent transcript sink now would double-deliver the
