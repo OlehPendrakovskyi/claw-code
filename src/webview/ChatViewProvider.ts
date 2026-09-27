@@ -99,7 +99,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 connected,
                 label,
             });
-        });
+        }, () => this.invalidateGatewayRuns());
         const initialThread = this.createThreadState();
         this.threads.set(initialThread.id, initialThread);
         this.visibleThreadIds = [initialThread.id];
@@ -1505,6 +1505,40 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
         return this.chatServiceFactory.resolve(existing);
+    }
+
+    /** Credential/transport changes on the shared gateway client retire every
+     *  transcript/run sink synchronously with a synthetic `done`. Invalidate
+     *  the affected threads' runs BEFORE that teardown: bump both epochs so
+     *  the synthetic `done` is epoch-dropped, finalize the send as an error,
+     *  and drop the run-scoped sink bookkeeping so a stale callback cannot be
+     *  rebound against the new gateway before the allowlist re-check. */
+    private invalidateGatewayRuns(): void {
+        for (const thread of this.threads.values()) {
+            const backend = this.backendFor(thread);
+            if (!(backend instanceof GatewayChatService)) {
+                continue;
+            }
+            if (!thread.isStreaming && thread.status !== 'running') {
+                continue;
+            }
+            thread.eventEpoch += 1;
+            thread.bindingEpoch += 1;
+            const ownCallback = this.transcriptCallbacks.get(thread.id);
+            if (ownCallback) {
+                backend.removeTranscriptSink(ownCallback.sessionKey, ownCallback.cb);
+            }
+            this.transcriptCallbacks.delete(thread.id);
+            this.suspendedTranscriptSinks.delete(thread.id);
+            thread.pendingAssistantText = '';
+            thread.isStreaming = false;
+            thread.status = 'error';
+            thread.messages.push({
+                role: 'error',
+                content: 'Gateway connection (URL or token) changed. The active run was interrupted; send the message again.'
+            });
+        }
+        this.emitState();
     }
 
     /**

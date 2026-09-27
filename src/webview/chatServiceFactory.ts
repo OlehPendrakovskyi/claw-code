@@ -39,7 +39,8 @@ export class ChatServiceFactory {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly onStatus?: (transport: 'gateway' | 'acpx', connected: boolean) => void
+    private readonly onStatus?: (transport: 'gateway' | 'acpx', connected: boolean) => void,
+    private readonly onGatewayIdentityChange?: () => void
   ) {}
 
   /** Await one-shot legacy-token migration before any token-dependent
@@ -83,6 +84,7 @@ export class ChatServiceFactory {
     await this.ensureMigrated();
     const settings = getGatewaySettings();
     if (settings.transport === 'acpx') {
+      this.onGatewayIdentityChange?.();
       this.suspendGateway();
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
@@ -105,6 +107,7 @@ export class ChatServiceFactory {
       // suspended to actually disconnect the gateway. Only an explicit
       // transport switch to acpx otherwise suspends the gateway client.
       if (this.cachedToken && this.gatewayService) {
+        this.onGatewayIdentityChange?.();
         this.suspendGateway();
         this.cachedToken = '';
       }
@@ -164,6 +167,13 @@ export class ChatServiceFactory {
       // Update credentials in place: threads keep a reference to this
       // instance for lifecycle actions, so dispose-and-recreate would sever
       // in-flight runs on url/token change.
+      // The provider must invalidate its gateway runs BEFORE the swap:
+      // updateConnection retires every transcript/run sink synchronously with
+      // a synthetic `done`, and without a prior epoch bump that done would be
+      // accepted as the real completion — the thread would finalize as
+      // `complete` and the pending send would be silently abandoned instead
+      // of being reported as interrupted.
+      this.onGatewayIdentityChange?.();
       this.gatewayService.updateConnection(url, token);
     }
     this.cachedUrl = url;
