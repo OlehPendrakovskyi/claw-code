@@ -263,9 +263,14 @@ private static userSettingsUris(): vscode.Uri[] {
     if (process.env.APPDATA) {
       roots.push(path.join(process.env.APPDATA));
     }
+  } else if (process.platform === 'darwin') {
+    // VS Code on macOS reads the user settings from the Application
+    // Support root only; XDG paths are never consulted, so probing them
+    // would find plaintext tokens the Configuration API can never clean up
+    // (Global writes affect only the running product's actual root).
+    roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
   } else {
     roots.push(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'));
-    roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
   }
   const distros = [GatewayConfigService.currentDistroDir()];
   return roots.flatMap((root) =>

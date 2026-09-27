@@ -115,7 +115,11 @@ export class GatewayChatService {
    *  keyed by this value so credentials changes invalidate them; never log
    *  it — it embeds the token. */
   getGatewayIdentity(): string {
-    return `${this.url}:${this.token}`;
+    // JSON tuple encoding is unambiguous: both url and token may contain
+    // `:`, so a plain `${url}:${token}` join could collide across different
+    // (url, token) pairs and let a webview reuse an allowlist learned from
+    // another gateway after a credential change.
+    return JSON.stringify([this.url, this.token]);
   }
   private readonly logger: Logger;
   private readonly wsFactory: WebSocketFactory;
@@ -1257,8 +1261,11 @@ export class GatewayChatService {
       // and display another thread's output in the wrong conversation. With
       // no pre-ack send left, every survivor belongs to a settled send, so
       // the gate is moot.
+      // The gate stays on even when no pre-ack send remains: settled keys
+      // are cleared only after the drain, so frames whose session matches
+      // the settled send route, while a frame buffered for an unrelated
+      // session cannot slip into that session's later sink.
       if (
-        this.preAckSendKeys.size > 0 &&
         !(typeof payload.sessionKey === 'string' && this.preAckSettledKeys.has(payload.sessionKey))
       ) {
         leftover.push(buffered);
