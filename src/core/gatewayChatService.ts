@@ -956,7 +956,9 @@ export class GatewayChatService {
    *  On `session.end` a resumed session only carries a transcript sink (no
    *  run entry) and its stream must still observe the run's end: the run
    *  sink wins when present, and without one every resumed subscriber is
-   *  completed. The completed run sink is retired from the transcript set
+   *  completed (finalizeSessionEnd). A `session.end` arriving while its
+   *  session's send is still pre-ack is buffered and applied after the
+   *  acknowledgement settles, so a fast run's response is never dropped. The completed run sink is retired from the transcript set
    *  as well — leaving it there retains the callback forever and replays
    *  catch-up deliveries into it after the run has ended, while sinks
    *  registered only by resumeSession (no run entry) stay subscribed.
@@ -1040,22 +1042,46 @@ export class GatewayChatService {
       if (endKey && this.abortingSessions.has(endKey)) {
         return;
       }
+      if (endKey && this.preAckSendKeys.has(endKey)) {
+        // A `session.end` for a key owned by a still-unacknowledged send is
+        // buffered like pre-ack `session.message` frames: finalizing now
+        // would delete the pre-ack run sink and emit `done`, and the later
+        // acknowledgement would then fail its ownership check — a fast run
+        // would complete with no delivered response and the sink gone.
+        // Buffering defers the end until the ack settles the send and the
+        // drain re-routes it; the send's failure path discards it wholesale.
+        // The frame is tagged with the one send whose requested key matches,
+        // mirroring the session.message attribution rule.
+        this.preAckBufferedFrames.push({ evt, sends: new Set([endKey]) });
+        return;
+      }
       if (endKey) {
-        const runSink = this.runSinksBySession.get(endKey);
-        const transcript = [...(this.transcriptSinksBySession.get(endKey) ?? [])];
-        const endSinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
-        this.runSinksBySession.delete(endKey);
-        if (runSink) {
-            this.removeTranscriptSink(endKey, runSink);
-        }
-        for (const endSink of endSinks) {
-          endSink({ type: 'done' });
-        }
+        this.finalizeSessionEnd(endKey);
       }
     }
     if (!routedChatEvent && !isSessionMessage) {
       const chatEvents = mapSessionEventToChatEvent(evt);
       for (const chatEvent of chatEvents) this.onEvent(chatEvent);
+    }
+  }
+
+  /** Finalize a session on its `session.end` frame: complete the run sink
+   *  (if present) and every transcript-only subscriber with `done`, then
+   *  retire the run sink. Leaving the completed run sink in the transcript
+   *  set would retain the callback forever and replay catch-up deliveries
+   *  into it after the run has ended, while sinks registered only by
+   *  resumeSession (no run entry) stay subscribed. Shared by the live
+   *  dispatch path and the pre-ack drain so both apply identical semantics. */
+  private finalizeSessionEnd(key: string): void {
+    const runSink = this.runSinksBySession.get(key);
+    const transcript = [...(this.transcriptSinksBySession.get(key) ?? [])];
+    const endSinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
+    this.runSinksBySession.delete(key);
+    if (runSink) {
+      this.removeTranscriptSink(key, runSink);
+    }
+    for (const endSink of endSinks) {
+      endSink({ type: 'done' });
     }
   }
 
@@ -1411,6 +1437,14 @@ export class GatewayChatService {
       const routed = this.sinkForSession(payload.sessionKey);
       if (!routed) {
         leftover.push(buffered);
+        continue;
+      }
+      if (buffered.evt.event === GatewayEvents.sessionEnd) {
+        // A buffered pre-ack `session.end` replays its finalization now that
+        // the send has settled: the correlation gate above guarantees the
+        // frame belongs to exactly this send's resolved session, so the run
+        // sink is completed with `done` instead of being silently dropped.
+        this.finalizeSessionEnd(routed.key);
         continue;
       }
       const chatEvents = mapSessionEventToChatEvent(buffered.evt);
