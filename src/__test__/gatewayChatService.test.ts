@@ -277,7 +277,7 @@ describe('GatewayChatService sendMessage/abort', () => {
 
   /** Resolve the pre-send history snapshot: issueSend awaits it before
    *  chat.send, so tests must answer it to reach the send RPC. */
-  function answerPreSendHistory(ws: MockSocket, payload: Record<string, unknown> = {}): void {
+  function answerPreSendHistory(ws: MockSocket, payload: Record<string, unknown> = { messages: [] }): void {
     for (const req of sentRequests(ws)) {
       if (req.method === 'chat.history' && !('deltaCursor' in req.params)) {
         ws.emit('message', JSON.stringify({ type: 'res', id: req.id, ok: true, payload }));
@@ -300,6 +300,25 @@ describe('GatewayChatService sendMessage/abort', () => {
     expect(send?.params).toMatchObject({ sessionKey: 'main', text: 'hello', queueMode: 'enqueue' });
     ws.emit('message', JSON.stringify({ type: 'res', id: send!.id, ok: true, payload: { sessionKey: 'main' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
+    svc.dispose();
+  });
+
+  it('aborts the send when the pre-send history snapshot resolves without a recovery boundary', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // A malformed snapshot (no messages array, no cursor) seeds no boundary:
+    // a reconnect catch-up would return early and miss deltas permanently,
+    // so the send must abort instead of issuing chat.send unrecoverably.
+    answerPreSendHistory(ws, {} as Record<string, unknown>);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    expect(sentRequests(ws).find((r) => r.method === 'chat.send')).toBeUndefined();
+    expect(events).toContainEqual({ type: 'done' });
+    expect(events.some((e) => (e as { type: string }).type === 'error')).toBe(true);
     svc.dispose();
   });
 

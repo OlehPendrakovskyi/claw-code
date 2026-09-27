@@ -1387,6 +1387,25 @@ export class GatewayChatService {
             return;
           }
           this.seedHistory(sessionKey, history);
+          // A snapshot that resolved but carries no usable boundary (null or
+          // malformed payload: no delta cursor and no message rows) leaves the
+          // run unrecoverable exactly like a rejected snapshot — a reconnect
+          // catch-up would return early and deltas missed while disconnected
+          // would be permanently absent, so the send is aborted here instead
+          // of issuing chat.send. A well-formed empty snapshot (`messages:
+          // []`) still seeds an empty fingerprint boundary and is accepted.
+          if (
+            !this.deltaCursorBySession.has(sessionKey) &&
+            !this.seededCatchUpFingerprints.has(sessionKey)
+          ) {
+            if (this.runSinksBySession.get(sessionKey) !== _onEvent) {
+              return;
+            }
+            this.failPreAckSend(sessionKey, _onEvent,
+              'Pre-send history snapshot did not include a usable recovery boundary; the send was aborted to avoid an unrecoverable response. Retry once the gateway returns a well-formed chat.history snapshot.',
+              sendId);
+            return;
+          }
         } catch {
           // A failed pre-send history snapshot leaves no delta cursor and no
           // seeded boundary for this session: after a reconnect catchUpHistory
@@ -1474,7 +1493,18 @@ export class GatewayChatService {
         });
         if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
           void this.send(GatewayRpcMethods.chatHistory, { sessionKey: key })
-            .then((history) => this.seedHistory(key, history, { rememberSeen: false }))
+            .then((history) => {
+              this.seedHistory(key, history, { rememberSeen: false });
+              // The run is already accepted here, so a boundary-less snapshot
+              // cannot abort the send the way the pre-ack path can; surface
+              // it so a gateway returning malformed history is diagnosable.
+              if (
+                !this.deltaCursorBySession.has(key) &&
+                !this.seededCatchUpFingerprints.has(key)
+              ) {
+                this.logger.warn(`post-ack history snapshot for "${key}" carried no recovery boundary; reconnect catch-up for this run may miss deltas`);
+              }
+            })
             .catch(() => undefined);
         }
         if (key !== sessionKey) {
