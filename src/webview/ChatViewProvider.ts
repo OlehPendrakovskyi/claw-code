@@ -2069,7 +2069,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
         };
         gateway.setActiveSession(sessionKey);
-        await this.persistLastSessionKey(sessionKey);
+        // A rejected persistence write (e.g. unavailable workspace state)
+        // must not skip the abandonment checks below: the teardown above
+        // already cleared the previous session's sinks, so leaving the thread
+        // keyed to the old session with a lost sink while the gateway points
+        // at the new one strands the conversation. Restore the previous
+        // binding, surface the failure, and keep the thread usable instead of
+        // propagating the rejection past the generation guards.
+        try {
+            await this.persistLastSessionKey(sessionKey);
+        } catch (err) {
+            log.warn('openSessionRebinding: failed to persist last session key', err);
+            restoreAbandonedRebind();
+            if (this.getActiveThread()?.id === thread.id && thread.openGeneration === openGen) {
+                thread.messages.push({
+                    role: 'error',
+                    content: 'Failed to persist the last session. Reopen the session to retry.'
+                });
+                this.emitState();
+            }
+            return;
+        }
         if (this.getActiveThread()?.id !== thread.id) {
             restoreAbandonedRebind();
             return;
