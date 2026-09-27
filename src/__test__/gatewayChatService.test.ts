@@ -426,12 +426,16 @@ describe('GatewayChatService sendMessage/abort', () => {
     (hello.payload as { features: { methods: string[] } }).features.methods = ['sessions.list'];
     ws.emit('message', JSON.stringify(hello));
     await pending;
-    svc.sendMessage('hi', '/tmp', 'm', 'chat', () => {});
+    const events: Array<Record<string, unknown>> = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e as unknown as Record<string, unknown>));
     await new Promise<void>((r) => setTimeout(r, 0));
-    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
-    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
-    await new Promise<void>((r) => setTimeout(r, 0));
-    expect(log.lines.join('\n')).toContain('does not advertise');
+    // Without transcript streaming the send is rejected explicitly: a
+    // gateway that does not advertise the subscribe method would emit no
+    // session events, so sending now would complete the turn silently
+    // without output.
+    expect(sentRequests(ws).find((r) => r.method === 'chat.send')).toBeUndefined();
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
     svc.dispose();
   });
 

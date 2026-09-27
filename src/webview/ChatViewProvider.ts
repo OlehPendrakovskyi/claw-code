@@ -1324,7 +1324,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // captured epoch must already be stale when it fires.
                 activeThread.eventEpoch += 1;
                 activeThread.bindingEpoch += 1;
-                if (!sharesLiveRun) {
+                // Only a gateway-backed run may abort the previous gateway
+                // session: an acpx fallback run holds no gateway run (the
+                // branch above already retired its backend), so an
+                // unconditional abort here would cancel whatever other owner
+                // still runs on the stale binding key.
+                if (!sharesLiveRun && previousBackend instanceof GatewayChatService) {
                     gateway.abort(previousKey);
                     if (!this.otherThreadsOnKey(activeThread.id, previousKey)) {
                         // Only clear the shared session sink when this thread
@@ -1420,7 +1425,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // async completion must not reach the rebound thread.
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
-            if (!sharesLiveRun) {
+            // Same backend-type guard as handleSelectAgent: only a
+            // gateway-backed run may abort the previous gateway session; an
+            // acpx fallback run (retired above) must not cancel whatever
+            // other owner still runs on the stale binding key.
+            if (!sharesLiveRun && previousBackend instanceof GatewayChatService) {
                 gateway.abort(previousKey);
                 if (!this.otherThreadsOnKey(thread.id, previousKey)) {
                     // Same guard as handleSelectAgent: idle resumed

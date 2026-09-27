@@ -808,13 +808,27 @@ export class GatewayChatService {
       return;
     }
     const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+    // Without server-side transcript subscription the gateway will not emit
+    // session events for this run: sending now would complete the turn with
+    // no visible output. Fail the send explicitly instead.
+    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
+      _onEvent({
+        type: 'error',
+        message: `Gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; transcript streaming is unavailable and sends would complete without output. Update the gateway to a version that supports transcript streaming.`
+      });
+      _onEvent({ type: 'done' });
+      return;
+    }
     const existingSink = this.runSinksBySession.get(sessionKey);
     const queueMode = existingSink ? 'steer' : 'enqueue';
     this.runSinksBySession.set(sessionKey, _onEvent);
     if (existingSink && existingSink !== _onEvent) {
       // A different thread still owns a run on this shared session: end its
       // stream cleanly instead of letting it hang while the replacement sink
-      // silently receives all subsequent events.
+      // silently receives all subsequent events. Its transcript registration
+      // must go too, or the retired callback would keep receiving events
+      // (and accumulate with every steer/re-send).
+      this.removeTranscriptSink(sessionKey, existingSink);
       existingSink({ type: 'done' });
     }
     // Subscribe BEFORE the send RPC: a gateway can emit the first
@@ -849,6 +863,10 @@ export class GatewayChatService {
           if (this.runSinksBySession.get(sessionKey) === _onEvent) {
             this.runSinksBySession.delete(sessionKey);
           }
+          // This send's pre-ack registration in the transcript set must be
+          // dropped as well, or the failed send's callback would linger and
+          // receive later events for the occupied session.
+          this.removeTranscriptSink(sessionKey, _onEvent);
           _onEvent({
             type: 'error',
             message: `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
