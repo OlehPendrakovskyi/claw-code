@@ -491,6 +491,16 @@ export class GatewayChatService {
     this.suspended = false;
     this.connectGeneration += 1;
     this.connectPromise = null;
+    // Connection-scoped per-session state belongs to the previous gateway:
+    // a credential change can point at a different endpoint that reuses the
+    // same session keys, and stale cursors/seen-ids/delta records would skip
+    // the next send's history seed, mis-dedupe its frames, or break reconnect
+    // catch-up with an invalid cursor. Transcript sinks stay registered —
+    // they are re-subscribed (with a fresh catch-up seed) after reconnect.
+    this.deltaCursorBySession.clear();
+    this.seededCatchUpFingerprints.clear();
+    this.seenMessageIdsBySession.clear();
+    this.deltaTextByMessage.clear();
     if (this.ws) {
       const oldWs = this.ws;
       this.ws = null;

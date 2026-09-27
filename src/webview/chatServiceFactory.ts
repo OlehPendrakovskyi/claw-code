@@ -97,9 +97,17 @@ export class ChatServiceFactory {
         return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
       }
       // Missing token in `auto` mode is a per-send fallback: do not suspend
-      // the shared client here — unrelated threads' in-flight gateway runs
-      // would be retired with `done` and their remote runs dropped. Only an
-      // explicit transport switch to acpx suspends the gateway client.
+      // the shared client here when no token was ever resolved — unrelated
+      // threads' in-flight gateway runs would be retired with `done` and
+      // their remote runs dropped. But a previously used token that is now
+      // gone is a deliberate removal/revocation: the cached client may still
+      // hold an authenticated socket with a live reconnect loop, so it is
+      // suspended to actually disconnect the gateway. Only an explicit
+      // transport switch to acpx otherwise suspends the gateway client.
+      if (this.cachedToken && this.gatewayService) {
+        this.suspendGateway();
+        this.cachedToken = '';
+      }
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
