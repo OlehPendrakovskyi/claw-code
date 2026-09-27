@@ -1853,7 +1853,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  cleared) rather than authorizing old-gateway keys on a new gateway.
      *  Returns the fresh payload, or null when no trustworthy refresh
      *  happened. */
+    /** Returns the fresh payload, or null when no trustworthy refresh
+     *  happened. Concurrent callers share one in-flight refresh: two
+     *  serialized requests would let the older response resolve last and
+     *  overwrite the allowlist with a stale snapshot, so refreshes are
+     *  serialized (later callers join the live attempt, and the newest
+     *  commit always reflects the most recent sessions.list). */
+    private allowlistRefreshInFlight: Promise<unknown | null> | null = null;
+
     private async refreshSessionAllowlist(gateway: GatewayChatService): Promise<unknown | null> {
+        const existing = this.allowlistRefreshInFlight;
+        if (existing) {
+            return existing;
+        }
+        const run = this.runAllowlistRefresh(gateway).finally(() => {
+            if (this.allowlistRefreshInFlight === run) {
+                this.allowlistRefreshInFlight = null;
+            }
+        });
+        this.allowlistRefreshInFlight = run;
+        return run;
+    }
+
+    private async runAllowlistRefresh(gateway: GatewayChatService): Promise<unknown | null> {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const identityBefore = gateway.getGatewayIdentity();
             try {

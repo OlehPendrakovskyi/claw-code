@@ -362,10 +362,12 @@ private static async discoverLanguageOverrides(): Promise<LanguageOverride[]> {
       seen.add(key);
       // vscode.ConfigurationScope for a language-plus-resource scope uses
       // a `uri` field, not `folderUri`: the uri must point into the owning
-      // folder so inspect/update reach that folder's language values.
-      const scope = source.folderUri
-        ? ({ languageId, uri: source.folderUri } as vscode.ConfigurationScope)
-        : ({ languageId } as vscode.ConfigurationScope);
+      // folder so inspect/update reach that folder's language values. The
+      // `{ uri, languageId }` object is a valid ConfigurationScope in the
+      // declared typings, so no cast is needed.
+      const scope: vscode.ConfigurationScope = source.folderUri
+        ? { languageId, uri: source.folderUri }
+        : { languageId };
       const config = vscode.workspace.getConfiguration('openclaw', scope);
       overrides.push({
         languageId,
