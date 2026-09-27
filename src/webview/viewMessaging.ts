@@ -213,6 +213,7 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
         const opened = await handle.stat();
         const current = await fsp.lstat(p);
         if (opened.dev !== current.dev || opened.ino !== current.ino ||
+            !opened.isFile() || !current.isFile() ||
             (await fsp.realpath(p)) !== p) {
             return null;
         }

@@ -1997,6 +1997,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         thread.sessionKey = sessionKey;
 
+        // Reopening the session this thread is already bound to while a run
+        // is in flight must not replace the transcript or reset status: the
+        // unconditional restore would drop the live response. This guard
+        // must run BEFORE the listSessions/cold-session branch below — that
+        // branch clears the transcript and marks the thread idle without
+        // aborting or retiring the run, and resumeSessionForThread would
+        // register a persistent sink alongside the live run sink, causing
+        // duplicate delivery and inconsistent lifecycle state. The thread
+        // keeps its registered transcript callback, so nothing to rebind.
+        if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {
+            return;
+        }
+
         let label = sessionKey;
         try {
             const payload = await gateway.listSessions({});
@@ -2034,13 +2047,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
 
         const historyEpoch = thread.eventEpoch;
-        // Reopening the session this thread is already bound to while a run
-        // is in flight must not replace the transcript or reset status:
-        // the unconditional restore would drop the live response. The thread
-        // keeps its registered transcript callback, so nothing to rebind.
-        if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {
-            return;
-        }
         const history = await gateway.getHistory(sessionKey);
         if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
             thread.eventEpoch !== historyEpoch || thread.openGeneration !== openGen) {

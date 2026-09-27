@@ -1396,6 +1396,17 @@ export class GatewayChatService {
     if (!this.deltaCursorBySession.has(sessionKey) && !opts?.allowUnscopedCatchUp) {
       return;
     }
+    // Snapshot the run sink BEFORE the chat.history RPC: run sinks must
+    // never receive catch-up replay, and a send that registers its sink
+    // while the RPC is in flight is exactly the raced case — capturing
+    // after the await would treat the new send's sink as the catch-up-era
+    // sink, so once its ack cleared the pre-ack marker neither exclusion
+    // below would match and replayed rows (with their `done`) would flow
+    // into the fresh turn. The snapshot only also decides whether a
+    // settled catch-up may retire the run sink: only the sink that already
+    // existed when the catch-up started, and is not still pre-ack, may be
+    // retired by the replay tail.
+    const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
     try {
       const payload = (await this.send(GatewayRpcMethods.chatHistory, {
         sessionKey,
@@ -1413,17 +1424,8 @@ export class GatewayChatService {
         this.deltaCursorBySession.set(sessionKey, cursor);
       }
       let lastRowFinalized = false;
-      // Run sinks must never receive catch-up replay: a send that registers
-      // its run sink while this catch-up is still in flight (its ack may
-      // already have cleared the pre-ack marker) would otherwise receive the
-      // historical tail — duplicating the transcript or having a replayed
-      // `done` prematurely finalize the new response. Exclusion is checked
-      // per delivery against the CURRENT run sink, so a sink registered
-      // mid-replay is excluded too. The snapshot below only decides whether
-      // a settled catch-up may retire the run sink: only the sink that
-      // already existed when the catch-up started, and is not still pre-ack,
-      // may be retired by the replay tail.
-      const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
+      // Exclusion is checked per delivery against the CURRENT run sink, so
+      // a sink registered mid-replay is excluded too.
       // A send that registered its run sink while `chat.send` is still
       // pre-ack must not receive replay rows (the ack's ownership check
       // would treat the run as retired and drop the actual response).
