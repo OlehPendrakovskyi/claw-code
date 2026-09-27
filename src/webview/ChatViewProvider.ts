@@ -1241,6 +1241,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  discard the suspended transcript sink captured for
      *  the requested key (the run never lived there).
      */
+    /** Send a queued user prompt through the resolved backend. Retiring the
+     *  thread's previous backend bumps eventEpoch to drop stale events, but
+     *  that is internal invalidation, not a superseding send: refresh the
+     *  captured send epoch here so the send is not stranded between the
+     *  queued message and the backend handoff. */
     private async sendPrompt(thread: ChatThreadState, fullPrompt: string, sendEpoch: number): Promise<void> {
         if (thread.eventEpoch !== sendEpoch) {
             return;
@@ -1301,6 +1306,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.bindingEpoch += 1;
             }
         }
+        sendEpoch = thread.eventEpoch;
         thread.transportBackend = choice.service;
         let runEpoch: number | undefined;
         if (choice.service instanceof GatewayChatService) {
