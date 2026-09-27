@@ -489,18 +489,22 @@ export class GatewayChatService {
               return;
             }
             if (!settled) {
-              settled = true;
-              if (handshakeTimer) {
-                clearTimeout(handshakeTimer);
-                handshakeTimer = null;
-              }
               if (this.ws !== ws) {
                 // Retired socket: updateConnection() or a newer attempt
                 // replaced this.ws while this handshake was in flight. The
                 // stale hello-ok must not mark the client connected while
-                // this.ws is null or points at a different socket.
+                // this.ws is null or points at a different socket. Reject
+                // BEFORE marking the handshake settled: settleError() no-ops
+                // once settled, and skipping the rejection would leak this
+                // handshake promise and leave callers waiting on an outer
+                // timeout.
                 settleError('gateway handshake superseded: retired socket delivered hello-ok');
                 return;
+              }
+              settled = true;
+              if (handshakeTimer) {
+                clearTimeout(handshakeTimer);
+                handshakeTimer = null;
               }
               this.connected = true;
               resolve(payload as unknown as HelloOk);
@@ -1044,6 +1048,13 @@ export class GatewayChatService {
       })
       .catch((err: Error): boolean => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
+        // A stale rejection (the socket drop already cleared the pending
+        // slot, or a newer subscribe attempt owns it now) must not retire a
+        // replacement run sink installed by a reconnect or a newer send:
+        // tie the cleanup to the attempt that still owns the pending entry.
+        if (this.pendingSubscribeBySession.get(sessionKey) !== attempt) {
+          return false;
+        }
         // A transient subscribe rejection must not retire persistent resume
         // sinks: they would vanish from transcriptSinksBySession and
         // resubscribeActiveSession() could never restore them after
