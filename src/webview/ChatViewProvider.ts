@@ -1264,7 +1264,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Resume bindings deferred because a send started before the automatic
      *  resume finished: the persistent transcript sink is registered only
      *  after that run finalizes, so live delivery is never double-wired. */
-    private deferredResumes = new Map<string, { sessionKey: string }>();
+    private deferredResumes = new Map<string, { sessionKey: string; historyRendered?: boolean }>();
 
     /** Suspend a thread's persistent transcript callback for an in-flight run
      *  on the same session; prevents duplicate fan-out to the run sink. */
@@ -1327,7 +1327,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (thread.sessionKey !== deferred.sessionKey) {
             return;
         }
-        this.resumeSessionForThread(gateway, thread, deferred.sessionKey);
+        this.resumeSessionForThread(gateway, thread, deferred.sessionKey, deferred.historyRendered === true);
         this.emitState();
     }
 
@@ -1841,10 +1841,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         });
                         activeThread.status = 'error';
                     }
-                    this.resumeSessionForThread(gateway, activeThread, sessionKey);
+                    this.resumeSessionForThread(gateway, activeThread, sessionKey, history !== null);
                 }
             } else if (reboundFrom) {
-                this.resumeSessionForThread(gateway, activeThread, sessionKey);
+                // No history fetch on the mid-run rebind: keep the unscoped
+                // catch-up (the run sink owns delivery until `done`).
+                this.resumeSessionForThread(gateway, activeThread, sessionKey, false);
             }
         }
         this.emitState();
@@ -2148,7 +2150,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         sessionKey,
                     });
                     this.bindGatewayTransportIfIdle(thread, gateway);
-                    this.resumeSessionForThread(gateway, thread, sessionKey);
+                    this.resumeSessionForThread(gateway, thread, sessionKey, false);
                     return;
                 }
             }
@@ -2201,7 +2203,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             type: 'agentSelected',
             sessionKey,
         });
-        this.resumeSessionForThread(gateway, thread, sessionKey);
+        this.resumeSessionForThread(gateway, thread, sessionKey, history !== null);
         this.emitState();
     }
 
@@ -2217,8 +2219,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Resume a session for a thread, replacing any previous transcript
-     *  callback for that session so reopen cannot deliver events twice. */
-    private resumeSessionForThread(gateway: GatewayChatService, thread: ChatThreadState, sessionKey: string): void {
+     *  callback for that session so reopen cannot deliver events twice.
+     *  historyRendered marks a resume whose `chat.history` payload was
+     *  rendered into the thread and seeded into the gateway: the unscoped
+     *  tail catch-up must stay off there, or keyless assistant rows get
+     *  appended a second time (null-history resumes keep it). */
+    private resumeSessionForThread(
+        gateway: GatewayChatService,
+        thread: ChatThreadState,
+        sessionKey: string,
+        historyRendered: boolean,
+    ): void {
         // Track callbacks per thread: opening/resuming the same session in a
         // second thread must not evict this thread's callback from the
         // gateway's fan-out sink set.
@@ -2229,7 +2240,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const resumeEpoch = thread.bindingEpoch;
         const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, resumeEpoch, 'binding'); };
         this.transcriptCallbacks.set(thread.id, { sessionKey, cb });
-        gateway.resumeSession(sessionKey, cb);
+        gateway.resumeSession(sessionKey, cb, { historyRendered });
     }
 
     /** Persist the last selected session key for window-restart resume.
@@ -2274,6 +2285,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!gateway) {
             return;
         }
+        // Same webview-origin validation as selectAgent/openSession: the
+        // shape check alone still accepts a guessed key for an agent the
+        // picker never listed, so the persisted key is dropped against the
+        // last sessions.list allowlist before binding (fail-closed).
+        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
+            log.warn(`resumeLastSession: rejected unknown persisted session key: ${sessionKey}`);
+            this.lastSessionKey = null;
+            await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, undefined);
+            return;
+        }
         gateway.setActiveSession(sessionKey);
         const thread = this.getActiveThread();
         if (thread) {
@@ -2301,8 +2322,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // delta callback does not replay the whole session into the live
             // stream (user messages would be dropped and assistant messages
             // would pile up as one pending response).
+            // Hoisted so the resume below can distinguish a rendered,
+            // seeded history (null fetch keeps the unscoped catch-up).
+            let history: unknown = null;
             try {
-                const history = await gateway.getHistory(sessionKey);
+                history = await gateway.getHistory(sessionKey);
                 // Re-check after the await: opening another session meanwhile
                 // must not let this late resume overwrite its transcript, and
                 // a run the user started on this thread during the await (its
@@ -2322,7 +2346,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         // the already-rendered transcript into the thread as
                         // duplicated messages.
                         gateway.seedHistory(sessionKey, history);
-                        this.deferredResumes.set(thread.id, { sessionKey });
+                        this.deferredResumes.set(thread.id, { sessionKey, historyRendered: false });
                     }
                     return;
                 }
@@ -2340,7 +2364,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } catch (err) {
                 log.warn('history restore during resume failed', err);
             }
-            this.resumeSessionForThread(gateway, thread, sessionKey);
+            this.resumeSessionForThread(gateway, thread, sessionKey, history !== null);
             this.emitState();
         }
     }

@@ -822,12 +822,23 @@ export class GatewayChatService {
    * subscribe to its transcript events; the deltaCursor catch-up then
    * replays only messages the UI has not seen yet (deduped by messageId).
    */
-  resumeSession(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
+  resumeSession(
+    sessionKey: string,
+    onEvent: (event: ChatEvent) => void,
+    opts?: { historyRendered?: boolean },
+  ): void {
     this.activeSessionKey = sessionKey;
     this.addTranscriptSink(sessionKey, onEvent);
     // Resume is an explicit cursor path: allow the unscoped-tail catch-up
-    // (deduped by messageId) even when no delta cursor was seeded yet.
-    this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: true });
+    // (deduped by messageId) even when no delta cursor was seeded yet —
+    // but only when the provider has not already rendered `chat.history`
+    // into the thread. A history-backed resume whose payload carried no
+    // cursor would otherwise re-fetch the full tail and append keyless
+    // assistant rows a second time (rows without messageId are not
+    // deduplicated); the provider therefore disables the unscoped replay
+    // for that path. A no-history resume (null RPC) keeps the unscoped
+    // catch-up so events missed while the window was closed still arrive.
+    this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp: !opts?.historyRendered });
   }
 
   /**
