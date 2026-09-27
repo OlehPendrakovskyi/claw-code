@@ -54,7 +54,8 @@ export class ChatService {
         cwd: string,
         model: string,
         chatType: string,
-        onEvent: (event: ChatEvent) => void
+        onEvent: (event: ChatEvent) => void,
+        _onSessionResolved?: (resolvedKey: string, requestedKey: string) => void
     ): void {
         this.abort();
 

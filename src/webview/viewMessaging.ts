@@ -172,24 +172,18 @@ export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-/** Frame a file section with a per-section unique element name. File data is
- *  embedded as escaped XML character data (`&`, `<`, `>` and CR are emitted
- *  as numeric character references), so ordinary source such as `a < b &&
- *  c > d` cannot terminate or malform the framing, and decoded content is
- *  byte-faithful to the original file text. A forged close tag cannot
- *  terminate the section because the random id is generated per section and
- *  never derived from file bytes; the id is carried in the element name
- *  itself — closing tags cannot carry attributes, so `</file id="...">`
- *  would be rejected by any XML-conformant parser — and `file-<uuid>` is a
- *  valid XML NCName (dashes are legal; the leading letter keeps the name
- *  from starting with a digit). */
-function escapeXmlText(text: string): string {
-    return text.replace(/[&<>\r]/g, (ch) => `&#${ch.charCodeAt(0)};`);
-}
-
+/** Frame a file section with a per-section unique element name. The body is
+ *  embedded byte/text-faithful (never entity-escaped: the prompt path has no
+ *  XML parser, so escaping would reach the model altered). Injection is
+ *  still impossible: the random id is generated per section and never
+ *  derived from file bytes, so file content cannot forge the closing tag;
+ *  the id is carried in the element name itself — closing tags cannot carry
+ *  attributes, so `</file id="...">` would be rejected by any XML-conformant
+ *  parser — and `file-<uuid>` is a valid XML NCName (dashes are legal; the
+ *  leading letter keeps the name from starting with a digit). */
 function frameFileBody(path: string, content: string): string {
     const id = randomUUID();
-    return `<file-${id} path="${escapeXmlAttr(path)}">\n${escapeXmlText(content)}\n</file-${id}>`;
+    return `<file-${id} path="${escapeXmlAttr(path)}">\n${content}\n</file-${id}>`;
 }
 
 /** Returns the canonical attachment path only when it still resolves to the
