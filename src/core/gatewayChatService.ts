@@ -744,8 +744,13 @@ export class GatewayChatService {
    *  later completed row. Seeding a delta row would make the resume
    *  catch-up skip the completed row (and its finalization), leaving the
    *  resumed thread streaming forever — same contract as
-   *  isCompleteAssistantFrame for live frames. */
-  seedHistory(sessionKey: string, payload: unknown): void {
+   *  isCompleteAssistantFrame for live frames.
+ *
+ *  `opts.rememberSeen: false` skips the seen-set entirely: for a seed taken
+ *  mid-run (post-ack catch-up), a complete row in the snapshot may be the
+ *  still-streaming response, and remembering its messageId would drop the
+ *  live final frame as a duplicate. */
+  seedHistory(sessionKey: string, payload: unknown, opts?: { rememberSeen?: boolean }): void {
     if (!payload || typeof payload !== 'object') {
       return;
     }
@@ -755,6 +760,15 @@ export class GatewayChatService {
       this.deltaCursorBySession.set(sessionKey, cursor);
     }
     if (!Array.isArray(data.messages)) {
+      return;
+    }
+    // Post-ack seeding happens while the run is still streaming: a snapshot
+    // row may be the in-flight response itself, and pre-seeding its
+    // messageId would make claimCompleteFrame drop the live final frame.
+    // Cursor-less replay dedupe is covered by the seeded fingerprint
+    // boundary, and cursor-bearing catch-up never replays pre-cursor rows,
+    // so the seen-set is not needed for these rows.
+    if (opts?.rememberSeen === false) {
       return;
     }
     for (const rowRaw of data.messages) {
@@ -1136,7 +1150,7 @@ export class GatewayChatService {
         this.subscribeSessionMessages(key);
         if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
           void this.send(GatewayRpcMethods.chatHistory, { sessionKey: key })
-            .then((history) => this.seedHistory(key, history))
+            .then((history) => this.seedHistory(key, history, { rememberSeen: false }))
             .catch(() => undefined);
         }
         if (key !== sessionKey) {

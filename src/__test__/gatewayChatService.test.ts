@@ -634,6 +634,45 @@ describe('GatewayChatService sendMessage/abort', () => {
   });
 
 
+  it('does not pre-seed the in-flight response from the post-ack history snapshot', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.onEvent = (e) => events.push(e);
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: subscribe.id, ok: true, payload: {} }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // The post-ack snapshot races the live stream: if it already contains
+    // the in-flight response row, the seen-set must not pre-seed it.
+    const history = sentRequests(ws).find((r) => r.method === 'chat.history');
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history!.id,
+      ok: true,
+      payload: { messages: [{ messageId: 'm-live', role: 'assistant', text: 'live reply' }] },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'main', messageId: 'm-live', role: 'assistant', text: 'live reply' },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e): e is { type: string; text: string } =>
+      (e as { type?: string }).type === 'text');
+    expect(texts).toContainEqual({ type: 'text', text: 'live reply' });
+    svc.dispose();
+  });
+
   it('drops unroutable keyless session.message frames instead of leaking via onEvent', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);
