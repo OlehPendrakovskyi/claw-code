@@ -306,11 +306,16 @@ describe('GatewayChatService session selection and resume', () => {
     rpcPayload(ws, history!.id, { messages: [{ role: 'assistant', text: 'routed', messageId: 'm-r1' }], deltaCursor: 'c1' });
     await new Promise((r) => setTimeout(r, 0));
     svc.dispose();
-    // The run sink is present at catch-up start, so it is excluded from
-    // replayed history (and its finalizing done): replay must not reach a
-    // live run whose own response is still in flight. Routing to the chosen
-    // session is asserted above via chat.send params.
-    expect(done).toEqual([]);
+    // The run sink is present at catch-up start and consumes replayed rows:
+    // it is the thread's only delivery channel while the persistent sink is
+    // suspended, so an unseen completed row in the replay is recovered as
+    // content plus its terminal done (the response finished server-side and
+    // its live final frame will not arrive). Routing to the chosen session
+    // is asserted above via chat.send params.
+    expect(done).toEqual([
+      { type: 'text', text: 'routed' },
+      { type: 'done' },
+    ]);
   });
 
   it('resumeSession subscribes and replays unseen history (dedup by messageId)', async () => {

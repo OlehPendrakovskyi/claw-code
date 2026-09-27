@@ -1844,11 +1844,12 @@ export class GatewayChatService {
    * trailing prompt must keep its sink.
    *
    * The run sink is retired only when the replayed tail ends on a completed
-   * assistant row (both roles, like the sessionEnd path): the run is over,
-   * and leaving it in runSinksBySession would make the next send select
-   * queueMode 'steer' against a finished run and keep routing future deltas
-   * into the old callback. A final row followed by further deltas means the
-   * stream continued, so the run sink must stay. A run sink registered by a
+   * assistant row whose finalization was delivered to it (seen rows,
+   * boundary-skipped rows, or unseen finalized rows recovered from the
+   * replay): the run is over, and leaving it in runSinksBySession would make
+   * the next send select queueMode 'steer' against a finished run and keep
+   * routing future deltas into the old callback. A final row followed by
+   * further deltas means the stream continued, so the run sink must stay. A run sink registered by a
    * send that raced this catch-up stays registered: its response is still
    * in flight and a replayed finalization must not retire it.
    */
@@ -1896,26 +1897,31 @@ export class GatewayChatService {
         (cursor === undefined || cursor === null);
       let lastRowFinalized = false;
       let lastFinalWasRecovery = false;
-      // Whether the last finalization came from a recovery branch (seen row
-      // or boundary-skipped row): only those may retire the catch-up-start
-      // run sink, because their `done` reflects a response that was already
-      // rendered or recovered locally. An unseen final row may be the live
-      // run's own in-flight response, so it must not retire its sink.
+      // Whether the last finalization came from a recovery branch (seen
+      // row, boundary-skipped row, or unseen finalized row recovered from
+      // the replay): only those may retire the catch-up-start run sink,
+      // because their `done` reflects a response that was already rendered
+      // or recovered locally. An unseen final row must not retire a pre-ack
+      // or raced sink, whose live final frame must still claim the row; the
+      // catch-up-start sink IS finalized by it — a completed row in the
+      // replayed history means the response finished server-side, so its
+      // live final frame will not arrive and the recovered done is the only
+      // terminal.
       const isPreAckRunSink = (sink: (event: ChatEvent) => void): boolean =>
         this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
       const isRacedRunSink = (sink: (event: ChatEvent) => void): boolean =>
         this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
-      // Run-sink exclusion for catch-up REPLAY delivery: every current run
-      // sink is excluded, including the one present at catch-up start (the
-      // ack may have settled mid-replay, so the pre-ack/raced checks alone
-      // miss it) — replayed history and its finalizing `done` must never
-      // reach a live run whose own response is still in flight. Recovery
-      // finalization (seen rows and boundary-skipped rows below) keeps the
-      // narrower pre-ack/raced exclusion so terminal recovery still reaches
-      // the sink that existed at catch-up start.
-      const isProtectedRunSink = (sink: (event: ChatEvent) => void): boolean =>
-        isPreAckRunSink(sink) || isRacedRunSink(sink) ||
-        (sink === catchUpStartRunSink && this.runSinksBySession.get(sessionKey) === sink);
+      // Replay delivery to run sinks: pre-ack and raced run sinks are
+      // excluded — a replayed finalizing `done` must not complete a send
+      // whose own response is still in flight. The run sink present at
+      // catch-up start DOES consume replayed rows: the persistent
+      // transcript sink is suspended while its run streams, so rows
+      // appended while the socket was down would otherwise reach no sink
+      // at all. Delta-only rows are still withheld from it — replayed
+      // chunks cannot be deduped against chunks the live stream already
+      // delivered — their content is recovered when the row's finalized
+      // (full-text) form replays or streams and the complete frame is
+      // diffed against the streamed prefix.
       const seeded = this.seededCatchUpFingerprints.get(sessionKey);
       // Cursor-less boundary alignment: a history tail is a sliding
       // window, so a new row can shift the seeded tail (e.g. [A,B,C] ->
@@ -2025,24 +2031,44 @@ export class GatewayChatService {
           payload: row as Record<string, unknown>,
         });
         const adjusted = this.adjustCompleteFrameEvents(sessionKey, row, mapped);
+        const isDeltaOnlyRow =
+          typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0 &&
+          !(typeof rowPayload.text === 'string' && rowPayload.text.length > 0);
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of adjusted) {
           for (const sink of sinks) {
-            if (isProtectedRunSink(sink)) {
+            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
+              continue;
+            }
+            if (
+              sink === catchUpStartRunSink &&
+              this.runSinksBySession.get(sessionKey) === sink &&
+              isDeltaOnlyRow
+            ) {
               continue;
             }
             sink(chatEvent);
           }
         }
         if (isFinalAssistantRow) {
+          let recoveredStartRunSink = false;
           for (const sink of sinks) {
-            if (isProtectedRunSink(sink)) {
+            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
               continue;
+            }
+            if (sink === catchUpStartRunSink && this.runSinksBySession.get(sessionKey) === sink) {
+              recoveredStartRunSink = true;
             }
             sink({ type: 'done' });
           }
+          // The recovered sink's run is over: remember the row so any late
+          // re-emission of the same completed frame is filtered instead of
+          // re-rendered into the restored transcript sink.
+          if (recoveredStartRunSink && messageId) {
+            this.rememberSeen(sessionKey, messageId);
+          }
           lastRowFinalized = true;
-          lastFinalWasRecovery = false;
+          lastFinalWasRecovery = true;
         } else {
           lastRowFinalized = false;
           lastFinalWasRecovery = false;

@@ -675,13 +675,16 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
-  it('does not deliver replayed catch-up history to the run sink present at catch-up start', async () => {
-    // Reconnect/resume catch-up with a live run: the run sink exists when
-    // catchUpHistory starts and its send has already settled, so neither the
-    // pre-ack nor the raced check matches — the start sink itself must be
-    // excluded from replay delivery and replay finalization, or a replayed
-    // final row would emit done and retire the run before its own response
-    // arrives.
+  it('delivers replayed unseen catch-up rows and their done to the run sink present at catch-up start', async () => {
+    // Reconnect/resume catch-up with a live run whose socket dropped: the
+    // run sink is the thread's only delivery channel (the persistent sink
+    // is suspended while the run streams), so replayed rows must reach it
+    // or deltas appended while disconnected are permanently lost. A
+    // completed row in the replayed history means the response finished
+    // server-side, so the replayed done is the run's only terminal — the
+    // sink is retired and the row is remembered so a late re-emission is
+    // filtered. Pre-ack and raced sinks stay excluded (covered by the
+    // pre-ack and post-ack-seed tests below).
     const ws = createMockWs();
     const svc = await connectService(ws);
     const events: unknown[] = [];
@@ -707,7 +710,52 @@ describe('GatewayChatService sendMessage/abort', () => {
       },
     }));
     await new Promise<void>((r) => setTimeout(r, 0));
-    expect(events.filter((e) => (e as { type?: string }).type === 'text')).toHaveLength(0);
+    expect(events.filter((e) => (e as { type?: string }).type === 'text')).toHaveLength(1);
+    expect(events.filter((e) => (e as { type?: string }).type === 'done')).toHaveLength(1);
+    svc.dispose();
+  });
+
+  it('withholds replayed delta-only rows from the run sink present at catch-up start', async () => {
+    // Replayed delta chunks cannot be deduped against chunks the live
+    // stream already delivered, so they stay withheld from the run sink;
+    // the missed content is recovered when the row's finalized form
+    // arrives and the complete frame is diffed against the streamed
+    // prefix.
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.onEvent = (e) => events.push(e);
+    svc.seedHistory('main', { deltaCursor: 'cursor-42', messages: [] });
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Simulate a live streamed delta prefix so the in-flight message has a
+    // store entry, then reconnect-catch-up delta rows for the same message.
+    ws.emit('message', JSON.stringify({
+      type: 'event',
+      event: 'session.message',
+      payload: { sessionKey: 'main', messageId: 'm1', role: 'assistant', delta: 'live ' },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const history = sentRequests(ws).filter((r) => r.method === 'chat.history').pop()!;
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history.id,
+      ok: true,
+      payload: {
+        deltaCursor: 'cursor-42',
+        messages: [{ messageId: 'm1', role: 'assistant', delta: 'replayed' }],
+      },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e) => (e as { type?: string }).type === 'text') as Array<{ text: string }>;
+    expect(texts.map((t) => t.text)).toEqual(['live ']);
     expect(events.filter((e) => (e as { type?: string }).type === 'done')).toHaveLength(0);
     svc.dispose();
   });
