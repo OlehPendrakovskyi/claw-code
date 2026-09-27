@@ -629,6 +629,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // case-insensitive volume cannot smuggle a swap whose target
                 // is only case-different at read time.
                 const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
+                // The realpath await is another suspension point: a
+                // cancel/clear that lands during it bumps the epoch and
+                // clears the thread, so the caller's guard must be re-checked
+                // before mutating the thread again.
+                if (options?.guard?.() === false) {
+                    return;
+                }
                 // A mention path was validated against the workspace boundary
                 // before this realpath ran; a symlink swap in between could
                 // make the canonicalization jump outside the workspace, so
@@ -1458,6 +1465,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             pendingOpenThread.openInFlightGen = pendingOpenThread.openGeneration;
         }
         gateway.setActiveSession(sessionKey);
+        // The generation this selection was issued under: a handleOpenSession
+        // that starts during the persist await supersedes this binding.
+        const selectionGen = pendingOpenThread ? pendingOpenThread.openGeneration : null;
         try {
             await this.persistLastSessionKey(sessionKey);
         } finally {
@@ -1468,9 +1478,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Same thread-identity guard as openSessionRebinding: a pane switch
         // during the persist await must not apply this rebind (retire/abort
         // and sessionKey assignment) to whichever thread is active then —
-        // verify the captured target thread is still the active one first.
+        // verify the captured target thread is still the active one and that
+        // this selection was not superseded (a concurrent handleOpenSession
+        // bumps openGeneration and must win the rebind race).
         const activeThread = pendingOpenThread;
         if (!activeThread || this.getActiveThread()?.id !== activeThread.id) {
+            return;
+        }
+        if (selectionGen !== null && activeThread.openGeneration !== selectionGen) {
             return;
         }
         if (activeThread) {
@@ -1854,6 +1869,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // without one once the run's per-send sink is removed at
                     // done — defer the binding until the run finalizes.
                     if (thread.isStreaming || thread.status === 'running') {
+                        // Seed the fetched snapshot before deferring: the
+                        // later flushDeferredResume catch-up must not replay
+                        // the already-rendered transcript into the thread as
+                        // duplicated messages.
+                        gateway.seedHistory(sessionKey, history);
                         this.deferredResumes.set(thread.id, { sessionKey });
                     }
                     return;

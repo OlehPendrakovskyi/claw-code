@@ -1314,6 +1314,22 @@ export class GatewayChatService {
     }
     const runSink = this.runSinksBySession.get(key);
     this.runSinksBySession.delete(key);
+    // A pre-ack send cancelled by this abort never reaches its send
+    // acknowledgement/catch, so its pre-ack registration and any frames
+    // buffered on its behalf would linger forever: a later catch-up could
+    // treat a fresh run sink on this session as pre-ack-protected and skip
+    // finalizing it, and orphaned buffered frames could replay into a later
+    // send. Retire both here.
+    this.preAckSendKeys.delete(key);
+    if (this.preAckSendKeys.size === 0) {
+      // No pre-ack send remains: every buffered frame was held for a send
+      // that can no longer be acknowledged, keyed or not.
+      this.preAckBufferedFrames = [];
+    } else {
+      this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
+        (evt) => (evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
+      );
+    }
     // Retire only the aborted run's sink, from both sink roles: the run
     // sink also lives in the transcript set, so removing it stops late
     // events for the cancelled run. Persistent resume sinks owned by other
