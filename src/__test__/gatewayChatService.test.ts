@@ -87,6 +87,26 @@ describe('mapSessionEventToChatEvent', () => {
       { type: 'usage', usage: { promptTokens: 5, completionTokens: 7, totalTokens: 12 } },
     ]);
   });
+  it('maps a mixed delta+text frame without a messageId to the full text only', () => {
+    // Both fields describe the same content; without an id the per-message
+    // dedupe cannot run, so the full text is canonical (delta would append
+    // the same string twice).
+    const evt: SessionEvent = {
+      event: 'session.message',
+      payload: { role: 'assistant', delta: 'hello', text: 'hello' },
+    };
+    expect(mapSessionEventToChatEvent(evt)).toEqual([{ type: 'text', text: 'hello' }]);
+  });
+  it('emits both delta and text for a messageId-carrying mixed frame', () => {
+    const evt: SessionEvent = {
+      event: 'session.message',
+      payload: { role: 'assistant', messageId: 'm1', delta: 'hello', text: 'hello' },
+    };
+    expect(mapSessionEventToChatEvent(evt)).toEqual([
+      { type: 'text', text: 'hello' },
+      { type: 'text', text: 'hello' },
+    ]);
+  });
   it('emits toolCall together with delta and usage in the same frame', () => {
     const evt: SessionEvent = {
       event: 'session.message',

@@ -155,7 +155,9 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
           output_tokens?: number;
         }
       | null;
+        messageId?: unknown;
   };
+  const messageId = typeof payload.messageId === 'string' && payload.messageId ? payload.messageId : null;
   if (payload.role && payload.role !== 'assistant') return [];
   const tc = payload.toolCall;
   const events: ChatEvent[] = [];
@@ -170,11 +172,23 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
       ...(typeof tc.id === 'string' && tc.id ? { id: tc.id } : {}),
     });
   }
-  if (typeof payload.delta === 'string' && payload.delta.length > 0) {
-    events.push({ type: 'text', text: payload.delta });
-  }
-  if (typeof payload.text === 'string' && payload.text.length > 0) {
-    events.push({ type: 'text', text: payload.text });
+  const deltaText = typeof payload.delta === 'string' && payload.delta.length > 0 ? payload.delta : null;
+  const fullText = typeof payload.text === 'string' && payload.text.length > 0 ? payload.text : null;
+  // Mixed frames carry both the incremental delta and the full text of the
+  // same content. With a messageId the per-message dedupe in
+  // adjustCompleteFrameEvents keeps both events consistent; without one the
+  // provider would append both strings verbatim ({delta:"hello", text:"hello"}
+  // renders "hellohello"), so the full text is canonical: a snapshot cannot
+  // lose content, while a delta-only frame is preserved below.
+  if (!messageId && fullText !== null) {
+    events.push({ type: 'text', text: fullText });
+  } else {
+    if (deltaText !== null) {
+      events.push({ type: 'text', text: deltaText });
+    }
+    if (fullText !== null) {
+      events.push({ type: 'text', text: fullText });
+    }
   }
   const u = payload.usage;
   const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);

@@ -1990,8 +1990,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // appended to the newly opened transcript. The old transcript
         // sink is dropped too, so events for the previous key cannot
         // reach the rebound thread.
+        // Hoisted so the abandoned-rebind restore closure below can reach the
+        // previous binding even though the teardown block declares them inside
+        // its own scope.
+        let abandonedPreviousKey: string | null = null;
+        let abandonedSuspendedSink: { gateway: GatewayChatService; sessionKey: string } | null = null;
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
             const previousKey = thread.sessionKey;
+            abandonedPreviousKey = previousKey;
             // Same shared-session guard as handleSelectAgent: only tear down
             // the previous session when no other thread still *runs* on it;
             // an idle resumed subscriber must not keep this thread's run
@@ -2000,6 +2006,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // a later restore would otherwise rebind the old session's
             // callback to this thread and deliver cross-session events.
             const suspendedSink = this.suspendedTranscriptSinks.get(thread.id);
+            abandonedSuspendedSink = suspendedSink ?? null;
             if (suspendedSink && suspendedSink.sessionKey === previousKey) {
                 this.suspendedTranscriptSinks.delete(thread.id);
             }
@@ -2035,9 +2042,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.pendingAssistantText = '';
             thread.status = 'idle';
         }
+        // Restores the previous binding when this rebind is abandoned after
+        // the teardown above but before the commit: switching panes or a
+        // superseding open must not leave the thread bound to previousKey
+        // with its transcript sink cleared and its callback epoch stale.
+        const restoreAbandonedRebind = (): void => {
+            if (!abandonedPreviousKey) {
+                return;
+            }
+            if (abandonedSuspendedSink) {
+                this.suspendedTranscriptSinks.set(thread.id, abandonedSuspendedSink);
+                this.restoreSuspendedTranscriptSink(thread);
+                return;
+            }
+            const persistent = this.transcriptCallbacks.get(thread.id);
+            const gatewayBackend = this.backendFor(thread);
+            if (!persistent || persistent.sessionKey !== abandonedPreviousKey ||
+                !(gatewayBackend instanceof GatewayChatService)) {
+                return;
+            }
+            this.transcriptCallbacks.delete(thread.id);
+            gatewayBackend.removeTranscriptSink(persistent.sessionKey, persistent.cb);
+            const rebindEpoch = thread.bindingEpoch;
+            const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, rebindEpoch, 'binding'); };
+            this.transcriptCallbacks.set(thread.id, { sessionKey: persistent.sessionKey, cb });
+            gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
+        };
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
         if (this.getActiveThread()?.id !== thread.id) {
+            restoreAbandonedRebind();
             return;
         }
         if (thread.openGeneration !== openGen) {
@@ -2048,6 +2082,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // only after its own generation check), so persisting it would
             // overwrite the newer request's resume key. The current-generation
             // request owns persistence.
+            restoreAbandonedRebind();
             return;
         }
         thread.sessionKey = sessionKey;

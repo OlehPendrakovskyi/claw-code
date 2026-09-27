@@ -284,6 +284,13 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
             try {
                 const opened = await handle.stat();
                 const current = await fsp.lstat(real);
+                // A FIFO or other special file passes the O_NOFOLLOW open:
+                // without the regular-file check readFile() on a FIFO blocks
+                // indefinitely and hangs the send, the same gate as image
+                // verification above.
+                if (!opened.isFile() || !current.isFile()) {
+                    throw new Error('attachment path is not a regular file');
+                }
                 if (opened.dev !== current.dev || opened.ino !== current.ino) {
                     throw new Error('attachment path changed during read');
                 }
