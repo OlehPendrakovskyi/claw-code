@@ -1363,7 +1363,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 pendingOpenThread.openInFlightGen = null;
             }
         }
-        const activeThread = this.getActiveThread();
+        // Same thread-identity guard as openSessionRebinding: a pane switch
+        // during the persist await must not apply this rebind (retire/abort
+        // and sessionKey assignment) to whichever thread is active then —
+        // verify the captured target thread is still the active one first.
+        const activeThread = pendingOpenThread;
+        if (!activeThread || this.getActiveThread()?.id !== activeThread.id) {
+            return;
+        }
         if (activeThread) {
             // An acpx run has no session key (and a gateway-fallback run can
             // still use an acpx backend): selecting another agent while such
