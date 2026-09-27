@@ -66,6 +66,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  newest request before touching workspace state. */
     private persistGeneration = 0;
     private persistLastSessionKeyWrite: Promise<void> = Promise.resolve();
+    /** Main-agent session keys reported by the most recent sessions.list:
+     *  webview-supplied keys are only shape-checked at the message boundary,
+     *  so selectAgent/openSession verify against this allowlist before
+     *  rebinding or loading history (a crafted key for an unlisted agent
+     *  must not activate that session or pull its transcript). */
+    private knownMainSessionKeys = new Set<string>();
     /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
     private threadCounter = 0;
@@ -1584,6 +1590,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         try {
             const payload = await gateway.listSessions({});
+            this.knownMainSessionKeys = new Set(
+                buildAgentSessionItems(payload).map(item => item.sessionKey)
+            );
             postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
                 type: forPicker ? 'agentsList' : 'sessionsList',
                 sessions: buildAgentSessionItems(payload),
@@ -1591,6 +1600,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
             log.warn('sessions.list failed', err);
         }
+    }
+
+    /** Whether the webview-supplied main-session key is in the last
+     *  sessions.list allowlist. A stale/empty allowlist refreshes once from
+     *  the gateway first: the restart-resume path binds a key the webview
+     *  has not listed yet, and a failed initial list must not permanently
+     *  reject every later legitimate selection. Fail-closed on refresh
+     *  errors: an unverifiable key is treated as unknown. */
+    private async isKnownMainSessionKey(gateway: GatewayChatService, sessionKey: string): Promise<boolean> {
+        if (this.knownMainSessionKeys.has(sessionKey)) {
+            return true;
+        }
+        if (this.knownMainSessionKeys.size === 0) {
+            try {
+                const payload = await gateway.listSessions({});
+                this.knownMainSessionKeys = new Set(
+                    buildAgentSessionItems(payload).map(item => item.sessionKey)
+                );
+            } catch (err) {
+                log.warn('session allowlist refresh failed', err);
+            }
+        }
+        return this.knownMainSessionKeys.has(sessionKey);
     }
 
     /** Bind the chosen agent session key to the active chat and persist it. */
@@ -1634,6 +1666,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         if (!gateway) {
+            if (pendingOpenThread &&
+                pendingOpenThread.openInFlightGen === selectionGen) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+            return;
+        }
+        // Same webview-origin validation as the message boundary: the shape
+        // check alone still accepts a guessed key for an agent the picker
+        // never listed, so unknown keys are dropped against the last
+        // sessions.list allowlist (refreshed first when the webview has not
+        // listed sessions yet).
+        if (!this.isKnownMainSessionKey(gateway, sessionKey)) {
+            log.warn('selectAgent: rejected unknown session key', sessionKey);
             if (pendingOpenThread &&
                 pendingOpenThread.openInFlightGen === selectionGen) {
                 pendingOpenThread.openInFlightGen = null;
@@ -1871,6 +1916,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         if (!gateway) {
+            if (thread.openInFlightGen === openGen) {
+                thread.openInFlightGen = null;
+            }
+            return;
+        }
+        // Same webview-origin allowlist as handleSelectAgent: a crafted key
+        // for an unlisted agent must not reach history loading or the rebind.
+        if (!this.isKnownMainSessionKey(gateway, sessionKey)) {
+            log.warn('openSession: rejected unknown session key', sessionKey);
             if (thread.openInFlightGen === openGen) {
                 thread.openInFlightGen = null;
             }

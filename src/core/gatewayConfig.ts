@@ -148,7 +148,10 @@ type LanguageOverride = {
  *  so migration covers every override. */
 /** User-level settings.json locations across VS Code distributions: a
  *  plaintext token hidden under a `[language]` override in the global
- *  settings file must be discovered too, not only workspace-level ones. */
+ *  settings file must be discovered too, not only workspace-level ones.
+ *  Insiders and VSCodium ship separate `User` directories from stable, so
+ *  each distribution is probed independently — a token stored only in one
+ *  product's settings file would otherwise stay plaintext forever. */
 function userSettingsUris(): vscode.Uri[] {
   const roots: string[] = [];
   if (process.platform === 'win32') {
@@ -159,7 +162,7 @@ function userSettingsUris(): vscode.Uri[] {
     roots.push(path.join(os.homedir(), '.config'));
     roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
   }
-  const distros = ['Code', 'Code - OSS', 'VSCodium'];
+  const distros = ['Code', 'Code - Insiders', 'Code - OSS', 'VSCodium'];
   return roots.flatMap((root) =>
     distros.map((d) => vscode.Uri.file(path.join(root, d, 'User', 'settings.json')))
   );
