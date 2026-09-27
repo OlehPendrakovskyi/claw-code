@@ -722,4 +722,44 @@ describe('GatewayChatService sendMessage/abort', () => {
     expect(texts).toEqual([{ type: 'text', text: 'fresh' }]);
     svc.dispose();
   });
+
+  it('seeds the fingerprint boundary even when the seen-set is skipped (rememberSeen: false)', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    // Post-ack seeding skips the seen-set, but the cursor-less catch-up
+    // boundary must still be seeded: otherwise the next reconnect replays
+    // the whole snapshot (or, mid-run, skips catch-up and loses events).
+    svc.seedHistory(
+      'main',
+      {
+        messages: [
+          { role: 'user', text: 'hi' },
+          { role: 'assistant', text: 'done' },
+        ],
+      },
+      { rememberSeen: false }
+    );
+    svc.resumeSession('main', (e) => events.push(e), { historyRendered: true });
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const history = sentRequests(ws).find((r) => r.method === 'chat.history');
+    ws.emit('message', JSON.stringify({
+      type: 'res',
+      id: history!.id,
+      ok: true,
+      payload: {
+        messages: [
+          { role: 'user', text: 'hi' },
+          { role: 'assistant', text: 'done' },
+          { messageId: 'm9', role: 'assistant', text: 'fresh' },
+        ],
+      },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e): e is { type: string; text: string } =>
+      (e as { type?: string }).type === 'text');
+    expect(texts).toEqual([{ type: 'text', text: 'fresh' }]);
+    svc.dispose();
+  });
 });

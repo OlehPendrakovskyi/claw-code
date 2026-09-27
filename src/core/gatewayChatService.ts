@@ -768,20 +768,10 @@ export class GatewayChatService {
     // Cursor-less replay dedupe is covered by the seeded fingerprint
     // boundary, and cursor-bearing catch-up never replays pre-cursor rows,
     // so the seen-set is not needed for these rows.
-    if (opts?.rememberSeen === false) {
-      return;
-    }
-    for (const rowRaw of data.messages) {
-      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
-      const messageId = asNonEmptyString(row.messageId);
-      if (this.isCompleteAssistantFrame({
-        messageId: row.messageId,
-        text: row.text,
-        delta: row.delta,
-      })) {
-        this.rememberSeen(sessionKey, messageId as string);
-      }
-    }
+    // The fingerprint boundary is seeded regardless of `rememberSeen`:
+    // without it, a cursor-less reconnect after a post-ack seed has no
+    // boundary at all and replays the entire history (or, mid-run, skips
+    // catch-up and can lose events).
     this.seededCatchUpFingerprints.set(
       sessionKey,
       (data.messages as unknown[]).map((rowRaw) =>
@@ -790,6 +780,23 @@ export class GatewayChatService {
         )
       )
     );
+    if (opts?.rememberSeen === false) {
+      return;
+    }
+    for (const rowRaw of data.messages) {
+      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
+      const messageId = asNonEmptyString(row.messageId);
+      if (
+        messageId &&
+        this.isCompleteAssistantFrame({
+          messageId: row.messageId,
+          text: row.text,
+          delta: row.delta,
+        })
+      ) {
+        this.rememberSeen(sessionKey, messageId);
+      }
+    }
   }
 
   /**
