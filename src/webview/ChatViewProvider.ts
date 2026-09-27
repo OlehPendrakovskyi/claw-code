@@ -1701,7 +1701,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }, 100);
         if (!this.resumeStarted) {
             this.resumeStarted = true;
-            void this.resumeLastSession();
+            void this.resumeLastSession().catch(err => {
+                log.warn('resumeLastSession: failed to resume last session', err);
+            });
         }
     }
 
@@ -1841,6 +1843,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             await this.persistLastSessionKey(sessionKey, () =>
                 this.selectGeneration === selectGen &&
                 (selectionGen === null || pendingOpenThread?.openGeneration === selectionGen));
+        } catch (err) {
+            log.warn('selectAgent: failed to persist last session key', err);
+            if (pendingOpenThread && pendingOpenThread.openInFlightGen === selectionGen) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+            if (this.getActiveThread()?.id === pendingOpenThread?.id) {
+                const activeThread = this.getActiveThread();
+                if (activeThread) {
+                    activeThread.messages.push({
+                        role: 'error',
+                        content: 'Failed to persist the last session. Reopen the session to retry.'
+                    });
+                    this.emitState();
+                }
+            }
+            return;
+        }
+        try {
         if (this.selectGeneration !== selectGen) {
             return;
         }
