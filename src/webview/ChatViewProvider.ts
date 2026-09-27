@@ -578,6 +578,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!thread) {
             return;
         }
+        // Invalidate pending send/attach continuations before teardown: unlike
+        // resetThread, this path had no epoch bump, so a pending continuation
+        // could pass its captured-epoch guard and mutate (or emit state for)
+        // a thread that is about to be deleted.
+        thread.eventEpoch += 1;
+        thread.bindingEpoch += 1;
 
         const backend = this.backendFor(thread);
         // Retire this thread's persistent transcript callback before closing:
@@ -1600,13 +1606,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         gateway.setActiveSession(sessionKey);
+        // The send-rejection marker stays owned for the ENTIRE rebind, not
+        // just the persist await: between the persist and the sessionKey
+        // assignment/history, the gateway already points at the new key
+        // while thread.sessionKey still holds the old one, and a send
+        // accepted in that window would race this continuation and mix
+        // transcripts. Release the marker in the finally after the rebind
+        // and history/resume settle.
         try {
             await this.persistLastSessionKey(sessionKey);
-        } finally {
-            if (pendingOpenThread && pendingOpenThread.openInFlightGen === selectionGen) {
-                pendingOpenThread.openInFlightGen = null;
-            }
-        }
         // Same thread-identity guard as openSessionRebinding: a pane switch
         // during the persist await must not apply this rebind (retire/abort
         // and sessionKey assignment) to whichever thread is active then —
@@ -1754,6 +1762,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
         this.emitState();
+        } finally {
+            // Release the send-rejection marker only now that the full rebind
+            // (persist, retire/abort, key assignment, history, resume) has
+            // settled; any early return above leaves it owned, blocking sends
+            // that would otherwise race the rebind window.
+            if (pendingOpenThread && pendingOpenThread.openInFlightGen === selectionGen) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+        }
     }
 
     /** Whether any other thread (or its suspended sink) is still bound to

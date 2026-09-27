@@ -1401,17 +1401,28 @@ export class GatewayChatService {
         this.deltaCursorBySession.set(sessionKey, cursor);
       }
       let lastRowFinalized = false;
-      // The pre-ack registration of an in-flight send is protected: the
-      // replay may not finalize/retire that sink, or the send ack's ownership
-      // check would treat the run as retired and drop its actual response.
-      const protectedRunSink = this.preAckSendKeys.has(sessionKey)
-        ? this.runSinksBySession.get(sessionKey)
-        : undefined;
-      // The protected sink is excluded from ALL catch-up delivery below, not
-      // just the final `done`: replayed historical text/tool/usage events
-      // would otherwise flow into the new send's run callback, so the next
-      // response starts with the prior transcript appended to its
-      // pendingAssistantText.
+      // Run sinks must never receive catch-up replay: a send that registers
+      // its run sink while this catch-up is still in flight (its ack may
+      // already have cleared the pre-ack marker) would otherwise receive the
+      // historical tail — duplicating the transcript or having a replayed
+      // `done` prematurely finalize the new response. Exclusion is checked
+      // per delivery against the CURRENT run sink, so a sink registered
+      // mid-replay is excluded too. The snapshot below only decides whether
+      // a settled catch-up may retire the run sink: only the sink that
+      // already existed when the catch-up started, and is not still pre-ack,
+      // may be retired by the replay tail.
+      const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
+      // A send that registered its run sink while `chat.send` is still
+      // pre-ack must not receive replay rows (the ack's ownership check
+      // would treat the run as retired and drop the actual response).
+      const isPreAckRunSink = (sink: (event: ChatEvent) => void): boolean =>
+        this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
+      // A send that raced this catch-up (registered its run sink after the
+      // replay started) must not receive a replayed `done`, or the ack's
+      // ownership check plus the finalization would prematurely complete the
+      // new response before its own first frame arrives.
+      const isRacedRunSink = (sink: (event: ChatEvent) => void): boolean =>
+        this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
       for (const row of payload.messages) {
         const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
         const isFinalAssistantRow =
@@ -1430,7 +1441,7 @@ export class GatewayChatService {
           // idempotent for consumers) unless a later row re-opens the tail.
           const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
           for (const sink of sinks) {
-            if (sink === protectedRunSink) {
+            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
               continue;
             }
             sink({ type: 'done' });
@@ -1460,7 +1471,7 @@ export class GatewayChatService {
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of adjusted) {
           for (const sink of sinks) {
-            if (sink === protectedRunSink) {
+            if (isPreAckRunSink(sink)) {
               continue;
             }
             sink(chatEvent);
@@ -1468,7 +1479,7 @@ export class GatewayChatService {
         }
         if (isFinalAssistantRow) {
           for (const sink of sinks) {
-            if (sink === protectedRunSink) {
+            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
               continue;
             }
             sink({ type: 'done' });
@@ -1486,11 +1497,13 @@ export class GatewayChatService {
       // over, and leaving it in runSinksBySession would make the next send
       // select queueMode 'steer' against a finished run and keep routing
       // future deltas into the old callback. A final row followed by further
-      // deltas means the stream continued, so the run sink must stay. The
-      // protected pre-ack sink of an in-flight send stays registered.
-      if (lastRowFinalized) {
+      // deltas means the stream continued, so the run sink must stay. A run
+      // sink registered by a send that raced this catch-up stays registered:
+      // its response is still in flight and a replayed finalization must not
+      // retire it.
+      if (lastRowFinalized && !this.preAckSendKeys.has(sessionKey)) {
         const runSink = this.runSinksBySession.get(sessionKey);
-        if (runSink && runSink !== protectedRunSink) {
+        if (runSink && runSink === catchUpStartRunSink) {
           this.runSinksBySession.delete(sessionKey);
           this.removeTranscriptSink(sessionKey, runSink);
         }
