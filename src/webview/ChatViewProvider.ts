@@ -303,9 +303,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (thread) {
                         const backend = this.backendFor(thread);
                         if (backend instanceof GatewayChatService) {
-                            const shared = [...this.threads.values()].some(
-                                t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
-                            );
+                            const shared = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
                             thread.eventEpoch += 1;
                             if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                                 backend.abort(thread.sessionKey);
@@ -556,9 +554,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.openGeneration += 1;
             thread.openInFlightGen = null;
             if (thread.sessionKey) {
-                const shared = [...this.threads.values()].some(
-                    t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
-                );
+                const shared = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
                 if (!shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                     backend.abort(thread.sessionKey);
                 }
@@ -655,14 +651,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.suspendedTranscriptSinks.delete(threadId);
         this.deferredResumes.delete(threadId);
         if (backend instanceof GatewayChatService) {
-            const shared = [...this.threads.values()].some(
-                t => t.id !== threadId && t.sessionKey === thread.sessionKey && t.status === 'running'
-            );
+            const shared = this.otherRunningGatewayThread(threadId, thread.sessionKey);
             if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                 backend.abort(thread.sessionKey);
             }
             if (thread.sessionKey &&
-                ![...this.threads.values()].some(t => t.id !== threadId && t.sessionKey === thread.sessionKey)) {
+                ![...this.threads.values()].some(t => t.id !== threadId &&
+                    t.sessionKey === thread.sessionKey && this.backendFor(t) instanceof GatewayChatService)) {
                 backend.clearSessionSink(thread.sessionKey);
             }
         } else {
@@ -1284,9 +1279,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (thread.sessionKey) {
                     thread.eventEpoch += 1;
                     thread.bindingEpoch += 1;
-                    const sharedRun = [...this.threads.values()].some(
-                        t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
-                    );
+                    const sharedRun = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
                     if (!sharedRun && previousBackend.hasOwnedRun(thread.sessionKey)) {
                         previousBackend.abort(thread.sessionKey);
                     }
@@ -1386,7 +1379,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         const resolvedLiveOther =
                             [...this.threads.values()].some(
                                 t => t.id !== thread.id && t.sessionKey === resolvedKey &&
-                                    (t.isStreaming || t.status === 'running')
+                                    (t.isStreaming || t.status === 'running') &&
+                                    this.backendFor(t) instanceof GatewayChatService
                             ) ||
                             [...this.suspendedTranscriptSinks].some(
                                 ([threadId, suspended]) => threadId !== thread.id &&
@@ -1395,7 +1389,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         if (choice.service.hasOwnedRun(resolvedKey) && !resolvedLiveOther) {
                             choice.service.abort(resolvedKey);
                         }
-                        if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === resolvedKey)) {
+                        if (![...this.threads.values()].some(t => t.id !== thread.id &&
+                            t.sessionKey === resolvedKey && this.backendFor(t) instanceof GatewayChatService)) {
                             choice.service.clearSessionSink(resolvedKey);
                         }
                     }
@@ -2010,9 +2005,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (suspendedSink && suspendedSink.sessionKey === previousKey) {
                     this.suspendedTranscriptSinks.delete(activeThread.id);
                 }
-                const sharesLiveRun = [...this.threads.values()].some(
-                    t => t.id !== activeThread.id && t.sessionKey === previousKey && t.status === 'running'
-                );
+                const sharesLiveRun = this.otherRunningGatewayThread(activeThread.id, previousKey);
                 activeThread.eventEpoch += 1;
                 activeThread.bindingEpoch += 1;
                 if (!sharesLiveRun && previousBackend instanceof GatewayChatService) {
@@ -2091,9 +2084,26 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Whether any other thread (or its suspended sink) is still bound to
      *  the given session key: such threads keep valid transcript sinks that
      *  a clearSessionSink call must not wipe. */
+    /** Whether another Gateway-backed running thread holds this session key.
+     *  Only Gateway-backed threads own a Gateway run, so acpx threads on the
+     *  same key must not block aborting or cleaning up that run. */
+    private otherRunningGatewayThread(excludeThreadId: string, sessionKey: string | undefined): boolean {
+        if (!sessionKey) {
+            return false;
+        }
+        for (const t of this.threads.values()) {
+            if (t.id !== excludeThreadId && t.sessionKey === sessionKey &&
+                t.status === 'running' && this.backendFor(t) instanceof GatewayChatService) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private otherThreadsOnKey(excludeThreadId: string, sessionKey: string): boolean {
         for (const t of this.threads.values()) {
-            if (t.id !== excludeThreadId && t.sessionKey === sessionKey) {
+            if (t.id !== excludeThreadId && t.sessionKey === sessionKey &&
+                this.backendFor(t) instanceof GatewayChatService) {
                 return true;
             }
         }
@@ -2358,9 +2368,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (suspendedSink && suspendedSink.sessionKey === previousKey) {
                 this.suspendedTranscriptSinks.delete(thread.id);
             }
-            const sharesLiveRun = [...this.threads.values()].some(
-                t => t.id !== thread.id && t.sessionKey === previousKey && t.status === 'running'
-            );
+            const sharesLiveRun = this.otherRunningGatewayThread(thread.id, previousKey);
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
             if (previousBackend instanceof GatewayChatService) {

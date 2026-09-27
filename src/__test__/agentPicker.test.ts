@@ -362,7 +362,9 @@ describe('GatewayChatService session selection and resume', () => {
     // awaits this snapshot before issuing chat.send.
     req = lastRequest(ws);
     expect(req.method).toBe('chat.history');
-    rpcPayload(ws, req.id, {});
+    // The snapshot must carry a recovery boundary (cursor + messages),
+    // otherwise the pre-ack send aborts and chat.send is never issued.
+    rpcPayload(ws, req.id, { deltaCursor: 'c0', messages: [] });
     await new Promise((r) => setTimeout(r, 0));
     req = lastRequest(ws);
     expect(req.method).toBe('chat.send');
