@@ -1,6 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
+
+/** O_NONBLOCK on POSIX, absent on Windows: a blocking O_RDONLY open on a
+ *  FIFO (named pipe) parks the caller until a writer appears, so every
+ *  attachment open combines it with O_NOFOLLOW and lets the regular-file
+ *  checks below reject special files after a non-blocking open. */
+const openNonBlock = process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK;
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
@@ -195,7 +201,8 @@ async function safeCanonicalPath(p: string): Promise<string | null> {
 
 /** Prove an image attachment path still refers to the validated regular file.
  *  Mirrors the text-attachment hardening: realpath must match the stored
- *  spelling, the leaf must open with O_NOFOLLOW, and the opened identity
+ *  spelling, the leaf must open with O_NOFOLLOW|O_NONBLOCK, and the opened
+ *  identity
  *  (dev/ino) must equal a fresh lstat of the path. Returns the verified
  *  canonical spelling, or null when any check fails. */
 async function verifyStableImagePath(p: string): Promise<string | null> {
@@ -205,7 +212,7 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
     const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
     let handle: fsp.FileHandle;
     try {
-        handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow);
+        handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow | openNonBlock);
     } catch {
         return null;
     }
@@ -233,7 +240,10 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
  *  1. Re-verify realpath up front — a changed path means a symlink was
  *     swapped in since validation (reject).
  *  2. Open the final component with O_NOFOLLOW (POSIX) so a last-instant
- *     leaf swap cannot redirect the read outside the workspace.
+ *     leaf swap cannot redirect the read outside the workspace. The open
+ *     also carries O_NONBLOCK: a FIFO's blocking O_RDONLY open would park
+ *     the send until a writer attaches, before the regular-file check can
+ *     reject it.
  *  3. Compare the opened handle's identity (dev/ino) against a fresh lstat
  *     of the path. This covers Windows too, where O_NOFOLLOW is unavailable:
  *     a symlink/junction swapped in at the final component yields a mismatch
@@ -280,14 +290,16 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                 continue;
             }
             const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
-            const handle = await fsp.open(real, fsConstants.O_RDONLY | noFollow);
+            const handle = await fsp.open(real, fsConstants.O_RDONLY | noFollow | openNonBlock);
             try {
                 const opened = await handle.stat();
                 const current = await fsp.lstat(real);
                 // A FIFO or other special file passes the O_NOFOLLOW open:
-                // without the regular-file check readFile() on a FIFO blocks
-                // indefinitely and hangs the send, the same gate as image
-                // verification above.
+                // O_NONBLOCK keeps the open itself from parking on a FIFO
+                // until a writer attaches, and the regular-file check below
+                // rejects the special file instead (readFile() on a FIFO
+                // would block indefinitely and hang the send — the same gate
+                // as image verification above).
                 if (!opened.isFile() || !current.isFile()) {
                     throw new Error('attachment path is not a regular file');
                 }
