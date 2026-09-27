@@ -1677,7 +1677,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // never listed, so unknown keys are dropped against the last
         // sessions.list allowlist (refreshed first when the webview has not
         // listed sessions yet).
-        if (!this.isKnownMainSessionKey(gateway, sessionKey)) {
+        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
             log.warn('selectAgent: rejected unknown session key', sessionKey);
             if (pendingOpenThread &&
                 pendingOpenThread.openInFlightGen === selectionGen) {
@@ -1923,7 +1923,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         // Same webview-origin allowlist as handleSelectAgent: a crafted key
         // for an unlisted agent must not reach history loading or the rebind.
-        if (!this.isKnownMainSessionKey(gateway, sessionKey)) {
+        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
             log.warn('openSession: rejected unknown session key', sessionKey);
             if (thread.openInFlightGen === openGen) {
                 thread.openInFlightGen = null;
