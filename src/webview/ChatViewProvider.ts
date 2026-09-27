@@ -486,6 +486,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // epochs must already be stale when the `done` fires.
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
+            // An openSession rebinding already in flight passes its
+            // unchanged openGeneration after reset unless the counter is
+            // bumped here: the continuation would then assign the session
+            // and history, undoing this clear (and holding the thread
+            // hostage via openInFlightGen until then).
+            thread.openGeneration += 1;
+            thread.openInFlightGen = null;
             if (thread.sessionKey) {
                 const shared = [...this.threads.values()].some(
                     t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
@@ -697,7 +704,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // silently omits the requested file attachment.
         const mentions = await this.resolveMentions(userText);
         if (mentions.length > 0) {
-            await this.addAttachments(thread, mentions);
+            await this.addAttachments(thread, mentions, { guard: () => thread.eventEpoch === sendEpoch });
         }
         // /compact summarizes prior turns: include the thread transcript so the
         // fresh per-send exec (both transports) has the conversation to compress.
@@ -1641,6 +1648,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
             previousBackend.abort();
+            // Aborting an acpx-backed run leaves no `done` completion that
+            // clears streaming state, and the later history restore only
+            // sets `status` to idle: without clearing here, `isStreaming`
+            // stays true and every subsequent send is rejected at the busy
+            // check, permanently bricking the thread.
+            thread.isStreaming = false;
+            thread.pendingAssistantText = '';
         }
         // Retire any run still active on the previous session before
         // rebinding: late events from the old run would otherwise be
