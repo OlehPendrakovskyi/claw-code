@@ -67,12 +67,17 @@ export class ChatServiceFactory {
    * Resolve the backend for the current settings. In `auto` mode a failed
    * or missing-token gateway connect falls back to acpx transparently.
    *
-   * Switching away from the gateway transport (explicit `acpx` setting or
-   * a tokenless acpx fallback) suspends the shared gateway client: an
-   * authenticated socket must not linger receiving transcript events after
-   * the transport changed. The instance stays cached and valid, so a later
-   * gateway resolution resumes it in place without severing threads that
-   * hold lifecycle references.
+   * Switching away from the gateway transport (explicit `acpx` setting)
+   * suspends the shared gateway client: an authenticated socket must not
+   * linger receiving transcript events after the transport changed. The
+   * instance stays cached and valid, so a later gateway resolution resumes
+   * it in place without severing threads that hold lifecycle references.
+   *
+   * A per-send `auto` fallback (missing token) does NOT suspend the shared
+   * client: resolve() runs per send and the fallback is scoped to the
+   * affected thread's send, while other threads' in-flight gateway runs
+   * must keep streaming on the still-live socket. The client keeps its run
+   * sinks; a later explicit transport switch still suspends it.
    */
   async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
     await this.ensureMigrated();
@@ -91,7 +96,10 @@ export class ChatServiceFactory {
         // getOrCreateGateway), so no per-call instances leak.
         return { service: this.getOrCreateGateway(settings.url, ''), transport: 'gateway' };
       }
-      this.suspendGateway();
+      // Missing token in `auto` mode is a per-send fallback: do not suspend
+      // the shared client here — unrelated threads' in-flight gateway runs
+      // would be retired with `done` and their remote runs dropped. Only an
+      // explicit transport switch to acpx suspends the gateway client.
       this.onStatus?.('acpx', true);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }

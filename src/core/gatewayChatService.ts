@@ -1686,7 +1686,10 @@ export class GatewayChatService {
    *  Unlike dispose() the instance stays valid — threads keep lifecycle
    *  references (abort/hasOwnedRun) — but an authenticated socket no longer
    *  lingers receiving transcript events after a transport switch to acpx.
-   *  Sinks are retired with `done` so streaming threads finalize instead of
+   *  Each active remote run is explicitly aborted (best-effort
+   *  `chat.abort` fired while the socket is still writable) so the gateway
+   *  stops generating for a transport it will no longer serve; locally the
+   *  sinks are retired with `done` so streaming threads finalize instead of
    *  waiting on events that can no longer arrive. Only run sinks are
    *  retired: persistent resume-only sinks stay registered so a later
    *  resubscribeActiveSession() restores their subscriptions and resumed
@@ -1704,6 +1707,13 @@ export class GatewayChatService {
       this.reconnectTimer = null;
     }
     for (const [sessionKey, sink] of this.runSinksBySession) {
+      if (this.connected) {
+        this.abortingSessions.delete(sessionKey);
+        void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
+          .catch((err: Error) => {
+            this.logger.warn(`chat.abort failed during suspend ${err.message}`);
+          });
+      }
       sink({ type: 'done' });
       this.removeTranscriptSink(sessionKey, sink);
     }
