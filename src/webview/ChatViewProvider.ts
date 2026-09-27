@@ -1837,7 +1837,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        gateway.setActiveSession(sessionKey);
         try {
             await this.persistLastSessionKey(sessionKey);
         if (this.selectGeneration !== selectGen) {
@@ -1850,6 +1849,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (selectionGen !== null && activeThread.openGeneration !== selectionGen) {
             return;
         }
+        // Switch the shared gateway session only after the ownership/generation
+        // checks above: mutating `activeSessionKey` before them lets a stale
+        // continuation overwrite the key a newer selection already installed
+        // while this request was awaiting gateway resolution, so fallback
+        // sends in that window would target a stale session. The in-flight
+        // marker blocks sends during the rebind window, so this late switch
+        // cannot strand a send on the previous key; the finally block below
+        // releases the marker when this request still owns it.
+        gateway.setActiveSession(sessionKey);
         const reboundFrom = activeThread.sessionKey && activeThread.sessionKey !== sessionKey
             ? activeThread.sessionKey
             : null;
@@ -2236,7 +2244,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.transcriptCallbacks.set(thread.id, { sessionKey: persistent.sessionKey, cb });
             gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
         };
-        gateway.setActiveSession(sessionKey);
         try {
             await this.persistLastSessionKey(sessionKey);
         } catch (err) {
@@ -2259,6 +2266,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             restoreAbandonedRebind();
             return;
         }
+        // Switch the shared gateway session only after the active-thread and
+        // open-generation checks above: mutating `activeSessionKey` before
+        // them lets a stale rebinding overwrite the key a newer open already
+        // installed while this request was awaiting persistence, so fallback
+        // sends between bindings would target the wrong conversation. The
+        // in-flight marker blocks sends during the rebind window, so this
+        // late switch cannot strand a send on the previous key; the stale
+        // paths above never touched the shared key, so no restore is needed.
+        gateway.setActiveSession(sessionKey);
         thread.sessionKey = sessionKey;
 
         if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {

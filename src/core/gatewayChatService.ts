@@ -20,6 +20,7 @@ import type {
 } from './contract';
 import { GatewayEvents, GatewayRpcMethods } from './contract';
 import { asNonEmptyString, asStringOr } from './typeGuards';
+import { randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
 import {
   DEFAULT_SESSION_KEY,
@@ -244,6 +245,13 @@ export class GatewayChatService {
    *  resume catch-up replaying a missed completed row must not finalize that
    *  sink, or the ack's ownership check would drop the actual response. */
   private preAckSendKeys = new Set<string>();
+  /** Current send ownership id per pre-ack session key. The key alone cannot
+   *  distinguish overlapping sends on the same session: after `abort()`
+   *  removes the key, a late acknowledgement from the abandoned send must not
+   *  delete a newer send's registration, settle its own attribution, or
+   *  mutate the shared active key — so the ack path correlates by this id and
+   *  is a no-op when it no longer owns the key. */
+  private preAckSendOwners = new Map<string, string>();
   /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect.
    *  Multiple threads may bind the same session, so sinks fan out per key —
    *  a later subscriber must not overwrite an earlier thread's callback. */
@@ -1168,7 +1176,9 @@ export class GatewayChatService {
       return;
     }
     this.runSinksBySession.set(sessionKey, _onEvent);
+    const sendId = randomUUID();
     this.preAckSendKeys.add(sessionKey);
+    this.preAckSendOwners.set(sessionKey, sendId);
     if (existingSink && existingSink !== _onEvent) {
       this.removeTranscriptSink(sessionKey, existingSink);
       existingSink({ type: 'done' });
@@ -1194,13 +1204,24 @@ export class GatewayChatService {
             return;
           }
           this.failPreAckSend(sessionKey, _onEvent,
-            'Pre-send history snapshot for this session failed; the send was aborted to avoid an unrecoverable response. Retry once the gateway accepts chat.history.');
+            'Pre-send history snapshot for this session failed; the send was aborted to avoid an unrecoverable response. Retry once the gateway accepts chat.history.',
+            sendId);
           return;
         }
       }
       void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
+        // Ownership gate: only the send that currently owns this pre-ack key
+        // may settle it. After an abort removed the key and a newer send took
+        // it over, a late acknowledgement from the abandoned send must not
+        // delete the newer send's registration, add its own attribution, or
+        // touch the shared active key — the abort flow already retired this
+        // send's sinks and delivered its terminal events.
+        if (this.preAckSendOwners.get(sessionKey) !== sendId) {
+          return;
+        }
         this.preAckSendKeys.delete(sessionKey);
+        this.preAckSendOwners.delete(sessionKey);
         const key = extractSessionKey(payload) ?? sessionKey;
         this.preAckSettledSends.push({ requested: sessionKey, resolved: key });
         this.activeSessionKey = key;
@@ -1265,7 +1286,7 @@ export class GatewayChatService {
         }
       })
       .catch((err: Error) => {
-        this.failPreAckSend(sessionKey, _onEvent, err.message);
+        this.failPreAckSend(sessionKey, _onEvent, err.message, sendId);
       });
     };
     void this.subscribeSessionMessages(sessionKey).then((subscribed: boolean) => {
@@ -1297,8 +1318,16 @@ export class GatewayChatService {
    *  to the caller. Used by the chat.send failure path and by the pre-send
    *  history snapshot failure (an accepted run without a recovery boundary is
    *  unrecoverable, so continuing would lose deltas after a reconnect). */
-  private failPreAckSend(sessionKey: string, sink: (event: ChatEvent) => void, message: string): void {
+  private failPreAckSend(sessionKey: string, sink: (event: ChatEvent) => void, message: string, sendId?: string): void {
+    // Ownership gate (see the ack path): a superseded send's failure must not
+    // delete a newer send's registration or discard its buffered frames.
+    // sendId is optional so the shared failure path stays callable when no
+    // registration was made.
+    if (sendId !== undefined && this.preAckSendOwners.get(sessionKey) !== sendId) {
+      return;
+    }
     this.preAckSendKeys.delete(sessionKey);
+    this.preAckSendOwners.delete(sessionKey);
     this.preAckSettledSends = this.preAckSettledSends.filter(
       (settled) => settled.requested !== sessionKey
     );
@@ -1829,6 +1858,7 @@ export class GatewayChatService {
     const runSink = this.runSinksBySession.get(key);
     this.runSinksBySession.delete(key);
     this.preAckSendKeys.delete(key);
+    this.preAckSendOwners.delete(key);
     if (this.preAckSendKeys.size === 0) {
       this.preAckBufferedFrames = [];
       this.preAckSettledSends = [];
@@ -1895,6 +1925,7 @@ export class GatewayChatService {
     this.subscribedSessions.clear();
     this.pendingSubscribeBySession.clear();
     this.preAckSendKeys.clear();
+    this.preAckSendOwners.clear();
     this.preAckBufferedFrames = [];
     this.preAckSettledSends = [];
     this.rejectAllPending('gateway transport suspended');
