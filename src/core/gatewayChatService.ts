@@ -1977,6 +1977,30 @@ export class GatewayChatService {
             !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
           if (skippedIsFinalAssistantRow && this.runSinksBySession.has(sessionKey)) {
             const skippedSinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
+            // Deliver the row content before finalizing: the post-ack seed does
+            // not enter the seen-set, so a boundary-skipped final row may be a
+            // response whose live final frame was missed before catch-up and
+            // whose text was never rendered into the thread. Emitting only
+            // `done` would mark the run complete with the response invisible.
+            // The same prefix handling as the unseen-row replay applies: the
+            // delta bookkeeping yields only the unrendered remainder.
+            const mappedRow = mapSessionEventToChatEvent({
+              event: GatewayEvents.sessionMessage,
+              payload: row as Record<string, unknown>,
+            });
+            const adjustedRow = this.adjustCompleteFrameEvents(
+              sessionKey,
+              row as { messageId?: unknown; text?: unknown; delta?: unknown },
+              mappedRow
+            );
+            for (const chatEvent of adjustedRow) {
+              for (const skippedSink of skippedSinks) {
+                if (isPreAckRunSink(skippedSink) || isRacedRunSink(skippedSink)) {
+                  continue;
+                }
+                skippedSink(chatEvent);
+              }
+            }
             for (const skippedSink of skippedSinks) {
               if (isPreAckRunSink(skippedSink) || isRacedRunSink(skippedSink)) {
                 continue;
