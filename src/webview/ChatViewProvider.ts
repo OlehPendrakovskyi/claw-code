@@ -1576,8 +1576,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             try {
                 const history = await gateway.getHistory(sessionKey);
                 // Re-check after the await: opening another session meanwhile
-                // must not let this late resume overwrite its transcript.
-                if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey) {
+                // must not let this late resume overwrite its transcript, and
+                // a run the user started on this thread during the await (its
+                // messages live in the thread) must not be dropped either.
+                if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey ||
+                    thread.isStreaming || thread.status === 'running') {
                     return;
                 }
                 // Replace the transcript instead of appending: on a

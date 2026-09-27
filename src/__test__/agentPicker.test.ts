@@ -265,6 +265,17 @@ describe('GatewayChatService session selection and resume', () => {
     return frame as { id: string; method: string; params?: Record<string, unknown> };
   }
 
+  /** Newest request frame with the given method (frames are sent in order). */
+  function lastRequestByMethod(ws: MockSocket, method: string): { id: string; method: string } | null {
+    for (let i = ws.sent.length - 1; i >= 0; i--) {
+      const frame = JSON.parse(ws.sent[i]) as { type: string; id: string; method: string };
+      if (frame.type === 'req' && frame.method === method) {
+        return frame;
+      }
+    }
+    return null;
+  }
+
   it('setActiveSession routes the next chat.send to the chosen session', async () => {
     const log = { lines: [] as string[] };
     const { svc, ws, ready } = makeConnected(log);
@@ -281,15 +292,18 @@ describe('GatewayChatService session selection and resume', () => {
     let req = lastRequest(ws);
     expect(req.method).toBe('chat.send');
     expect(req.params?.sessionKey).toBe('agent:coder:main');
+    // Resolve the pre-send subscription before the acknowledgement: the ack
+    // path reuses the established subscription instead of issuing a
+    // duplicate `sessions.messages.subscribe` RPC whose failure handler
+    // could tear down the surviving stream.
+    const preSend = lastRequestByMethod(ws, 'sessions.messages.subscribe');
+    expect(preSend).not.toBeNull();
+    rpcPayload(ws, preSend!.id, {});
     rpcPayload(ws, req.id, { sessionKey: 'agent:coder:main' });
     await new Promise((r) => setTimeout(r, 0));
 
-    req = lastRequest(ws);
-    expect(req.method).toBe('sessions.messages.subscribe');
-    expect(req.params?.sessionKeys).toEqual(['agent:coder:main']);
-    rpcPayload(ws, req.id, {});
-    await new Promise((r) => setTimeout(r, 0));
-
+    // No duplicate subscribe after the ack; the pre-send subscription's
+    // catch-up (cursor seeded) replays the transcript.
     req = lastRequest(ws);
     expect(req.method).toBe('chat.history');
     rpcPayload(ws, req.id, { messages: [{ role: 'assistant', text: 'routed', messageId: 'm-r1' }], deltaCursor: 'c1' });
@@ -341,18 +355,18 @@ describe('GatewayChatService session selection and resume', () => {
     svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => runEvents.push(e as unknown as Record<string, unknown>));
     let req = lastRequest(ws);
     expect(req.method).toBe('chat.send');
+    // Resolve the pre-send subscription and the acknowledgement; the gateway
+    // resolves a different session, so the ack path re-subscribes the
+    // resolved key (the requested-key subscription cannot be reused).
     rpcPayload(ws, req.id, { sessionKey: 'agent:main:main' });
     await new Promise((r) => setTimeout(r, 0));
     req = lastRequest(ws);
     expect(req.method).toBe('sessions.messages.subscribe');
     rpcPayload(ws, req.id, {});
     await new Promise((r) => setTimeout(r, 0));
-    // A second, transcript-only subscriber on the same session.
+    // A second, transcript-only subscriber on the same session: the session
+    // is already subscribed, so no duplicate subscribe RPC is issued.
     svc.resumeSession('agent:main:main', (e) => transcriptEvents.push(e as unknown as Record<string, unknown>));
-    req = lastRequest(ws);
-    expect(req.method).toBe('sessions.messages.subscribe');
-    rpcPayload(ws, req.id, {});
-    await new Promise((r) => setTimeout(r, 0));
 
     svc.abort('agent:main:main');
     req = lastRequest(ws);

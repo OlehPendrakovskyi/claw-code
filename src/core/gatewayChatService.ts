@@ -227,6 +227,16 @@ export class GatewayChatService {
    *  Multiple threads may bind the same session, so sinks fan out per key —
    *  a later subscriber must not overwrite an earlier thread's callback. */
   private transcriptSinksBySession = new Map<string, Set<((event: ChatEvent) => void)>>();
+  /** In-flight `sessions.messages.subscribe` RPCs per session. Concurrent
+   *  callers (pre-send subscription and the send acknowledgement path) share
+   *  one RPC instead of issuing duplicates whose independent failure handler
+   *  could tear down the surviving stream. Resolved `true` on success,
+   *  `false` on rejection; cleared on completion. */
+  private pendingSubscribeBySession = new Map<string, Promise<boolean>>();
+  /** Sessions with a live transcript subscription on the current socket.
+   *  Cleared whenever the socket drops: every subscriber must re-subscribe
+   *  after a reconnect. */
+  private subscribedSessions = new Set<string>();
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
   private deltaCursorBySession = new Map<string, unknown>();
@@ -352,6 +362,8 @@ export class GatewayChatService {
       const oldWs = this.ws;
       this.ws = null;
       this.connected = false;
+      this.subscribedSessions.clear();
+      this.pendingSubscribeBySession.clear();
       this.rejectAllPending('gateway credentials changed');
       try { oldWs.close(); } catch { /* already closed */ }
       this.scheduleReconnect();
@@ -496,6 +508,8 @@ export class GatewayChatService {
       const onClose = () => {
         if (this.ws !== ws) return;
         this.connected = false;
+        this.subscribedSessions.clear();
+        this.pendingSubscribeBySession.clear();
         if (!settled) settleError('gateway closed before handshake completed');
         if (challengeTimer) {
           clearTimeout(challengeTimer);
@@ -925,19 +939,36 @@ export class GatewayChatService {
 
   /** Subscribe to transcript events for a session key (soft method check);
    *  subscription is per session, and delivery fans out to all sinks. */
-  private subscribeSessionMessages(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean }): void {
+  private subscribeSessionMessages(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean }): Promise<boolean> {
+    // Reuse an in-flight or already-established subscription for the same
+    // session instead of issuing a duplicate RPC: both RPCs can complete in
+    // either order, and the loser's failure handler would retire the run
+    // sink of the surviving stream.
+    const pending = this.pendingSubscribeBySession.get(sessionKey);
+    if (pending) {
+      return pending;
+    }
+    if (this.subscribedSessions.has(sessionKey)) {
+      return Promise.resolve(true);
+    }
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
       this.logger.warn(
         `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
       );
       this.retireTranscriptSinks(sessionKey);
-      return;
+      return Promise.resolve(false);
     }
-    void this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
-      .then(() => {
+    const attempt = this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
+      .then((): boolean => {
+        // eslint-disable-next-line no-console
+        console.error('DBG subscribe.then', sessionKey);
+        this.subscribedSessions.add(sessionKey);
         void this.catchUpHistory(sessionKey, opts);
+        return true;
       })
-      .catch((err: Error) => {
+      .catch((err: Error): boolean => {
+        // eslint-disable-next-line no-console
+        console.error('DBG subscribe.catch', sessionKey, err.message);
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
         // A transient subscribe rejection must not retire persistent resume
         // sinks: they would vanish from transcriptSinksBySession and
@@ -956,7 +987,15 @@ export class GatewayChatService {
           this.removeTranscriptSink(sessionKey, runSink);
           runSink({ type: 'done' });
         }
+        return false;
+      })
+      .finally(() => {
+        if (this.pendingSubscribeBySession.get(sessionKey) === attempt) {
+          this.pendingSubscribeBySession.delete(sessionKey);
+        }
       });
+    this.pendingSubscribeBySession.set(sessionKey, attempt);
+    return attempt;
   }
 
   /**

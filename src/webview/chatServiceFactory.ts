@@ -43,13 +43,21 @@ export class ChatServiceFactory {
   ) {}
 
   /** Await one-shot legacy-token migration before any token-dependent
-   *  resolution; failures are non-fatal (logged, resolution proceeds). */
+   *  resolution. A failed cleanup (plaintext token still on disk) is not
+   *  cached: the next resolve() retries it, so the SecretStorage-only
+   *  state is eventually restored without blocking the current call. */
   private ensureMigrated(): Promise<void> {
     if (!this.migrationDone) {
       this.migrationDone = migrateLegacyGatewayToken(this.context)
-        .then(() => undefined)
+        .then((completed: boolean) => {
+          if (!completed) {
+            this.migrationDone = null;
+          }
+          return undefined;
+        })
         .catch((err: Error) => {
           log.warn(`legacy gateway token migration failed ${err.message}`);
+          this.migrationDone = null;
         });
     }
     return this.migrationDone!;
