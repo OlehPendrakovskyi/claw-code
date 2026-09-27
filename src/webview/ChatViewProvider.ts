@@ -1074,6 +1074,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (!sharedRun && previousBackend.hasOwnedRun(thread.sessionKey)) {
                         previousBackend.abort(thread.sessionKey);
                     }
+                    // Gateway→acpx fallback retires this thread's own gateway
+                    // bindings: the persistent callback was captured with the
+                    // pre-bump bindingEpoch (its events are epoch-dropped
+                    // anyway) and a suspended entry would linger with no owner
+                    // to restore it, stranding the thread without a persistent
+                    // sink when it later returns to Gateway. Only this
+                    // thread's bindings are retired — other threads' sinks on
+                    // the shared key stay registered.
+                    const ownCallback = this.transcriptCallbacks.get(thread.id);
+                    if (ownCallback && ownCallback.sessionKey === thread.sessionKey) {
+                        this.transcriptCallbacks.delete(thread.id);
+                        previousBackend.removeTranscriptSink(thread.sessionKey, ownCallback.cb);
+                    }
+                    const suspendedOwn = this.suspendedTranscriptSinks.get(thread.id);
+                    if (suspendedOwn && suspendedOwn.sessionKey === thread.sessionKey) {
+                        this.suspendedTranscriptSinks.delete(thread.id);
+                    }
                 }
             } else {
                 previousBackend.dispose();
@@ -1535,10 +1552,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Bind the chosen agent session key to the active chat and persist it. */
     private async handleSelectAgent(sessionKey: string): Promise<void> {
-        const gateway = await this.resolveGateway();
-        if (!gateway) {
-            return;
-        }
+        // Capture and invalidate the selection generation BEFORE the gateway
+        // resolve await: two selections can resolve out of order, and a bump
+        // after the await lets the older selection claim the newer
+        // generation and clobber the newer binding/history.
         const selectGen = ++this.selectGeneration;
         // Selecting an agent invalidates any pending openSession on the
         // active thread: its openGeneration-guarded continuation would
@@ -1551,6 +1568,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // session is switched before the rebind and the persist await
             // opens a window where a send would target the previous key.
             pendingOpenThread.openInFlightGen = pendingOpenThread.openGeneration;
+        }
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            if (pendingOpenThread &&
+                pendingOpenThread.openInFlightGen === pendingOpenThread.openGeneration) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+            return;
         }
         gateway.setActiveSession(sessionKey);
         // The generation this selection was issued under: a handleOpenSession
@@ -1734,10 +1759,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  newer open of another session cannot be overwritten by this call's
      *  late history/resume. */
     private async handleOpenSession(sessionKey: string): Promise<void> {
-        const gateway = await this.resolveGateway();
-        if (!gateway) {
-            return;
-        }
         const thread = this.getActiveThread();
         if (!thread) {
             return;
@@ -1746,6 +1767,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // same thread bumps the counter, so this continuation can detect it
         // after every await (the session key alone cannot — it still holds
         // the previous key until this request assigns the new one).
+        // Captured BEFORE the gateway resolve await: two open requests can
+        // resolve out of order, and a bump after the await lets the older
+        // request claim the newer generation and overwrite the newer
+        // session/history.
         const openGen = ++thread.openGeneration;
         // Send-rejection marker: the shared gateway session is switched below
         // before the thread is rebound, and the rebinding awaits persistence,
@@ -1754,6 +1779,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Cleared only while this open still owns the marker (a newer open
         // supersedes it and owns the marker from then on).
         thread.openInFlightGen = openGen;
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            if (thread.openInFlightGen === openGen) {
+                thread.openInFlightGen = null;
+            }
+            return;
+        }
+        // Re-check after the resolve await: a thread switch while the gateway
+        // resolved must not apply this open to the previously active thread.
+        if (this.getActiveThread()?.id !== thread.id) {
+            if (thread.openInFlightGen === openGen) {
+                thread.openInFlightGen = null;
+            }
+            return;
+        }
         try {
             await this.openSessionRebinding(thread, sessionKey, gateway, openGen);
         } finally {

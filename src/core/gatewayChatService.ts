@@ -1384,11 +1384,22 @@ export class GatewayChatService {
       // response starts with the prior transcript appended to its
       // pendingAssistantText.
       for (const row of payload.messages) {
+        const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
+        const isFinalAssistantRow =
+          rowPayload.role === 'assistant' &&
+          typeof rowPayload.text === 'string' &&
+          rowPayload.text.length > 0 &&
+          typeof rowPayload.delta !== 'string';
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
         if (messageId && this.hasSeen(sessionKey, messageId)) {
           continue;
         }
-        if (messageId) {
+        // Only complete assistant rows may enter the seen-set: streaming
+        // delta rows share their messageId with the later completed row
+        // (same contract as seedHistory/isCompleteAssistantFrame), and
+        // remembering a delta would make the next catch-up skip the
+        // completed row, leaving the resumed thread streaming forever.
+        if (messageId && isFinalAssistantRow) {
           this.rememberSeen(sessionKey, messageId);
         }
         const mapped = mapSessionEventToChatEvent({
@@ -1399,12 +1410,6 @@ export class GatewayChatService {
         // A completed assistant history row (full text, no delta) must also
         // finalize: replaying only its text would leave subscribers streaming
         // forever, since catch-up never replays a session_end for it.
-        const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
-        const isFinalAssistantRow =
-          rowPayload.role === 'assistant' &&
-          typeof rowPayload.text === 'string' &&
-          rowPayload.text.length > 0 &&
-          typeof rowPayload.delta !== 'string';
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
         for (const chatEvent of adjusted) {
           for (const sink of sinks) {
