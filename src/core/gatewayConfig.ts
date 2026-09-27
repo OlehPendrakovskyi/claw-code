@@ -189,8 +189,9 @@ async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
   if (vscode.workspace.workspaceFile) {
     sources.push({ uri: vscode.workspace.workspaceFile, folderUri: undefined });
   }
-  // The same language may be overridden in several folders; each (language,
-  // folder) pair gets its own entry so cleanup reaches every folder.
+  // The same language may be overridden in several files and folders; each
+  // (language, source file, folder) triple gets its own entry so cleanup
+  // reaches every distribution's user settings and every folder.
   const seen = new Set<string>();
   const overrides: LanguageOverride[] = [];
   for (const source of sources) {
@@ -208,7 +209,9 @@ async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
       // Missing or unreadable settings files hold no discoverable overrides.
     }
     for (const languageId of languageIds) {
-      const key = `${languageId}|${source.folderUri ? source.folderUri.toString() : ''}`;
+      const key = `${languageId}|${source.uri.toString()}|${
+        source.folderUri ? source.folderUri.toString() : ''
+      }`;
       if (seen.has(key)) {
         continue;
       }

@@ -265,13 +265,13 @@ export class GatewayChatService {
     }
     const delta = typeof payload.delta === 'string' ? payload.delta : '';
     const fullText = typeof payload.text === 'string' ? payload.text : '';
+    const streamed = this.deltaTextByMessage.get(sessionKey + '\u0000' + messageId);
     if (delta.length > 0) {
       this.rememberDeltaText(sessionKey, messageId, delta);
     }
     if (fullText.length === 0) {
       return events;
     }
-    const streamed = this.deltaTextByMessage.get(sessionKey + '\u0000' + messageId);
     if (delta.length === 0) {
       // Complete frame: the message is finalized, drop the record.
       this.forgetDeltaText(sessionKey, messageId);
@@ -282,13 +282,25 @@ export class GatewayChatService {
       // the tail a second time.
       this.deltaTextByMessage.set(sessionKey + '\u0000' + messageId, fullText);
     }
-    if (!streamed) {
+    if (!streamed && delta.length === 0) {
       return events;
     }
+    // Dedupe only the full-text event against what the earlier deltas
+    // already streamed (plus this frame's own delta on a mixed frame);
+    // the delta event stays intact. Rewriting the delta event too would
+    // drop a frame where delta equals the full text — e.g. a first frame
+    // carrying delta "hello", text "hello" — and lose the first content.
+    const prefix = (streamed ?? '') + (delta.length > 0 ? delta : '');
     return events
       .map((e) => {
-        if (e.type === 'text' && e.text === fullText && fullText.startsWith(streamed)) {
-          return { ...e, text: fullText.slice(streamed.length) };
+        if (e.type !== 'text') {
+          return e;
+        }
+        if (delta.length > 0 && e.text === delta) {
+          return e;
+        }
+        if (e.text === fullText && fullText.startsWith(prefix)) {
+          return { ...e, text: fullText.slice(prefix.length) };
         }
         return e;
       })

@@ -1190,10 +1190,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.eventEpoch += 1;
                     if (choice.service instanceof GatewayChatService) {
                         // The resolved key may host a run owned by another
-                        // client even though this service has no local sink
-                        // for it: gate the abort on local run ownership and
-                        // keep the sink cleanup separate.
-                        if (choice.service.hasOwnedRun(resolvedKey)) {
+                        // client or another thread (its pre-ack window counts
+                        // as owned) even though this service has no local
+                        // sink for it: gate the abort on local run ownership
+                        // plus no other live thread on the key, and keep the
+                        // sink cleanup separate.
+                        const resolvedLiveOther =
+                            [...this.threads.values()].some(
+                                t => t.id !== thread.id && t.sessionKey === resolvedKey &&
+                                    (t.isStreaming || t.status === 'running')
+                            ) ||
+                            [...this.suspendedTranscriptSinks].some(
+                                ([threadId, suspended]) => threadId !== thread.id &&
+                                    suspended.sessionKey === resolvedKey
+                            );
+                        if (choice.service.hasOwnedRun(resolvedKey) && !resolvedLiveOther) {
                             choice.service.abort(resolvedKey);
                         }
                         if (![...this.threads.values()].some(t => t.id !== thread.id && t.sessionKey === resolvedKey)) {
@@ -1730,9 +1741,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // Same gateway bind/history/resume steps as openSessionRebinding:
             // without them the old transcript stays displayed under the new
             // key and the resumed session's catch-up has no transcript to
-            // dedupe against. A streaming run on the selected key skips the
-            // restore (the live response must not be replaced) but still
-            // binds a sink so later events keep flowing.
+            // dedupe against. A streaming run that was not rebound skips the
+            // resume: its per-run sink already delivers every event and the
+            // suspended transcript sink is restored at `done`, so subscribing
+            // here would duplicate this response (and later turns). A
+            // mid-run rebound thread still needs the sink on the new key.
+            const reboundFrom = activeThread.sessionKey && activeThread.sessionKey !== sessionKey
+                ? activeThread.sessionKey
+                : null;
             if (!(activeThread.isStreaming || activeThread.status === 'running')) {
                 const historyEpoch = activeThread.eventEpoch;
                 const history = await gateway.getHistory(sessionKey);
@@ -1757,7 +1773,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     this.resumeSessionForThread(gateway, activeThread, sessionKey);
                 }
-            } else {
+            } else if (reboundFrom) {
                 this.resumeSessionForThread(gateway, activeThread, sessionKey);
             }
         }
