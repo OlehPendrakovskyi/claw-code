@@ -84,9 +84,35 @@ describe('buildMention', () => {
         expect(parseFileMentions('@"a b.ts"#L2-3')[0]).toEqual({ path: 'a b.ts', lineStart: 2, lineEnd: 3 });
     });
 
+    it('quotes paths containing parser delimiters (# and @)', () => {
+        expect(buildMention('foo#bar.ts')).toBe('@"foo#bar.ts"');
+        expect(buildMention('a@b.ts')).toBe('@"a@b.ts"');
+        expect(buildMention('a@b.ts', 1, 2)).toBe('@"a@b.ts"#L1-2');
+    });
+
+    it('quotes paths containing parser delimiters (# and @)', () => {
+        expect(buildMention('foo#bar.ts')).toBe('@"foo#bar.ts"');
+        expect(buildMention('a@b.ts')).toBe('@"a@b.ts"');
+        expect(buildMention('a@b.ts', 1, 2)).toBe('@"a@b.ts"#L1-2');
+    });
+
     it('round-trips a quoted path through build/parse', () => {
         const mention = buildMention('src/My File.ts');
         expect(parseFileMentions(`before ${mention} after`).map(m => m.path)).toEqual(['src/My File.ts']);
+    });
+
+    it('round-trips quoted paths containing delimiters through build/parse', () => {
+        for (const p of ['foo#bar.ts', 'a@b.ts']) {
+            const mention = buildMention(p, 2, 3);
+            expect(parseFileMentions(`see ${mention} ok`).map(m => m)).toEqual([{ path: p, lineStart: 2, lineEnd: 3 }]);
+        }
+    });
+
+    it('round-trips quoted paths containing delimiters through build/parse', () => {
+        for (const p of ['foo#bar.ts', 'a@b.ts']) {
+            const mention = buildMention(p, 2, 3);
+            expect(parseFileMentions(`see ${mention} ok`).map(m => m)).toEqual([{ path: p, lineStart: 2, lineEnd: 3 }]);
+        }
     });
 });
 

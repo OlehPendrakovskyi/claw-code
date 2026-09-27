@@ -52,9 +52,10 @@ export function parseFileMentions(text: string): FileMention[] {
 /** Build the mention string for an editor context (path plus optional line range).
  *  Non-positive starts clamp to line 1; reversed ranges collapse to the start line. */
 export function buildMention(filePath: string, lineStart?: number, lineEnd?: number): string {
-    // Paths with whitespace need a delimiter the parser understands; double
-    // quotes are unambiguous because raw (unquoted) paths cannot contain them.
-    const pathPart = /\s/.test(filePath) ? `@"${filePath}"` : `@${filePath}`;
+    // Quote any path containing whitespace or parser delimiters: the raw
+    // (unquoted) form cannot express `#` or `@` in a filename, and raw paths
+    // cannot contain double quotes, so the quoted form is always unambiguous.
+    const pathPart = /[\s#@]/.test(filePath) ? `@"${filePath}"` : `@${filePath}`;
     if (lineStart != null && lineEnd != null) {
         const start = Math.max(1, lineStart);
         const end = Math.max(start, lineEnd);
