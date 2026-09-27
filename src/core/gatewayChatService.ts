@@ -317,6 +317,29 @@ export class GatewayChatService {
       !(typeof payload.delta === 'string' && payload.delta.length > 0)
     );
   }
+  /** Fingerprint boundary seeds must only cover rows already rendered into
+   *  the thread. An in-flight assistant row (non-empty `delta`) is still
+   *  streaming: seeding its fingerprint would make a later cursor-less
+   *  catch-up match and skip it, silently dropping a response whose live
+   *  event was missed. The row is excluded so a later catch-up replays it
+   *  once the gateway history holds its finalized form. */
+  private static catchUpBoundaryFingerprints(rows: unknown[]): string[] {
+    const fingerprints: string[] = [];
+    for (const rowRaw of rows) {
+      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
+      const isAssistant = !(typeof row.role === 'string' && row.role !== 'assistant');
+      if (
+        isAssistant &&
+        typeof row.delta === 'string' &&
+        row.delta.length > 0
+      ) {
+        continue;
+      }
+      fingerprints.push(GatewayChatService.rowFingerprint(row));
+    }
+    return fingerprints;
+  }
+
   /** Sessions with a `chat.abort` RPC in flight. Events for these keys are
    *  suppressed until the abort completes: the gateway may keep emitting
    *  deltas until it processes the abort, and those late events would
@@ -783,14 +806,12 @@ export class GatewayChatService {
     // The fingerprint boundary is seeded regardless of `rememberSeen`:
     // without it, a cursor-less reconnect after a post-ack seed has no
     // boundary at all and replays the entire history (or, mid-run, skips
-    // catch-up and can lose events).
+    // catch-up and can lose events). In-flight assistant rows are excluded
+    // from the boundary: they are still streaming and not yet rendered, so
+    // a later catch-up must be able to replay their finalized form.
     this.seededCatchUpFingerprints.set(
       sessionKey,
-      (data.messages as unknown[]).map((rowRaw) =>
-        GatewayChatService.rowFingerprint(
-          rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {}
-        )
-      )
+      GatewayChatService.catchUpBoundaryFingerprints(data.messages as unknown[])
     );
     if (opts?.rememberSeen === false) {
       return;
@@ -1561,11 +1582,12 @@ export class GatewayChatService {
       // must skip them again. Without this, an id-less assistant response
       // rendered after the original seed is re-appended by the next
       // cursor-less catch-up (the messageId seen-set cannot dedupe it).
+      // In-flight assistant rows stay excluded: a delta row replayed into
+      // sinks here is superseded by the finalized row the run delivers, so
+      // a later catch-up must still be able to replay that final form.
       this.seededCatchUpFingerprints.set(
         sessionKey,
-        (payload.messages as Array<Record<string, unknown>>).map((rowRaw) =>
-          GatewayChatService.rowFingerprint(rowRaw)
-        )
+        GatewayChatService.catchUpBoundaryFingerprints(payload.messages as Array<Record<string, unknown>>)
       );
       if (lastRowFinalized && !this.preAckSendKeys.has(sessionKey)) {
         const runSink = this.runSinksBySession.get(sessionKey);
