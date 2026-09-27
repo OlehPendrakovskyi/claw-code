@@ -177,8 +177,17 @@ export class GatewayChatService {
    *  appends every text event, so `he` + `hello` would render `hehello`.
    *  When the full text extends the streamed prefix, emit only the remainder;
    *  if the full text diverges from the streamed prefix, keep the full text —
-   *  a duplicated tail beats lost content. Frames carrying a delta only
-   *  accumulate; a delta alongside full text also adjusts that text.
+   *  a duplicated tail beats lost content.
+   *
+   *  The tracked prefix counts what the mapper actually emits. Identified
+   *  mixed frames (messageId + delta + text) emit BOTH events, so the delta
+   *  counts toward the prefix. Frames without a messageId emit only the full
+   *  text when one is present (the mapper never renders that delta), so such
+   *  a delta must NOT count toward the prefix — recording it would slice the
+   *  un-rendered delta from the full text and the first response of a stream
+   *  like {delta: "hello", text: "hello"} would be reduced to an empty event.
+   *  A delta-only frame (no full text) is rendered verbatim and accumulates
+   *  regardless.
    *
    *  On a mixed frame whose full text is the cumulative emitted text, the
    *  tracked prefix must jump to the full text — keeping the stale delta
@@ -188,10 +197,10 @@ export class GatewayChatService {
    *  mark it as already emitted, so the later full-text completion frame
    *  would be reduced to an empty event and its final text lost. Only the
    *  full-text event is deduped against what earlier deltas already streamed
-   *  (plus this frame's own delta on a mixed frame); rewriting the delta
-   *  event too would drop a frame where delta equals the full text — e.g. a
-   *  first frame carrying delta "hello", text "hello" — and lose the first
-   *  content. */
+   *  (plus this frame's own delta on an identified mixed frame); rewriting
+   *  the delta event too would drop a frame where delta equals the full
+   *  text — e.g. a first frame carrying delta "hello", text "hello" — and
+   *  lose the first content. */
   private adjustCompleteFrameEvents(
     sessionKey: string,
     payload: { messageId?: unknown; text?: unknown; delta?: unknown },
@@ -210,7 +219,11 @@ export class GatewayChatService {
     const key = messageId ? this.messageKey(sessionKey, messageId) : sessionKey;
     const store = messageId ? this.deltaTextByMessage : this.deltaTextNoIdBySession;
     const streamed = store.get(key);
-    if (delta.length > 0) {
+    // Count the delta toward the emitted prefix only when the mapper actually
+    // renders it: without a messageId a frame carrying full text emits only
+    // that text, so its delta is invisible and must not join the prefix.
+    const deltaRendered = messageId !== undefined || fullText.length === 0;
+    if (delta.length > 0 && deltaRendered) {
       store.set(key, (store.get(key) ?? '') + delta);
       if (store.size > DELTA_TRACK_LIMIT) {
         const oldest = store.keys().next().value;
@@ -222,7 +235,7 @@ export class GatewayChatService {
     if (fullText.length === 0) {
       return events;
     }
-    const prefix = (streamed ?? '') + (delta.length > 0 ? delta : '');
+    const prefix = (streamed ?? '') + (deltaRendered && delta.length > 0 ? delta : '');
     if (delta.length === 0) {
       store.delete(key);
     } else if (fullText.startsWith(prefix)) {
@@ -1104,8 +1117,27 @@ export class GatewayChatService {
     if (runSink) {
       this.removeTranscriptSink(key, runSink);
     }
+    // A finished run leaves nothing behind that could re-open its session:
+    // stale delta records from a delta-only stream would make the next run
+    // on this session treat its first cumulative frame as already streamed
+    // and drop content.
+    this.clearSessionDeltaBookkeeping(key);
     for (const endSink of endSinks) {
       endSink({ type: 'done' });
+    }
+  }
+
+  /** Drop this session's streamed-delta trackers: the no-id per-session
+   *  record plus every messageKey scoped to this session. Called when a run
+   *  ends (session.end) and when a run is torn down (abort/suspend), so the
+   *  next run on the same session starts dedup from zero. */
+  private clearSessionDeltaBookkeeping(sessionKey: string): void {
+    this.deltaTextNoIdBySession.delete(sessionKey);
+    const prefix = sessionKey + '\u0000';
+    for (const key of this.deltaTextByMessage.keys()) {
+      if (key.startsWith(prefix)) {
+        this.deltaTextByMessage.delete(key);
+      }
     }
   }
 
@@ -1949,6 +1981,10 @@ export class GatewayChatService {
     this.runSinksBySession.delete(key);
     this.preAckSendKeys.delete(key);
     this.preAckSendOwners.delete(key);
+    // Aborting tears the run down (its terminal events come from this flow,
+    // not session.end): clear the run's delta trackers too so the next run
+    // on this session does not inherit a prefix it never streamed.
+    this.clearSessionDeltaBookkeeping(key);
     if (this.preAckSendKeys.size === 0) {
       this.preAckBufferedFrames = [];
       this.preAckSettledSends = [];
@@ -2019,6 +2055,11 @@ export class GatewayChatService {
     this.preAckBufferedFrames = [];
     this.preAckSettledSends = [];
     this.rejectAllPending('gateway transport suspended');
+    // Suspension tears down every run (each sink above already got `done`):
+    // leaving their delta records would corrupt the next run's dedup after
+    // reconnect, so the whole bookkeeping resets with the transport.
+    this.deltaTextByMessage.clear();
+    this.deltaTextNoIdBySession.clear();
     if (this.ws) {
       const oldWs = this.ws;
       this.ws = null;
