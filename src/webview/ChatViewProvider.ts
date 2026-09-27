@@ -263,8 +263,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                             // Same ownership guard as resetThread/closeThread:
                             // cancelling an idle resumed thread must not send
                             // chat.abort for a run owned by the gateway or
-                            // another client.
-                            if (thread.sessionKey && !shared && thread.status === 'running') {
+                            // another client. A thread is marked running before
+                            // sendPrompt resolves the backend and registers the
+                            // run sink, so hasOwnedRun also gates the lifecycle
+                            // abort during that await window.
+                            if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                                 backend.abort(thread.sessionKey);
                             }
                         } else {
@@ -509,7 +512,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // Only abort when this thread actually owns a run: an idle
                 // resumed thread holds no gateway run, and a chat.abort here
                 // would cancel a run owned by the gateway or another client.
-                if (!shared && thread.status === 'running') {
+                // The hasOwnedRun gate also covers the pre-ack window before
+                // sendPrompt resolves the backend and registers the sink.
+                if (!shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                     backend.abort(thread.sessionKey);
                 }
             }
@@ -582,8 +587,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (backend instanceof GatewayChatService) {
             // Same ownership guard as resetThread: abort only a run this
             // thread actually owned; an idle resumed thread must not cancel
-            // a run owned by the gateway or another client.
-            if (thread.status === 'running') {
+            // a run owned by the gateway or another client. The hasOwnedRun
+            // gate also covers the pre-ack window before the run sink exists.
+            if (thread.sessionKey && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                 backend.abort(thread.sessionKey);
             }
             // Drop the thread's transcript sink if no surviving thread still
@@ -1623,8 +1629,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // thread has no run on the previous key, and the abort
                     // would cancel a run owned by the gateway or another
                     // client (the shared-run guard alone does not cover
-                    // non-local owners).
-                    if (activeThread.status === 'running') {
+                    // non-local owners). The hasOwnedRun gate also covers
+                    // the pre-ack window before the run sink exists.
+                    if (activeThread.status === 'running' && gateway.hasOwnedRun(previousKey)) {
                         gateway.abort(previousKey);
                     }
                     if (!this.otherThreadsOnKey(activeThread.id, previousKey)) {
@@ -1712,7 +1719,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway: GatewayChatService,
         openGen: number
     ): Promise<void> {
-        const reboundFrom = thread.sessionKey && thread.sessionKey !== sessionKey ? thread.sessionKey : null;
+        // reboundFrom keeps the previous gateway key when one existed; the
+        // history-failure branch below must treat ANY binding change as a
+        // rebind — including undefined → new key (an acpx thread opening a
+        // gateway session): a failed history fetch must not keep the old
+        // (acpx) transcript displayed under the newly bound session.
+        const rebounded = thread.sessionKey !== sessionKey;
         // Same acpx guard as handleSelectAgent: a streaming run without a
         // gateway session key (or on an acpx fallback backend) must be
         // retired before rebinding, or its late output lands in the newly
@@ -1769,8 +1781,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // previous key: an idle subscriber merely switching away
                 // must not cancel a run owned by another client. Late events
                 // from an unowned run cannot reach the rebound thread — the
-                // epoch bumped above and the sink is cleared below.
-                if (thread.status === 'running' && !sharesLiveRun) {
+                // epoch bumped above and the sink is cleared below. The
+                // hasOwnedRun gate also covers the pre-ack window before
+                // the run sink exists.
+                if (thread.status === 'running' && !sharesLiveRun && gateway.hasOwnedRun(previousKey)) {
                     gateway.abort(previousKey);
                 }
                 if (!this.otherThreadsOnKey(thread.id, previousKey)) {
@@ -1867,7 +1881,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.messages.push({ role: msg.role, content: msg.content });
             }
             thread.status = 'idle';
-        } else if (reboundFrom) {
+        } else if (rebounded) {
             // A failed fetch after a session switch must not keep the
             // previous session's transcript under the new key: the resume
             // sink below would show the old transcript as the new session

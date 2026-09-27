@@ -114,6 +114,8 @@ export function parseFrame(data: unknown): RpcInboundFrame | null {
 }
 
 const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
+/** Cap for per-message streamed-delta tracking (oldest entry evicted). */
+const DELTA_TRACK_LIMIT = 200;
 
 /** Fallback details for tool-call frames that carry typed fields instead of a
  *  ready-made `details` string: serialize arguments/result so the UI still
@@ -223,6 +225,70 @@ export class GatewayChatService {
   /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
    *  An entry also marks that session as having an active run (queue-mode selection). */
   private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Remember streamed delta text for one message so a later complete frame
+   *  with the full text can emit only the unrendered remainder instead of
+   *  duplicating the already-streamed deltas. */
+  private rememberDeltaText(sessionKey: string, messageId: string, delta: string): void {
+    const key = sessionKey + '\u0000' + messageId;
+    this.deltaTextByMessage.set(key, (this.deltaTextByMessage.get(key) ?? '') + delta);
+    if (this.deltaTextByMessage.size > DELTA_TRACK_LIMIT) {
+      const oldest = this.deltaTextByMessage.keys().next().value;
+      if (oldest !== undefined) {
+        this.deltaTextByMessage.delete(oldest);
+      }
+    }
+  }
+
+  /** Drop the streamed-delta record once the message is finalized. */
+  private forgetDeltaText(sessionKey: string, messageId: string): void {
+    this.deltaTextByMessage.delete(sessionKey + '\u0000' + messageId);
+  }
+
+  /** Per-message streamed-delta accumulation for complete-frame dedup. */
+  private deltaTextByMessage = new Map<string, string>();
+
+  /** A complete assistant frame (full `text`, no `delta`) must not re-emit
+   *  text already streamed as deltas for the same messageId: the provider
+   *  appends every text event, so `he` + `hello` would render `hehello`.
+   *  When the full text extends the streamed prefix, emit only the remainder;
+   *  if the full text diverges from the streamed prefix, keep the full text —
+   *  a duplicated tail beats lost content. Frames carrying a delta only
+   *  accumulate; a delta alongside full text also adjusts that text. */
+  private adjustCompleteFrameEvents(
+    sessionKey: string,
+    payload: { messageId?: unknown; text?: unknown; delta?: unknown },
+    events: ChatEvent[]
+  ): ChatEvent[] {
+    const messageId = typeof payload.messageId === 'string' ? payload.messageId : null;
+    if (!messageId) {
+      return events;
+    }
+    const delta = typeof payload.delta === 'string' ? payload.delta : '';
+    const fullText = typeof payload.text === 'string' ? payload.text : '';
+    if (delta.length > 0) {
+      this.rememberDeltaText(sessionKey, messageId, delta);
+    }
+    if (fullText.length === 0) {
+      return events;
+    }
+    const streamed = this.deltaTextByMessage.get(sessionKey + '\u0000' + messageId);
+    if (delta.length === 0) {
+      // Complete frame: the message is finalized, drop the record.
+      this.forgetDeltaText(sessionKey, messageId);
+    }
+    if (!streamed) {
+      return events;
+    }
+    return events
+      .map((e) => {
+        if (e.type === 'text' && e.text === fullText && fullText.startsWith(streamed)) {
+          return { ...e, text: fullText.slice(streamed.length) };
+        }
+        return e;
+      })
+      .filter((e) => e.type !== 'text' || e.text.length > 0);
+  }
+
   /** Sessions whose run sink is registered pre-ack by an in-flight send: a
    *  resume catch-up replaying a missed completed row must not finalize that
    *  sink, or the ack's ownership check would drop the actual response. */
@@ -767,8 +833,9 @@ export class GatewayChatService {
           if (this.isCompleteAssistantFrame(payload)) {
             this.rememberSeen(routed.key, payload.messageId as string);
           }
-          routedChatEvent = chatEvents[0];
-          for (const chatEvent of chatEvents) {
+          const adjusted = this.adjustCompleteFrameEvents(routed.key, payload, chatEvents);
+          routedChatEvent = adjusted[0];
+          for (const chatEvent of adjusted) {
             for (const sink of routed.sinks) {
               sink(chatEvent);
             }
@@ -1004,8 +1071,19 @@ export class GatewayChatService {
           }
           // This send's pre-ack registration in the transcript set must be
           // dropped as well, or the failed send's callback would linger and
-          // receive later events for the occupied session.
+          // receive later events for the occupied session. Frames buffered
+          // pre-ack on this send's behalf (keyed with the resolved key while
+          // no sink was registered for it) must be discarded too: a later
+          // ack's drainPreAckBufferedFrames would route them into a new
+          // send's sink, leaking the abandoned run's output.
           this.removeTranscriptSink(sessionKey, _onEvent);
+          if (this.preAckSendKeys.size === 0) {
+            this.preAckBufferedFrames = [];
+          } else {
+            this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
+              (evt) => (evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
+            );
+          }
           _onEvent({
             type: 'error',
             message: `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
@@ -1111,10 +1189,15 @@ export class GatewayChatService {
       }
       const chatEvents = mapSessionEventToChatEvent(evt);
       if (chatEvents.length > 0) {
+        const adjusted = this.adjustCompleteFrameEvents(
+          typeof payload.sessionKey === 'string' ? payload.sessionKey : DEFAULT_SESSION_KEY,
+          payload,
+          chatEvents
+        );
         if (this.isCompleteAssistantFrame(payload)) {
           this.rememberSeen(routed.key, payload.messageId as string);
         }
-        for (const chatEvent of chatEvents) {
+        for (const chatEvent of adjusted) {
           for (const sink of routed.sinks) {
             sink(chatEvent);
           }
@@ -1285,6 +1368,7 @@ export class GatewayChatService {
           event: GatewayEvents.sessionMessage,
           payload: row as Record<string, unknown>,
         });
+        const adjusted = this.adjustCompleteFrameEvents(sessionKey, row, mapped);
         // A completed assistant history row (full text, no delta) must also
         // finalize: replaying only its text would leave subscribers streaming
         // forever, since catch-up never replays a session_end for it.
@@ -1295,7 +1379,7 @@ export class GatewayChatService {
           rowPayload.text.length > 0 &&
           typeof rowPayload.delta !== 'string';
         const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
-        for (const chatEvent of mapped) {
+        for (const chatEvent of adjusted) {
           for (const sink of sinks) {
             if (sink === protectedRunSink) {
               continue;

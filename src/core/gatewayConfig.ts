@@ -120,16 +120,27 @@ export async function migrateLegacyGatewayToken(
     if (!hadValue) {
       continue;
     }
-    const isLanguageScope =
-      (target === vscode.ConfigurationTarget.Global && inspection.globalLanguageValue !== undefined) ||
-      (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceLanguageValue !== undefined) ||
-      (target === vscode.ConfigurationTarget.WorkspaceFolder &&
-        inspection.workspaceFolderLanguageValue !== undefined);
     try {
-      if (isLanguageScope) {
-        await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target, true);
-      } else {
+      // Normal and language-scoped values in the same target are cleaned
+      // independently: a single update call removes only one of the two
+      // stored forms, leaving the other plaintext token behind.
+      const hasNormal =
+        inspection != null &&
+        ((target === vscode.ConfigurationTarget.Global && inspection.globalValue !== undefined) ||
+          (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceValue !== undefined) ||
+          (target === vscode.ConfigurationTarget.WorkspaceFolder &&
+            inspection.workspaceFolderValue !== undefined));
+      const hasLanguage =
+        inspection != null &&
+        ((target === vscode.ConfigurationTarget.Global && inspection.globalLanguageValue !== undefined) ||
+          (target === vscode.ConfigurationTarget.Workspace && inspection.workspaceLanguageValue !== undefined) ||
+          (target === vscode.ConfigurationTarget.WorkspaceFolder &&
+            inspection.workspaceFolderLanguageValue !== undefined));
+      if (hasNormal) {
         await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target);
+      }
+      if (hasLanguage) {
+        await config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target, true);
       }
     } catch (err) {
       cleanupFailed = true;
