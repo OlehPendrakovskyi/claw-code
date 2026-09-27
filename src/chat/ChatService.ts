@@ -79,7 +79,7 @@ export class ChatService {
             maxTokens,
         });
 
-        log.info(`spawn acpx ${args.join(' ')} (cwd=${cwd})`);
+        log.info(`spawn acpx (args=${args.length}, cwd=${cwd})`);
         const child = spawn('acpx', args, {
             cwd,
             env: { ...process.env },

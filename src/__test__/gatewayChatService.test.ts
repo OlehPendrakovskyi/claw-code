@@ -245,17 +245,29 @@ describe('GatewayChatService sendMessage/abort', () => {
       .filter((f) => f.type === 'req');
   }
 
+  /** Resolve the pre-send subscription: chat.send is issued only after the
+   *  subscribe acknowledgement, so tests must answer it first. */
+  function answerSubscribe(ws: MockSocket): void {
+    for (const req of sentRequests(ws)) {
+      if (req.method === 'sessions.messages.subscribe') {
+        ws.emit('message', JSON.stringify({ type: 'res', id: req.id, ok: true, payload: {} }));
+      }
+    }
+  }
+
   it('sends chat.send with enqueue mode and subscribes to session messages', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);
     svc.sendMessage('hello', '/tmp', 'm', 'chat', () => {});
     await new Promise<void>((r) => setTimeout(r, 0));
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe');
+    expect(subscribe?.params).toEqual({ sessionKeys: ['main'] });
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send');
     expect(send?.params).toMatchObject({ sessionKey: 'main', text: 'hello', queueMode: 'enqueue' });
     ws.emit('message', JSON.stringify({ type: 'res', id: send!.id, ok: true, payload: { sessionKey: 'main' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
-    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe');
-    expect(subscribe?.params).toEqual({ sessionKeys: ['main'] });
     svc.dispose();
   });
 
@@ -263,6 +275,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const ws = createMockWs();
     const svc = await connectService(ws);
     svc.sendMessage('hi', '/tmp', 'm', 'chat', () => {});
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
@@ -276,13 +290,19 @@ describe('GatewayChatService sendMessage/abort', () => {
       payload: { deltaCursor: 'cursor-seed', messages: [{ messageId: 'm0', role: 'user', text: 'hi' }] },
     }));
     await new Promise<void>((r) => setTimeout(r, 0));
-    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe')!;
-    ws.emit('message', JSON.stringify({ type: 'res', id: subscribe.id, ok: true, payload: {} }));
-    await new Promise<void>((r) => setTimeout(r, 0));
-    const catchUp = sentRequests(ws)
-      .filter((r) => r.method === 'chat.history')
-      .find((r) => r.params.deltaCursor === 'cursor-seed');
-    expect(catchUp).toBeDefined();
+    // The pre-send subscription was already established, so no duplicate
+    // subscribe (and no cursor-gated catch-up) is issued after the ack: the
+    // fresh-run catch-up is skipped because it ran with no cursor yet.
+    const subscribe = sentRequests(ws).find((r) => r.method === 'sessions.messages.subscribe');
+    expect(subscribe).toBeDefined();
+    expect(
+      sentRequests(ws).filter((r) => r.method === 'sessions.messages.subscribe')
+    ).toHaveLength(1);
+    expect(
+      sentRequests(ws)
+        .filter((r) => r.method === 'chat.history')
+        .find((r) => r.params.deltaCursor === 'cursor-seed')
+    ).toBeUndefined();
     svc.dispose();
   });
 
@@ -291,6 +311,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const svc = await connectService(ws);
     const events: unknown[] = [];
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
@@ -321,6 +343,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.setActiveSession('other');
     svc.sendMessage('b', '/tmp', 'm', 'chat', (e) => bEvents.push(e));
     await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
     const bSend = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: bSend.id, ok: true, payload: { sessionKey: 'other' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -329,6 +353,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const aEvents: unknown[] = [];
     svc.setActiveSession('main');
     svc.sendMessage('a', '/tmp', 'm', 'chat', (e) => aEvents.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const aSend = sentRequests(ws).filter((r) => r.method === 'chat.send').pop()!;
     expect(aSend.params).toMatchObject({ sessionKey: 'main', queueMode: 'enqueue' });
@@ -346,6 +372,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const svc = await connectService(ws);
     const events: unknown[] = [];
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
@@ -366,6 +394,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const events: unknown[] = [];
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
     await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
     await new Promise<void>((r) => setTimeout(r, 0));
@@ -383,6 +413,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     const svc = await connectService(ws);
     const events: unknown[] = [];
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
@@ -448,6 +480,8 @@ describe('GatewayChatService sendMessage/abort', () => {
     // (the initial send itself must not replay an unscoped history tail).
     svc.seedHistory('main', { deltaCursor: 'cursor-42', messages: [] });
     svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
     await new Promise<void>((r) => setTimeout(r, 0));
     const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
     ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));

@@ -842,9 +842,13 @@ export class GatewayChatService {
     // acknowledgement returns. Subscribing after the ack would race that
     // delivery and drop the initial tokens/tool events. The resolved key is
     // reconciled below; until then the requested key routes keyless frames.
+    // The subscribe acknowledgement is awaited before issuing `chat.send`:
+    // a rejected subscription retires the run sink, which would orphan an
+    // already-accepted send (gateway keeps running, no listener, UI shows a
+    // completed turn with no response).
     this.addTranscriptSink(sessionKey, _onEvent);
-    this.subscribeSessionMessages(sessionKey);
-    void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
+    const issueSend = (): void => {
+      void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
@@ -919,6 +923,24 @@ export class GatewayChatService {
         _onEvent({ type: 'error', message: err.message });
         _onEvent({ type: 'done' });
       });
+    };
+    void this.subscribeSessionMessages(sessionKey).then((subscribed: boolean) => {
+      if (subscribed) {
+        issueSend();
+        return;
+      }
+      // Subscription failed (or is unsupported): the gateway would run the
+      // send with no transcript listener. Fail this send before issuing it.
+      if (this.runSinksBySession.get(sessionKey) === _onEvent) {
+        this.runSinksBySession.delete(sessionKey);
+      }
+      this.removeTranscriptSink(sessionKey, _onEvent);
+      _onEvent({
+        type: 'error',
+        message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
+      });
+      _onEvent({ type: 'done' });
+    });
   }
 
   /** Route a session event to its session-keyed run sink.
