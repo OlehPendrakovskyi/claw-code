@@ -226,19 +226,20 @@ export class GatewayConfigService {
    * Interactive command handler: prompt for the gateway token (masked input)
    * and store it in SecretStorage. Cancel keeps any previously stored token.
    */
-  static async promptForGatewayToken(context: vscode.ExtensionContext): Promise<void> {
+  static async promptForGatewayToken(context: vscode.ExtensionContext): Promise<boolean> {
     const value = await vscode.window.showInputBox({
       prompt: 'OpenClaw gateway auth token (stored in SecretStorage)',
       password: true,
       placeHolder: 'paste token',
     });
     if (value === undefined) {
-      return;
+      return false;
     }
     await GatewayConfigService.setGatewayToken(context.secrets, value.trim());
     void vscode.window.showInformationMessage(
       value.trim() ? 'Gateway token saved to SecretStorage.' : 'Gateway token cleared.'
     );
+    return true;
   }
 
 /** List language overrides configured via `[language]` sections in the raw

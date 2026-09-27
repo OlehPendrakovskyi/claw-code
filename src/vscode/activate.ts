@@ -89,7 +89,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('openclaw.chat.connectGateway', () => {
-            void promptForGatewayToken(context);
+            // Saving the token must leave the extension connected, not just
+            // configured: connect right after a submitted token so the status
+            // bar and socket reflect the new credentials immediately.
+            void promptForGatewayToken(context).then((saved) => {
+                if (saved) {
+                    void connect();
+                }
+            });
         })
     );
 

@@ -276,6 +276,16 @@ export class GatewayChatService {
    *  finalization), leaving the thread streaming forever. A stable-shape
    *  empty `delta` (e.g. `delta: ''` on the final full-text row) counts as
    *  absent: only a non-empty delta marks a streaming frame. */
+  /** Stable catch-up boundary fingerprint for one history row: role, delta
+   *  vs final shape, and full text. Used both when seeding the boundary from
+   *  a history payload and when advancing it to the latest processed tail. */
+  private static rowFingerprint(row: Record<string, unknown>): string {
+    const role = typeof row.role === 'string' ? row.role : '';
+    const delta = typeof row.delta === 'string' && row.delta.length > 0;
+    const text = typeof row.text === 'string' ? row.text : '';
+    return `${role}|${delta ? 'delta' : 'final'}|${text}`;
+  }
+
   private isCompleteAssistantFrame(payload: {
     messageId?: unknown;
     text?: unknown;
@@ -751,13 +761,11 @@ export class GatewayChatService {
     }
     this.seededCatchUpFingerprints.set(
       sessionKey,
-      (data.messages as unknown[]).map((rowRaw) => {
-        const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
-        const role = typeof row.role === 'string' ? row.role : '';
-        const delta = typeof row.delta === 'string' && row.delta.length > 0;
-        const text = typeof row.text === 'string' ? row.text : '';
-        return `${role}|${delta ? 'delta' : 'final'}|${text}`;
-      })
+      (data.messages as unknown[]).map((rowRaw) =>
+        GatewayChatService.rowFingerprint(
+          rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {}
+        )
+      )
     );
   }
 
@@ -1418,10 +1426,10 @@ export class GatewayChatService {
         // what keeps a cursor-less history-backed resume from duplicating
         // keyless rows, which the messageId seen-set cannot dedupe).
         if (seeded) {
-          const role = typeof rowPayload.role === 'string' ? rowPayload.role : '';
-          const delta = typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0;
-          const text = typeof rowPayload.text === 'string' ? rowPayload.text : '';
-          if (seededIndex < seeded.length && seeded[seededIndex] === `${role}|${delta ? 'delta' : 'final'}|${text}`) {
+          if (
+            seededIndex < seeded.length &&
+            seeded[seededIndex] === GatewayChatService.rowFingerprint(row)
+          ) {
             seededIndex++;
             continue;
           }
@@ -1477,6 +1485,17 @@ export class GatewayChatService {
           lastRowFinalized = false;
         }
       }
+      // Advance the boundary to the latest processed tail: every row of
+      // this payload is now rendered into the thread, so a later catch-up
+      // must skip them again. Without this, an id-less assistant response
+      // rendered after the original seed is re-appended by the next
+      // cursor-less catch-up (the messageId seen-set cannot dedupe it).
+      this.seededCatchUpFingerprints.set(
+        sessionKey,
+        (payload.messages as Array<Record<string, unknown>>).map((rowRaw) =>
+          GatewayChatService.rowFingerprint(rowRaw)
+        )
+      );
       if (lastRowFinalized && !this.preAckSendKeys.has(sessionKey)) {
         const runSink = this.runSinksBySession.get(sessionKey);
         if (runSink && runSink === catchUpStartRunSink) {
