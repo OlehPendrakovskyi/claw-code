@@ -21,6 +21,12 @@ export const DELTA_TRACK_LIMIT = 200;
 
 const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
 
+/** Coerce a wire-provided token count to a finite, non-negative number (0 otherwise). */
+const toFiniteTokenCount = (value: unknown): number => {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+};
+
 /** Extract a `sessionKey` from an RPC payload, when present. */
 export function extractSessionKey(payload: unknown): string | null {
   if (payload && typeof payload === 'object') {
@@ -108,9 +114,11 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
     }
   }
   const u = payload.usage;
-  const promptTokens = Number(u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens ?? 0);
-  const completionTokens = Number(
-    u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens ?? 0
+  const promptTokens = toFiniteTokenCount(
+    u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens
+  );
+  const completionTokens = toFiniteTokenCount(
+    u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens
   );
   if (u && (promptTokens || completionTokens)) {
     events.push({
