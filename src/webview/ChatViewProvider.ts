@@ -1569,18 +1569,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // opens a window where a send would target the previous key.
             pendingOpenThread.openInFlightGen = pendingOpenThread.openGeneration;
         }
+        // The generation this selection was issued under, captured BEFORE the
+        // resolve await: a handleOpenSession that starts during resolveGateway
+        // bumps openGeneration; reading it after the await would adopt the
+        // newer request's generation, clear its openInFlightGen marker in the
+        // finally below, and let this stale rebind overwrite the newer open.
+        const selectionGen = pendingOpenThread ? pendingOpenThread.openGeneration : null;
         const gateway = await this.resolveGateway();
         if (!gateway) {
             if (pendingOpenThread &&
-                pendingOpenThread.openInFlightGen === pendingOpenThread.openGeneration) {
+                pendingOpenThread.openInFlightGen === selectionGen) {
                 pendingOpenThread.openInFlightGen = null;
             }
             return;
         }
         gateway.setActiveSession(sessionKey);
-        // The generation this selection was issued under: a handleOpenSession
-        // that starts during the persist await supersedes this binding.
-        const selectionGen = pendingOpenThread ? pendingOpenThread.openGeneration : null;
         try {
             await this.persistLastSessionKey(sessionKey);
         } finally {
@@ -1710,7 +1713,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const historyEpoch = activeThread.eventEpoch;
                 const history = await gateway.getHistory(sessionKey);
                 if (this.getActiveThread()?.id === activeThread.id && activeThread.sessionKey === sessionKey &&
-                    activeThread.eventEpoch === historyEpoch && !activeThread.isStreaming) {
+                    activeThread.eventEpoch === historyEpoch && !activeThread.isStreaming &&
+                    (selectionGen === null || activeThread.openGeneration === selectionGen)) {
                     if (history !== null) {
                         gateway.seedHistory(sessionKey, history);
                         activeThread.messages = mapHistoryMessages(history)
@@ -1916,7 +1920,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         let label = sessionKey;
         try {
             const payload = await gateway.listSessions({});
-            if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey) {
+            if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
+                thread.openGeneration !== openGen) {
                 return;
             }
             const rows = parseSessionRows(payload).rows as SessionRow[];
@@ -1956,7 +1961,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const history = await gateway.getHistory(sessionKey);
-        if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey || thread.eventEpoch !== historyEpoch) {
+        if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
+            thread.eventEpoch !== historyEpoch || thread.openGeneration !== openGen) {
             return;
         }
         // A successful fetch replaces the transcript unconditionally (empty
