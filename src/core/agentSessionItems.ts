@@ -192,7 +192,6 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
       role?: unknown;
       text?: unknown;
       messageId?: unknown;
-      delta?: unknown;
     };
     const messageId =
       typeof rec.messageId === 'string' && rec.messageId ? rec.messageId : null;
@@ -200,13 +199,8 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     if (!role || typeof rec.text !== 'string' || !rec.text) {
       continue;
     }
-    if (
-      role === 'assistant' &&
-      typeof rec.delta === 'string' &&
-      rec.delta.length > 0
-    ) {
-      continue;
-    }
+    // Delta-only rows (no non-empty text) are already dropped by the
+    // text check above; mixed delta+text rows keep the completed text.
     // Complete rows may repeat in chat.history (e.g. snapshot + tail overlap
     // on restore); dedupe by messageId while retaining rows without an id.
     // An empty string id is missing, not a dedup key: keying it would drop
