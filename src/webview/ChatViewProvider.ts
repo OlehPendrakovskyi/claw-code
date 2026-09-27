@@ -1698,9 +1698,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (thread.openGeneration !== openGen) {
             // A newer openSession request superseded this one while the
             // persist/await above was in flight: never clobber the newer
-            // selection with this stale key, and restore the newer key as
-            // the persisted last-session since our persist overwrote it.
-            await this.persistLastSessionKey(thread.sessionKey ?? sessionKey);
+            // selection. Do not persist anything here either — `thread.sessionKey`
+            // is still the previous binding (the newer request assigns its key
+            // only after its own generation check), so persisting it would
+            // overwrite the newer request's resume key. The current-generation
+            // request owns persistence.
             return;
         }
         thread.sessionKey = sessionKey;

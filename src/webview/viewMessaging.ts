@@ -6,6 +6,7 @@ import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
 import { EditorContext, ContextType } from './slashCommands';
+import { randomUUID } from 'crypto';
 
 /** Shared output channel for chat panel logging. */
 export const log = vscode.window.createOutputChannel('OpenClaw Chat', { log: true });
@@ -165,11 +166,13 @@ export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-/** Neutralize only the closing-tag sequence `</file` so file bodies stay
- *  byte-faithful (comparisons, HTML etc. are not rewritten) while the prompt
- *  wrapper structure cannot be broken by file content. */
-export function escapeXmlBody(str: string): string {
-    return str.replace(/<\/file/gi, '&lt;/file');
+/** Frame a file section with a per-section unique closing tag. File data is
+ *  embedded verbatim (byte-faithful): a `</file id="...">` sequence forged by
+ *  file content cannot terminate the section because the random id is
+ *  generated per section and never derived from file bytes. */
+function frameFileBody(path: string, content: string): string {
+    const id = randomUUID();
+    return `<file path="${escapeXmlAttr(path)}" id="${id}">\n${content}\n</file id="${id}">`;
 }
 
 /** Returns the canonical attachment path only when it still resolves to the
@@ -236,7 +239,7 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
             // which a swap can exploit on case-sensitive volumes — means the
             // stored path now resolves elsewhere and must be dropped.
             if (real !== att.path) {
-                sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
+                sections.push(frameFileBody(att.path, '[Could not read file]'));
                 continue;
             }
             const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
@@ -253,12 +256,12 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                 if (realAfter !== real) {
                     throw new Error('attachment path changed during read');
                 }
-                sections.push(`<file path="${escapeXmlAttr(att.path)}">\n${escapeXmlBody(sliceLineRange(content, att.lineStart, att.lineEnd))}\n</file>`);
+                sections.push(frameFileBody(att.path, sliceLineRange(content, att.lineStart, att.lineEnd)));
             } finally {
                 await handle.close();
             }
         } catch {
-            sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
+            sections.push(frameFileBody(att.path, '[Could not read file]'));
         }
     }
 
