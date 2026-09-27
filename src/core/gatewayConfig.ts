@@ -264,7 +264,7 @@ private static userSettingsUris(): vscode.Uri[] {
       roots.push(path.join(process.env.APPDATA));
     }
   } else {
-    roots.push(path.join(os.homedir(), '.config'));
+    roots.push(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config'));
     roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
   }
   const distros = [GatewayConfigService.currentDistroDir()];

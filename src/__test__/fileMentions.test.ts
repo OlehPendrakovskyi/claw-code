@@ -90,6 +90,12 @@ describe('buildMention', () => {
         expect(buildMention('a@b.ts', 1, 2)).toBe('@"a@b.ts"#L1-2');
     });
 
+    it('quotes paths ending in parser punctuation', () => {
+        expect(buildMention('foo.ts,')).toBe('@"foo.ts,"');
+        expect(buildMention('foo.ts)')).toBe('@"foo.ts)"');
+        expect(parseFileMentions(`see ${buildMention('foo.ts,')} ok`).map(m => m.path)).toEqual(['foo.ts,']);
+    });
+
     it('quotes paths containing parser delimiters (# and @)', () => {
         expect(buildMention('foo#bar.ts')).toBe('@"foo#bar.ts"');
         expect(buildMention('a@b.ts')).toBe('@"a@b.ts"');

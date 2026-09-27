@@ -59,7 +59,10 @@ export function buildMention(filePath: string, lineStart?: number, lineEnd?: num
     // so a path carrying one is quoted too and embedded quotes are doubled
     // (`""`) inside the quoted form; parseFileMentions un-doubles them, so
     // every such path round-trips through a mention.
-    const pathPart = /[\s#@"]/.test(filePath) ? `@"${filePath.replace(/"/g, '""')}"` : `@${filePath}`;
+    const pathPart =
+      /[\s#@"]/.test(filePath) || /[.,:;)}\]]$/.test(filePath)
+        ? `@"${filePath.replace(/"/g, '""')}"`
+        : `@${filePath}`;
     if (lineStart != null && lineEnd != null) {
         const start = Math.max(1, lineStart);
         const end = Math.max(start, lineEnd);
