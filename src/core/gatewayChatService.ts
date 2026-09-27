@@ -275,6 +275,12 @@ export class GatewayChatService {
     if (delta.length === 0) {
       // Complete frame: the message is finalized, drop the record.
       this.forgetDeltaText(sessionKey, messageId);
+    } else if (fullText.length > 0) {
+      // Mixed frame: the adjusted events already emitted the cumulative
+      // text, so the tracked prefix must jump to it — keeping the stale
+      // delta prefix makes the later full-text completion frame re-emit
+      // the tail a second time.
+      this.deltaTextByMessage.set(sessionKey + '\u0000' + messageId, fullText);
     }
     if (!streamed) {
       return events;

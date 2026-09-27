@@ -351,6 +351,41 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('does not re-emit the tail when a mixed delta+text frame precedes the full-text completion', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // Delta 'he', then a mixed frame carrying both a delta and the
+    // cumulative text, then the normal full-text completion frame: the
+    // stale delta prefix must not duplicate the tail.
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', delta: 'he' },
+    }));
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', delta: 'x', text: 'hello' },
+    }));
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', messageId: 'm0', text: 'hello' },
+    }));
+    ws.emit('message', JSON.stringify({ type: 'event', event: 'session_end', payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e) => (e as { type: string }).type === 'text').map((e) => (e as { text: string }).text);
+    expect(texts).toEqual(['he', 'x', 'hello']);
+    svc.dispose();
+  });
+
   it('fails the send as a conflict when the resolved session is owned by another run', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);

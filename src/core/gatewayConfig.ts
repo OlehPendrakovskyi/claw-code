@@ -9,6 +9,8 @@
  */
 
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
 import { log } from '../vscode/commands/shared';
 
 /** SecretStorage key under which the gateway token is stored. */
@@ -134,8 +136,37 @@ type LanguageOverride = {
  *  The configured languages must be discovered from disk and inspected per
  *  language ({@link vscode.ConfigurationScope} supports a bare `languageId`)
  *  so migration covers every override. */
+/** User-level settings.json locations across VS Code distributions: a
+ *  plaintext token hidden under a `[language]` override in the global
+ *  settings file must be discovered too, not only workspace-level ones. */
+function userSettingsUris(): vscode.Uri[] {
+  const roots: string[] = [];
+  if (process.platform === 'win32') {
+    if (process.env.APPDATA) {
+      roots.push(path.join(process.env.APPDATA));
+    }
+  } else {
+    roots.push(path.join(os.homedir(), '.config'));
+    roots.push(path.join(os.homedir(), 'Library', 'Application Support'));
+  }
+  const distros = ['Code', 'Code - OSS', 'VSCodium'];
+  return roots.flatMap((root) =>
+    distros.map((d) => vscode.Uri.file(path.join(root, d, 'User', 'settings.json')))
+  );
+}
+
+/** Collect `[language]` override keys from a parsed settings object. */
+function collectLanguageIds(parsed: Record<string, unknown>, into: Set<string>): void {
+  for (const key of Object.keys(parsed)) {
+    const match = /^\[(.+)\]$/.exec(key.trim());
+    if (match && typeof parsed[key] === 'object' && parsed[key] !== null) {
+      into.add(match[1]);
+    }
+  }
+}
+
 async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
-  const uris: vscode.Uri[] = [];
+  const uris: vscode.Uri[] = userSettingsUris();
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
     uris.push(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json'));
   }
@@ -147,11 +178,11 @@ async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
     try {
       const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
       const parsed = JSON.parse(stripJsonc(text)) as Record<string, unknown>;
-      for (const key of Object.keys(parsed)) {
-        const match = /^\[(.+)\]$/.exec(key.trim());
-        if (match && typeof parsed[key] === 'object' && parsed[key] !== null) {
-          languageIds.add(match[1]);
-        }
+      collectLanguageIds(parsed, languageIds);
+      // .code-workspace files store their settings under a nested
+      // `settings` object; overrides there must be discovered as well.
+      if (typeof parsed.settings === 'object' && parsed.settings !== null) {
+        collectLanguageIds(parsed.settings as Record<string, unknown>, languageIds);
       }
     } catch {
       // Missing or unreadable settings files hold no discoverable overrides.

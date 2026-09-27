@@ -1271,6 +1271,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const gateway = await this.resolveGateway();
         if (!gateway) {
+            // Transport temporarily unavailable: retain the deferred entry
+            // so a later flush (the next run's done) can still bind the
+            // resume sink; deleting it here would strand the thread without
+            // transcript events for the resumed session.
+            if (this.threads.has(thread.id) && thread.sessionKey === deferred.sessionKey) {
+                this.deferredResumes.set(thread.id, deferred);
+            }
             return;
         }
         // Re-check after the await: a send started while the gateway resolved
@@ -1920,11 +1927,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         thread.sessionKey = sessionKey;
-        // Bind the thread to the gateway transport right away: until the
-        // next send, cancel/clear/close call backendFor(thread), which must
-        // reach the gateway session actually opened here instead of the
-        // unused legacy ChatService.
-        thread.transportBackend = gateway;
 
         let label = sessionKey;
         try {
@@ -1953,6 +1955,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         type: 'agentSelected',
                         sessionKey,
                     });
+                    this.bindGatewayTransportIfIdle(thread, gateway);
                     this.resumeSessionForThread(gateway, thread, sessionKey);
                     return;
                 }
@@ -1974,6 +1977,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.eventEpoch !== historyEpoch || thread.openGeneration !== openGen) {
             return;
         }
+        this.bindGatewayTransportIfIdle(thread, gateway);
         // A successful fetch replaces the transcript unconditionally (empty
         // history clears the prior session's messages); a failed fetch keeps
         // the current transcript rather than wiping it on transport errors.
@@ -2014,6 +2018,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         this.resumeSessionForThread(gateway, thread, sessionKey);
         this.emitState();
+    }
+
+    /** Bind the gateway transport for a thread only when no send owns it:
+     *  a send that started during the open's list/history awaits resolves
+     *  and binds its own backend (the acpx fallback included), and
+     *  overwriting it here would leave Cancel/Clear aborting the gateway
+     *  reference while that acpx process keeps running. */
+    private bindGatewayTransportIfIdle(thread: ChatThreadState, gateway: GatewayChatService): void {
+        if (!thread.isStreaming && thread.status !== 'running') {
+            thread.transportBackend = gateway;
+        }
     }
 
     /** Resume a session for a thread, replacing any previous transcript
