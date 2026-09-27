@@ -695,6 +695,7 @@ export class GatewayChatService {
     this.transcriptSinksBySession.delete(sessionKey);
     this.seenMessageIdsBySession.delete(sessionKey);
     this.deltaCursorBySession.delete(sessionKey);
+    this.seededCatchUpFingerprints.delete(sessionKey);
     this.releaseSubscription(sessionKey);
   }
 
@@ -1246,7 +1247,8 @@ export class GatewayChatService {
       }
       const fallbackKey = [...keys][0];
       const runSink = this.runSinksBySession.get(fallbackKey);
-      const sinks = runSink ? [runSink] : [...(this.transcriptSinksBySession.get(fallbackKey) ?? [])];
+      const transcript = [...(this.transcriptSinksBySession.get(fallbackKey) ?? [])];
+      const sinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
       return sinks.length > 0 ? { sinks, key: fallbackKey } : null;
     }
     const key = String(sessionKey);
