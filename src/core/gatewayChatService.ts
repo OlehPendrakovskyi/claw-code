@@ -109,6 +109,14 @@ function defaultWsFactory(url: string): WebSocketLike {
 export class GatewayChatService {
   private url: string;
   private token: string;
+
+  /** Composite identity of the configured gateway endpoint. Callers keep
+   *  connection-scoped caches (e.g. the webview session-key allowlist)
+   *  keyed by this value so credentials changes invalidate them; never log
+   *  it — it embeds the token. */
+  getGatewayIdentity(): string {
+    return `${this.url}:${this.token}`;
+  }
   private readonly logger: Logger;
   private readonly wsFactory: WebSocketFactory;
   private readonly baseDelayMs: number;

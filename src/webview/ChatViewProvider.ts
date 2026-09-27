@@ -71,6 +71,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  rebinding or loading history (a crafted key for an unlisted agent
      *  must not activate that session or pull its transcript). */
     private knownMainSessionKeys = new Set<string>();
+    /** Gateway identity the current allowlist was built from. A URL or
+     *  token change invalidates the list: keys reported by the previous
+     *  gateway must not pass the allowlist (or be auto-refreshed against)
+     *  after switching to another gateway. */
+    private allowlistGatewayId: string | null = null;
     /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
     private threadCounter = 0;
@@ -1719,6 +1724,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         try {
             const payload = await gateway.listSessions({});
+            this.allowlistGatewayId = gateway.getGatewayIdentity();
             this.knownMainSessionKeys = new Set(
                 buildAgentSessionItems(payload).map(item => item.sessionKey)
             );
@@ -1736,14 +1742,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  the gateway first: the restart-resume path binds a key the webview
      *  has not listed yet, and a failed initial list must not permanently
      *  reject every later legitimate selection. Fail-closed on refresh
-     *  errors: an unverifiable key is treated as unknown. */
+     *  errors: an unverifiable key is treated as unknown. A gateway
+     *  identity (URL/token) change clears the list first: keys learned
+     *  from the previous gateway are not valid for the new one, and the
+     *  identity check runs before the size check so a stale non-empty
+     *  list still triggers a fresh sessions.list. */
     private async isKnownMainSessionKey(gateway: GatewayChatService, sessionKey: string): Promise<boolean> {
+        const gatewayId = gateway.getGatewayIdentity();
+        if (this.allowlistGatewayId !== gatewayId) {
+            this.allowlistGatewayId = null;
+            this.knownMainSessionKeys = new Set<string>();
+        }
         if (this.knownMainSessionKeys.has(sessionKey)) {
             return true;
         }
         if (this.knownMainSessionKeys.size === 0) {
             try {
                 const payload = await gateway.listSessions({});
+                this.allowlistGatewayId = gatewayId;
                 this.knownMainSessionKeys = new Set(
                     buildAgentSessionItems(payload).map(item => item.sessionKey)
                 );
