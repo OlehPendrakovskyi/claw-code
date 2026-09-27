@@ -223,6 +223,10 @@ export class GatewayChatService {
   /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
    *  An entry also marks that session as having an active run (queue-mode selection). */
   private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
+  /** Sessions whose run sink is registered pre-ack by an in-flight send: a
+   *  resume catch-up replaying a missed completed row must not finalize that
+   *  sink, or the ack's ownership check would drop the actual response. */
+  private preAckSendKeys = new Set<string>();
   /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect.
    *  Multiple threads may bind the same session, so sinks fan out per key —
    *  a later subscriber must not overwrite an earlier thread's callback. */
@@ -836,6 +840,11 @@ export class GatewayChatService {
     const existingSink = this.runSinksBySession.get(sessionKey);
     const queueMode = existingSink ? 'steer' : 'enqueue';
     this.runSinksBySession.set(sessionKey, _onEvent);
+    // Mark the pre-ack registration: a concurrent resume catch-up that
+    // replays a missed completed assistant row must not finalize/retire
+    // this run sink while `chat.send` is still starting, or the ack's
+    // ownership check would drop the actual response.
+    this.preAckSendKeys.add(sessionKey);
     if (existingSink && existingSink !== _onEvent) {
       // A different thread still owns a run on this shared session: end its
       // stream cleanly instead of letting it hang while the replacement sink
@@ -858,6 +867,7 @@ export class GatewayChatService {
     const issueSend = (): void => {
       void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
       .then((payload) => {
+        this.preAckSendKeys.delete(sessionKey);
         const key = extractSessionKey(payload) ?? sessionKey;
         this.activeSessionKey = key;
         const stillOwns = this.runSinksBySession.get(key) === _onEvent ||
@@ -924,6 +934,7 @@ export class GatewayChatService {
         }
       })
       .catch((err: Error) => {
+        this.preAckSendKeys.delete(sessionKey);
         if (this.runSinksBySession.get(sessionKey) === _onEvent) {
           this.runSinksBySession.delete(sessionKey);
         }
@@ -934,6 +945,13 @@ export class GatewayChatService {
     };
     void this.subscribeSessionMessages(sessionKey).then((subscribed: boolean) => {
       if (subscribed) {
+        // Cancellation during the subscribe await must not issue the send:
+        // abort() removed this callback's pre-ack run-sink registration
+        // and its completion already finalized the run sink.
+        if (this.runSinksBySession.get(sessionKey) !== _onEvent) {
+          this.removeTranscriptSink(sessionKey, _onEvent);
+          return;
+        }
         issueSend();
         return;
       }
@@ -942,12 +960,18 @@ export class GatewayChatService {
       if (this.runSinksBySession.get(sessionKey) === _onEvent) {
         this.runSinksBySession.delete(sessionKey);
       }
+      // The subscribe helper's failure paths (unsupported-method retire and
+      // rejection catch) already finalized this sink with a `done`: emitting
+      // another one here would make the provider finalize the run twice.
+      const unfinalized = this.transcriptSinksBySession.get(sessionKey)?.has(_onEvent);
       this.removeTranscriptSink(sessionKey, _onEvent);
       _onEvent({
         type: 'error',
         message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
       });
-      _onEvent({ type: 'done' });
+      if (unfinalized) {
+        _onEvent({ type: 'done' });
+      }
     });
   }
 
@@ -1080,6 +1104,12 @@ export class GatewayChatService {
         this.deltaCursorBySession.set(sessionKey, cursor);
       }
       let lastRowFinalized = false;
+      // The pre-ack registration of an in-flight send is protected: the
+      // replay may not finalize/retire that sink, or the send ack's ownership
+      // check would treat the run as retired and drop its actual response.
+      const protectedRunSink = this.preAckSendKeys.has(sessionKey)
+        ? this.runSinksBySession.get(sessionKey)
+        : undefined;
       for (const row of payload.messages) {
         const messageId = typeof row.messageId === 'string' ? row.messageId : null;
         if (messageId && this.hasSeen(sessionKey, messageId)) {
@@ -1109,6 +1139,9 @@ export class GatewayChatService {
         }
         if (isFinalAssistantRow) {
           for (const sink of sinks) {
+            if (sink === protectedRunSink) {
+              continue;
+            }
             sink({ type: 'done' });
           }
           lastRowFinalized = true;
@@ -1121,10 +1154,11 @@ export class GatewayChatService {
       // over, and leaving it in runSinksBySession would make the next send
       // select queueMode 'steer' against a finished run and keep routing
       // future deltas into the old callback. A final row followed by further
-      // deltas means the stream continued, so the run sink must stay.
+      // deltas means the stream continued, so the run sink must stay. The
+      // protected pre-ack sink of an in-flight send stays registered.
       if (lastRowFinalized) {
         const runSink = this.runSinksBySession.get(sessionKey);
-        if (runSink) {
+        if (runSink && runSink !== protectedRunSink) {
           this.runSinksBySession.delete(sessionKey);
           this.removeTranscriptSink(sessionKey, runSink);
         }

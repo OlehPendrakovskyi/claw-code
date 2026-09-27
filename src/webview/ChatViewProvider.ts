@@ -1324,6 +1324,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!gateway) {
             return;
         }
+        // Selecting an agent invalidates any pending openSession on the
+        // active thread: its openGeneration-guarded continuation would
+        // otherwise pass the stale-generation check after its history/list
+        // await and clobber this binding (and persist the stale key again).
+        const pendingOpenThread = this.getActiveThread();
+        if (pendingOpenThread) {
+            pendingOpenThread.openGeneration += 1;
+        }
         gateway.setActiveSession(sessionKey);
         await this.persistLastSessionKey(sessionKey);
         const activeThread = this.getActiveThread();
