@@ -183,13 +183,53 @@ export type SessionRow = {
   lastActivityAt?: string | null;
   lastInteractionAt?: string | null;
   activeMinutes?: number | null;
-  placement?: {
-    state: 'local' | 'requested' | 'provisioning' | 'syncing' | 'starting' | 'active' | 'draining' | 'reconciling' | 'reclaimed' | 'failed';
-    [key: string]: unknown;
-  };
-  owner?: { type: string; id: string; label?: string; assignedBy?: string; assignedAt?: string };
-  participants?: Array<{ type: string; id: string; label?: string }>;
+  placement?: SessionRowPlacement;
+  owner?: SessionRowOwner;
+  participants?: SessionRowParticipant[];
   participantCount?: number;
+  [key: string]: unknown;
+};
+
+/** Placement projection of a {@link SessionRow}. */
+export type SessionRowPlacement = {
+  state:
+    | 'local'
+    | 'requested'
+    | 'provisioning'
+    | 'syncing'
+    | 'starting'
+    | 'active'
+    | 'draining'
+    | 'reconciling'
+    | 'reclaimed'
+    | 'failed';
+  [key: string]: unknown;
+};
+
+/** Owner projection of a {@link SessionRow}. */
+export type SessionRowOwner = {
+  type: string;
+  id: string;
+  label?: string;
+  assignedBy?: string;
+  assignedAt?: string;
+};
+
+/** Participant entry of a {@link SessionRow}. */
+export type SessionRowParticipant = {
+  type: string;
+  id: string;
+  label?: string;
+};
+
+/** Tool invocation metadata attached to a session message (additive). */
+export type ToolCallPayload = {
+  id?: string;
+  name?: string;
+  title?: string;
+  status?: string;
+  arguments?: unknown;
+  result?: unknown;
   [key: string]: unknown;
 };
 
@@ -203,16 +243,45 @@ export type SessionMessagePayload = {
   /** Streaming text delta (partial assistant chunk). */
   delta?: string;
   /** Tool invocation metadata attached to the message (additive). */
+  toolCall?: ToolCallPayload;
+  usage?: Partial<UsageInfo>;
+  [key: string]: unknown;
+};
+
+/**
+ * Raw message-frame payload shape tolerated by the gateway chat transport:
+ * unlike {@link SessionMessagePayload} every field is `unknown`, because the
+ * wire format is parsed without validation and narrowed at the edges.
+ */
+export type SessionMessageFrame = {
+  role?: unknown;
+  text?: unknown;
+  delta?: unknown;
+  messageId?: unknown;
   toolCall?: {
-    id?: string;
-    name?: string;
-    title?: string;
-    status?: string;
+    id?: unknown;
+    name?: unknown;
+    title?: unknown;
+    status?: unknown;
+    details?: unknown;
     arguments?: unknown;
     result?: unknown;
-    [key: string]: unknown;
-  };
-  usage?: Partial<UsageInfo>;
+  } | null;
+  usage?: {
+    promptTokens?: number;
+    completionTokens?: number;
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    input_tokens?: number;
+    output_tokens?: number;
+  } | null;
+  [key: string]: unknown;
+};
+
+/** Payload of the `sessions.changed` broadcast event. */
+export type SessionsChangedPayload = {
+  key?: string;
+  reason?: string;
   [key: string]: unknown;
 };
 
@@ -222,7 +291,7 @@ export type SessionMessagePayload = {
  */
 export type SessionEvent =
   | { event: 'session.message'; payload: SessionMessagePayload }
-  | { event: 'sessions.changed'; payload: { key?: string; reason?: string; [key: string]: unknown } }
+  | { event: 'sessions.changed'; payload: SessionsChangedPayload }
   | { event: 'session.approval'; payload: Record<string, unknown> }
   | { event: 'session_start'; payload: Record<string, unknown> }
   | { event: 'session_end'; payload: Record<string, unknown> }
