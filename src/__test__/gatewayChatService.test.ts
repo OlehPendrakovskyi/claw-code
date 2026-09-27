@@ -443,6 +443,34 @@ describe('GatewayChatService sendMessage/abort', () => {
     svc.dispose();
   });
 
+  it('keeps the response visible for a no-id frame carrying delta and full text', async () => {
+    const ws = createMockWs();
+    const svc = await connectService(ws);
+    const events: unknown[] = [];
+    svc.sendMessage('hi', '/tmp', 'm', 'chat', (e) => events.push(e));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerSubscribe(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    answerPreSendHistory(ws);
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const send = sentRequests(ws).find((r) => r.method === 'chat.send')!;
+    ws.emit('message', JSON.stringify({ type: 'res', id: send.id, ok: true, payload: { sessionKey: 'main' } }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    // A normal frame without a messageId carries both the delta and the
+    // cumulative text describing the same content: the mapper emits only the
+    // full text, so the delta must NOT join the emitted prefix — otherwise
+    // bookkeeping slices the response down to an empty string and the
+    // assistant turn disappears.
+    ws.emit('message', JSON.stringify({
+      type: 'event', event: 'session.message',
+      payload: { sessionKey: 'main', role: 'assistant', delta: 'hello', text: 'hello' },
+    }));
+    await new Promise<void>((r) => setTimeout(r, 0));
+    const texts = events.filter((e) => (e as { type: string }).type === 'text').map((e) => (e as { text: string }).text);
+    expect(texts).toEqual(['hello']);
+    svc.dispose();
+  });
+
   it('fails the send as a conflict when the resolved session is owned by another run', async () => {
     const ws = createMockWs();
     const svc = await connectService(ws);

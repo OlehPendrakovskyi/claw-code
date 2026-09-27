@@ -222,7 +222,11 @@ export class GatewayChatService {
     // Count the delta toward the emitted prefix only when the mapper actually
     // renders it: without a messageId a frame carrying full text emits only
     // that text, so its delta is invisible and must not join the prefix.
-    const deltaRendered = messageId !== undefined || fullText.length === 0;
+    // `asNonEmptyString` yields `string | null`, so presence is checked
+    // against null: treating null as present would count a delta the mapper
+    // never emitted (no-id full-text frames render only the full text) and
+    // slice the emitted response down to nothing.
+    const deltaRendered = messageId !== null || fullText.length === 0;
     if (delta.length > 0 && deltaRendered) {
       store.set(key, (store.get(key) ?? '') + delta);
       if (store.size > DELTA_TRACK_LIMIT) {
@@ -275,6 +279,13 @@ export class GatewayChatService {
    *  Multiple threads may bind the same session, so sinks fan out per key —
    *  a later subscriber must not overwrite an earlier thread's callback. */
   private transcriptSinksBySession = new Map<string, Set<((event: ChatEvent) => void)>>();
+  /** Terminal `error`/`done` pairs already delivered to a sink, tracked
+   *  because failure delivery is per caller: when a send joins a pending
+   *  subscription owned by another caller (e.g. a resume), the shared RPC's
+   *  failure path runs with the OWNER's options, not the send's, so the send
+   *  cannot rely on its own `onFailure` having run. A sink marked here must
+   *  not receive a second terminal when its own attempt resolves `false`. */
+  private terminallyDeliveredSinks = new WeakSet<(event: ChatEvent) => void>();
   /** In-flight `sessions.messages.subscribe` RPCs per session. Concurrent
    *  callers (pre-send subscription and the send acknowledgement path) share
    *  one RPC instead of issuing duplicates whose independent failure handler
@@ -1362,6 +1373,7 @@ export class GatewayChatService {
         this.addTranscriptSink(key, _onEvent);
         this.subscribeSessionMessages(key, {
           onFailure: (err: Error) => {
+            this.terminallyDeliveredSinks.add(_onEvent);
             _onEvent({
               type: 'error',
               message: `Transcript subscription for "${key}" failed after the run was accepted: ${err.message}. The response may not appear in this thread.`
@@ -1384,6 +1396,7 @@ export class GatewayChatService {
     };
     void this.subscribeSessionMessages(sessionKey, {
       onFailure: () => {
+        this.terminallyDeliveredSinks.add(_onEvent);
         _onEvent({
           type: 'error',
           message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
@@ -1404,12 +1417,13 @@ export class GatewayChatService {
       }
       // Terminal delivery belongs to the attempt's single failure path (our
       // onFailure, or the joined attempt's owner): emit a terminal here only
-      // when that path never ran for this sink (e.g. the attempt was
-      // superseded and skipped its cleanup), never after an already-delivered
-      // done.
-      const stillListed = this.transcriptSinksBySession.get(sessionKey)?.has(_onEvent) ?? false;
+      // when no terminal was delivered to this sink — the joined attempt's
+      // owner options, not ours, decide delivery, and that owner's failure
+      // path may have emitted nothing (e.g. a resume whose captured run sink
+      // was still null). The delivered-set makes that explicit.
+      const alreadyDelivered = this.terminallyDeliveredSinks.has(_onEvent);
       this.removeTranscriptSink(sessionKey, _onEvent);
-      if (stillListed) {
+      if (!alreadyDelivered) {
         _onEvent({
           type: 'error',
           message: `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`
@@ -1587,6 +1601,9 @@ export class GatewayChatService {
         // no error.
         onFailure: (err: Error) => {
           const runSink = this.runSinksBySession.get(sessionKey);
+          if (runSink) {
+            this.terminallyDeliveredSinks.add(runSink);
+          }
           runSink?.({
             type: 'error',
             message: `Transcript subscription for "${sessionKey}" failed after reconnect: ${err.message}. The response may not appear in this thread.`
@@ -1650,6 +1667,7 @@ export class GatewayChatService {
           } else {
             // No failure callback (resume path): finalize the streaming row
             // so an active run does not stay `running` forever.
+            this.terminallyDeliveredSinks.add(runSink);
             runSink({ type: 'done' });
           }
         }
