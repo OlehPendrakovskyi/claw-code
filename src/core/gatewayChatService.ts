@@ -1174,6 +1174,26 @@ export class GatewayChatService {
         this.preAckBufferedFrames.push({ evt, sends: new Set([endKey]) });
         return;
       }
+      if (
+        endKey &&
+        this.preAckSendKeys.size > 0 &&
+        !this.runSinksBySession.has(endKey) &&
+        !this.transcriptSinksBySession.has(endKey)
+      ) {
+        // A `session.end` keyed by a session with no sink while a send is
+        // pre-ack may be the RESOLVED key of a remapped send: the gateway
+        // reports the resolved key while `preAckSendKeys` holds only the
+        // requested one, so finalizing now is a no-op and the later
+        // acknowledgement installs the sink after the terminal event was
+        // lost, leaving the thread streaming forever. Buffer with every
+        // in-flight send (the owning send is unknown before settlement, the
+        // same ambiguity the keyed session.message path accepts) and let the
+        // drain correlate via the settled requested→resolved mapping; if the
+        // end belongs to no in-flight send it is dropped, which matches the
+        // no-op finalize it replaces.
+        this.preAckBufferedFrames.push({ evt, sends: new Set(this.preAckSendKeys) });
+        return;
+      }
       if (endKey) {
         this.finalizeSessionEnd(endKey);
       }

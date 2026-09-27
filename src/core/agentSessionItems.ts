@@ -168,6 +168,11 @@ export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will lo
 /**
  * Map `chat.history` rows into transcript messages. Non-assistant/user rows
  * (tool-only or unknown roles) are skipped; empty text yields nothing.
+ *
+ * A history row can appear twice for one messageId: first as a streaming
+ * delta (partial `text`, non-empty `delta`), then as the completed row.
+ * Delta rows are skipped so the completed row survives deduplication —
+ * keeping the first (partial) row would truncate the restored transcript.
  */
 export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
   if (!payload || typeof payload !== 'object') {
@@ -183,11 +188,23 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     if (!row || typeof row !== 'object') {
       continue;
     }
-    const rec = row as { role?: unknown; text?: unknown; messageId?: unknown };
+    const rec = row as {
+      role?: unknown;
+      text?: unknown;
+      messageId?: unknown;
+      delta?: unknown;
+    };
     const messageId =
       typeof rec.messageId === 'string' && rec.messageId ? rec.messageId : null;
     const role = rec.role === 'user' ? 'user' : rec.role === 'assistant' ? 'assistant' : null;
     if (!role || typeof rec.text !== 'string' || !rec.text) {
+      continue;
+    }
+    if (
+      role === 'assistant' &&
+      typeof rec.delta === 'string' &&
+      rec.delta.length > 0
+    ) {
       continue;
     }
     // Complete rows may repeat in chat.history (e.g. snapshot + tail overlap
