@@ -2025,7 +2025,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        if (this.getActiveThread()?.id !== thread.id) {
+        if (this.getActiveThread()?.id !== thread.id || thread.openGeneration !== openGen) {
             if (thread.openInFlightGen === openGen) {
                 thread.openInFlightGen = null;
             }
