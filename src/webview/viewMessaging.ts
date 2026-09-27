@@ -170,7 +170,16 @@ export function escapeXmlBody(str: string): string {
 async function safeCanonicalPath(p: string): Promise<string | null> {
     try {
         const real = await fsp.realpath(p);
-        return real === p ? real : null;
+        // Case-insensitive filesystems (Windows, macOS) can canonicalize the
+        // spelling of a manually attached path, so an exact string comparison
+        // would reject valid files; apply the text-attachment comparison
+        // policy here as well. Any other mismatch still means the stored
+        // path now resolves elsewhere (e.g. a symlink swap) and is dropped.
+        const samePath =
+            process.platform === 'win32' || process.platform === 'darwin'
+                ? real.toLowerCase() === p.toLowerCase()
+                : real === p;
+        return samePath ? real : null;
     } catch {
         return null;
     }

@@ -505,8 +505,24 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.status = 'idle';
         // Abort's `done` is epoch-dropped above, so the suspended transcript
         // callback would stay stranded: restore it explicitly so the thread
-        // keeps receiving transcript events after the reset.
-        this.restoreSuspendedTranscriptSink(thread);
+        // keeps receiving transcript events after the reset. An idle resumed
+        // thread has no suspended sink, but its persistent callback was
+        // captured with the pre-bump bindingEpoch: rebind it too, or every
+        // future transcript event is epoch-dropped after Clear/Reset.
+        const gatewayBackend = backend instanceof GatewayChatService ? backend : null;
+        if (!this.suspendedTranscriptSinks.get(thread.id) && gatewayBackend) {
+            const persistent = this.transcriptCallbacks.get(thread.id);
+            if (persistent) {
+                this.transcriptCallbacks.delete(thread.id);
+                gatewayBackend.removeTranscriptSink(persistent.sessionKey, persistent.cb);
+                const rebindEpoch = thread.bindingEpoch;
+                const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, rebindEpoch, 'binding'); };
+                this.transcriptCallbacks.set(thread.id, { sessionKey: persistent.sessionKey, cb });
+                gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
+            }
+        } else {
+            this.restoreSuspendedTranscriptSink(thread);
+        }
         thread.title = `Thread ${thread.index}`;
         thread.contextTokens = 0;
         thread.lastUsage = null;
@@ -1243,7 +1259,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         const chosen = await picker.pick();
         if (chosen) {
-            await this.handleSelectAgent(chosen.sessionKey);
+            // Route through the open flow, not just key binding: unlike the
+            // webview session flow, the palette selection must fetch history
+            // and register the transcript resume sink, or the thread keeps
+            // showing the previous conversation and receives no events.
+            await this.handleOpenSession(chosen.sessionKey);
         }
     }
 

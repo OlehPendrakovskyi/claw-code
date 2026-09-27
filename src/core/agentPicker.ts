@@ -83,7 +83,12 @@ export function isMainAgentSession(row: SessionRow): boolean {
     return true;
   }
   const parts = key.split(':');
-  return parts.length === 3 && parts[0] === 'agent' && parts[2] === 'main';
+  return (
+    parts.length === 3 &&
+    parts[0] === 'agent' &&
+    parts[1] !== '' &&
+    parts[2] === 'main'
+  );
 }
 
 /**

@@ -651,7 +651,13 @@ export class GatewayChatService {
   private attachRuntimeHandlers(): void {
     const ws = this.ws;
     if (!ws) return;
-    ws.on('message', (data: unknown) => this.handleMessage(data) as never);
+    // A late frame on a retired socket (reconnect/updateConnection replaced
+    // it) must not route: its events belong to the old connection and could
+    // leak stale-session deltas into the current run or finalize it early.
+    ws.on('message', (data: unknown) => {
+      if (this.ws !== ws) return;
+      this.handleMessage(data);
+    });
   }
 
   private handleMessage(data: unknown): void {
@@ -978,15 +984,11 @@ export class GatewayChatService {
     }
     const attempt = this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
       .then((): boolean => {
-        // eslint-disable-next-line no-console
-        console.error('DBG subscribe.then', sessionKey);
         this.subscribedSessions.add(sessionKey);
         void this.catchUpHistory(sessionKey, opts);
         return true;
       })
       .catch((err: Error): boolean => {
-        // eslint-disable-next-line no-console
-        console.error('DBG subscribe.catch', sessionKey, err.message);
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
         // A transient subscribe rejection must not retire persistent resume
         // sinks: they would vanish from transcriptSinksBySession and
