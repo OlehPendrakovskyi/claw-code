@@ -276,6 +276,7 @@ export class GatewayChatService {
   }): boolean {
     return (
       typeof payload.messageId === 'string' &&
+      payload.messageId.length > 0 &&
       typeof payload.text === 'string' &&
       payload.text.length > 0 &&
       !(typeof payload.delta === 'string' && payload.delta.length > 0)

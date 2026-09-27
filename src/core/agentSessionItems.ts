@@ -184,22 +184,26 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
       continue;
     }
     const rec = row as { role?: unknown; text?: unknown; messageId?: unknown };
+    const messageId =
+      typeof rec.messageId === 'string' && rec.messageId ? rec.messageId : null;
     const role = rec.role === 'user' ? 'user' : rec.role === 'assistant' ? 'assistant' : null;
     if (!role || typeof rec.text !== 'string' || !rec.text) {
       continue;
     }
     // Complete rows may repeat in chat.history (e.g. snapshot + tail overlap
     // on restore); dedupe by messageId while retaining rows without an id.
-    if (typeof rec.messageId === 'string') {
-      if (seenIds.has(rec.messageId)) {
+    // An empty string id is missing, not a dedup key: keying it would drop
+    // every idless history row after the first.
+    if (messageId) {
+      if (seenIds.has(messageId)) {
         continue;
       }
-      seenIds.add(rec.messageId);
+      seenIds.add(messageId);
     }
     out.push({
       role,
       content: rec.text,
-      messageId: typeof rec.messageId === 'string' ? rec.messageId : null,
+      messageId,
     });
   }
   return out;
