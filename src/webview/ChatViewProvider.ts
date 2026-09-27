@@ -844,17 +844,30 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
                 if (autoAttach) {
                     await this.addAttachments(thread, [autoAttachPath], { guard: () => thread.eventEpoch === sendEpoch });
-                    pushNew(thread.pendingAttachments.filter(a => a.path === autoAttachPath));
+                    // addAttachments stores the canonical realpath; compare
+                    // against the canonical editor spelling so a symlinked
+                    // or case-differing auto-attachment is not dropped.
+                    const canonicalAutoAttach = await fs.promises.realpath(autoAttachPath).catch(() => autoAttachPath);
+                    pushNew(thread.pendingAttachments.filter(a => a.path === canonicalAutoAttach));
                 }
             }
 
             const mentions = await this.resolveMentions(text);
             if (mentions.length > 0) {
-                await this.addAttachments(thread, mentions, { guard: () => thread.eventEpoch === sendEpoch });
+                // Canonicalize mention paths before dedupe and attachment:
+                // addAttachments stores canonical realpaths, and the dedupe
+                // and mention-key comparisons below must use the same
+                // spelling or a symlinked/case-differing mention is lost.
+                const canonicalMentions = await Promise.all(
+                    mentions.map(m =>
+                        fs.promises.realpath(m.path).then(p => ({ ...m, path: p })).catch(() => m)
+                    )
+                );
+                await this.addAttachments(thread, canonicalMentions, { guard: () => thread.eventEpoch === sendEpoch });
                 // Mention dedupe keys on (path + range); attach only pending
                 // entries whose range matches an accepted mention, not every
                 // attachment of the same file.
-                const mentionKeys = new Set(mentions.map(mentionKey));
+                const mentionKeys = new Set(canonicalMentions.map(mentionKey));
                 pushNew(thread.pendingAttachments.filter(a => mentionKeys.has(attachmentKey(a))));
             }
 
@@ -1603,8 +1616,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // gateway-backed run may abort the previous gateway session; an
             // acpx fallback run (retired above) must not cancel whatever
             // other owner still runs on the stale binding key.
-            if (!sharesLiveRun && previousBackend instanceof GatewayChatService) {
-                gateway.abort(previousKey);
+            if (previousBackend instanceof GatewayChatService) {
+                // Abort only when this thread owns the live run on the
+                // previous key: an idle subscriber merely switching away
+                // must not cancel a run owned by another client. Late events
+                // from an unowned run cannot reach the rebound thread — the
+                // epoch bumped above and the sink is cleared below.
+                if (thread.status === 'running' && !sharesLiveRun) {
+                    gateway.abort(previousKey);
+                }
                 if (!this.otherThreadsOnKey(thread.id, previousKey)) {
                     // Same guard as handleSelectAgent: idle resumed
                     // subscribers on the previous session keep their sink.
