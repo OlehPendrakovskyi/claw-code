@@ -1520,6 +1520,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 continue;
             }
             if (!thread.isStreaming && thread.status !== 'running') {
+                // Idle threads are not interrupted, but `updateConnection`
+                // retires every transcript sink on the shared gateway —
+                // including the persistent resume sinks of idle resumed
+                // threads. Drop the provider-side bookkeeping for those too,
+                // so no stale callback record survives a sink that no longer
+                // exists on the gateway: the next openSession or resume
+                // revalidates the key against the new identity's allowlist
+                // and re-subscribes with a fresh catch-up seed.
+                this.transcriptCallbacks.delete(thread.id);
+                this.suspendedTranscriptSinks.delete(thread.id);
                 continue;
             }
             thread.eventEpoch += 1;

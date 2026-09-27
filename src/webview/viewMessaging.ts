@@ -204,8 +204,10 @@ async function safeCanonicalPath(p: string): Promise<string | null> {
     }
 }
 
-/** Resolve the location an opened handle actually refers to through
- *  /proc/self/fd (Linux only; null elsewhere). Unlike realpath of the
+/** Resolve the location an opened handle actually refers to. Linux exposes
+ *  the fd link at /proc/self/fd; other POSIX systems (macOS/BSD) mount the
+ *  same handle view at /dev/fd (fdescfs), so both are tried and a link that
+ *  fails to resolve to a real path yields null. Unlike realpath of the
  *  stored path, the fd link is anchored to the opened inode, so a parent
  *  directory swapped before open and restored afterwards still shows the
  *  swap: the opened file's true path differs from the stored canonical
@@ -214,11 +216,22 @@ async function openedHandlePath(handle: fsp.FileHandle): Promise<string | null> 
     if (process.platform === 'win32') {
         return null;
     }
-    try {
-        return await fsp.realpath(`/proc/self/fd/${handle.fd}`);
-    } catch {
-        return null;
+    for (const dir of ['/proc/self/fd', '/dev/fd']) {
+        try {
+            const real = await fsp.realpath(`${dir}/${handle.fd}`);
+            // A char-device fallback (fdescfs not resolving to the target)
+            // echoes the fd path itself instead of the file path; such a
+            // result carries no location information and must not reject a
+            // valid attachment.
+            if (real === `${dir}/${handle.fd}`) {
+                continue;
+            }
+            return real;
+        } catch {
+            // try the next handle root
+        }
     }
+    return null;
 }
 
 /** Prove an image attachment path still refers to the validated regular file.
@@ -274,16 +287,16 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
  *     of the path. This covers Windows too, where O_NOFOLLOW is unavailable:
  *     a symlink/junction swapped in at the final component yields a mismatch
  *     instead of foreign content.
- *  4. Verify the opened handle's own location via /proc/self/fd realpath
- *     (POSIX): the fd link always resolves through the current directory
+ *  4. Verify the opened handle's own location via the fd link (/proc/self/fd
+ *     on Linux, /dev/fd on other POSIX systems): the fd link always resolves through the current directory
  *     chain to the actual opened inode, so an intermediate-directory swap
  *     that happened before open is exposed even if the attacker reverts
  *     the directory before the later checks — the pre-open realpath and
  *     the identity comparison both read live path state, but the fd link
  *     is anchored to the opened handle.
  *  5. Re-canonicalize the path after the read and discard on any drift.
- *  On Windows /proc is unavailable, so the swap-revert window there relies
- *  on the dev/ino comparison alone.
+ *  On Windows the fd link is unavailable, so the swap-revert window there
+ *  relies on the dev/ino comparison alone.
  */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
