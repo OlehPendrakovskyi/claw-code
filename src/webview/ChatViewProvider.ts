@@ -1838,7 +1838,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         try {
-            await this.persistLastSessionKey(sessionKey);
+            await this.persistLastSessionKey(sessionKey, () =>
+                this.selectGeneration === selectGen &&
+                (selectionGen === null || pendingOpenThread?.openGeneration === selectionGen));
         if (this.selectGeneration !== selectGen) {
             return;
         }
@@ -2245,7 +2247,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
         };
         try {
-            await this.persistLastSessionKey(sessionKey);
+            await this.persistLastSessionKey(sessionKey, () =>
+                this.getActiveThread()?.id === thread.id && thread.openGeneration === openGen);
         } catch (err) {
             log.warn('openSessionRebinding: failed to persist last session key', err);
             restoreAbandonedRebind();
@@ -2389,12 +2392,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  only if no newer persist was requested while it waited: an older
      *  selection's late write must not overwrite a newer selection's key,
      *  which the in-memory generation checks would then reject while the
-     *  stale key still resumes after a restart. */
-    private async persistLastSessionKey(sessionKey: string): Promise<void> {
+     *  stale key still resumes after a restart.
+     *  The caller additionally passes an isCurrent predicate capturing its
+     *  own request generation: it is re-checked inside the serialized write
+     *  right before workspaceState is updated, because a stale request can
+     *  call this method AFTER a newer one — bumping the persist generation
+     *  — yet still be rejected by the caller's own checks afterward. */
+    private async persistLastSessionKey(sessionKey: string, isCurrent?: () => boolean): Promise<void> {
         const gen = ++this.persistGeneration;
+        const stale = (): boolean => gen !== this.persistGeneration || (isCurrent !== undefined && !isCurrent());
+        if (stale()) {
+            return;
+        }
         this.lastSessionKey = sessionKey;
         const write = this.persistLastSessionKeyWrite.then(async () => {
-            if (gen !== this.persistGeneration) {
+            if (stale()) {
                 return;
             }
             await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, sessionKey);
