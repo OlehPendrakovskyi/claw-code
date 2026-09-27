@@ -1838,11 +1838,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         try {
-            const payload = await gateway.listSessions({});
-            this.allowlistGatewayId = gateway.getGatewayIdentity();
-            this.knownMainSessionKeys = new Set(
-                buildAgentSessionItems(payload).map(item => item.sessionKey)
-            );
+            const payload = await this.refreshSessionAllowlist(gateway);
+            if (!payload) {
+                return;
+            }
             postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
                 type: forPicker ? 'agentsList' : 'sessionsList',
                 sessions: buildAgentSessionItems(payload),
@@ -1850,6 +1849,34 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
             log.warn('sessions.list failed', err);
         }
+    }
+
+    /** Fetch sessions.list and populate the allowlist, rejecting a stale
+     *  response: the gateway identity is re-read after the RPC resolves, so
+     *  a URL/token change while it was in flight discards the result and
+     *  retries once; a persistent mismatch fails closed (allowlist left
+     *  cleared) rather than authorizing old-gateway keys on a new gateway.
+     *  Returns the fresh payload, or null when no trustworthy refresh
+     *  happened. */
+    private async refreshSessionAllowlist(gateway: GatewayChatService): Promise<unknown | null> {
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+            const identityBefore = gateway.getGatewayIdentity();
+            try {
+                const payload = await gateway.listSessions({});
+                if (gateway.getGatewayIdentity() !== identityBefore) {
+                    continue;
+                }
+                this.allowlistGatewayId = identityBefore;
+                this.knownMainSessionKeys = new Set(
+                    buildAgentSessionItems(payload).map(item => item.sessionKey)
+                );
+                return payload;
+            } catch (err) {
+                log.warn('session allowlist refresh failed', err);
+                return null;
+            }
+        }
+        return null;
     }
 
     /** Whether the webview-supplied main-session key is in the last
@@ -1872,15 +1899,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return true;
         }
         if (this.knownMainSessionKeys.size === 0) {
-            try {
-                const payload = await gateway.listSessions({});
-                this.allowlistGatewayId = gatewayId;
-                this.knownMainSessionKeys = new Set(
-                    buildAgentSessionItems(payload).map(item => item.sessionKey)
-                );
-            } catch (err) {
-                log.warn('session allowlist refresh failed', err);
-            }
+            await this.refreshSessionAllowlist(gateway);
         }
         return this.knownMainSessionKeys.has(sessionKey);
     }
