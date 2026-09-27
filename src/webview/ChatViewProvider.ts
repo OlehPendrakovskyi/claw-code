@@ -623,10 +623,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (options?.guard?.() === false) {
                     return;
                 }
-                const ext = path.extname(filePath).toLowerCase();
+                // Canonicalize the stored path so the read-time realpath
+                // re-verification compares against the true spelling: a
+                // case-insensitive volume cannot smuggle a swap whose target
+                // is only case-different at read time.
+                const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
+                const ext = path.extname(canonical).toLowerCase();
                 thread.pendingAttachments.push({
-                    name: path.basename(filePath),
-                    path: filePath,
+                    name: path.basename(canonical),
+                    path: canonical,
                     type: ChatViewProvider.IMAGE_EXTENSIONS.has(ext) ? 'image' : 'file',
                     ...(typeof item !== 'string' && item.lineStart
                         ? { lineStart: item.lineStart, lineEnd: item.lineEnd ?? item.lineStart }

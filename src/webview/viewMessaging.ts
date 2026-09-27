@@ -231,16 +231,11 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         }
         try {
             const real = await fsp.realpath(att.path);
-            // Case-insensitive filesystems (Windows, macOS) can canonicalize
-            // the spelling of a manually attached path, so a raw string
-            // comparison would reject valid files. Compare case-insensitively
-            // there; any other mismatch still means the stored path now
-            // resolves elsewhere (e.g. a symlink swap) and is dropped.
-            const samePath =
-                process.platform === 'win32' || process.platform === 'darwin'
-                    ? real.toLowerCase() === att.path.toLowerCase()
-                    : real === att.path;
-            if (!samePath) {
+            // The stored path is canonicalized at attachment time, so any
+            // realpath mismatch — including a case-only spelling difference,
+            // which a swap can exploit on case-sensitive volumes — means the
+            // stored path now resolves elsewhere and must be dropped.
+            if (real !== att.path) {
                 sections.push(`<file path="${escapeXmlAttr(att.path)}">\n[Could not read file]\n</file>`);
                 continue;
             }
