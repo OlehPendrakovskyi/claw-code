@@ -1864,20 +1864,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  serialized requests would let the older response resolve last and
      *  overwrite the allowlist with a stale snapshot, so refreshes are
      *  serialized (later callers join the live attempt, and the newest
-     *  commit always reflects the most recent sessions.list). */
-    private allowlistRefreshInFlight: Promise<unknown | null> | null = null;
+     *  commit always reflects the most recent sessions.list). The shared
+     *  promise is keyed by gateway identity: a URL/token change while an
+     *  old refresh is in flight starts a new refresh for the new gateway
+     *  instead of joining the old one, and a caller whose identity differs
+     *  from the committed refresh retries against its own gateway. */
+    private allowlistRefreshInFlight: Map<string, Promise<unknown | null>> = new Map();
 
     private async refreshSessionAllowlist(gateway: GatewayChatService): Promise<unknown | null> {
-        const existing = this.allowlistRefreshInFlight;
+        const identity = gateway.getGatewayIdentity();
+        const existing = this.allowlistRefreshInFlight.get(identity);
         if (existing) {
             return existing;
         }
         const run = this.runAllowlistRefresh(gateway).finally(() => {
-            if (this.allowlistRefreshInFlight === run) {
-                this.allowlistRefreshInFlight = null;
+            if (this.allowlistRefreshInFlight.get(identity) === run) {
+                this.allowlistRefreshInFlight.delete(identity);
             }
         });
-        this.allowlistRefreshInFlight = run;
+        this.allowlistRefreshInFlight.set(identity, run);
         return run;
     }
 
@@ -2059,7 +2064,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (!(activeThread.isStreaming || activeThread.status === 'running')) {
                 const historyEpoch = activeThread.eventEpoch;
                 const history = await gateway.getHistory(sessionKey);
-                if (this.getActiveThread()?.id === activeThread.id && activeThread.sessionKey === sessionKey &&
+                if (this.selectGeneration === selectGen &&
+                    this.getActiveThread()?.id === activeThread.id && activeThread.sessionKey === sessionKey &&
                     activeThread.eventEpoch === historyEpoch && !activeThread.isStreaming &&
                     (selectionGen === null || activeThread.openGeneration === selectionGen)) {
                     if (history !== null) {
@@ -2076,7 +2082,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         activeThread.status = 'error';
                     }
                     this.resumeSessionForThread(gateway, activeThread, sessionKey, history !== null);
-                } else if (this.getActiveThread()?.id === activeThread.id &&
+                } else if (this.selectGeneration === selectGen &&
+                    this.getActiveThread()?.id === activeThread.id &&
                     (selectionGen === null || activeThread.openGeneration === selectionGen) &&
                     !this.transcriptCallbacks.has(activeThread.id) &&
                     !this.suspendedTranscriptSinks.has(activeThread.id) &&

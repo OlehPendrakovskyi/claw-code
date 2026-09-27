@@ -191,6 +191,7 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     const rec = row as {
       role?: unknown;
       text?: unknown;
+      delta?: unknown;
       messageId?: unknown;
     };
     const messageId =
@@ -205,6 +206,12 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     // on restore); dedupe by messageId while retaining rows without an id.
     // An empty string id is missing, not a dedup key: keying it would drop
     // every idless history row after the first.
+    // A non-empty `delta` marks the row as still-streaming (partial text):
+    // skip it without recording the id, otherwise the id would shadow the
+    // completed row that follows and truncate the restored transcript.
+    if (typeof rec.delta === 'string' && rec.delta) {
+      continue;
+    }
     if (messageId) {
       if (seenIds.has(messageId)) {
         continue;
