@@ -1290,7 +1290,10 @@ export class GatewayChatService {
             sink({ type: 'done' });
           }
           lastRowFinalized = true;
-        } else if (mapped.length > 0) {
+        } else {
+          // Any non-duplicate row that is not a final assistant row (user
+          // rows map to no chat event) re-opens the replay tail: the live run
+          // answering that trailing prompt must keep its sink.
           lastRowFinalized = false;
         }
       }
@@ -1321,6 +1324,13 @@ export class GatewayChatService {
       return true;
     }
     return methods.includes(method);
+  }
+
+  /** Whether a run on this session is locally owned (a registered run sink
+   *  or a still pre-ack send): runs owned by the gateway or another client
+   *  are invisible here, so callers gating aborts on this must skip them. */
+  hasOwnedRun(sessionKey: string): boolean {
+    return this.runSinksBySession.has(sessionKey) || this.preAckSendKeys.has(sessionKey);
   }
 
   /** Abort the run for one session: RPC `chat.abort` targeted at the given

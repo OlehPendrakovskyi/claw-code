@@ -715,6 +715,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         const sendEpoch = thread.eventEpoch;
         thread.isStreaming = true;
+        // Same run-state marking as handleSend: a rebind (selectAgent/
+        // openSession) during the async resolution below retires only a
+        // `running` thread, and the send-epoch guard needs the bumped epoch
+        // a rebind performs, so an idle-marked command could otherwise slip
+        // a stale prompt into the newly selected session.
+        thread.status = 'running';
 
         try {
         const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args));
@@ -1041,7 +1047,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     const sharedRun = [...this.threads.values()].some(
                         t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
                     );
-                    if (!sharedRun) {
+                    // An idle resumed thread with an externally owned live
+                    // run (gateway or another client) has no local run sink:
+                    // hasOwnedRun skips the abort in that case, while an
+                    // in-flight run this thread started keeps its sink and
+                    // is still cancelled cleanly.
+                    if (!sharedRun && previousBackend.hasOwnedRun(thread.sessionKey)) {
                         previousBackend.abort(thread.sessionKey);
                     }
                 }
@@ -1706,6 +1717,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             // check, permanently bricking the thread.
             thread.isStreaming = false;
             thread.pendingAssistantText = '';
+            // A null history response (e.g. gateway unavailable) leaves the
+            // `history !== null` branch unreached: the status must already
+            // be idle here, or a sessionless rebind strands the thread in
+            // `running` and future sends are rejected as busy.
+            thread.status = 'idle';
         }
         // Retire any run still active on the previous session before
         // rebinding: late events from the old run would otherwise be
