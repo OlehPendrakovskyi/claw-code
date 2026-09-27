@@ -1046,7 +1046,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // no longer running must not be resurrected by the continuation.
         if (!this.threads.has(thread.id) ||
             thread.status !== 'running' ||
-            thread.eventEpoch !== sendEpoch) {
+            thread.eventEpoch !== sendEpoch ||
+            thread.openInFlightGen !== null) {
+            // The rebind marker set during the resolve await means a
+            // selectAgent/openSession rebind has already switched the
+            // gateway active session and owns the binding: routing this
+            // send now would target the previous key and its callback
+            // would deliver into the newly opened conversation. Bail out;
+            // the rebind continuation finalizes the streaming state.
+            if (thread.openInFlightGen !== null) {
+                log.info('sendPrompt: openSession in flight after backend resolve, send retired');
+            }
             if (choice.service !== thread.service &&
                 !(choice.service instanceof GatewayChatService) &&
                 thread.transportBackend !== choice.service) {
@@ -1608,7 +1618,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // newer request's generation, clear its openInFlightGen marker in the
         // finally below, and let this stale rebind overwrite the newer open.
         const selectionGen = pendingOpenThread ? pendingOpenThread.openGeneration : null;
-        const gateway = await this.resolveGateway();
+        // A rejected gateway resolution (SecretStorage/config lookup) must
+        // also release the send-rejection marker, with the same ownership
+        // check as the null-gateway path: otherwise the thread stays
+        // permanently marked in-flight and later sends are refused.
+        let gateway: GatewayChatService | null = null;
+        try {
+            gateway = await this.resolveGateway();
+        } catch (err) {
+            log.warn('selectAgent: gateway resolution failed', err);
+            if (pendingOpenThread &&
+                pendingOpenThread.openInFlightGen === selectionGen) {
+                pendingOpenThread.openInFlightGen = null;
+            }
+            return;
+        }
         if (!gateway) {
             if (pendingOpenThread &&
                 pendingOpenThread.openInFlightGen === selectionGen) {
@@ -1832,7 +1856,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // Cleared only while this open still owns the marker (a newer open
         // supersedes it and owns the marker from then on).
         thread.openInFlightGen = openGen;
-        const gateway = await this.resolveGateway();
+        // Same rejection guard as handleSelectAgent: a failed gateway
+        // resolution here must release this open's marker via the
+        // ownership check, or later sends stay refused forever.
+        let gateway: GatewayChatService | null = null;
+        try {
+            gateway = await this.resolveGateway();
+        } catch (err) {
+            log.warn('openSession: gateway resolution failed', err);
+            if (thread.openInFlightGen === openGen) {
+                thread.openInFlightGen = null;
+            }
+            return;
+        }
         if (!gateway) {
             if (thread.openInFlightGen === openGen) {
                 thread.openInFlightGen = null;
