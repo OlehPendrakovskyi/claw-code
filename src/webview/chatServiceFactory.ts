@@ -13,7 +13,7 @@
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/ChatService';
 import { GatewayChatService } from '../core/gatewayChatService';
-import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken } from '../core/gatewayConfig';
+import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken, LegacyTokenMigrationResult } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
 
 /** Resolved backend for one send. */
@@ -43,14 +43,14 @@ export class ChatServiceFactory {
   ) {}
 
   /** Await one-shot legacy-token migration before any token-dependent
-   *  resolution. A failed cleanup (plaintext token still on disk) is not
-   *  cached: the next resolve() retries it, so the SecretStorage-only
+   *  resolution. An incomplete migration (plaintext token still on disk)
+   *  is not cached: the next resolve() retries it, so the SecretStorage-only
    *  state is eventually restored without blocking the current call. */
   private ensureMigrated(): Promise<void> {
     if (!this.migrationDone) {
       this.migrationDone = migrateLegacyGatewayToken(this.context)
-        .then((completed: boolean) => {
-          if (!completed) {
+        .then((result: LegacyTokenMigrationResult) => {
+          if (result === 'incomplete') {
             this.migrationDone = null;
           }
           return undefined;

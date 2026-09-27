@@ -35,10 +35,10 @@ describe('migrateLegacyGatewayToken', () => {
         jest.clearAllMocks();
     });
 
-    it('returns false and touches nothing when no legacy value exists', async () => {
+    it('returns noop and touches nothing when no legacy value exists', async () => {
         const store = secrets();
         const { update } = configWith(undefined);
-        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(false);
+        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('noop');
         expect(store.store).not.toHaveBeenCalled();
         expect(update).not.toHaveBeenCalled();
     });
@@ -49,7 +49,7 @@ describe('migrateLegacyGatewayToken', () => {
             globalValue: 'legacy-token',
             workspaceFolderValue: 'folder-token',
         });
-        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(true);
+        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
         expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'folder-token');
         const targets = update.mock.calls.map((c: unknown[]) => c[2]);
         expect(targets).toEqual([
@@ -62,7 +62,7 @@ describe('migrateLegacyGatewayToken', () => {
         const store = secrets();
         store.get.mockResolvedValue('existing-secret-token');
         const { update } = configWith({ globalValue: 'legacy-token' });
-        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(true);
+        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
         expect(store.store).not.toHaveBeenCalled();
         expect(update).toHaveBeenCalledTimes(1);
     });
@@ -72,7 +72,7 @@ describe('migrateLegacyGatewayToken', () => {
         const { update } = configWith({ workspaceValue: 'legacy-token' }, () =>
             Promise.reject(new Error('no folder open')),
         );
-        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe(false);
+        await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('incomplete');
         expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'legacy-token');
         expect(update).toHaveBeenCalledWith('gateway.token', undefined, vscode.ConfigurationTarget.Workspace);
         expect(vscode.window.showWarningMessage).toHaveBeenCalled();

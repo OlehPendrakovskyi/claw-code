@@ -114,10 +114,16 @@ function stripJsonc(text: string): string {
 }
 
 /** A language override discovered on disk, with a scoped configuration for
- *  inspecting and clearing that language's settings. */
+ *  inspecting and clearing that language's settings. Folder-level sources
+ *  keep the owning folder's URI so `WorkspaceFolder` updates clear the
+ *  folder that actually holds the value — a multi-root workspace must not
+ *  write an unscoped update that only touches the first folder. */
 type LanguageOverride = {
   languageId: string;
   config: vscode.WorkspaceConfiguration;
+  /** Owning workspace folder for folder-level sources; undefined for user
+   *  settings and the workspace file, which have no folder scope. */
+  folderUri: vscode.Uri | undefined;
   inspection:
     | {
         globalLanguageValue?: string;
@@ -166,17 +172,27 @@ function collectLanguageIds(parsed: Record<string, unknown>, into: Set<string>):
 }
 
 async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
-  const uris: vscode.Uri[] = userSettingsUris();
+  const sources: { uri: vscode.Uri; folderUri: vscode.Uri | undefined }[] = [];
+  for (const uri of userSettingsUris()) {
+    sources.push({ uri, folderUri: undefined });
+  }
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
-    uris.push(vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json'));
+    sources.push({
+      uri: vscode.Uri.joinPath(folder.uri, '.vscode', 'settings.json'),
+      folderUri: folder.uri,
+    });
   }
   if (vscode.workspace.workspaceFile) {
-    uris.push(vscode.workspace.workspaceFile);
+    sources.push({ uri: vscode.workspace.workspaceFile, folderUri: undefined });
   }
-  const languageIds = new Set<string>();
-  for (const uri of uris) {
+  // The same language may be overridden in several folders; each (language,
+  // folder) pair gets its own entry so cleanup reaches every folder.
+  const seen = new Set<string>();
+  const overrides: LanguageOverride[] = [];
+  for (const source of sources) {
+    const languageIds = new Set<string>();
     try {
-      const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(uri));
+      const text = new TextDecoder().decode(await vscode.workspace.fs.readFile(source.uri));
       const parsed = JSON.parse(stripJsonc(text)) as Record<string, unknown>;
       collectLanguageIds(parsed, languageIds);
       // .code-workspace files store their settings under a nested
@@ -187,24 +203,41 @@ async function discoverLanguageOverrides(): Promise<LanguageOverride[]> {
     } catch {
       // Missing or unreadable settings files hold no discoverable overrides.
     }
+    for (const languageId of languageIds) {
+      const key = `${languageId}|${source.folderUri ? source.folderUri.toString() : ''}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const scope = source.folderUri
+        ? ({ languageId, folderUri: source.folderUri } as vscode.ConfigurationScope)
+        : ({ languageId } as vscode.ConfigurationScope);
+      const config = vscode.workspace.getConfiguration('openclaw', scope);
+      overrides.push({
+        languageId,
+        folderUri: source.folderUri,
+        config,
+        inspection: config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING),
+      });
+    }
   }
-  return [...languageIds].map((languageId) => {
-    const config = vscode.workspace.getConfiguration('openclaw', {
-      languageId,
-    } as vscode.ConfigurationScope);
-    return { languageId, config, inspection: config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING) };
-  });
+  return overrides;
 }
+
+export type LegacyTokenMigrationResult = 'completed' | 'noop' | 'incomplete';
 
 /**
  * One-time migration: if a legacy plaintext `openclaw.gateway.token`
  * setting exists, move it into SecretStorage and clear the plaintext
  * setting. Never overwrites an existing SecretStorage token with an empty
  * legacy value; a non-empty legacy value wins only when no secret exists.
+ * Returns `completed` after a successful migration, `noop` when no legacy
+ * value exists anywhere (a finished no-op that callers may cache), and
+ * `incomplete` when a scope cleanup failed so callers can retry later.
  */
 export async function migrateLegacyGatewayToken(
   context: vscode.ExtensionContext
-): Promise<boolean> {
+): Promise<LegacyTokenMigrationResult> {
   const config = vscode.workspace.getConfiguration('openclaw');
   const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
   // VS Code stores language-scoped values (`[lang]` overrides), and `inspect`
@@ -231,7 +264,7 @@ export async function migrateLegacyGatewayToken(
   const nonEmpty = nonEmptyScopes.find((v) => typeof v === 'string' && v) ?? '';
   const legacyDefined = nonEmptyScopes.some((v) => v !== undefined);
   if (!legacyDefined) {
-    return false;
+    return 'noop';
   }
   const existing = await getGatewayToken(context.secrets);
   if (!existing && nonEmpty) {
@@ -296,7 +329,8 @@ export async function migrateLegacyGatewayToken(
     const hadLanguageValue =
       entry.inspection?.globalLanguageValue !== undefined ||
       entry.inspection?.workspaceLanguageValue !== undefined ||
-      entry.inspection?.workspaceFolderLanguageValue !== undefined;
+      (entry.folderUri !== undefined &&
+        entry.inspection?.workspaceFolderLanguageValue !== undefined);
     if (!hadLanguageValue) {
       continue;
     }
@@ -305,6 +339,12 @@ export async function migrateLegacyGatewayToken(
       vscode.ConfigurationTarget.Workspace,
       vscode.ConfigurationTarget.WorkspaceFolder,
     ]) {
+      // Unscoped entries (user settings, workspace file) hold no folder
+      // values of their own: an unscoped WorkspaceFolder update would
+      // write only the first folder of a multi-root workspace.
+      if (target === vscode.ConfigurationTarget.WorkspaceFolder && entry.folderUri === undefined) {
+        continue;
+      }
       try {
         await entry.config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, target, true);
       } catch (err) {
@@ -326,9 +366,9 @@ export async function migrateLegacyGatewayToken(
       'Legacy plaintext gateway token could not be removed from settings. ' +
       'Delete `openclaw.gateway.token` from settings.json manually.'
     );
-    return false;
+    return 'incomplete';
   }
-  return true;
+  return 'completed';
 }
 
 /**
