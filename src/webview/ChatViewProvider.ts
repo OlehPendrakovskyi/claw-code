@@ -559,6 +559,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         }
         this.suspendedTranscriptSinks.delete(threadId);
+        this.deferredResumes.delete(threadId);
         if (backend instanceof GatewayChatService) {
             backend.abort(thread.sessionKey);
             // Drop the thread's transcript sink if no surviving thread still
@@ -1034,6 +1035,23 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                             choice.service.clearSessionSink(resolvedKey);
                         }
                     }
+                    // The retired run's `done` is epoch-dropped above, so
+                    // nothing else finalizes this send: without an explicit
+                    // cleanup the thread stays `isStreaming`/`running`
+                    // forever and the UI cannot send normally. Drop the
+                    // stale pending text, clear the streaming state, and
+                    // discard the suspended transcript sink captured for
+                    // the requested key (the run never lived there).
+                    thread.pendingAssistantText = '';
+                    thread.isStreaming = false;
+                    if (thread.status === 'running') {
+                        thread.status = 'idle';
+                    }
+                    const retiredSuspend = this.suspendedTranscriptSinks.get(thread.id);
+                    if (retiredSuspend && retiredSuspend.sessionKey === requestedKey) {
+                        this.suspendedTranscriptSinks.delete(thread.id);
+                    }
+                    this.emitState();
                     return;
                 }
                 thread.sessionKey = resolvedKey;
@@ -1050,6 +1068,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Persistent transcript callbacks per thread, suspended for the duration
      *  of a run on the same session (the run sink covers live delivery). */
     private suspendedTranscriptSinks = new Map<string, { gateway: GatewayChatService; sessionKey: string }>();
+
+    /** Resume bindings deferred because a send started before the automatic
+     *  resume finished: the persistent transcript sink is registered only
+     *  after that run finalizes, so live delivery is never double-wired. */
+    private deferredResumes = new Map<string, { sessionKey: string }>();
 
     /** Suspend a thread's persistent transcript callback for an in-flight run
      *  on the same session; prevents duplicate fan-out to the run sink. */
@@ -1074,6 +1097,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, epoch, 'binding'); };
         this.transcriptCallbacks.set(thread.id, { sessionKey: suspended.sessionKey, cb });
         suspended.gateway.rebindTranscriptSink(suspended.sessionKey, cb);
+    }
+
+    /** Register a resume binding deferred because a send was already in
+     *  flight when the automatic resume reached its subscription step. */
+    private async flushDeferredResume(thread: ChatThreadState): Promise<void> {
+        const deferred = this.deferredResumes.get(thread.id);
+        if (!deferred || thread.isStreaming || thread.status === 'running') {
+            return;
+        }
+        this.deferredResumes.delete(thread.id);
+        if (thread.sessionKey !== deferred.sessionKey) {
+            return;
+        }
+        const gateway = await this.resolveGateway();
+        if (!gateway) {
+            return;
+        }
+        this.resumeSessionForThread(gateway, thread, deferred.sessionKey);
+        this.emitState();
     }
 
     private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
@@ -1142,6 +1184,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this.restoreSuspendedTranscriptSink(thread);
                 this.updateThreadSubjectFromContext(thread);
                 this.emitState();
+                void this.flushDeferredResume(thread);
                 break;
             case 'usage':
                 thread.lastUsage = event.usage;
@@ -1154,6 +1197,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.status = 'error';
                 this.restoreSuspendedTranscriptSink(thread);
                 this.emitState();
+                void this.flushDeferredResume(thread);
                 break;
         }
     }
@@ -1387,6 +1431,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 activeThread.eventEpoch += 1;
                 activeThread.bindingEpoch += 1;
                 previousBackend.abort();
+                // A sessionless acpx run skips the session-key reset block
+                // below: the abort's completion is epoch-dropped, so the
+                // thread must be finalized here or it stays
+                // `isStreaming`/`running` indefinitely and the UI cannot
+                // send normally.
+                activeThread.pendingAssistantText = '';
+                activeThread.isStreaming = false;
+                activeThread.status = 'idle';
             }
             // Selecting another agent rebinds the thread: retire any run on
             // the previous session first so its late events cannot leak into
@@ -1736,6 +1788,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // messages live in the thread) must not be dropped either.
                 if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey ||
                     thread.isStreaming || thread.status === 'running') {
+                    // A send started during the history await: subscribing the
+                    // persistent transcript sink now would double-deliver the
+                    // run's events, but skipping entirely leaves the thread
+                    // without one once the run's per-send sink is removed at
+                    // done — defer the binding until the run finalizes.
+                    if (thread.isStreaming || thread.status === 'running') {
+                        this.deferredResumes.set(thread.id, { sessionKey });
+                    }
                     return;
                 }
                 // Replace the transcript instead of appending: on a

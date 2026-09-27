@@ -396,13 +396,26 @@ export class GatewayChatService {
       this.reconnectTimer = null;
     }
     const gen = ++this.connectGeneration;
-    const attempt = this.openAndHandshake()
-      .then((hello) => {
+    const attempt: Promise<void> = this.openAndHandshake()
+      .then((hello): Promise<void> | void => {
         if (gen !== this.connectGeneration) {
           // Superseded (credentials changed or a newer attempt started
           // mid-handshake): do not mark this client connected with the
           // stale hello or attach handlers to the retired socket.
           this.logger.info('gateway handshake superseded by a newer connection attempt');
+          // connect() must never resolve a superseded handshake: callers
+          // (e.g. ChatServiceFactory.resolve()) would then report
+          // `connected` while this.connected is still false and the next
+          // send fails as a misleading disconnected error. Adopt the
+          // newer generation's attempt so the caller resolves only once
+          // the client is actually connected (or reject if none is
+          // pending and the client is not connected).
+          if (this.connectPromise && this.connectPromise !== attempt) {
+            return this.connectPromise;
+          }
+          if (!(this.connected && this.ws)) {
+            throw new Error('gateway connection superseded by a newer attempt');
+          }
           return;
         }
         this.hello = hello;
