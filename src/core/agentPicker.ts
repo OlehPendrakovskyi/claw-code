@@ -14,7 +14,7 @@ export * from './agentSessionItems';
 
 /** Transport surface the picker needs (satisfied by GatewayChatService). */
 export type SessionListTransport = {
-  listSessions(params?: Record<string, unknown>): Promise<unknown>;
+  listSessions(params: Record<string, unknown>): Promise<unknown>;
 };
 
 /** QuickPick seam so core stays VS Code-free and testable. */
@@ -29,7 +29,7 @@ export type QuickPickLike = {
 export class AgentPicker {
   constructor(
     private readonly transport: SessionListTransport | null,
-    private readonly quickPick?: QuickPickLike
+    private readonly quickPick: QuickPickLike
   ) {}
 
   /**
@@ -50,12 +50,9 @@ export class AgentPicker {
 
   /**
    * Show the QuickPick and return the selected item (undefined on cancel).
-   * No-op (undefined) when the gateway transport is unavailable.
+   * No-op (undefined) when no session is listed, e.g. without a transport.
    */
   async pick(): Promise<AgentSessionItem | undefined> {
-    if (!this.quickPick) {
-      return undefined;
-    }
     const items = await this.listMainSessions();
     if (items.length === 0) {
       return undefined;

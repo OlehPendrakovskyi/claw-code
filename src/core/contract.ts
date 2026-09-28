@@ -15,14 +15,9 @@
  * optional fields) keeps parsing forward-compatible with newer gateways.
  */
 
-import type { ChatEvent, UsageInfo } from '../chat/ChatService';
-
 /* ------------------------------------------------------------------ */
 /* Framing (transport.md)                                              */
 /* ------------------------------------------------------------------ */
-
-/** Frame types on the wire: `{type:"req"|"res"|"event", ...}`. */
-export type RpcFrameType = 'req' | 'res' | 'event';
 
 /** Error payload of a failed response (`{code, message, details?...}`). */
 export type RpcErrorPayload = {
@@ -54,7 +49,7 @@ export type RpcResponseFrame = {
 };
 
 /** Event frame: `{type:"event", event, payload, seq?, stateVersion?...}`. */
-export type RpcEventFrame = {
+type RpcEventFrame = {
   type: 'event';
   event: string;
   payload: unknown;
@@ -71,7 +66,7 @@ export type RpcInboundFrame = RpcResponseFrame | RpcEventFrame;
 /* ------------------------------------------------------------------ */
 
 /** Client identity block of the `connect` params. */
-export type ClientHelloClientInfo = {
+type ClientHelloClientInfo = {
   id: string;
   version: string;
   platform: string;
@@ -79,7 +74,7 @@ export type ClientHelloClientInfo = {
 };
 
 /** Token auth block: `auth: { token }`. */
-export type ClientHelloAuth = {
+type ClientHelloAuth = {
   token: string;
 };
 
@@ -116,32 +111,26 @@ export type ClientHello = {
   [key: string]: unknown;
 };
 
-/** Pre-connect challenge the Gateway emits before `connect`. */
-export type GatewayChallengeEvent = {
-  event: 'connect.challenge';
-  payload: { nonce: string; ts: number };
-};
-
 /** Server identity block from `hello-ok`. */
-export type HelloOkServer = {
+type HelloOkServer = {
   version: string;
   connId: string;
 };
 
 /** Advertised method/event families from `hello-ok`. */
-export type HelloOkFeatures = {
+type HelloOkFeatures = {
   methods: string[];
   events: string[];
 };
 
 /** Negotiated authorization from `hello-ok`. */
-export type HelloOkAuth = {
+type HelloOkAuth = {
   role: string;
   scopes: string[];
 };
 
 /** Size/keepalive policy advertised by the Gateway. */
-export type HelloOkPolicy = {
+type HelloOkPolicy = {
   maxPayload: number;
   maxBufferedBytes: number;
   tickIntervalMs: number;
@@ -191,7 +180,7 @@ export type SessionRow = {
 };
 
 /** Placement projection of a {@link SessionRow}. */
-export type SessionRowPlacement = {
+type SessionRowPlacement = {
   state:
     | 'local'
     | 'requested'
@@ -207,7 +196,7 @@ export type SessionRowPlacement = {
 };
 
 /** Owner projection of a {@link SessionRow}. */
-export type SessionRowOwner = {
+type SessionRowOwner = {
   type: string;
   id: string;
   label?: string;
@@ -216,42 +205,15 @@ export type SessionRowOwner = {
 };
 
 /** Participant entry of a {@link SessionRow}. */
-export type SessionRowParticipant = {
+type SessionRowParticipant = {
   type: string;
   id: string;
   label?: string;
 };
 
-/** Tool invocation metadata attached to a session message (additive). */
-export type ToolCallPayload = {
-  id?: string;
-  name?: string;
-  title?: string;
-  status?: string;
-  arguments?: unknown;
-  result?: unknown;
-  [key: string]: unknown;
-};
-
-/** Payload of `session.message` transcript events. */
-export type SessionMessagePayload = {
-  sessionKey?: string;
-  agentId?: string;
-  messageId?: string;
-  role?: string;
-  text?: string;
-  /** Streaming text delta (partial assistant chunk). */
-  delta?: string;
-  /** Tool invocation metadata attached to the message (additive). */
-  toolCall?: ToolCallPayload;
-  usage?: Partial<UsageInfo>;
-  [key: string]: unknown;
-};
-
 /**
- * Raw message-frame payload shape tolerated by the gateway chat transport:
- * unlike {@link SessionMessagePayload} every field is `unknown`, because the
- * wire format is parsed without validation and narrowed at the edges.
+ * Raw `session.message` payload: every field is `unknown` because the wire
+ * format is parsed without validation and narrowed at the edges.
  */
 export type SessionMessageFrame = {
   role?: unknown;
@@ -268,38 +230,27 @@ export type SessionMessageFrame = {
     result?: unknown;
   } | null;
   usage?: {
-    promptTokens?: number;
-    completionTokens?: number;
-    totalTokens?: number;
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
+    promptTokens?: unknown;
+    completionTokens?: unknown;
+    totalTokens?: unknown;
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    total_tokens?: unknown;
   } | null;
   [key: string]: unknown;
 };
 
-/** Payload of the `sessions.changed` broadcast event. */
-export type SessionsChangedPayload = {
-  key?: string;
-  reason?: string;
-  [key: string]: unknown;
-};
-
 /**
- * Union of session-related events a chat client cares about.
- * Unknown event names are preserved so subscribers can ignore them safely.
+ * A gateway event frame reduced to what the chat client routes on. Payloads
+ * are untrusted and narrowed where they are read; unknown event names are
+ * ignored, never rejected.
  */
-export type SessionEvent =
-  | { event: 'session.message'; payload: SessionMessagePayload }
-  | { event: 'sessions.changed'; payload: SessionsChangedPayload }
-  | { event: 'session.approval'; payload: Record<string, unknown> }
-  | { event: 'session_start'; payload: Record<string, unknown> }
-  | { event: 'session_end'; payload: Record<string, unknown> }
-  | { event: 'session.pending'; payload: Record<string, unknown> }
-  /** Anything the protocol adds later; never fail on it. */
-  | { event: string; payload: unknown };
+export type SessionEvent = {
+  event: string;
+  payload: unknown;
+};
 
 /* ------------------------------------------------------------------ */
 /* RPC method names (rpc-methods.md)                                   */
@@ -318,8 +269,6 @@ export const GatewayRpcMethods = {
   connect: 'connect',
   /** Session index. */
   sessionsList: 'sessions.list',
-  /** Subscribe to session change events for this socket. */
-  sessionsSubscribe: 'sessions.subscribe',
   /** Per-session transcript events subscription. */
   sessionsMessagesSubscribe: 'sessions.messages.subscribe',
   sessionsMessagesUnsubscribe: 'sessions.messages.unsubscribe',
@@ -329,50 +278,11 @@ export const GatewayRpcMethods = {
   chatHistory: 'chat.history',
   /** Abort active work in a session. */
   chatAbort: 'chat.abort',
-  /** Inject a message into an active run. */
-  chatInject: 'chat.inject',
 } as const;
 
 /** Known event names emitted by the Gateway (subset, additive). */
 export const GatewayEvents = {
   connectChallenge: 'connect.challenge',
   sessionMessage: 'session.message',
-  sessionsChanged: 'sessions.changed',
-  sessionApproval: 'session.approval',
-  sessionStart: 'session_start',
   sessionEnd: 'session_end',
 } as const;
-
-/* ------------------------------------------------------------------ */
-/* ChatEvent bridge                                                    */
-/* ------------------------------------------------------------------ */
-
-/** Map a gateway usage-ish payload to the UI `UsageInfo`. */
-export function mapUsage(payload: SessionMessagePayload): UsageInfo | undefined {
-  const usage = (payload.usage ?? {}) as Record<string, unknown>;
-  const promptTokens = Number(usage.promptTokens ?? usage.prompt_tokens ?? 0);
-  const completionTokens = Number(usage.completionTokens ?? usage.completion_tokens ?? 0);
-  if (promptTokens <= 0 && completionTokens <= 0) return undefined;
-  return {
-    promptTokens,
-    completionTokens,
-    totalTokens: promptTokens + completionTokens,
-  };
-}
-
-/**
- * Bridge a gateway session event to the ChatService `ChatEvent` union the
- * chat panel already understands. Returns `null` when nothing maps.
- */
-export function sessionEventToChatEvent(evt: SessionEvent): ChatEvent | null {
-  if (evt.event !== GatewayEvents.sessionMessage) return null;
-  const payload = (evt.payload ?? {}) as SessionMessagePayload;
-  if (payload.role && payload.role !== 'assistant') return null;
-  const text = payload.text;
-  if (typeof text === 'string' && text.length > 0) {
-    return { type: 'text', text };
-  }
-  const usage = mapUsage(payload);
-  if (usage) return { type: 'usage', usage };
-  return null;
-}

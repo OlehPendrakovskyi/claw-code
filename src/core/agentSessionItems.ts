@@ -125,13 +125,9 @@ function rowUpdatedAt(row: SessionRow): string | null {
   return freshest;
 }
 
-/** Numeric millisecond value of a picker timestamp for ordering. */
+/** Millisecond value of a picker timestamp for ordering (rowUpdatedAt only keeps parseable values). */
 function updatedAtMs(value: string | null): number {
-  if (value === null) {
-    return 0;
-  }
-  const ts = Date.parse(value);
-  return Number.isNaN(ts) ? 0 : ts;
+  return value === null ? 0 : Date.parse(value);
 }
 
 /** Derive a human-readable label for a session row. */
@@ -236,9 +232,4 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     }
   }
   return out;
-}
-
-/** Whether a history row was already surfaced (resume dedup by messageId). */
-export function isDuplicateMessage(messageId: string | null, seen: ReadonlySet<string>): boolean {
-  return messageId !== null && seen.has(messageId);
 }

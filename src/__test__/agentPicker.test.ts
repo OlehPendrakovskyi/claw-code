@@ -8,7 +8,6 @@ import {
   COLD_SESSION_PLACEHOLDER,
   buildAgentSessionItems,
   isColdSession,
-  isDuplicateMessage,
   isMainAgentSession,
   isMainAgentSessionKey,
   mapHistoryMessages,
@@ -16,15 +15,16 @@ import {
   toAgentSessionItems,
 } from '../core/agentPicker';
 import { GatewayChatService, WebSocketLike } from '../core/gatewayChatService';
+import type { ChatEvent } from '../chat/ChatService';
 
 type MockSocket = WebSocketLike & {
-  handlers: Map<string, Array<(...args: never[]) => void>>;
+  handlers: Map<string, Array<(...args: unknown[]) => void>>;
   sent: string[];
   emit(event: string, ...args: unknown[]): void;
 };
 
 function createMockWs(): MockSocket {
-  const handlers = new Map<string, Array<(...args: never[]) => void>>();
+  const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
   const ws: MockSocket = {
     handlers,
     sent: [],
@@ -32,19 +32,19 @@ function createMockWs(): MockSocket {
       ws.sent.push(data);
     },
     close() {
-      handlers.get('close')?.forEach((cb) => (cb as (code: number, reason: Buffer) => void)(1000, Buffer.alloc(0)));
+      handlers.get('close')?.forEach((cb) => cb(1000, Buffer.alloc(0)));
     },
     on(event: string, cb: (...args: never[]) => void) {
       const list = handlers.get(event) ?? [];
-      list.push(cb as (...args: never[]) => void);
+      list.push(cb as (...args: unknown[]) => void);
       handlers.set(event, list);
     },
     removeListener(event: string, cb: (...args: unknown[]) => void) {
-      handlers.set(event, (handlers.get(event) ?? []).filter((h) => h !== (cb as never)));
+      handlers.set(event, (handlers.get(event) ?? []).filter((h) => h !== cb));
     },
     emit(event: string, ...args: unknown[]) {
-      for (const cb of handlers.get(event) ?? []) {
-        (cb as unknown as (...a: unknown[]) => void)(...args);
+      for (const cb of [...(handlers.get(event) ?? [])]) {
+        cb(...args);
       }
     },
   };
@@ -93,6 +93,11 @@ describe('agentPicker', () => {
         'node:dev:xyz',
         'main',
       ]);
+    });
+
+    it('accepts a {rows: [...]} payload and skips non-object entries', () => {
+      const parsed = parseSessionRows({ rows: [null, 'agent:x:main', { key: 'agent:y:main' }] });
+      expect(parsed).toEqual({ rows: [{ key: 'agent:y:main' }], ok: true });
     });
 
     it('tolerates bare arrays and junk payloads', () => {
@@ -170,6 +175,21 @@ describe('agentPicker', () => {
       expect(stale.map((i) => i.sessionKey)).toEqual(['agent:stale:main', 'agent:mid:main']);
     });
 
+    it('keeps the newest candidate when an older one follows it', () => {
+      const items = toAgentSessionItems([
+        { key: 'agent:x:main', lastActivityAt: '2026-09-28T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
+      ]);
+      expect(items[0].updatedAt).toBe('2026-09-28T00:00:00Z');
+    });
+
+    it('sorts an active run ahead of a newer idle session', () => {
+      const items = toAgentSessionItems([
+        { key: 'agent:idle:main', updatedAt: '2026-09-28T00:00:00Z' },
+        { key: 'agent:busy:main', hasActiveRun: true },
+      ]);
+      expect(items.map((i) => i.sessionKey)).toEqual(['agent:busy:main', 'agent:idle:main']);
+    });
+
     it('ignores unparseable timestamp values', () => {
       const items = toAgentSessionItems([
         { key: 'agent:bad:main', lastActivityAt: 'not-a-date', updatedAt: '2026-09-20T00:00:00Z' },
@@ -179,22 +199,22 @@ describe('agentPicker', () => {
   });
 
   describe('AgentPicker', () => {
+    const noQuickPick = { show: async () => undefined };
+
     it('lists filtered sessions through the transport', async () => {
-      const picker = new AgentPicker({
-        listSessions: async () => ({ sessions: SESSIONS_ROWS }),
-      });
+      const picker = new AgentPicker({ listSessions: async () => ({ sessions: SESSIONS_ROWS }) }, noQuickPick);
       const items = await picker.listMainSessions();
       expect(items.length).toBe(5);
       expect(items[0].sessionKey).toBe('agent:main:main');
     });
 
     it('returns [] without transport or on RPC failure', async () => {
-      expect(await new AgentPicker(null).listMainSessions()).toEqual([]);
+      expect(await new AgentPicker(null, noQuickPick).listMainSessions()).toEqual([]);
       const failing = new AgentPicker({
         listSessions: async () => {
           throw new Error('rpc down');
         },
-      });
+      }, noQuickPick);
       expect(await failing.listMainSessions()).toEqual([]);
     });
 
@@ -301,15 +321,6 @@ describe('agentPicker', () => {
     });
   });
 
-  describe('isDuplicateMessage', () => {
-    it('dedups by messageId and passes unknown ids', () => {
-      const seen = new Set(['m1']);
-      expect(isDuplicateMessage('m1', seen)).toBe(true);
-      expect(isDuplicateMessage('m2', seen)).toBe(false);
-      expect(isDuplicateMessage(null, seen)).toBe(false);
-    });
-  });
-
   describe('GatewayChatService session selection and resume', () => {
     function makeConnected(log: { lines: string[] }): { svc: GatewayChatService; ws: MockSocket; ready: Promise<void> } {
       const ws = createMockWs();
@@ -397,8 +408,8 @@ describe('agentPicker', () => {
       const log = { lines: [] as string[] };
       const { svc, ws, ready } = makeConnected(log);
       await ready;
-      const events: Array<Record<string, unknown>> = [];
-      svc.resumeSession('agent:main:main', (e) => events.push(e as unknown as Record<string, unknown>));
+      const events: ChatEvent[] = [];
+      svc.resumeSession('agent:main:main', (e) => events.push(e));
       expect(svc.getActiveSessionKey()).toBe('agent:main:main');
 
       let req = lastRequest(ws);
@@ -417,7 +428,7 @@ describe('agentPicker', () => {
       });
       await new Promise((r) => setTimeout(r, 0));
 
-      const texts = events.filter((e) => e.type === 'text').map((e) => e.text);
+      const texts = events.flatMap((e) => (e.type === 'text' ? [e.text] : []));
       expect(texts).toEqual(['restored']);
       // The completed assistant row (full text, no delta) finalizes; the empty
       // text row does not.
@@ -430,9 +441,9 @@ describe('agentPicker', () => {
       const { svc, ws, ready } = makeConnected(log);
       await ready;
       svc.seedHistory('agent:main:main', { deltaCursor: 'c0', messages: [] });
-      const runEvents: Array<Record<string, unknown>> = [];
-      const transcriptEvents: Array<Record<string, unknown>> = [];
-      svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => runEvents.push(e as unknown as Record<string, unknown>));
+      const runEvents: ChatEvent[] = [];
+      const transcriptEvents: ChatEvent[] = [];
+      svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => runEvents.push(e));
       // The send is gated behind the pre-send subscription acknowledgement.
       let req = lastRequest(ws);
       expect(req.method).toBe('sessions.messages.subscribe');
@@ -454,7 +465,7 @@ describe('agentPicker', () => {
       await new Promise((r) => setTimeout(r, 0));
       // A second, transcript-only subscriber on the same session: the session
       // is already subscribed, so no duplicate subscribe RPC is issued.
-      svc.resumeSession('agent:main:main', (e) => transcriptEvents.push(e as unknown as Record<string, unknown>));
+      svc.resumeSession('agent:main:main', (e) => transcriptEvents.push(e));
 
       svc.abort('agent:main:main');
       req = lastRequest(ws);

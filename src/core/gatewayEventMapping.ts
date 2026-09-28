@@ -10,7 +10,7 @@
 
 import type { RpcInboundFrame, SessionEvent, SessionMessageFrame } from './contract';
 import { GatewayEvents } from './contract';
-import { asNonEmptyString, asString, asStringOr } from './typeGuards';
+import { asNonEmptyString, asString } from './typeGuards';
 import type { ChatEvent } from '../chat/ChatService';
 
 /** Session key used when the gateway does not echo one back. */
@@ -18,8 +18,6 @@ export const DEFAULT_SESSION_KEY = 'main';
 
 /** Cap for per-message streamed-delta tracking (least recently updated entry evicted). */
 export const DELTA_TRACK_LIMIT = 200;
-
-const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);
 
 /** Coerce a wire-provided token count to a finite, non-negative number (0 otherwise). */
 const toFiniteTokenCount = (value: unknown): number => {
@@ -37,16 +35,23 @@ export function extractSessionKey(payload: unknown): string | null {
   return null;
 }
 
+/** Whether a row or frame carries assistant content: a missing role counts as assistant. */
+export function isAssistantRole(role: unknown): boolean {
+  return !role || role === 'assistant';
+}
+
+function isInboundFrame(value: unknown): value is RpcInboundFrame {
+  const type = (value as { type?: unknown } | null)?.type;
+  return type === 'res' || type === 'event';
+}
+
 /** Extract frames from mixed WS message data (string/Buffer). */
 export function parseFrame(data: unknown): RpcInboundFrame | null {
   const text = typeof data === 'string' ? data : data instanceof Buffer ? data.toString('utf8') : null;
   if (!text) return null;
   try {
-    const obj = JSON.parse(text) as Record<string, unknown>;
-    if (obj.type === 'res' || obj.type === 'event') {
-      return obj as unknown as RpcInboundFrame;
-    }
-    return null;
+    const frame: unknown = JSON.parse(text);
+    return isInboundFrame(frame) ? frame : null;
   } catch {
     return null;
   }
@@ -86,21 +91,17 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
   if (evt.event !== GatewayEvents.sessionMessage) return [];
   const payload = (evt.payload ?? {}) as SessionMessageFrame;
   const messageId = asNonEmptyString(payload.messageId);
-  if (payload.role && payload.role !== 'assistant') return [];
+  if (!isAssistantRole(payload.role)) return [];
   const tc = payload.toolCall;
   const events: ChatEvent[] = [];
   if (tc && typeof tc === 'object') {
-    const rawStatus = asStringOr(tc.status, '');
-    // An omitted status is not terminal: like the acpx mapper, keep the
-    // invocation visible as running so hideToolActivity cannot hide it.
-    const status = TOOL_CALL_STATUSES.has(rawStatus)
-      ? rawStatus
-      : rawStatus || 'running';
     const id = asNonEmptyString(tc.id);
     events.push({
       type: 'toolCall',
       title: asString(tc.title, asString(tc.name, 'tool')),
-      status,
+      // An omitted status is not terminal: like the acpx mapper, keep the
+      // invocation visible as running so hideToolActivity cannot hide it.
+      status: asString(tc.status, 'running'),
       details: asString(tc.details, serializeToolCallDetails(tc)),
       ...(id ? { id } : {}),
     });

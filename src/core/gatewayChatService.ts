@@ -1,26 +1,21 @@
 /**
  * Claw Code — GatewayChatService.
  *
- * Skeleton transport client for the OpenClaw Gateway WebSocket protocol
- * (docs/gateway/protocol/transport.md + handshake.md). Implements the same
- * public method surface as `ChatService` from src/chat/ChatService.ts so the
- * chat panel can switch backends via dependency injection later.
+ * WebSocket RPC client for the OpenClaw Gateway (docs/gateway/protocol/):
+ * the operator `connect` handshake, `chat.send` with steer/enqueue queue
+ * modes, per-session transcript subscriptions with `chat.history` catch-up,
+ * and reconnect with exponential backoff. It exposes the same
+ * sendMessage/abort surface as `ChatService`, so the chat panel can switch
+ * backends. Never logs tokens or prompts.
  *
- * - WebSocket is injected as a factory so unit tests can mock the transport.
- * - Never logs tokens or prompts; only connect/error/reconnect status lines.
- * - Not wired into active code paths yet: exported + unit-tested only.
+ * Sinks: a run sink receives one send's response and exactly one terminal
+ * `done`; transcript sinks observe a session (resumed threads) and fan out
+ * per session key.
  */
 
-import type {
-  ClientHello,
-  HelloOk,
-  RpcErrorPayload,
-  RpcRequestFrame,
-  RpcResponseFrame,
-  SessionEvent,
-} from './contract';
+import type { ClientHello, HelloOk, RpcErrorPayload, RpcRequestFrame, RpcResponseFrame, SessionEvent } from './contract';
 import { GatewayAuthRejectionCodes, GatewayEvents, GatewayRpcMethods } from './contract';
-import { asNonEmptyString, asStringOr } from './typeGuards';
+import { asNonEmptyString, asString } from './typeGuards';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
 import { redactEndpoint, redactPlainSecrets } from './accessInfo/redact';
@@ -28,16 +23,12 @@ import {
   DEFAULT_SESSION_KEY,
   DELTA_TRACK_LIMIT,
   extractSessionKey,
+  isAssistantRole,
   mapSessionEventToChatEvent,
   parseFrame,
 } from './gatewayEventMapping';
 
-export {
-  DEFAULT_SESSION_KEY,
-  extractSessionKey,
-  mapSessionEventToChatEvent,
-  parseFrame,
-} from './gatewayEventMapping';
+export { DEFAULT_SESSION_KEY } from './gatewayEventMapping';
 
 /** Minimal logger seam; default is a silent no-op. */
 export type Logger = {
@@ -70,48 +61,149 @@ export type GatewayChatServiceOptions = {
   reconnectMaxDelayMs?: number;
 };
 
-const silentLogger: Logger = { info() {}, warn() {}, error() {} };
+/** Catch-up state of one session, as captured before a sink teardown that may be rolled back. */
+export type SessionCatchUpSnapshot = {
+  seenMessageIds?: Set<string>;
+  deltaCursor?: string;
+  seededCatchUpFingerprints?: string[];
+};
+
+type ChatSink = (event: ChatEvent) => void;
 
 type PendingRequest = {
   resolve: (payload: unknown) => void;
   reject: (err: Error) => void;
 };
 
+/** Message fields shared by live `session.message` payloads and `chat.history` rows. */
+type MessageFields = { role?: unknown; messageId?: unknown; text?: unknown; delta?: unknown; sessionKey?: unknown };
+
+type HistoryRow = Record<string, unknown> & MessageFields;
+
+/** A send between sendMessage() and its `chat.send` acknowledgement. */
+type PendingSend = {
+  id: string;
+  sessionKey: string;
+  sink: ChatSink;
+  prompt: string;
+  queueMode: 'steer' | 'enqueue';
+  onSessionResolved?: (resolvedKey: string, requestedKey: string) => void;
+  /** `chat.send` is on the wire, so the gateway may already stream this run. */
+  issued: boolean;
+  /** The send steers a run the gateway already started: aborting it must abort that run. */
+  steersRemoteRun: boolean;
+  /** The send replaced an issued, unacknowledged send: that run's frames are this send's to claim. */
+  continuesIssuedRun: boolean;
+};
+
+/** A frame that arrived before the acknowledgement of the issued sends it may belong to. */
+type BufferedFrame = { evt: SessionEvent; key: string; sends: Set<string> };
+
+const silentLogger: Logger = { info() {}, warn() {}, error() {} };
+
 const CLIENT_VERSION = '0.2.1';
 const PROTOCOL_VERSION = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
-
 /** Finite timeout for the full connect handshake (no-response protection). */
 const HANDSHAKE_TIMEOUT_MS = 10_000;
-
 /** Cap on frames held for pre-ack sends; the oldest frame is dropped beyond it. */
 const PRE_ACK_BUFFER_LIMIT = 500;
-
 /** Cap on catch-up boundary fingerprints kept per session (latest rows win). */
 const SEEDED_FINGERPRINT_LIMIT = 500;
+/** Cap on remembered complete-message ids per session (oldest evicted). */
+const SEEN_MESSAGE_LIMIT = 500;
 
 const URL_IN_TEXT = /\b(?:wss?|https?):\/\/[^\s"'<>]+/gi;
 
-/** Whether a handshake error rejects the credentials themselves (not retryable as-is). */
-function isAuthRejection(error: RpcErrorPayload | undefined): boolean {
-  return error !== undefined && error.retryable !== true && GatewayAuthRejectionCodes.has(error.code);
+const NOT_CONNECTED_MESSAGE =
+  'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.';
+const CREDENTIALS_REJECTED_MESSAGE =
+  'The gateway rejected the configured credentials, so the run was interrupted. Update the gateway token and retry.';
+const PRE_SEND_HISTORY_FAILED_MESSAGE =
+  'Pre-send history snapshot for this session failed; the send was aborted to avoid an unrecoverable response. Retry once the gateway accepts chat.history.';
+const PRE_SEND_NO_BOUNDARY_MESSAGE =
+  'Pre-send history snapshot did not include a usable recovery boundary; the send was aborted to avoid an unrecoverable response. Retry once the gateway returns a well-formed chat.history snapshot.';
+
+/** Lazily require `ws` to keep it off the activation path; its CJS entry exports the constructor. */
+function defaultWsFactory(url: string): WebSocketLike {
+  const WebSocketCtor = require('ws') as new (url: string) => WebSocketLike;
+  return new WebSocketCtor(url);
 }
 
-/** Lazily require `ws` (activation-path friendly); handles CJS and ESM interop shapes. */
-function defaultWsFactory(url: string): WebSocketLike {
-  const wsModule = require('ws') as unknown;
-  const WSCtor =
-    typeof wsModule === 'function'
-      ? (wsModule as new (url: string) => WebSocketLike)
-      : ((wsModule as { WebSocket?: new (url: string) => WebSocketLike }).WebSocket ??
-        (wsModule as { default?: { WebSocket?: new (url: string) => WebSocketLike } }).default
-          ?.WebSocket);
-  if (typeof WSCtor !== 'function') {
-    throw new Error('unable to resolve WebSocket constructor from the ws package');
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Error code of an untrusted `res.error` payload. */
+function errorCode(error: unknown): string {
+  return asString((error as Partial<RpcErrorPayload> | null | undefined)?.code, 'unknown');
+}
+
+/** Whether a handshake error rejects the credentials themselves (not retryable as-is). */
+function isAuthRejection(error: unknown): boolean {
+  const retryable = (error as Partial<RpcErrorPayload> | null | undefined)?.retryable;
+  return retryable !== true && GatewayAuthRejectionCodes.has(errorCode(error));
+}
+
+function isHelloOk(payload: unknown): payload is HelloOk {
+  return (payload as { type?: unknown } | null | undefined)?.type === 'hello-ok';
+}
+
+/** A frame without a session key; a key of the wrong type is malformed, not keyless. */
+function isKeyless(sessionKey: unknown): boolean {
+  return sessionKey === undefined || sessionKey === null || sessionKey === '';
+}
+
+function payloadFields(evt: SessionEvent): MessageFields {
+  return evt.payload && typeof evt.payload === 'object' ? (evt.payload as MessageFields) : {};
+}
+
+/** Object rows of an untrusted `chat.history` messages array; anything else is ignored. */
+function historyRows(messages: unknown[]): HistoryRow[] {
+  return messages.filter(
+    (row): row is HistoryRow => row !== null && typeof row === 'object' && !Array.isArray(row)
+  );
+}
+
+function isFinalAssistantRow(row: MessageFields): boolean {
+  return isAssistantRole(row.role) && asNonEmptyString(row.text) !== null;
+}
+
+/** A still-streaming assistant chunk: a delta without completed text. */
+function isDeltaOnlyRow(row: MessageFields): boolean {
+  return isAssistantRole(row.role) && asNonEmptyString(row.delta) !== null && asNonEmptyString(row.text) === null;
+}
+
+/** The messageId of a complete assistant frame (final text, no streaming delta), else null.
+ *  Only these ids enter the seen-set: a delta shares its id with the later final row,
+ *  and marking it seen would make catch-up skip that row and its finalization. */
+function completeFrameId(row: MessageFields): string | null {
+  const messageId = asNonEmptyString(row.messageId);
+  return messageId && isFinalAssistantRow(row) && asNonEmptyString(row.delta) === null ? messageId : null;
+}
+
+/** Stable catch-up boundary fingerprint of one history row: a digest keeps untrusted text out of memory. */
+function rowFingerprint(row: MessageFields): string {
+  const role = typeof row.role === 'string' ? row.role : '';
+  const shape = asNonEmptyString(row.delta) ? 'delta' : 'final';
+  const text = typeof row.text === 'string' ? row.text : '';
+  return `${role}|${shape}|${createHash('sha256').update(text).digest('base64')}`;
+}
+
+/** Longest suffix of the seeded boundary that equals a prefix of the replayed rows:
+ *  a history tail is a sliding window ([A,B,C] then [B,C,D]), so a row-by-row
+ *  prefix match would miss the boundary once a new row shifts it. */
+function boundaryOverlap(seeded: string[], rows: HistoryRow[]): number {
+  const head = rows.slice(0, seeded.length).map(rowFingerprint);
+  for (let overlap = head.length; overlap > 0; overlap--) {
+    const tail = seeded.slice(seeded.length - overlap);
+    if (tail.every((fingerprint, i) => fingerprint === head[i])) {
+      return overlap;
+    }
   }
-  return new WSCtor(url);
+  return 0;
 }
 
 /**
@@ -119,436 +211,62 @@ function defaultWsFactory(url: string): WebSocketLike {
  *
  * Lifecycle: `connect()` opens the WS and completes the `connect` handshake
  * (role=operator, token auth, hello-ok). On socket close it reconnects with
- * exponential backoff. RPCs (`send`, `listSessions`) ride the same socket
- * with per-request ids and timeouts.
+ * exponential backoff and re-subscribes every observed session. RPCs ride
+ * the same socket with per-request ids and timeouts.
  */
 export class GatewayChatService {
   private url: string;
   private token: string;
-
-  /** Composite identity of the configured gateway endpoint. Callers keep
-   *  connection-scoped caches (e.g. the webview session-key allowlist)
-   *  keyed by this value so credentials changes invalidate them; never log
-   *  it — it embeds the token. */
-  getGatewayIdentity(): string {
-    // JSON tuple encoding is unambiguous: both url and token may contain
-    // `:`, so a plain `${url}:${token}` join could collide across different
-    // (url, token) pairs and let a webview reuse an allowlist learned from
-    // another gateway after a credential change.
-    return JSON.stringify([this.url, this.token]);
-  }
   private readonly logger: Logger;
   private readonly wsFactory: WebSocketFactory;
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
 
+  /** Socket of the current attempt, handshaking or live. */
   private ws: WebSocketLike | null = null;
+  /** The socket once its handshake completed; null while disconnected. */
+  private liveWs: WebSocketLike | null = null;
   private nextRequestId = 1;
   private readonly pending = new Map<string, PendingRequest>();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  /** True while the client is deliberately parked (transport switched away
-   *  from gateway): the socket is closed and the reconnect loop stopped, but
-   *  lifecycle references stay valid until the next connect()/
-   *  updateConnection() resumes it. */
-  private suspended = false;
   private disposed = false;
-  private connected = false;
   /** In-flight connect() (serialized: concurrent calls share the attempt). */
   private connectPromise: Promise<void> | null = null;
-  /** Monotonic connection generation: bumped by updateConnection and every
-   *  new connect() attempt so a superseded handshake cannot apply stale
-   *  hello/handlers to the current connection or clear a newer attempt's
-   *  connectPromise from its .finally. */
+  /** Bumped by every attempt and teardown, so a superseded handshake cannot apply its hello. */
   private connectGeneration = 0;
-  /** Session key the last sendMessage targeted (falls back to default). */
+  /** Session key the next send targets (null → gateway default). */
   private activeSessionKey: string | null = null;
-  /** Run sinks keyed by session so concurrent thread sends do not overwrite each other.
-   *  An entry also marks that session as having an active run (queue-mode selection). */
-  private runSinksBySession = new Map<string, ((event: ChatEvent) => void)>();
-  /** Streamed-delta prefixes for frames WITHOUT a messageId, keyed per
-   *  session: messageless streams ({delta: "he"} then {text: "hello"}) need
-   *  the same complete-frame dedup as identified ones, otherwise the final
-   *  full text appends on top of the already-rendered deltas. One record per
-   *  session is safe: only one run streams per session at a time, and a
-   *  finished stream's record is dropped by the finalize rule below. */
-  private deltaTextNoIdBySession = new Map<string, string>();
 
-  /** Remember streamed delta text for one message so a later complete frame
-   *  with the full text can emit only the unrendered remainder instead of
-   *  duplicating the already-streamed deltas. */
+  /** Run sinks keyed by session; an entry also marks that session's run as active (queue-mode selection). */
+  private readonly runSinksBySession = new Map<string, ChatSink>();
+  /** Transcript subscribers keyed by session; a run sink is registered here too while its run streams. */
+  private readonly transcriptSinksBySession = new Map<string, Set<ChatSink>>();
+  /** Sessions with a live transcript subscription on the current socket. */
+  private readonly subscribedSessions = new Set<string>();
+  /** In-flight `sessions.messages.subscribe` RPCs, shared by concurrent callers. */
+  private readonly pendingSubscribeBySession = new Map<string, Promise<boolean>>();
+  /** Sessions with a `chat.abort` in flight: their late events must not repopulate the cancelled thread. */
+  private readonly abortingSessions = new Set<string>();
 
-
-  /** Composite map key that scopes a messageId to its session. */
-  private messageKey(sessionKey: string, messageId: string): string {
-    return sessionKey + '\u0000' + messageId;
-  }
-
-  /** Per-message streamed-delta accumulation for complete-frame dedup. */
-  private deltaTextByMessage = new Map<string, string>();
-
-  /** A complete assistant frame (full `text`, no `delta`) must not re-emit
-   *  text already streamed as deltas for the same messageId: the provider
-   *  appends every text event, so `he` + `hello` would render `hehello`.
-   *  When the full text extends the streamed prefix, emit only the remainder;
-   *  if the full text diverges from the streamed prefix, keep the full text —
-   *  a duplicated tail beats lost content.
-   *
-   *  The tracked prefix counts what the mapper actually emits. Identified
-   *  mixed frames (messageId + delta + text) emit BOTH events, so the delta
-   *  counts toward the prefix. Frames without a messageId emit only the full
-   *  text when one is present (the mapper never renders that delta), so such
-   *  a delta must NOT count toward the prefix — recording it would slice the
-   *  un-rendered delta from the full text and the first response of a stream
-   *  like {delta: "hello", text: "hello"} would be reduced to an empty event.
-   *  A delta-only frame (no full text) is rendered verbatim and accumulates
-   *  regardless.
-   *
-   *  On a mixed frame whose full text is the cumulative emitted text, the
-   *  tracked prefix must jump to the full text — keeping the stale delta
-   *  prefix would make the later completion frame re-emit the tail a second
-   *  time. A divergent mixed frame is emitted intact and keeps the
-   *  accumulated delta prefix: advancing the tracker to the full text would
-   *  mark it as already emitted, so the later full-text completion frame
-   *  would be reduced to an empty event and its final text lost. Only the
-   *  full-text event is deduped against what earlier deltas already streamed
-   *  (plus this frame's own delta on an identified mixed frame); rewriting
-   *  the delta event too would drop a frame where delta equals the full
-   *  text — e.g. a first frame carrying delta "hello", text "hello" — and
-   *  lose the first content. */
-  private adjustCompleteFrameEvents(
-    sessionKey: string,
-    payload: { messageId?: unknown; text?: unknown; delta?: unknown },
-    events: ChatEvent[]
-  ): ChatEvent[] {
-    const messageId = asNonEmptyString(payload.messageId);
-    const delta = asStringOr(payload.delta, '');
-    const fullText = asStringOr(payload.text, '');
-    if (!messageId && delta.length === 0 && fullText.length === 0) {
-      return events;
-    }
-    // No-ID fallback: frames without a messageId share one per-session
-    // record instead of being excluded from dedup entirely — a valid stream
-    // may never carry an ID, and the final full text must still emit only
-    // the unrendered remainder.
-    const key = messageId ? this.messageKey(sessionKey, messageId) : sessionKey;
-    const store = messageId ? this.deltaTextByMessage : this.deltaTextNoIdBySession;
-    const streamed = store.get(key);
-    // Count the delta toward the emitted prefix only when the mapper actually
-    // renders it: without a messageId a frame carrying full text emits only
-    // that text, so its delta is invisible and must not join the prefix.
-    // `asNonEmptyString` yields `string | null`, so presence is checked
-    // against null: treating null as present would count a delta the mapper
-    // never emitted (no-id full-text frames render only the full text) and
-    // slice the emitted response down to nothing.
-    const deltaRendered = messageId !== null || fullText.length === 0;
-    if (delta.length > 0 && deltaRendered) {
-      this.touchDeltaRecord(store, key, (store.get(key) ?? '') + delta);
-    }
-    if (fullText.length === 0) {
-      return events;
-    }
-    const prefix = (streamed ?? '') + (deltaRendered && delta.length > 0 ? delta : '');
-    if (delta.length === 0) {
-      store.delete(key);
-    } else if (fullText.startsWith(prefix)) {
-      this.touchDeltaRecord(store, key, fullText);
-    }
-    if (!streamed && delta.length === 0) {
-      return events;
-    }
-    return events
-      .map((e) => {
-        if (e.type !== 'text') {
-          return e;
-        }
-        if (delta.length > 0 && e.text === delta) {
-          return e;
-        }
-        if (e.text === fullText && fullText.startsWith(prefix)) {
-          return { ...e, text: fullText.slice(prefix.length) };
-        }
-        return e;
-      })
-      .filter((e) => e.type !== 'text' || e.text.length > 0);
-  }
-
-  /** Least-recently-updated eviction: an actively streaming message is re-inserted
-   *  on every update so it outlives idle records past the cap. */
-  private touchDeltaRecord(store: Map<string, string>, key: string, text: string): void {
-    store.delete(key);
-    store.set(key, text);
-    if (store.size > DELTA_TRACK_LIMIT) {
-      const stalest = store.keys().next().value;
-      if (stalest !== undefined) {
-        store.delete(stalest);
-      }
-    }
-  }
-
-  /** Sessions whose run sink is registered pre-ack by an in-flight send: a
-   *  resume catch-up replaying a missed completed row must not finalize that
-   *  sink, or the ack's ownership check would drop the actual response. */
-  private preAckSendKeys = new Set<string>();
-
-  /** Sessions whose pre-ack send has actually issued `chat.send`: a send
-   *  still awaiting its pre-send history/subscribe RPCs has started no
-   *  remote run, so aborting it must only tear down local state — a remote
-   *  `chat.abort` here could cancel an unrelated run owned by the gateway
-   *  or another client. */
-  private preAckSendIssuedKeys = new Set<string>();
-  /** Current send ownership id per pre-ack session key. The key alone cannot
-   *  distinguish overlapping sends on the same session: after `abort()`
-   *  removes the key, a late acknowledgement from the abandoned send must not
-   *  delete a newer send's registration, settle its own attribution, or
-   *  mutate the shared active key — so the ack path correlates by this id and
-   *  is a no-op when it no longer owns the key. */
-  private preAckSendOwners = new Map<string, string>();
-  /** Transcript subscribers keyed by session (run or resume); re-subscribed after reconnect.
-   *  Multiple threads may bind the same session, so sinks fan out per key —
-   *  a later subscriber must not overwrite an earlier thread's callback. */
-  private transcriptSinksBySession = new Map<string, Set<((event: ChatEvent) => void)>>();
-  /** Terminal `error`/`done` pairs already delivered to a sink, tracked
-   *  because failure delivery is per caller: when a send joins a pending
-   *  subscription owned by another caller (e.g. a resume), the shared RPC's
-   *  failure path runs with the OWNER's options, not the send's, so the send
-   *  cannot rely on its own `onFailure` having run. A sink marked here must
-   *  not receive a second terminal when its own attempt resolves `false`. */
-  private terminallyDeliveredSinks = new WeakSet<(event: ChatEvent) => void>();
-  /** In-flight `sessions.messages.subscribe` RPCs per session. Concurrent
-   *  callers (pre-send subscription and the send acknowledgement path) share
-   *  one RPC instead of issuing duplicates whose independent failure handler
-   *  could tear down the surviving stream. Resolved `true` on success,
-   *  `false` on rejection; cleared on completion. Terminal delivery on
-   *  rejection stays in ONE path: the caller's `onFailure` emits error +
-   *  done (or, without an `onFailure`, the catch finalizes the run sink
-   *  with `done` alone, preserving the resume-path semantics). The catch
-   *  never emits both: a `done` here followed by a caller's error in its
-   *  continuation would deliver a terminal event before the failure,
-   *  leaving the error with no following `done`. */
-  private pendingSubscribeBySession = new Map<string, Promise<boolean>>();
-  /** session.message / session_end frames that arrived after a send issued
-   *  `chat.send` but before its ack: buffered until the acknowledgement
-   *  resolves the actual session key, then re-routed (drainPreAckBufferedFrames).
-   *  Bounded by PRE_ACK_BUFFER_LIMIT. Each frame records the issued sends it
-   *  may belong to, so a failed send can discard its frames instead of
-   *  draining them into another run's sink. */
-  private preAckBufferedFrames: Array<{ evt: SessionEvent; sends: Set<string>; resolvedKey?: string }> = [];
-  /** Settled pre-ack sends as requested→resolved key pairs. Drain routes a
-   *  buffered frame only when its session key is the RESOLVED key of a settled
-   *  send that the frame was buffered for: the previous global settled-key set
-   *  attributed frames to whichever send resolved to their key, so with several
-   *  sends in flight a frame held for send B could be drained into a sink
-   *  remapped from an unrelated send C that resolved to the same key. When two
-   *  sends resolve to the same key the association is ambiguous and the frame
-   *  is dropped at drain. */
-  private preAckSettledSends: Array<{ requested: string; resolved: string }> = [];
-  /** Sessions with a live transcript subscription on the current socket.
-   *  Cleared whenever the socket drops: every subscriber must re-subscribe
-   *  after a reconnect. */
-  private subscribedSessions = new Set<string>();
+  /** Sends awaiting their acknowledgement, keyed by the requested session. */
+  private readonly preAckSends = new Map<string, PendingSend>();
+  /** Frames that arrived while issued sends were unacknowledged: the ack reveals which session is theirs. */
+  private preAckBufferedFrames: BufferedFrame[] = [];
 
   /** Latest delta cursor per session key (for catch-up after reconnect). */
-  private deltaCursorBySession = new Map<string, unknown>();
-  /** Ordered content fingerprints of the rows a `chat.history` payload
-   *  seeded per session. When the payload carried no delta cursor this is
-   *  the only catch-up boundary available: the replayed tail must skip
-   *  exactly these rows (in order) so an already-rendered history is not
-   *  appended a second time, while rows after the seeded tail still
-   *  replay. Keyed per session; overwritten by every seed. */
-  private seededCatchUpFingerprints = new Map<string, string[]>();
-  /** Message ids already surfaced for the active session (dedup on resume). */
-  /** Seen message IDs per session key, capped so long-lived sessions cannot
-   *  grow memory unbounded. Keyed per session: messageIds are only unique
-   *  within one session's transcript. */
-  private seenMessageIdsBySession = new Map<string, Set<string>>();
-  /** A session.message frame carries a complete assistant message only when
-   *  it has non-empty full `text` and no streaming `delta`. Delta frames and
-   *  textless tool/usage frames share the messageId with the final row, so
-   *  only complete frames may enter the seen-set: marking a delta seen would
-   *  make a reconnect's catch-up skip the completed history row (and its
-   *  finalization), leaving the thread streaming forever. A stable-shape
-   *  empty `delta` (e.g. `delta: ''` on the final full-text row) counts as
-   *  absent: only a non-empty delta marks a streaming frame. */
-  /** Stable catch-up boundary fingerprint for one history row: role, delta
-   *  vs final shape, and a digest of the full text (kept small: rows are
-   *  untrusted and can be large). Used both when seeding the boundary from
-   *  a history payload and when advancing it to the latest processed tail. */
-  private static rowFingerprint(row: Record<string, unknown>): string {
-    const role = typeof row.role === 'string' ? row.role : '';
-    const delta = typeof row.delta === 'string' && row.delta.length > 0;
-    const text = typeof row.text === 'string' ? row.text : '';
-    const textDigest = createHash('sha256').update(text).digest('base64');
-    return `${role}|${delta ? 'delta' : 'final'}|${textDigest}`;
-  }
-
-  /** Store a session's catch-up boundary, keeping only its latest rows: the
-   *  boundary aligns on the seeded suffix, so older fingerprints never match. */
-  private setCatchUpBoundary(sessionKey: string, rows: unknown[]): void {
-    const fingerprints = GatewayChatService.catchUpBoundaryFingerprints(rows);
-    this.seededCatchUpFingerprints.set(sessionKey, fingerprints.slice(-SEEDED_FINGERPRINT_LIMIT));
-  }
-
-  private isCompleteAssistantFrame(payload: {
-    messageId?: unknown;
-    text?: unknown;
-    delta?: unknown;
-  }): boolean {
-    return (
-      typeof payload.messageId === 'string' &&
-      payload.messageId.length > 0 &&
-      typeof payload.text === 'string' &&
-      payload.text.length > 0 &&
-      !(typeof payload.delta === 'string' && payload.delta.length > 0)
-    );
-  }
-  /** Fingerprint boundary seeds must only cover rows already rendered into
-   *  the thread. A delta-ONLY assistant row (non-empty `delta`, no completed
-   *  `text`) is still streaming: seeding its fingerprint would make a later
-   *  cursor-less catch-up match and skip it, silently dropping a response
-   *  whose live event was missed. The row is excluded so a later catch-up
-   *  replays it once the gateway history holds its finalized form. Rows
-   *  carrying completed `text` — including mixed delta+text frames, whose
-   *  text is final (same contract as mapHistoryMessages) — are rendered by
-   *  the catch-up, so they belong in the boundary. */
-  private static catchUpBoundaryFingerprints(rows: unknown[]): string[] {
-    const fingerprints: string[] = [];
-    for (const rowRaw of rows) {
-      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
-      const isAssistant = !(typeof row.role === 'string' && row.role !== 'assistant');
-      const hasText = typeof row.text === 'string' && row.text.length > 0;
-      if (
-        isAssistant &&
-        !hasText &&
-        typeof row.delta === 'string' &&
-        row.delta.length > 0
-      ) {
-        continue;
-      }
-      fingerprints.push(GatewayChatService.rowFingerprint(row));
-    }
-    return fingerprints;
-  }
-
-  /** Sessions with a `chat.abort` RPC in flight. Events for these keys are
-   *  suppressed until the abort completes: the gateway may keep emitting
-   *  deltas until it processes the abort, and those late events would
-   *  otherwise repopulate a cancelled thread through a re-bound sink. */
-  private abortingSessions = new Set<string>();
-  private static readonly SEEN_MESSAGE_LIMIT = 500;
-
-    /** Record a messageId as seen for one session (oldest entry evicted at the
-   *  cap). An already-seen ID must not evict an older entry: repeated delivery
-   *  would otherwise churn unrelated IDs out of the capped set and let old
-   *  history rows replay after reconnect. */
-  private rememberSeen(sessionKey: string, messageId: string): void {
-    let seen = this.seenMessageIdsBySession.get(sessionKey);
-    if (!seen) {
-      seen = new Set<string>();
-      this.seenMessageIdsBySession.set(sessionKey, seen);
-    }
-    if (seen.has(messageId)) {
-      return;
-    }
-    if (seen.size >= GatewayChatService.SEEN_MESSAGE_LIMIT) {
-      const oldest = seen.values().next().value;
-      if (oldest !== undefined) {
-        seen.delete(oldest);
-      }
-    }
-    seen.add(messageId);
-  }
-
-  /** Register a transcript sink for one session (fan-out, never overwrite). */
-  private addTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
-    let sinks = this.transcriptSinksBySession.get(sessionKey);
-    if (!sinks) {
-      sinks = new Set();
-      this.transcriptSinksBySession.set(sessionKey, sinks);
-    }
-    sinks.add(onEvent);
-  }
-
-  /** Drop one transcript sink for a session; the session entry disappears when
-   *  the last subscriber for that key is removed. Callers (e.g. the provider
-   *  reopening a session) use it to replace, not duplicate, their callback. */
-  removeTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
-    const sinks = this.transcriptSinksBySession.get(sessionKey);
-    if (!sinks) return;
-    sinks.delete(onEvent);
-    if (sinks.size === 0) {
-      this.transcriptSinksBySession.delete(sessionKey);
-      this.releaseSubscription(sessionKey);
-    }
-  }
-
-  /** Re-register a transcript sink without claiming the active session:
-   *  used by callers restoring a suspended resume callback after a run so a
-   *  concurrent thread's session selection is not overwritten. */
-  rebindTranscriptSink(sessionKey: string, onEvent: (event: ChatEvent) => void): void {
-    this.addTranscriptSink(sessionKey, onEvent);
-    this.subscribeSessionMessages(sessionKey);
-  }
-
-  /** Complete and drop every sink of one session (subscribe failure /
-   *  teardown: none of them will receive further events). Retires the run
-   *  sink too: leaving it in runSinksBySession would make the next
-   *  sendMessage select queueMode 'steer' against a run that already
-   *  ended. */
-  private retireTranscriptSinks(sessionKey: string): void {
-    const sinks = this.transcriptSinksBySession.get(sessionKey);
-    this.transcriptSinksBySession.delete(sessionKey);
-    const retired = new Set(sinks ?? []);
-    const runSink = this.runSinksBySession.get(sessionKey);
-    this.runSinksBySession.delete(sessionKey);
-    if (runSink) {
-      retired.add(runSink);
-    }
-    this.releaseSubscription(sessionKey);
-    for (const sink of retired) {
-      sink({ type: 'done' });
-    }
-  }
-
-  /** Whether a messageId was already delivered for one session. */
-  private hasSeen(sessionKey: string, messageId: string): boolean {
-    return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
-  }
-
-  /** Gate mapped frame events for dispatch: complete assistant frames are
- *  claimed in the seen-set (first delivery) and duplicates are rejected, so a
- *  complete frame replayed around a reconnect is not appended twice. Only the
- *  text facet of a duplicate is rejected: a later frame that repeats a
- *  completed text while carrying a tool lifecycle update or usage must still
- *  deliver those non-text facets, or the tool row sticks at its earlier
- *  status and the usage update is lost. Deltas and textless frames pass
- *  through untouched — only complete frames may enter the seen-set, otherwise
- *  a reconnect's catch-up would skip the completed row (and its
- *  finalization) and leave the thread streaming forever. Returns the events
- *  to deliver; on a first claim the caller still applies
- *  adjustCompleteFrameEvents text bookkeeping, on a duplicate the returned
- *  non-text events are delivered as-is. */
-  private filterDuplicateFrameEvents(
-    sessionKey: string,
-    payload: { messageId?: unknown; text?: unknown; delta?: unknown },
-    events: ChatEvent[]
-  ): ChatEvent[] {
-    if (!this.isCompleteAssistantFrame(payload)) return events;
-    const messageId = payload.messageId as string;
-    if (this.hasSeen(sessionKey, messageId)) {
-      return events.filter((e) => e.type !== 'text');
-    }
-    this.rememberSeen(sessionKey, messageId);
-    return events;
-  }
+  private readonly deltaCursorBySession = new Map<string, string>();
+  /** Fingerprints of the rows already rendered per session: the only catch-up boundary without a cursor. */
+  private readonly seededCatchUpFingerprints = new Map<string, string[]>();
+  /** Complete-message ids already delivered per session (messageIds are unique per transcript only). */
+  private readonly seenMessageIdsBySession = new Map<string, Set<string>>();
+  /** Streamed delta text per message, so a later full-text frame emits only the unrendered remainder. */
+  private readonly deltaTextByMessage = new Map<string, string>();
+  /** The same for frames without a messageId: one stream per session at a time. */
+  private readonly deltaTextNoIdBySession = new Map<string, string>();
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
-
-  /** Gateway events forwarded to chat subscribers (mapped to ChatEvent). */
-  onEvent: (event: ChatEvent) => void = () => {};
-  /** Raw session events for lower-level subscribers. */
-  onSessionEvent: (event: SessionEvent) => void = () => {};
 
   constructor(deps: GatewayChatServiceOptions) {
     this.url = deps.url;
@@ -561,87 +279,58 @@ export class GatewayChatService {
 
   /** Whether the socket is currently open and handshook. */
   get isRunning(): boolean {
-    return this.connected;
+    return this.liveWs !== null;
   }
 
-  /** Update gateway credentials in place instead of replacing the client:
-   *  threads hold this instance for lifecycle actions (abort/cancel), so a
-   *  dispose-and-recreate on url/token change would sever in-flight runs.
-   *  Every transcript sink (including resume-only ones) is retired with
-   *  `done` instead of being carried into the new connection: a credential
-   *  change can point at a different gateway where the same session keys
-   *  name different sessions, so the provider must revalidate each key
-   *  against the new gateway's allowlist (isKnownMainSessionKey) before any
-   *  sink is re-registered. Streaming threads finalize; a later openSession
-   *  re-subscribes with a fresh catch-up seed after the allowlist check. Any
-   *  in-flight handshake is invalidated: it authenticated with the old
-   *  credentials, so its `.then` must not mark this client connected and its
-   *  `.finally` must not clear the next attempt's connectPromise. */
+  /** Identity of the configured endpoint, for caches that credential changes must invalidate.
+   *  Never log it: it embeds the token. A JSON tuple cannot collide the way a `url:token` join can. */
+  getGatewayIdentity(): string {
+    return JSON.stringify([this.url, this.token]);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Connection lifecycle                                              */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Update credentials in place: threads hold this instance for lifecycle
+   * actions, so replacing it would sever in-flight runs. The new endpoint may
+   * reuse session keys for different sessions, so every sink is retired with
+   * `done` (the provider re-validates keys before re-registering) and all
+   * per-session catch-up state is dropped. An in-flight handshake used the
+   * old credentials and is superseded.
+   */
   updateConnection(url: string, token: string): void {
-    if (this.url === url && this.token === token) { return; }
+    if (this.url === url && this.token === token) {
+      return;
+    }
     this.url = url;
     this.token = token;
-    this.suspended = false;
     this.connectGeneration += 1;
     this.connectPromise = null;
-    // Connection-scoped per-session state belongs to the previous gateway:
-    // a credential change can point at a different endpoint that reuses the
-    // same session keys, and stale cursors/seen-ids/delta records would skip
-    // the next send's history seed, mis-dedupe its frames, or break reconnect
-    // catch-up with an invalid cursor. Transcript sinks are retired (with
-    // `done`) so no session key is silently re-subscribed against the new
-    // gateway: keys must pass the provider's identity-checked allowlist
-    // again (isKnownMainSessionKey) before any sink is re-registered.
-    this.deltaCursorBySession.clear();
-    this.seededCatchUpFingerprints.clear();
-    this.seenMessageIdsBySession.clear();
-    this.deltaTextByMessage.clear();
-    this.deltaTextNoIdBySession.clear();
-    for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
-      if (
-        this.connected &&
-        this.runSinksBySession.has(sessionKey) &&
-        // Same class as abort()/suspend(): a pre-ack send still awaiting its
-        // history/subscribe RPCs has started no remote run, so it must not
-        // trigger a remote `chat.abort` on the new gateway here.
-        (this.preAckSendIssuedKeys.has(sessionKey) || !this.preAckSendKeys.has(sessionKey))
-      ) {
-        this.abortingSessions.add(sessionKey);
-        void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
-          .catch((err: Error) => {
-            this.logger.warn(`chat.abort failed during credential switch ${err.message}`);
-          })
-          .finally(() => this.abortingSessions.delete(sessionKey));
-      }
+    this.abortRemoteRuns();
+    this.forgetSubscriptions();
+    for (const sessionKey of this.sinkSessionKeys()) {
       this.retireTranscriptSinks(sessionKey);
     }
     this.clearPreAckState();
-    if (this.ws) {
-      const oldWs = this.ws;
-      this.ws = null;
-      this.connected = false;
-      this.subscribedSessions.clear();
-      this.pendingSubscribeBySession.clear();
-      this.rejectAllPending('gateway credentials changed');
-      try { oldWs.close(); } catch { /* already closed */ }
-      this.scheduleReconnect();
+    this.deltaCursorBySession.clear();
+    this.seededCatchUpFingerprints.clear();
+    this.seenMessageIdsBySession.clear();
+    this.clearDeltaBookkeeping();
+    if (!this.ws) {
+      return;
     }
+    this.closeSocket('gateway credentials changed');
+    this.scheduleReconnect();
   }
 
   /**
    * Open the WebSocket and complete the operator handshake. Serialized
    * (concurrent calls join the in-flight attempt), idempotent while
-   * connected; an explicit attempt cancels any pending scheduled reconnect.
-   *
-   * A superseded attempt (credentials changed or a newer attempt started
-   * mid-handshake) must never resolve: callers (e.g.
-   * ChatServiceFactory.resolve()) would then report `connected` while
-   * this.connected is still false and the next send fails as a misleading
-   * disconnected error. Instead the newer generation's attempt is adopted so
-   * the caller resolves only once the client is actually connected (or
-   * rejects when none is pending and the client is not connected), and a
-   * superseded attempt never clears a newer attempt's shared connectPromise
-   * slot in its `.finally`.
+   * connected; an explicit attempt cancels a scheduled reconnect. A
+   * superseded attempt never resolves on its own: it adopts the newer
+   * attempt, or rejects when none is pending.
    */
   connect(): Promise<void> {
     if (this.disposed) {
@@ -650,35 +339,15 @@ export class GatewayChatService {
     if (this.connectPromise) {
       return this.connectPromise;
     }
-    this.suspended = false;
-    if (this.connected && this.ws) {
+    if (this.liveWs) {
       return Promise.resolve();
     }
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    const gen = ++this.connectGeneration;
+    this.clearReconnectTimer();
+    const generation = ++this.connectGeneration;
     const attempt: Promise<void> = this.openAndHandshake()
-      .then((hello): Promise<void> | void => {
-        if (gen !== this.connectGeneration) {
-          this.logger.info('gateway handshake superseded by a newer connection attempt');
-          if (this.connectPromise && this.connectPromise !== attempt) {
-            return this.connectPromise;
-          }
-          if (!(this.connected && this.ws)) {
-            throw new Error('gateway connection superseded by a newer attempt');
-          }
-          return;
-        }
-        this.hello = hello;
-        this.reconnectAttempt = 0;
-        this.attachRuntimeHandlers();
-        this.resubscribeActiveSession();
-        this.logger.info(`gateway connected protocol=${hello.protocol}`);
-      })
+      .then((hello) => this.completeHandshake(generation, hello))
       .finally(() => {
-        if (gen === this.connectGeneration) {
+        if (generation === this.connectGeneration) {
           this.connectPromise = null;
         }
       });
@@ -686,153 +355,212 @@ export class GatewayChatService {
     return attempt;
   }
 
+  /** Park the client after a transport switch: abort remote runs while the socket is still
+   *  writable, finish run sinks with `done`, drop resume-only sinks (the provider reopens
+   *  them later), and stop reconnecting. The instance stays valid for lifecycle calls. */
+  suspend(): void {
+    this.stopConnecting();
+    this.abortRemoteRuns();
+    this.forgetSubscriptions();
+    this.finishRunSinks();
+    this.transcriptSinksBySession.clear();
+    this.clearPreAckState();
+    this.clearDeltaBookkeeping();
+    this.closeSocket('gateway transport suspended');
+  }
+
+  /** Tear the client down for good. Remote runs keep running (a later window resumes them);
+   *  local run sinks finish with `done`. */
+  dispose(): void {
+    this.disposed = true;
+    this.stopConnecting();
+    this.forgetSubscriptions();
+    this.finishRunSinks();
+    this.clearPreAckState();
+    this.closeSocket('gateway client disposed');
+  }
+
+  private completeHandshake(generation: number, hello: HelloOk): Promise<void> | void {
+    if (generation !== this.connectGeneration) {
+      this.logger.info('gateway handshake superseded by a newer connection attempt');
+      if (this.connectPromise) {
+        return this.connectPromise;
+      }
+      throw new Error('gateway connection superseded by a newer attempt');
+    }
+    const ws = this.liveWs;
+    if (!ws) {
+      throw new Error('gateway connection closed during the handshake');
+    }
+    this.hello = hello;
+    this.reconnectAttempt = 0;
+    ws.on('message', (data: unknown) => {
+      if (this.liveWs === ws) {
+        this.handleMessage(data);
+      }
+    });
+    this.resubscribeSessions();
+    this.logger.info(`gateway connected protocol=${String(hello.protocol)}`);
+  }
+
   /**
-   * Full connect handshake: gate `connect` on the pre-connect
-   * `connect.challenge` event (token-only clients need no signed reply;
-   * a short fallback timer keeps gateways without challenge working).
-   *
-   * A retired socket (updateConnection() or a newer attempt replaced
-   * `this.ws` while this handshake was in flight) must not mark the client
-   * connected. The stale hello-ok is rejected BEFORE the handshake settles:
-   * settleError() no-ops once settled, and skipping the rejection would leak
-   * this handshake promise and leave callers waiting on an outer timeout.
-   * On close of a retired socket the promise must still settle — the normal
-   * retirement path is a bare close event, and leaving the promise pending
-   * strands callers awaiting the retired connect() attempt (forced
-   * token/URL rotation would hang them forever).
+   * Full connect handshake: `connect` is sent on the pre-connect
+   * `connect.challenge` event, or after a short fallback for gateways without
+   * one. A socket retired mid-handshake (updateConnection, suspend or a newer
+   * attempt replaced `this.ws`) never marks the client connected, and its
+   * promise still settles so callers are not stranded.
    */
   private openAndHandshake(): Promise<HelloOk> {
     let ws: WebSocketLike;
     try {
       ws = this.wsFactory(this.url);
     } catch (err) {
-      // `ws` throws synchronously on a malformed URL: a permanent failure, so
-      // no reconnect is scheduled.
+      // `ws` throws synchronously on a malformed URL: permanent, so no reconnect.
       this.ws = null;
-      this.connected = false;
-      const message = err instanceof Error ? err.message : String(err);
-      return Promise.reject(new Error(`gateway connect failed ${this.redactCredentials(message)}`));
+      return Promise.reject(new Error(`gateway connect failed ${this.redactCredentials(errorMessage(err))}`));
     }
     this.ws = ws;
     return new Promise<HelloOk>((resolve, reject) => {
       let settled = false;
-      // The gateway refused these credentials: retrying them cannot succeed,
-      // so the reconnect loop stops until the next explicit
-      // connect()/updateConnection(). Other handshake errors keep backing off.
-      let rejectedByGateway = false;
-      let helloSent = false;
+      // Rejected credentials cannot succeed on retry: stop reconnecting until settings change.
+      let credentialsRejected = false;
       let connectRequestId: string | null = null;
-      let handshakeTimer: ReturnType<typeof setTimeout> | null = null;
-      let challengeTimer: ReturnType<typeof setTimeout> | null = null;
-      handshakeTimer = setTimeout(() => {
-        settleError('gateway handshake timed out');
-        try {
-          ws.close();
-        } catch {
-        }
-      }, HANDSHAKE_TIMEOUT_MS);
-      const settleError = (msg: string) => {
-        if (settled) return;
+      let challengeTimer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (): boolean => {
+        if (settled) return false;
         settled = true;
+        clearTimeout(challengeTimer);
+        clearTimeout(handshakeTimer);
+        ws.removeListener('message', onMessage);
+        return true;
+      };
+      const abandon = (message: string): void => {
+        if (settle()) reject(new Error(message));
+      };
+      const fail = (message: string): void => {
+        abandon(message);
         try {
           ws.close();
         } catch {
+          /* already closed */
         }
-        if (challengeTimer) {
-          clearTimeout(challengeTimer);
-          challengeTimer = null;
-        }
-        if (handshakeTimer) {
-          clearTimeout(handshakeTimer);
-          handshakeTimer = null;
-        }
-        reject(new Error(msg));
       };
-      const sendHello = () => {
-        if (helloSent || settled) return;
-        helloSent = true;
-        if (challengeTimer) {
-          clearTimeout(challengeTimer);
-          challengeTimer = null;
-        }
-        const frame: RpcRequestFrame = {
-          type: 'req',
-          id: this.allocId(),
-          method: GatewayRpcMethods.connect,
-          params: this.buildHello() as unknown as Record<string, unknown>,
-        };
-        connectRequestId = frame.id;
+      const sendHello = (): void => {
+        if (connectRequestId !== null) return;
+        clearTimeout(challengeTimer);
+        connectRequestId = this.allocId();
+        const params: ClientHello = this.buildHello();
+        const frame: RpcRequestFrame = { type: 'req', id: connectRequestId, method: GatewayRpcMethods.connect, params };
         ws.send(JSON.stringify(frame));
       };
-      const onOpen = () => {
-        challengeTimer = setTimeout(() => sendHello(), CHALLENGE_FALLBACK_MS);
-      };
-      const onMessage = (data: unknown) => {
+      const onMessage = (data: unknown): void => {
         const frame = parseFrame(data);
-        if (!frame) return;
-        if (frame.type === 'res') {
-          const res = frame as RpcResponseFrame;
-          if (res.id !== connectRequestId) return;
-          if (res.ok) {
-            const payload = res.payload as { type?: string } | undefined;
-            if (payload?.type !== 'hello-ok') {
-              settleError(`gateway handshake unexpected payload type=${payload?.type ?? 'unknown'}`);
-              return;
-            }
-            if (!settled) {
-              if (this.ws !== ws) {
-                settleError('gateway handshake superseded: retired socket delivered hello-ok');
-                return;
-              }
-              settled = true;
-              if (handshakeTimer) {
-                clearTimeout(handshakeTimer);
-                handshakeTimer = null;
-              }
-              this.connected = true;
-              resolve(payload as unknown as HelloOk);
-            }
-          } else {
-            rejectedByGateway = isAuthRejection(res.error);
-            settleError(`gateway handshake rejected code=${res.error?.code ?? 'unknown'}`);
-          }
-        } else if (!settled && (frame as { event?: string }).event === GatewayEvents.connectChallenge) {
-          sendHello();
+        if (frame?.type === 'event') {
+          if (frame.event === GatewayEvents.connectChallenge) sendHello();
           return;
         }
-      };
-      const onError = (err: Error) => {
-        const message = this.redactCredentials(err.message);
-        this.logger.error(`gateway error ${message}`);
-        settleError(`gateway error ${message}`);
-      };
-      const onClose = () => {
+        if (!frame || frame.id !== connectRequestId) return;
+        if (frame.ok !== true) {
+          credentialsRejected = isAuthRejection(frame.error);
+          fail(`gateway handshake rejected code=${errorCode(frame.error)}`);
+          return;
+        }
+        if (!isHelloOk(frame.payload)) {
+          const type = (frame.payload as { type?: unknown } | null | undefined)?.type;
+          fail(`gateway handshake unexpected payload type=${asString(type, 'unknown')}`);
+          return;
+        }
         if (this.ws !== ws) {
-          if (!settled) settleError('gateway handshake superseded: retired socket closed');
+          fail('gateway handshake superseded: retired socket delivered hello-ok');
           return;
         }
-        this.connected = false;
-        this.subscribedSessions.clear();
-        this.pendingSubscribeBySession.clear();
-        this.preAckBufferedFrames = [];
-        this.preAckSettledSends = [];
-        if (!settled) settleError('gateway closed before handshake completed');
-        if (challengeTimer) {
-          clearTimeout(challengeTimer);
-          challengeTimer = null;
-        }
-        this.rejectAllPending('gateway connection closed');
-        if (rejectedByGateway) {
-          this.logger.warn('gateway rejected the handshake; not reconnecting until the connection settings change');
-          return;
-        }
-        this.scheduleReconnect();
+        settle();
+        this.liveWs = ws;
+        resolve(frame.payload);
       };
-      ws.on('open', onOpen as () => void);
-      ws.on('message', onMessage as (data: unknown) => void);
-      ws.on('error', onError as (err: Error) => void);
-      ws.on('close', onClose as (code: number, reason: Buffer) => void);
+      const onError = (err: Error): void => {
+        const message = this.redactCredentials(errorMessage(err));
+        this.logger.error(`gateway error ${message}`);
+        fail(`gateway error ${message}`);
+      };
+      const onClose = (): void => {
+        if (this.ws !== ws) {
+          abandon('gateway handshake superseded: retired socket closed');
+          return;
+        }
+        abandon('gateway closed before handshake completed');
+        this.handleSocketClosed(credentialsRejected);
+      };
+      const handshakeTimer = setTimeout(() => fail('gateway handshake timed out'), HANDSHAKE_TIMEOUT_MS);
+      ws.on('open', () => {
+        challengeTimer = setTimeout(sendHello, CHALLENGE_FALLBACK_MS);
+      });
+      ws.on('message', onMessage);
+      ws.on('error', onError);
+      ws.on('close', onClose);
     });
+  }
+
+  /** The current socket closed: subscriptions and RPCs die with it. Runs survive a
+   *  reconnect, except when the gateway refused the credentials and none will follow. */
+  private handleSocketClosed(credentialsRejected: boolean): void {
+    this.liveWs = null;
+    this.forgetSubscriptions();
+    this.preAckBufferedFrames = [];
+    this.rejectAllPending('gateway connection closed');
+    if (credentialsRejected) {
+      this.logger.warn('gateway rejected the handshake; not reconnecting until the connection settings change');
+      this.finishRunSinks(CREDENTIALS_REJECTED_MESSAGE);
+      return;
+    }
+    this.scheduleReconnect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) return;
+    const attempt = this.reconnectAttempt++;
+    const delay = Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs);
+    this.logger.info(`gateway reconnect scheduled attempt=${attempt + 1} delayMs=${delay}`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect().catch((err: Error) => {
+        this.logger.error(`gateway reconnect failed ${this.redactCredentials(err.message)}`);
+      });
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+  }
+
+  /** Invalidate any in-flight handshake and cancel scheduled reconnects. */
+  private stopConnecting(): void {
+    this.connectGeneration += 1;
+    this.connectPromise = null;
+    this.clearReconnectTimer();
+  }
+
+  /** Drop the current socket and fail its RPCs; its close event is then ignored as retired. */
+  private closeSocket(reason: string): void {
+    const ws = this.ws;
+    this.ws = null;
+    this.liveWs = null;
+    this.forgetSubscriptions();
+    this.rejectAllPending(reason);
+    try {
+      ws?.close();
+    } catch {
+      /* already closed */
+    }
+  }
+
+  /** Subscriptions are socket-scoped: a closing socket drops them server-side, so no unsubscribe RPCs follow. */
+  private forgetSubscriptions(): void {
+    this.subscribedSessions.clear();
+    this.pendingSubscribeBySession.clear();
   }
 
   /** Strip URL userinfo, sensitive query params and the token from a
@@ -854,16 +582,19 @@ export class GatewayChatService {
     };
   }
 
+  /* ---------------------------------------------------------------- */
+  /* RPC                                                               */
+  /* ---------------------------------------------------------------- */
+
   private allocId(): string {
     return `cc-${this.nextRequestId++}`;
   }
 
   /** Send an RPC request and resolve with the response payload. */
   send(method: string, params?: Record<string, unknown>): Promise<unknown> {
-    if (!this.ws || !this.connected) {
-      return Promise.reject(
-        new Error('Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.')
-      );
+    const ws = this.liveWs;
+    if (!ws) {
+      return Promise.reject(new Error(NOT_CONNECTED_MESSAGE));
     }
     const id = this.allocId();
     const frame: RpcRequestFrame = { type: 'req', id, method, params };
@@ -872,7 +603,7 @@ export class GatewayChatService {
         this.pending.delete(id);
         reject(new Error(`gateway rpc timeout method=${method}`));
       }, REQUEST_TIMEOUT_MS);
-      this.pending.set(id, {
+      const request: PendingRequest = {
         resolve: (payload) => {
           clearTimeout(timer);
           resolve(payload);
@@ -881,33 +612,60 @@ export class GatewayChatService {
           clearTimeout(timer);
           reject(err);
         },
-      });
-      this.ws!.send(JSON.stringify(frame));
+      };
+      this.pending.set(id, request);
+      try {
+        ws.send(JSON.stringify(frame));
+      } catch (err) {
+        this.pending.delete(id);
+        request.reject(new Error(`gateway rpc send failed method=${method} ${this.redactCredentials(errorMessage(err))}`));
+      }
     });
   }
 
   /** Typed convenience wrapper for `sessions.list`. */
-  listSessions(params: Record<string, unknown> = {}): Promise<unknown> {
+  listSessions(params: Record<string, unknown>): Promise<unknown> {
     return this.send(GatewayRpcMethods.sessionsList, params);
   }
+
+  /** Reject and clear every in-flight request (socket closed / disposed). */
+  private rejectAllPending(reason: string): void {
+    const requests = [...this.pending.values()];
+    this.pending.clear();
+    for (const request of requests) {
+      request.reject(new Error(reason));
+    }
+  }
+
+  /** Whether hello-ok advertises the given RPC method (unknown-tolerant). */
+  private methodAdvertised(method: string): boolean {
+    const methods = this.hello?.features?.methods;
+    return !Array.isArray(methods) || methods.includes(method);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Session binding, history seeding and resume                       */
+  /* ---------------------------------------------------------------- */
 
   /** Bind the active chat to a session key (agent picker). */
   setActiveSession(sessionKey: string): void {
     this.activeSessionKey = sessionKey;
   }
 
-  /** Snapshot one session's catch-up state so a caller that clears the
-   *  sink (and with it the cursor, seen IDs, and seeded boundary) can
-   *  restore an identical catch-up boundary when the teardown is later
-   *  rolled back (e.g. an abandoned rebind): without the snapshot the
-   *  replay boundary is gone and events missed while no sink was
-   *  registered are permanently lost. Returns null when there is
-   *  nothing to preserve. */
-  captureSessionState(sessionKey: string): {
-    seenMessageIds?: Set<string>;
-    deltaCursor?: unknown;
-    seededCatchUpFingerprints?: string[];
-  } | null {
+  /** Session key the next send will target (null → gateway default). */
+  getActiveSessionKey(): string | null {
+    return this.activeSessionKey;
+  }
+
+  /** Whether a run on this session is locally owned (a run sink or a pre-ack send):
+   *  runs of the gateway or other clients are invisible here, so abort gates skip them. */
+  hasOwnedRun(sessionKey: string): boolean {
+    return this.runSinksBySession.has(sessionKey) || this.preAckSends.has(sessionKey);
+  }
+
+  /** Snapshot one session's catch-up state before a teardown that may be rolled back
+   *  (e.g. an abandoned rebind); null when there is nothing to preserve. */
+  captureSessionState(sessionKey: string): SessionCatchUpSnapshot | null {
     const seenMessageIds = this.seenMessageIdsBySession.get(sessionKey);
     const deltaCursor = this.deltaCursorBySession.get(sessionKey);
     const seededCatchUpFingerprints = this.seededCatchUpFingerprints.get(sessionKey);
@@ -915,42 +673,26 @@ export class GatewayChatService {
       return null;
     }
     return {
-      seenMessageIds: seenMessageIds ? new Set(seenMessageIds) : undefined,
-      deltaCursor: deltaCursor === undefined ? undefined : deltaCursor,
-      seededCatchUpFingerprints: seededCatchUpFingerprints
-        ? [...seededCatchUpFingerprints]
-        : undefined,
+      seenMessageIds: seenMessageIds && new Set(seenMessageIds),
+      deltaCursor,
+      seededCatchUpFingerprints: seededCatchUpFingerprints && [...seededCatchUpFingerprints],
     };
   }
 
-  /** Restore a captureSessionState snapshot for one session: the entries
-   *  re-establish the pre-clear catch-up boundary so the next (re)
-   *  subscription replays exactly the rows missed after the snapshot.
-   *  A null snapshot is a no-op. */
-  restoreSessionState(
-    sessionKey: string,
-    snapshot: {
-      seenMessageIds?: Set<string>;
-      deltaCursor?: unknown;
-      seededCatchUpFingerprints?: string[];
-    } | null
-  ): void {
-    if (!snapshot) {
-      return;
+  /** Restore a captureSessionState snapshot, so the next subscription replays exactly the rows missed since. */
+  restoreSessionState(sessionKey: string, snapshot: SessionCatchUpSnapshot | null): void {
+    if (snapshot?.seenMessageIds) {
+      this.seenMessageIdsBySession.set(sessionKey, new Set(snapshot.seenMessageIds));
     }
-    if (snapshot.seenMessageIds) {
-      this.seenMessageIdsBySession.set(sessionKey, snapshot.seenMessageIds);
-    }
-    if (snapshot.deltaCursor !== undefined) {
+    if (snapshot?.deltaCursor !== undefined) {
       this.deltaCursorBySession.set(sessionKey, snapshot.deltaCursor);
     }
-    if (snapshot.seededCatchUpFingerprints) {
-      this.seededCatchUpFingerprints.set(sessionKey, snapshot.seededCatchUpFingerprints);
+    if (snapshot?.seededCatchUpFingerprints) {
+      this.seededCatchUpFingerprints.set(sessionKey, [...snapshot.seededCatchUpFingerprints]);
     }
   }
 
-  /** Drop one session's transcript sink (thread teardown): stops routing that
-   *  session's live events to a callback for a thread that no longer exists. */
+  /** Thread teardown: stop routing the session to transcript callbacks and forget its catch-up state. */
   clearSessionSink(sessionKey: string): void {
     this.transcriptSinksBySession.delete(sessionKey);
     this.seenMessageIdsBySession.delete(sessionKey);
@@ -959,14 +701,414 @@ export class GatewayChatService {
     this.releaseSubscription(sessionKey);
   }
 
-  /** Release a session's connection-scoped subscription once the last sink
-   *  (transcript or run) for it is gone: the shared socket must not keep a
-   *  server-side subscription for every closed/rebound session for the
-   *  client's lifetime, and a stale subscribed entry would let a later
-   *  resume skip its catch-up and lose events delivered with no sink. The
-   *  entry is removed synchronously so a resume re-subscribes immediately;
-   *  the unsubscribe RPC is fire-and-forget and a no-op when the gateway
-   *  does not advertise it or the socket is already gone. */
+  /** Drop one transcript sink; the provider uses it to replace, not duplicate, a callback. */
+  removeTranscriptSink(sessionKey: string, onEvent: ChatSink): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey);
+    if (!sinks) return;
+    sinks.delete(onEvent);
+    if (sinks.size === 0) {
+      this.transcriptSinksBySession.delete(sessionKey);
+      this.releaseSubscription(sessionKey);
+    }
+  }
+
+  /** Re-register a transcript sink without claiming the active session. */
+  rebindTranscriptSink(sessionKey: string, onEvent: ChatSink): void {
+    this.addTranscriptSink(sessionKey, onEvent);
+    void this.subscribeSessionMessages(sessionKey);
+  }
+
+  /**
+   * Seed the delta cursor, the catch-up boundary and the seen-set from a
+   * `chat.history` payload, so a later catch-up does not replay rendered
+   * rows. `rememberSeen: false` is for a snapshot taken mid-run: a complete
+   * row in it may be the streaming response, whose live final frame must not
+   * be dropped as a duplicate.
+   */
+  seedHistory(sessionKey: string, payload: unknown, opts?: { rememberSeen?: boolean }): void {
+    if (!payload || typeof payload !== 'object') {
+      return;
+    }
+    const { messages, deltaCursor, cursor } = payload as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
+    const nextCursor = asNonEmptyString(deltaCursor ?? cursor);
+    if (nextCursor) {
+      this.deltaCursorBySession.set(sessionKey, nextCursor);
+    }
+    if (!Array.isArray(messages)) {
+      return;
+    }
+    const rows = historyRows(messages);
+    this.setCatchUpBoundary(sessionKey, rows);
+    if (opts?.rememberSeen === false) {
+      return;
+    }
+    for (const row of rows) {
+      const messageId = completeFrameId(row);
+      if (messageId) this.rememberSeen(sessionKey, messageId);
+    }
+  }
+
+  /** Fetch a transcript tail for UI-side history restore; null on transport/RPC failure. */
+  async getHistory(sessionKey: string): Promise<unknown> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return null;
+    }
+    try {
+      return await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
+    } catch (err) {
+      this.logger.warn(`chat.history fetch failed ${(err as Error).message}`);
+      return null;
+    }
+  }
+
+  /**
+   * Resume a session after a window restart: bind the key, subscribe, and
+   * catch up on the rows the UI has not rendered. `historyRendered` means
+   * the provider already rendered `chat.history`: without a cursor or seeded
+   * boundary the replay would then be pure duplication. Every resume caller
+   * schedules its own catch-up, even when it joins an existing subscription;
+   * the seen-set and boundary dedupe the repeat.
+   */
+  resumeSession(sessionKey: string, onEvent: ChatSink, opts?: { historyRendered?: boolean }): void {
+    this.activeSessionKey = sessionKey;
+    this.addTranscriptSink(sessionKey, onEvent);
+    const allowUnscopedCatchUp = !opts?.historyRendered;
+    const pending = this.pendingSubscribeBySession.get(sessionKey);
+    if (pending) {
+      void pending.then((subscribed) => {
+        if (subscribed) void this.catchUpHistory(sessionKey, allowUnscopedCatchUp);
+      });
+      return;
+    }
+    if (this.subscribedSessions.has(sessionKey)) {
+      void this.catchUpHistory(sessionKey, allowUnscopedCatchUp);
+      return;
+    }
+    void this.subscribeSessionMessages(sessionKey, allowUnscopedCatchUp);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Sending                                                           */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * ChatService-compatible send: `chat.send` with queue mode `steer` while
+   * the session has an active run, `enqueue` otherwise. The run sink is
+   * registered at once; a run of another thread on the same session ends
+   * with `done`. The transcript subscription and a pre-send history snapshot
+   * (the catch-up boundary for this run) complete BEFORE `chat.send`: the
+   * gateway may stream the first delta before the acknowledgement, and a
+   * send without a recovery boundary could lose its response for good on a
+   * reconnect. The acknowledgement may resolve a different session key;
+   * `onSessionResolved` then rebinds the owning thread to it.
+   */
+  sendMessage(
+    prompt: string,
+    _cwd: string,
+    _model: string,
+    _chatType: string,
+    onEvent: ChatSink,
+    onSessionResolved?: (resolvedKey: string, requestedKey: string) => void,
+    _onRunComplete?: () => void
+  ): void {
+    // onRunComplete stays unused: Gateway images travel inline, so no temp files need cleanup.
+    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
+    const refusal = this.sendRefusal(sessionKey);
+    if (refusal) {
+      onEvent({ type: 'error', message: refusal });
+      onEvent({ type: 'done' });
+      return;
+    }
+    const previousSink = this.runSinksBySession.get(sessionKey);
+    const replacedSend = this.preAckSends.get(sessionKey);
+    const send: PendingSend = {
+      id: randomUUID(),
+      sessionKey,
+      sink: onEvent,
+      prompt,
+      queueMode: previousSink ? 'steer' : 'enqueue',
+      onSessionResolved,
+      issued: false,
+      steersRemoteRun: this.hasRemoteRun(sessionKey),
+      continuesIssuedRun: replacedSend !== undefined && this.buffersFrames(replacedSend),
+    };
+    if (replacedSend) {
+      this.retagBufferedFrames(replacedSend.id, send.continuesIssuedRun ? send.id : null);
+    }
+    this.runSinksBySession.set(sessionKey, onEvent);
+    this.preAckSends.set(sessionKey, send);
+    if (previousSink && previousSink !== onEvent) {
+      this.removeTranscriptSink(sessionKey, previousSink);
+      previousSink({ type: 'done' });
+    }
+    this.addTranscriptSink(sessionKey, onEvent);
+    void this.subscribeSessionMessages(sessionKey).then((subscribed) => this.continueAfterSubscribe(send, subscribed));
+  }
+
+  /** Why a send must not start now, or null. An abort still in flight would drop the new run's frames. */
+  private sendRefusal(sessionKey: string): string | null {
+    if (!this.liveWs) {
+      return NOT_CONNECTED_MESSAGE;
+    }
+    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
+      return `Gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; transcript streaming is unavailable and sends would complete without output. Update the gateway to a version that supports transcript streaming.`;
+    }
+    if (this.abortingSessions.has(sessionKey)) {
+      return 'The previous run on this session is still aborting; retry in a moment.';
+    }
+    return null;
+  }
+
+  private continueAfterSubscribe(send: PendingSend, subscribed: boolean): void {
+    if (!subscribed) {
+      this.failPreAckSend(send, this.subscribeAbortedMessage(send.sessionKey));
+      return;
+    }
+    if (this.isAbandoned(send)) {
+      this.abandonSend(send);
+      return;
+    }
+    void this.issueSend(send);
+  }
+
+  private async issueSend(send: PendingSend): Promise<void> {
+    if (!(await this.seedPreSendHistory(send))) {
+      return;
+    }
+    send.issued = true;
+    this.send(GatewayRpcMethods.chatSend, { sessionKey: send.sessionKey, text: send.prompt, queueMode: send.queueMode })
+      .then((payload) => this.acknowledgeSend(send, payload))
+      .catch((err: Error) => this.failPreAckSend(send, err.message));
+  }
+
+  /** Seed the recovery boundary before `chat.send`; false when the send must not go out. */
+  private async seedPreSendHistory(send: PendingSend): Promise<boolean> {
+    const { sessionKey } = send;
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory) || this.deltaCursorBySession.has(sessionKey)) {
+      return true;
+    }
+    let history: unknown;
+    try {
+      history = await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
+    } catch {
+      this.failPreAckSend(send, PRE_SEND_HISTORY_FAILED_MESSAGE);
+      return false;
+    }
+    if (this.isAbandoned(send)) {
+      this.abandonSend(send);
+      return false;
+    }
+    this.seedHistory(sessionKey, history);
+    if (this.hasCatchUpBoundary(sessionKey)) {
+      return true;
+    }
+    this.failPreAckSend(send, PRE_SEND_NO_BOUNDARY_MESSAGE);
+    return false;
+  }
+
+  /** Settle a send on its acknowledgement: move the run sink to the resolved key, replay the
+   *  frames buffered for it, and follow the run. A resolved key whose run belongs to another
+   *  thread is a conflict: taking it over would steal that thread's live response. */
+  private acknowledgeSend(send: PendingSend, payload: unknown): void {
+    const requestedKey = send.sessionKey;
+    if (this.preAckSends.get(requestedKey) !== send) {
+      return;
+    }
+    const key = extractSessionKey(payload) ?? requestedKey;
+    const occupant = this.runSinksBySession.get(key);
+    if (occupant && occupant !== send.sink) {
+      this.failPreAckSend(
+        send,
+        `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
+      );
+      return;
+    }
+    this.preAckSends.delete(requestedKey);
+    this.activeSessionKey = key;
+    if (key !== requestedKey) {
+      this.detachRunSink(requestedKey, send.sink);
+    }
+    this.runSinksBySession.set(key, send.sink);
+    this.addTranscriptSink(key, send.sink);
+    this.settleBufferedFrames(send.id, key);
+    // A buffered session_end may already have finished the run: nothing is left to follow or rebind.
+    if (this.runSinksBySession.get(key) !== send.sink) {
+      return;
+    }
+    this.followAcceptedRun(key);
+    if (key !== requestedKey) {
+      send.onSessionResolved?.(key, requestedKey);
+    }
+  }
+
+  /** Subscribe to the accepted run's session and seed its boundary when none exists yet. */
+  private followAcceptedRun(sessionKey: string): void {
+    void this.subscribeSessionMessages(sessionKey);
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory) || this.deltaCursorBySession.has(sessionKey)) {
+      return;
+    }
+    this.send(GatewayRpcMethods.chatHistory, { sessionKey })
+      .then((history) => {
+        this.seedHistory(sessionKey, history, { rememberSeen: false });
+        // The run is already accepted, so it cannot be aborted like a pre-send failure.
+        if (!this.hasCatchUpBoundary(sessionKey)) {
+          this.logger.warn(`post-ack history snapshot for "${sessionKey}" carried no recovery boundary; reconnect catch-up for this run may miss deltas`);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  /** Another path (abort, steer, teardown, subscription failure) took the send's registration or sink. */
+  private isAbandoned(send: PendingSend): boolean {
+    return this.preAckSends.get(send.sessionKey) !== send || this.runSinksBySession.get(send.sessionKey) !== send.sink;
+  }
+
+  /** Retire an abandoned send silently: whoever took it over delivered its terminal. */
+  private abandonSend(send: PendingSend): void {
+    if (this.preAckSends.get(send.sessionKey) !== send) {
+      return;
+    }
+    this.detachRunSink(send.sessionKey, send.sink);
+    this.retirePreAckSend(send);
+  }
+
+  /** Retire a send that failed before its acknowledgement and deliver error + done, unless it
+   *  was abandoned meanwhile and its terminal already came from elsewhere. */
+  private failPreAckSend(send: PendingSend, message: string): void {
+    if (this.isAbandoned(send)) {
+      this.abandonSend(send);
+      return;
+    }
+    this.detachRunSink(send.sessionKey, send.sink);
+    this.retirePreAckSend(send);
+    send.sink({ type: 'error', message });
+    send.sink({ type: 'done' });
+  }
+
+  private retirePreAckSend(send: PendingSend): void {
+    this.preAckSends.delete(send.sessionKey);
+    this.untagBufferedFrames(send.id);
+  }
+
+  private clearPreAckState(): void {
+    this.preAckSends.clear();
+    this.preAckBufferedFrames = [];
+  }
+
+  private subscribeAbortedMessage(sessionKey: string): string {
+    return `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`;
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Aborting                                                          */
+  /* ---------------------------------------------------------------- */
+
+  /** Whether the gateway already runs something for this session on our behalf. */
+  private hasRemoteRun(sessionKey: string): boolean {
+    const send = this.preAckSends.get(sessionKey);
+    return send ? send.issued || send.steersRemoteRun : this.runSinksBySession.has(sessionKey);
+  }
+
+  /**
+   * Abort the run of one session (defaults to the active session) and
+   * complete its run sink with a single `done`. `chat.abort` goes out only
+   * for a run the gateway started: a send still awaiting its pre-send RPCs
+   * has none, and a remote abort could cancel another client's run. Only the
+   * run sink is retired; other threads' transcript sinks on the session stay.
+   */
+  abort(sessionKey?: string): void {
+    const key = sessionKey ?? this.activeSessionKey;
+    if (!key) {
+      return;
+    }
+    const runSink = this.runSinksBySession.get(key);
+    const abortRemotely = this.liveWs !== null && this.hasRemoteRun(key);
+    const send = this.preAckSends.get(key);
+    if (send) {
+      this.retirePreAckSend(send);
+    }
+    if (runSink) {
+      this.detachRunSink(key, runSink);
+    }
+    this.clearSessionDeltaBookkeeping(key);
+    if (!abortRemotely) {
+      runSink?.({ type: 'done' });
+      return;
+    }
+    this.abortingSessions.add(key);
+    this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
+      .catch((err: Error) => {
+        this.logger.warn(`chat.abort failed ${err.message}`);
+      })
+      .finally(() => {
+        this.abortingSessions.delete(key);
+        runSink?.({ type: 'done' });
+      });
+  }
+
+  /** Best-effort `chat.abort` for every remote run, sent before the socket closes; no reply arrives. */
+  private abortRemoteRuns(): void {
+    if (!this.liveWs) {
+      return;
+    }
+    for (const sessionKey of this.runSinksBySession.keys()) {
+      if (this.hasRemoteRun(sessionKey)) {
+        this.send(GatewayRpcMethods.chatAbort, { sessionKey }).catch(() => undefined);
+      }
+    }
+  }
+
+  /** Complete every run sink (with an error first when given) and drop it from both sink roles. */
+  private finishRunSinks(failure?: string): void {
+    for (const [sessionKey, sink] of [...this.runSinksBySession]) {
+      this.detachRunSink(sessionKey, sink);
+      if (failure) sink({ type: 'error', message: failure });
+      sink({ type: 'done' });
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Sinks and subscriptions                                           */
+  /* ---------------------------------------------------------------- */
+
+  private addTranscriptSink(sessionKey: string, onEvent: ChatSink): void {
+    const sinks = this.transcriptSinksBySession.get(sessionKey) ?? new Set<ChatSink>();
+    sinks.add(onEvent);
+    this.transcriptSinksBySession.set(sessionKey, sinks);
+  }
+
+  /** Drop a run sink from both sink roles. */
+  private detachRunSink(sessionKey: string, sink: ChatSink): void {
+    if (this.runSinksBySession.get(sessionKey) === sink) {
+      this.runSinksBySession.delete(sessionKey);
+    }
+    this.removeTranscriptSink(sessionKey, sink);
+  }
+
+  /** Complete and drop every sink of one session: none of them will receive further events. */
+  private retireTranscriptSinks(sessionKey: string): void {
+    const sinks = this.sessionSinks(sessionKey);
+    this.runSinksBySession.delete(sessionKey);
+    this.transcriptSinksBySession.delete(sessionKey);
+    this.releaseSubscription(sessionKey);
+    for (const sink of sinks) {
+      sink({ type: 'done' });
+    }
+  }
+
+  /** Every sink of a session, the run sink first. */
+  private sessionSinks(sessionKey: string): ChatSink[] {
+    const runSink = this.runSinksBySession.get(sessionKey);
+    const transcript = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
+    return runSink ? [runSink, ...transcript.filter((sink) => sink !== runSink)] : transcript;
+  }
+
+  private sinkSessionKeys(): Set<string> {
+    return new Set([...this.runSinksBySession.keys(), ...this.transcriptSinksBySession.keys()]);
+  }
+
+  /** Release a session's socket subscription once its last sink is gone, so closed sessions
+   *  do not accumulate server-side subscriptions; the unsubscribe RPC is fire-and-forget. */
   private releaseSubscription(sessionKey: string): void {
     if (this.runSinksBySession.has(sessionKey) || this.transcriptSinksBySession.has(sessionKey)) {
       return;
@@ -977,877 +1119,29 @@ export class GatewayChatService {
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesUnsubscribe)) {
       return;
     }
-    void this.send(GatewayRpcMethods.sessionsMessagesUnsubscribe, { sessionKeys: [sessionKey] }).catch(
-      (err: Error) => {
-        this.logger.warn(`sessions.messages.unsubscribe failed ${err.message}`);
-      }
-    );
-  }
-
-  /** Session key the next send will target (null → gateway default). */
-  getActiveSessionKey(): string | null {
-    return this.activeSessionKey;
-  }
-
-  /** Seed delta cursor and messageId dedupe from a `getHistory` payload so
-   *  a subsequent resumeSession catch-up does not replay restored history.
-   *  Only complete assistant rows may enter the seen-set: history payloads
-   *  can contain streaming delta rows that share their messageId with the
-   *  later completed row. Seeding a delta row would make the resume
-   *  catch-up skip the completed row (and its finalization), leaving the
-   *  resumed thread streaming forever — same contract as
-   *  isCompleteAssistantFrame for live frames.
- *
- *  `opts.rememberSeen: false` skips the seen-set entirely: for a seed taken
- *  mid-run (post-ack catch-up), a complete row in the snapshot may be the
- *  still-streaming response, and remembering its messageId would drop the
- *  live final frame as a duplicate. */
-  seedHistory(sessionKey: string, payload: unknown, opts?: { rememberSeen?: boolean }): void {
-    if (!payload || typeof payload !== 'object') {
-      return;
-    }
-    const data = payload as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
-    const cursor = data.deltaCursor ?? data.cursor;
-    if (asNonEmptyString(cursor)) {
-      this.deltaCursorBySession.set(sessionKey, cursor);
-    }
-    if (!Array.isArray(data.messages)) {
-      return;
-    }
-    // Post-ack seeding happens while the run is still streaming: a snapshot
-    // row may be the in-flight response itself, and pre-seeding its
-    // messageId would make the frame gate drop the live final frame as a duplicate.
-    // Cursor-less replay dedupe is covered by the seeded fingerprint
-    // boundary, and cursor-bearing catch-up never replays pre-cursor rows,
-    // so the seen-set is not needed for these rows.
-    // The fingerprint boundary is seeded regardless of `rememberSeen`:
-    // without it, a cursor-less reconnect after a post-ack seed has no
-    // boundary at all and replays the entire history (or, mid-run, skips
-    // catch-up and can lose events). In-flight assistant rows are excluded
-    // from the boundary: they are still streaming and not yet rendered, so
-    // a later catch-up must be able to replay their finalized form.
-    this.setCatchUpBoundary(sessionKey, data.messages as unknown[]);
-    if (opts?.rememberSeen === false) {
-      return;
-    }
-    for (const rowRaw of data.messages) {
-      const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
-      const messageId = asNonEmptyString(row.messageId);
-      if (
-        messageId &&
-        this.isCompleteAssistantFrame({
-          messageId: row.messageId,
-          text: row.text,
-          delta: row.delta,
-        })
-      ) {
-        this.rememberSeen(sessionKey, messageId);
-      }
-    }
-  }
-
-  /**
-   * Resume a session after a window restart: bind the session key and
-   * subscribe to its transcript events; the deltaCursor catch-up then
-   * replays only messages the UI has not seen yet (deduped by messageId).
-   *
-   * Resume is an explicit cursor path: the unscoped-tail catch-up (deduped
-   * by messageId) is allowed even when no delta cursor was seeded yet —
-   * but only when the provider has not already rendered `chat.history`
-   * into the thread. A history-backed resume whose payload carried no
-   * cursor no longer skips replay entirely: the seeded history rows are
-   * remembered as an ordered catch-up boundary, so the unscoped tail
-   * replay skips exactly those rows and only rows arriving after the
-   * history snapshot replay — events no longer get lost between the
-   * history snapshot and the subscription, and keyless seeded rows are
-   * not appended a second time. A no-history resume (null RPC) keeps
-   * the unscoped catch-up so events missed while the window was closed
-   * still arrive.
-   */
-  resumeSession(
-    sessionKey: string,
-    onEvent: (event: ChatEvent) => void,
-    opts?: { historyRendered?: boolean },
-  ): void {
-    this.activeSessionKey = sessionKey;
-    this.addTranscriptSink(sessionKey, onEvent);
-    const allowUnscopedCatchUp = !opts?.historyRendered;
-    // Catch-up scheduling is per resume caller, independent of
-    // subscription-RPC deduplication: a second resume into an already
-    // subscribed (or still subscribing) session reuses the shared
-    // subscription, whose catch-up reflects only the first caller's opts —
-    // without its own catch-up a `historyRendered: false` caller would get
-    // an empty restored transcript after a history failure or cold resume.
-    // Duplicate catch-up is safe: seen-set and fingerprint-boundary rules
-    // dedupe replayed rows.
-    const pending = this.pendingSubscribeBySession.get(sessionKey);
-    if (pending) {
-      void pending.then((subscribed) => {
-        if (subscribed) {
-          void this.catchUpHistory(sessionKey, { allowUnscopedCatchUp });
-        }
-      });
-    } else if (this.subscribedSessions.has(sessionKey)) {
-      void this.catchUpHistory(sessionKey, { allowUnscopedCatchUp });
-    } else {
-      this.subscribeSessionMessages(sessionKey, { allowUnscopedCatchUp });
-    }
-  }
-
-  /**
-   * Fetch a transcript tail for a session (`chat.history`, no delta cursor)
-   * for UI-side history restore. Returns null on transport/RPC failure.
-   */
-  async getHistory(sessionKey: string): Promise<unknown> {
-    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
-      return null;
-    }
-    try {
-      return await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`chat.history fetch failed ${message}`);
-      return null;
-    }
-  }
-
-  /** Wire runtime event handlers after the handshake promise settles: a
-   *  late frame on a retired socket (reconnect/updateConnection replaced
-   *  it) must not route, because its events belong to the old connection and
-   *  could leak stale-session deltas into the current run or finalize it
-   *  early. */
-  private attachRuntimeHandlers(): void {
-    const ws = this.ws;
-    if (!ws) return;
-    ws.on('message', (data: unknown) => {
-      if (this.ws !== ws) return;
-      this.handleMessage(data);
+    this.send(GatewayRpcMethods.sessionsMessagesUnsubscribe, { sessionKeys: [sessionKey] }).catch((err: Error) => {
+      this.logger.warn(`sessions.messages.unsubscribe failed ${err.message}`);
     });
   }
 
-  /** Dispatch one inbound frame: resolve pending RPCs, route session events
-   *  to per-session sinks, and forward other events globally.
-   *
-   *  Late deltas from a run being aborted (chat.abort still in flight) must
-   *  not repopulate the cancelled thread, so they are dropped while the abort
-   *  is pending. Live delivery counts as seen — but only for complete
-   *  frames: a streaming delta must not poison the dedupe set, otherwise a
-   *  reconnect whose catch-up replays the completed row for the same
-   *  messageId would skip it and never emit `done`, leaving the thread
-   *  streaming forever after an interrupted delta stream. The claim also
-   *  drops a duplicate complete frame (replayed around a reconnect) instead
-   *  of dispatching it twice.
-   *
-   *  A pre-ack send may resolve to a different session than requested:
-   *  keyed frames for that resolved key can arrive before the
-   *  acknowledgement registers the sink under the resolved key, so they are
-   *  buffered and re-routed after the ack instead of dropped. Unroutable
-   *  session.message frames (e.g. ambiguous keyless frames in multi-session
-   *  mode) are dropped by design in sinkForSession; emitting them on the
-   *  global onEvent would leak another session's content.
-   *
-   *  On `session.end` a resumed session only carries a transcript sink (no
-   *  run entry) and its stream must still observe the run's end: the run
-   *  sink wins when present, and without one every resumed subscriber is
-   *  completed (finalizeSessionEnd). A `session.end` arriving after its
-   *  session's pending send issued `chat.send` but before the ack is
-   *  buffered and applied after the acknowledgement settles, so a fast run's
-   *  response is never dropped; one arriving earlier belongs to a previous or
-   *  foreign run and must not finalize the new run sink. The completed run
-   *  sink is retired from the transcript set as well — leaving it there retains the callback forever and replays
-   *  catch-up deliveries into it after the run has ended, while sinks
-   *  registered only by resumeSession (no run entry) stay subscribed.
-   *  Keyless ends in multi-session mode are ambiguous and dropped: no sink
-   *  is completed, so the run is cleaned up on its own lifecycle path
-   *  (abort/reconnect/dispose) instead. Global onEvent only carries
-   *  non-session frames; session.message frames are either routed to a sink
-   *  above or dropped, never leaked globally. */
-  private handleMessage(data: unknown): void {
-    const frame = parseFrame(data);
-    if (!frame || frame.type !== 'res' && frame.type !== 'event') return;
-    if (frame.type === 'res') {
-      const res = frame as RpcResponseFrame;
-      const pending = this.pending.get(res.id);
-      if (!pending) return;
-      this.pending.delete(res.id);
-      if (res.ok) pending.resolve(res.payload);
-      else pending.reject(new Error(`gateway rpc error code=${res.error?.code ?? 'unknown'}`));
-      return;
-    }
-    const evt = frame as SessionEvent;
-    this.onSessionEvent(evt);
-    if (evt.event === GatewayEvents.sessionMessage) {
-      this.routeSessionMessage(evt);
-      return;
-    }
-    if (evt.event === GatewayEvents.sessionEnd) {
-      this.routeSessionEnd(evt);
-      return;
-    }
-    for (const chatEvent of mapSessionEventToChatEvent(evt)) this.onEvent(chatEvent);
-  }
-
-  /** Only a send that already issued `chat.send` can own a frame that arrives
-   *  before its ack: such frames are buffered until the ack resolves the
-   *  session key. The frame is tagged with the one send whose requested key
-   *  matches, so drain attribution stays per send. A keyed frame for a session
-   *  with no sink may be an issued send's resolved key, so it is tagged with
-   *  every issued send and correlated at drain. */
-  private routeSessionMessage(evt: SessionEvent): void {
-    const payload = (evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
-    const routed = this.sinkForSession(payload.sessionKey);
-    if (routed && this.preAckSendIssuedKeys.has(routed.key)) {
-      this.bufferPreAckFrame({ evt, sends: new Set([routed.key]), resolvedKey: routed.key });
-      return;
-    }
-    if (routed) {
-      if (this.abortingSessions.has(routed.key)) {
-        if (this.isCompleteAssistantFrame(payload)) {
-          this.rememberSeen(routed.key, payload.messageId as string);
-        }
-        return;
-      }
-      this.deliverSessionMessage(evt, routed.key, this.sinksExcludingUnsentRun(routed));
-      return;
-    }
-    if (asNonEmptyString(payload.sessionKey) && this.preAckSendIssuedKeys.size > 0) {
-      this.bufferPreAckFrame({ evt, sends: new Set(this.preAckSendIssuedKeys) });
-    }
-  }
-
-  /** A send that has not issued `chat.send` yet owns no frame: its run sink is
-   *  left out so an earlier or foreign run's output reaches only observers. */
-  private sinksExcludingUnsentRun(
-    routed: { sinks: Array<(event: ChatEvent) => void>; key: string }
-  ): Array<(event: ChatEvent) => void> {
-    if (!this.preAckSendKeys.has(routed.key)) {
-      return routed.sinks;
-    }
-    const runSink = this.runSinksBySession.get(routed.key);
-    return routed.sinks.filter((sink) => sink !== runSink);
-  }
-
-  /** Map, dedupe and fan out one session.message to the given sinks. */
-  private deliverSessionMessage(
-    evt: SessionEvent,
-    sessionKey: string,
-    sinks: Array<(event: ChatEvent) => void>
-  ): void {
-    const payload = (evt.payload ?? {}) as { messageId?: unknown; text?: unknown; delta?: unknown };
-    const chatEvents = mapSessionEventToChatEvent(evt);
-    if (chatEvents.length === 0) {
-      return;
-    }
-    const gated = this.filterDuplicateFrameEvents(sessionKey, payload, chatEvents);
-    const adjusted = gated === chatEvents
-      ? this.adjustCompleteFrameEvents(sessionKey, payload, chatEvents)
-      : gated;
-    for (const chatEvent of adjusted) {
-      for (const sink of sinks) {
-        sink(chatEvent);
-      }
-    }
-  }
-
-  /** A late end from a run being aborted is dropped: the abort flow delivers
-   *  `done` itself. An end for an issued, unacknowledged send (or for a sinkless
-   *  key that may be its resolved key) is buffered for the drain. An end for a
-   *  send that has not issued `chat.send` yet belongs to a previous or foreign
-   *  run: its observers complete, the new run sink stays. */
-  private routeSessionEnd(evt: SessionEvent): void {
-    const endKey = this.resolveSessionEndKey((evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey);
-    if (!endKey || this.abortingSessions.has(endKey)) {
-      return;
-    }
-    if (this.preAckSendIssuedKeys.has(endKey)) {
-      this.bufferPreAckFrame({ evt, sends: new Set([endKey]), resolvedKey: endKey });
-      return;
-    }
-    if (this.preAckSendKeys.has(endKey)) {
-      this.finalizeSessionObservers(endKey);
-      return;
-    }
-    if (
-      this.preAckSendIssuedKeys.size > 0 &&
-      !this.runSinksBySession.has(endKey) &&
-      !this.transcriptSinksBySession.has(endKey)
-    ) {
-      this.bufferPreAckFrame({ evt, sends: new Set(this.preAckSendIssuedKeys) });
-      return;
-    }
-    this.finalizeSessionEnd(endKey);
-  }
-
-  /** Complete a session's transcript-only observers without touching its run
-   *  sink, whose own run has not started yet. */
-  private finalizeSessionObservers(key: string): void {
-    const runSink = this.runSinksBySession.get(key);
-    this.clearSessionDeltaBookkeeping(key);
-    for (const sink of [...(this.transcriptSinksBySession.get(key) ?? [])]) {
-      if (sink !== runSink) {
-        sink({ type: 'done' });
-      }
-    }
-  }
-
-  /** Finalize a session on its `session.end` frame: complete the run sink
-   *  (if present) and every transcript-only subscriber with `done`, then
-   *  retire the run sink. Leaving the completed run sink in the transcript
-   *  set would retain the callback forever and replay catch-up deliveries
-   *  into it after the run has ended, while sinks registered only by
-   *  resumeSession (no run entry) stay subscribed. Shared by the live
-   *  dispatch path and the pre-ack drain so both apply identical semantics. */
-  private finalizeSessionEnd(key: string): void {
-    const runSink = this.runSinksBySession.get(key);
-    const transcript = [...(this.transcriptSinksBySession.get(key) ?? [])];
-    const endSinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
-    this.runSinksBySession.delete(key);
-    if (runSink) {
-      this.removeTranscriptSink(key, runSink);
-    }
-    // A finished run leaves nothing behind that could re-open its session:
-    // stale delta records from a delta-only stream would make the next run
-    // on this session treat its first cumulative frame as already streamed
-    // and drop content.
-    this.clearSessionDeltaBookkeeping(key);
-    for (const endSink of endSinks) {
-      endSink({ type: 'done' });
-    }
-  }
-
-  /** Drop this session's streamed-delta trackers: the no-id per-session
-   *  record plus every messageKey scoped to this session. Called when a run
-   *  ends (session.end) and when a run is torn down (abort/suspend), so the
-   *  next run on the same session starts dedup from zero. */
-  private clearSessionDeltaBookkeeping(sessionKey: string): void {
-    this.deltaTextNoIdBySession.delete(sessionKey);
-    const prefix = sessionKey + '\u0000';
-    for (const key of this.deltaTextByMessage.keys()) {
-      if (key.startsWith(prefix)) {
-        this.deltaTextByMessage.delete(key);
-      }
-    }
-  }
-
-  /** Reject and clear every in-flight request (socket closed / disposed). */
-  private rejectAllPending(reason: string): void {
-    for (const [id, pending] of this.pending) {
-      this.pending.delete(id);
-      pending.reject(new Error(reason));
-    }
-  }
-
-  /** Resolve the session key for a `session.end` frame. Valid keys pass
-   *  through; a keyless/ambiguous end is routed only when exactly one
-   *  session sink exists (the gateway's own default is unknown here), and
-   *  returns null otherwise so the caller drops the frame instead of
-   *  completing the wrong session's sink via the mutable activeSessionKey.
-   *  Keyless ends prefer an unambiguous active run: transcript-only keys can
-   *  belong to idle resumed sessions that no end would ever finalize, so a
-   *  single run sink must not be masked by their presence. */
-  private resolveSessionEndKey(sessionKey: unknown): string | null {
-    if (asNonEmptyString(sessionKey)) {
-      return sessionKey as string;
-    }
-    const runKeys = [...this.runSinksBySession.keys()];
-    if (runKeys.length === 1) {
-      return runKeys[0];
-    }
-    const sinkKeys = new Set<string>([
-      ...runKeys,
-      ...this.transcriptSinksBySession.keys()
-    ]);
-    if (sinkKeys.size === 1) {
-      return sinkKeys.values().next().value ?? null;
-    }
-    return null;
-  }
-
-  private scheduleReconnect(): void {
-    if (this.disposed || this.suspended || this.reconnectTimer) return;
-    const attempt = this.reconnectAttempt++;
-    const delay = Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs);
-    this.logger.info(`gateway reconnect scheduled attempt=${attempt + 1} delayMs=${delay}`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect().catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        this.logger.error(`gateway reconnect failed ${this.redactCredentials(message)}`);
-      });
-    }, delay);
-  }
-
-  /** ChatService-compatible send entry point: RPC `chat.send` with
-   * queue-mode selection (steer during an active run, enqueue otherwise),
-   * then subscription to per-session message events streamed into onEvent.
-   *
-   * Without server-side transcript subscription the gateway will not emit
-   * session events for this run: sending now would complete the turn with
-   * no visible output, so the send fails explicitly instead. An abort RPC
-   * still in flight targets the session key, so a send issued now would race
-   * it — the new run's frames would be dropped as late-abort events and the
-   * old run's session_end could finalize the new sink.
-   *
-   * The run sink is registered pre-ack so a concurrent resume catch-up that
-   * replays a missed completed assistant row must not finalize/retire this
-   * run sink while `chat.send` is still starting, or the ack's ownership
-   * check would drop the actual response. A different thread still owning a
-   * run on this shared session has its stream ended cleanly instead of
-   * letting it hang while the replacement sink silently receives all
-   * subsequent events; its transcript registration goes too, or the retired
-   * callback would keep receiving events (and accumulate with every
-   * steer/re-send).
-   *
-   * The transcript subscription is issued (and awaited) BEFORE the send RPC:
-   * a gateway can emit the first `session.message` delta as soon as it
-   * accepts the run, before the send acknowledgement returns, and a rejected
-   * subscription retires the run sink, which would orphan an already-accepted
-   * send (gateway keeps running, no listener, UI shows a completed turn with
-   * no response). The resolved key is reconciled in the ack handler; until
-   * then the requested key routes keyless frames. A pre-send history
-   * snapshot seeds the delta cursor for a fresh run: a reconnect before a
-   * post-ack snapshot seeds one would otherwise skip catch-up entirely and
-   * permanently lose the deltas missed while disconnected. Cancel (abort)
-   * removing this send's sink during the snapshot await — or during its
-   * failure path — must bypass issuing the send: never run a prompt with no
-   * listener.
-   *
-   * When the gateway resolves a different session whose run is still owned
-   * by another thread, replacing that sink would steal the other thread's
-   * live response: the occupied resolved key is treated as a conflict — this
-   * send fails (with its pre-ack registration and buffered frames dropped so
-   * a later drain cannot leak the abandoned run's output) and the caller can
-   * retry once the other run finishes. On success the owning thread rebinds
-   * to the resolved key via onSessionResolved, so its later cancel/reset/
-   * close aborts the actual run rather than the stale requested key. */
-  sendMessage(
-    prompt: string,
-    _cwd: string,
-    _model: string,
-    _chatType: string,
-    _onEvent: (event: ChatEvent) => void,
-    onSessionResolved?: (resolvedKey: string, requestedKey: string) => void,
-    _onRunComplete?: () => void
-  ): void {
-    // onRunComplete is a no-op here: Gateway images travel inline as data
-    // URIs, so no temp-file snapshot resources exist to clean up.
-    if (!this.connected) {
-      _onEvent({
-        type: 'error',
-        message:
-          'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.'
-      });
-      _onEvent({ type: 'done' });
-      return;
-    }
-    const sessionKey = this.activeSessionKey ?? DEFAULT_SESSION_KEY;
-    if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
-      _onEvent({
-        type: 'error',
-        message: `Gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; transcript streaming is unavailable and sends would complete without output. Update the gateway to a version that supports transcript streaming.`
-      });
-      _onEvent({ type: 'done' });
-      return;
-    }
-    const existingSink = this.runSinksBySession.get(sessionKey);
-    const queueMode = existingSink ? 'steer' : 'enqueue';
-    if (this.abortingSessions.has(sessionKey)) {
-      _onEvent({
-        type: 'error',
-        message: 'The previous run on this session is still aborting; retry in a moment.'
-      });
-      _onEvent({ type: 'done' });
-      return;
-    }
-    this.runSinksBySession.set(sessionKey, _onEvent);
-    const sendId = randomUUID();
-    this.preAckSendKeys.add(sessionKey);
-    this.preAckSendOwners.set(sessionKey, sendId);
-    if (existingSink && existingSink !== _onEvent) {
-      this.removeTranscriptSink(sessionKey, existingSink);
-      existingSink({ type: 'done' });
-    }
-    this.addTranscriptSink(sessionKey, _onEvent);
-    // Another path (abort, steer, credential switch, teardown) took this send's
-    // registration or run sink before chat.send: it must not be issued.
-    const isAbandoned = (): boolean =>
-      this.preAckSendOwners.get(sessionKey) !== sendId || this.runSinksBySession.get(sessionKey) !== _onEvent;
-    const abandonSend = (): void => {
-      if (this.preAckSendOwners.get(sessionKey) !== sendId) {
-        return;
-      }
-      if (this.runSinksBySession.get(sessionKey) === _onEvent) {
-        this.runSinksBySession.delete(sessionKey);
-      }
-      this.removeTranscriptSink(sessionKey, _onEvent);
-      this.retirePreAckSend(sessionKey, sendId);
-    };
-    const issueSend = async (): Promise<void> => {
-      if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(sessionKey)) {
-        // Without a cursor or seeded boundary a reconnect catch-up returns
-        // early and deltas missed while disconnected are lost for good, so a
-        // failed or boundary-less snapshot aborts the send instead. A
-        // well-formed empty snapshot (`messages: []`) still seeds a boundary.
-        let history: unknown;
-        try {
-          history = await this.send(GatewayRpcMethods.chatHistory, { sessionKey });
-        } catch {
-          if (isAbandoned()) {
-            abandonSend();
-            return;
-          }
-          this.failPreAckSend(sessionKey, _onEvent,
-            'Pre-send history snapshot for this session failed; the send was aborted to avoid an unrecoverable response. Retry once the gateway accepts chat.history.',
-            sendId);
-          return;
-        }
-        if (isAbandoned()) {
-          abandonSend();
-          return;
-        }
-        this.seedHistory(sessionKey, history);
-        if (!this.deltaCursorBySession.has(sessionKey) && !this.seededCatchUpFingerprints.has(sessionKey)) {
-          this.failPreAckSend(sessionKey, _onEvent,
-            'Pre-send history snapshot did not include a usable recovery boundary; the send was aborted to avoid an unrecoverable response. Retry once the gateway returns a well-formed chat.history snapshot.',
-            sendId);
-          return;
-        }
-      }
-      this.preAckSendIssuedKeys.add(sessionKey);
-      void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode }).then((payload) => {
-        // Ownership gate: only the send that currently owns this pre-ack key
-        // may settle it. After an abort removed the key and a newer send took
-        // it over, a late acknowledgement from the abandoned send must not
-        // delete the newer send's registration, add its own attribution, or
-        // touch the shared active key — the abort flow already retired this
-        // send's sinks and delivered its terminal events.
-        if (this.preAckSendOwners.get(sessionKey) !== sendId) {
-          return;
-        }
-        this.preAckSendKeys.delete(sessionKey);
-        this.preAckSendOwners.delete(sessionKey);
-        this.preAckSendIssuedKeys.delete(sessionKey);
-        const key = extractSessionKey(payload) ?? sessionKey;
-        this.preAckSettledSends.push({ requested: sessionKey, resolved: key });
-        this.activeSessionKey = key;
-        const stillOwns = this.runSinksBySession.get(key) === _onEvent ||
-          this.runSinksBySession.get(sessionKey) === _onEvent;
-        if (!stillOwns) {
-          return;
-        }
-        const existingKeySink = this.runSinksBySession.get(key);
-        if (existingKeySink && existingKeySink !== _onEvent) {
-          if (this.runSinksBySession.get(sessionKey) === _onEvent) {
-            this.runSinksBySession.delete(sessionKey);
-          }
-          this.removeTranscriptSink(sessionKey, _onEvent);
-          this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
-            (buffered) =>
-              !buffered.sends.has(sessionKey) ||
-              (buffered.evt.payload as { sessionKey?: unknown } | undefined)?.sessionKey !== key
-          );
-          this.preAckSettledSends = this.preAckSettledSends.filter(
-            (settled) => settled.requested !== sessionKey
-          );
-          _onEvent({
-            type: 'error',
-            message: `Session "${key}" is already streaming in another chat thread. Wait for it to finish or open a different session.`
-          });
-          _onEvent({ type: 'done' });
-          return;
-        }
-        this.runSinksBySession.set(key, _onEvent);
-        this.drainPreAckBufferedFrames();
-        // Retire the attribution keys once no pre-ack send remains: keys that
-        // outlive their drain would let a later pre-ack send admit a stale
-        // late frame from an already-finished run into a live sink. With no
-        // send in flight the gate is moot, so clearing is safe; while other
-        // sends are still pre-ack the keys must stay for their own drains.
-        if (this.preAckSendKeys.size === 0) {
-          this.preAckSettledSends = [];
-        }
-        // A fast gateway can deliver `session.end` for this run before the
-        // send acknowledgement. The drain then finalizes the just-installed
-        // sink (finalizeSessionEnd deletes it from the run set and emits
-        // `done`); adding the sink back below would resurrect a completed run
-        // as a transcript sink that keeps receiving (and restoring) later
-        // session events. When the drain consumed the run, bail before
-        // re-subscribing.
-        if (this.runSinksBySession.get(key) !== _onEvent) {
-          return;
-        }
-        if (key !== sessionKey) {
-          if (this.runSinksBySession.get(sessionKey) === _onEvent) {
-            this.runSinksBySession.delete(sessionKey);
-          }
-          this.removeTranscriptSink(sessionKey, _onEvent);
-        }
-        this.addTranscriptSink(key, _onEvent);
-        this.subscribeSessionMessages(key, {
-          onFailure: (err: Error) => {
-            this.terminallyDeliveredSinks.add(_onEvent);
-            _onEvent({
-              type: 'error',
-              message: `Transcript subscription for "${key}" failed after the run was accepted: ${err.message}. The response may not appear in this thread.`
-            });
-            _onEvent({ type: 'done' });
-          }
-        });
-        if (this.methodAdvertised(GatewayRpcMethods.chatHistory) && !this.deltaCursorBySession.has(key)) {
-          void this.send(GatewayRpcMethods.chatHistory, { sessionKey: key })
-            .then((history) => {
-              this.seedHistory(key, history, { rememberSeen: false });
-              // The run is already accepted here, so a boundary-less snapshot
-              // cannot abort the send the way the pre-ack path can; surface
-              // it so a gateway returning malformed history is diagnosable.
-              if (
-                !this.deltaCursorBySession.has(key) &&
-                !this.seededCatchUpFingerprints.has(key)
-              ) {
-                this.logger.warn(`post-ack history snapshot for "${key}" carried no recovery boundary; reconnect catch-up for this run may miss deltas`);
-              }
-            })
-            .catch(() => undefined);
-        }
-        if (key !== sessionKey) {
-          onSessionResolved?.(key, sessionKey);
-        }
-      })
-      .catch((err: Error) => {
-        this.failPreAckSend(sessionKey, _onEvent, err.message, sendId);
-      });
-    };
-    const subscribeFailure = `Transcript subscription for "${sessionKey}" failed; the send was aborted. Retry once the gateway accepts sessions.messages.subscribe.`;
-    void this.subscribeSessionMessages(sessionKey, {
-      onFailure: () => {
-        this.terminallyDeliveredSinks.add(_onEvent);
-        _onEvent({ type: 'error', message: subscribeFailure });
-        _onEvent({ type: 'done' });
-      }
-    }).then((subscribed: boolean) => {
-      // Terminal delivery belongs to whoever retired the send (our onFailure,
-      // a joined attempt's owner, abort, or a teardown): abandoning is silent.
-      if (isAbandoned() || this.terminallyDeliveredSinks.has(_onEvent)) {
-        abandonSend();
-        return;
-      }
-      if (subscribed) {
-        void issueSend();
-        return;
-      }
-      this.failPreAckSend(sessionKey, _onEvent, subscribeFailure, sendId);
-    });
-  }
-
-  /** Fail a pre-ack send deterministically: retire its pre-ack registration
-   *  and sinks, discard or drain its buffered frames, and surface error+done
-   *  to the caller. Owner-gated: a superseded send's failure must not touch a
-   *  newer send's registration or buffered frames. */
-  private failPreAckSend(sessionKey: string, sink: (event: ChatEvent) => void, message: string, sendId: string): void {
-    if (this.preAckSendOwners.get(sessionKey) !== sendId) {
-      return;
-    }
-    if (this.runSinksBySession.get(sessionKey) === sink) {
-      this.runSinksBySession.delete(sessionKey);
-    }
-    this.removeTranscriptSink(sessionKey, sink);
-    this.retirePreAckSend(sessionKey, sendId);
-    sink({ type: 'error', message });
-    sink({ type: 'done' });
-  }
-
-  /** Release one send's pre-ack registration (owner-gated). Every exit that
-   *  abandons a send before its acknowledgement must call it: a leftover key
-   *  keeps hasOwnedRun true and buffers later frames for a send that no
-   *  longer exists. */
-  private retirePreAckSend(sessionKey: string, sendId: string): void {
-    if (this.preAckSendOwners.get(sessionKey) !== sendId) {
-      return;
-    }
-    this.preAckSendKeys.delete(sessionKey);
-    this.preAckSendOwners.delete(sessionKey);
-    this.preAckSendIssuedKeys.delete(sessionKey);
-    this.preAckSettledSends = this.preAckSettledSends.filter(
-      (settled) => settled.requested !== sessionKey
-    );
-    if (this.preAckSendKeys.size === 0) {
-      this.preAckBufferedFrames = [];
-      this.preAckSettledSends = [];
-      return;
-    }
-    this.discardPreAckFramesForSend(sessionKey);
-    this.drainPreAckBufferedFrames();
-  }
-
-  /** Forget every pre-ack send (connection teardown or credential switch):
-   *  their continuations bail on the ownership check instead of delivering
-   *  a second terminal. */
-  private clearPreAckState(): void {
-    this.preAckSendKeys.clear();
-    this.preAckSendOwners.clear();
-    this.preAckSendIssuedKeys.clear();
-    this.preAckBufferedFrames = [];
-    this.preAckSettledSends = [];
-  }
-
-  private bufferPreAckFrame(frame: { evt: SessionEvent; sends: Set<string>; resolvedKey?: string }): void {
-    this.preAckBufferedFrames.push(frame);
-    if (this.preAckBufferedFrames.length > PRE_ACK_BUFFER_LIMIT) {
-      this.preAckBufferedFrames.shift();
-    }
-  }
-
-  /** Discard every frame buffered while the send for `key` was in flight.
-   *
-   *  A send that settles without an acknowledgement (RPC failure or abort)
-   *  never reveals its resolved session key, so its buffered frames cannot be
-   *  identified by key. Frames tagged with the send's requested key are
-   *  dropped wholesale rather than left for a later drain, where they could
-   *  be routed into a different run's sink and leak the abandoned run's
-   *  output. A surviving send loses at most its initial pre-ack deltas: its
-   *  completion frame still arrives live and history catch-up recovers the
-   *  rows on the next reconnect, so no content is permanently lost. */
-  private discardPreAckFramesForSend(key: string): void {
-    this.preAckBufferedFrames = this.preAckBufferedFrames.filter(
-      (buffered) => !buffered.sends.has(key)
-    );
-  }
-
-  /** Re-route frames buffered while a send was pre-ack: the acknowledgement
-   *  (or failure) has settled the send's sink registrations, so unmatched
-   *  frames stay buffered while another send is still pre-ack and are
-   *  dropped once none remains. */
-  private drainPreAckBufferedFrames(): void {
-    if (this.preAckBufferedFrames.length === 0) {
-      return;
-    }
-    const frames = this.preAckBufferedFrames;
-    this.preAckBufferedFrames = [];
-    const leftover: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
-    for (const buffered of frames) {
-      const payload = (buffered.evt.payload ?? {}) as { sessionKey?: unknown; messageId?: unknown };
-      // Send attribution gate: a buffered frame routes only when its session
-      // key is the RESOLVED key of a settled send the frame was buffered for
-      // (per-send mapping, not a global settled-key set) and that mapping is
-      // unambiguous — when several sends resolved to the same key the owning
-      // send cannot be determined and the frame is dropped. With no pre-ack
-      // send left, survivors belong to settled sends, so the gate still
-      // applies with the same correlation rule.
-      // Keyless frames are correlated too: when buffered, `sinkForSession`
-      // resolved an unambiguous single session and its key was preserved in
-      // `resolvedKey` — using it here keeps a fast gateway that omits
-      // `sessionKey` from losing its response/terminal frames at drain time.
-      const payloadKey = typeof payload.sessionKey === 'string' ? payload.sessionKey : null;
-      const correlationKey = payloadKey ?? buffered.resolvedKey ?? null;
-      const mapping = correlationKey
-        ? this.preAckSettledSends.filter(
-            (settled) => settled.resolved === correlationKey && buffered.sends.has(settled.requested)
-          )
-        : [];
-      const owners = new Set(mapping.map((settled) => settled.requested));
-      if (
-        !correlationKey ||
-        mapping.length === 0 ||
-        owners.size !== 1 ||
-        this.preAckSettledSends.filter((settled) => settled.resolved === correlationKey).length !== 1
-      ) {
-        leftover.push(buffered);
-        continue;
-      }
-      const routed = this.sinkForSession(payload.sessionKey);
-      if (!routed) {
-        leftover.push(buffered);
-        continue;
-      }
-      if (buffered.evt.event === GatewayEvents.sessionEnd) {
-        // A buffered pre-ack `session.end` replays its finalization now that
-        // the send has settled: the correlation gate above guarantees the
-        // frame belongs to exactly this send's resolved session, so the run
-        // sink is completed with `done` instead of being silently dropped.
-        this.finalizeSessionEnd(routed.key);
-        continue;
-      }
-      this.deliverSessionMessage(buffered.evt, routed.key, routed.sinks);
-    }
-    if (this.preAckSendKeys.size > 0) {
-      this.preAckBufferedFrames.push(...leftover);
-    }
-  }
-
-  /** Route a session event to its session-keyed run sink.
-   *
-   *  Keyless frames are ambiguous: with several sessions in flight they are
-   *  dropped instead of guessed, because whichever send acknowledgement ran
-   *  last would otherwise claim them. Returns the sink together with its
-   *  resolved session key so callers can bookkeep per session. Delivery fans
-   *  out to the union of the run sink and all transcript-only subscribers (a
-   *  resumed thread) — a run sink alone would drop live deltas/tool
-   *  events/usage for transcript-only subscribers on the same session while
-   *  another thread is running. */
-  private sinkForSession(sessionKey: unknown): { sinks: Array<((event: ChatEvent) => void)>; key: string } | null {
-    if (sessionKey === undefined || sessionKey === null) {
-      const keys = new Set<string>([...this.runSinksBySession.keys(), ...this.transcriptSinksBySession.keys()]);
-      if (keys.size !== 1) {
-        return null;
-      }
-      const fallbackKey = [...keys][0];
-      const runSink = this.runSinksBySession.get(fallbackKey);
-      const transcript = [...(this.transcriptSinksBySession.get(fallbackKey) ?? [])];
-      const sinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
-      return sinks.length > 0 ? { sinks, key: fallbackKey } : null;
-    }
-    const key = String(sessionKey);
-    const runSink = this.runSinksBySession.get(key);
-    const transcript = [...(this.transcriptSinksBySession.get(key) ?? [])];
-    const sinks = runSink ? [runSink, ...transcript.filter(s => s !== runSink)] : transcript;
-    return sinks.length > 0 ? { sinks, key } : null;
-  }
-
-  /** Re-issue transcript subscriptions after reconnect (subscriptions are
-   *  connection-scoped). A session with a live run keeps its cursor-gated
-   *  catch-up only: an unscoped history tail replayed into the run sink would
-   *  emit `done` per historical row and prematurely finalize the streaming
-   *  response. */
-  private resubscribeActiveSession(): void {
-    for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
+  /** Re-issue transcript subscriptions after a reconnect. A live run keeps its cursor-gated
+   *  catch-up only: an unscoped tail would replay old rows into the streaming response. */
+  private resubscribeSessions(): void {
+    for (const sessionKey of this.sinkSessionKeys()) {
       this.logger.info(`gateway re-subscribing session after reconnect ${sessionKey}`);
-      this.subscribeSessionMessages(sessionKey, {
-        allowUnscopedCatchUp: !this.runSinksBySession.has(sessionKey),
-        // Same failure class as a send-time subscription failure: a run with
-        // a lost subscription must not silently finalize with no response and
-        // no error.
-        onFailure: (err: Error) => {
-          const runSink = this.runSinksBySession.get(sessionKey);
-          if (runSink) {
-            this.terminallyDeliveredSinks.add(runSink);
-          }
-          runSink?.({
-            type: 'error',
-            message: `Transcript subscription for "${sessionKey}" failed after reconnect: ${err.message}. The response may not appear in this thread.`
-          });
-          runSink?.({ type: 'done' });
-        },
-      });
+      void this.subscribeSessionMessages(sessionKey, !this.runSinksBySession.has(sessionKey));
     }
   }
 
-  /** Subscribe to transcript events for a session key (soft method check);
-   *  subscription is per session, and delivery fans out to all sinks.
-   *  An in-flight or already-established subscription for the same session is
-   *  reused instead of issuing a duplicate RPC: both RPCs can complete in
-   *  either order, and the loser's failure handler would retire the run sink
-   *  of the surviving stream. A stale rejection (the socket drop already
-   *  cleared the pending slot, or a newer subscribe attempt owns it now)
-   *  must not retire a replacement run sink installed by a reconnect or a
-   *  newer send, so the cleanup is tied to the attempt that still owns the
-   *  pending entry. A transient rejection must not retire persistent resume
-   *  sinks: they would vanish from transcriptSinksBySession and
-   *  resubscribeActiveSession() could never restore them after reconnect.
-   *  Only the run sink is retired (its late `done` still finalizes the
-   *  streaming row), together with its send-time registration in the
-   *  transcript set, which would otherwise let later session events or
-   *  reconnect catch-up keep delivering into a failed run callback. */
-  private subscribeSessionMessages(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean; onFailure?: (err: Error) => void }): Promise<boolean> {
+  /**
+   * Subscribe to transcript events for a session and catch up once
+   * subscribed. Concurrent callers share one in-flight RPC: duplicates could
+   * complete in either order and the loser's failure would tear down the
+   * surviving stream. A stale rejection (the socket dropped and cleared the
+   * slot) changes nothing; a current one ends the session's run, which can
+   * no longer be observed, while resume sinks stay for the next reconnect.
+   */
+  private subscribeSessionMessages(sessionKey: string, allowUnscopedCatchUp = false): Promise<boolean> {
     const pending = this.pendingSubscribeBySession.get(sessionKey);
     if (pending) {
       return pending;
@@ -1856,37 +1150,24 @@ export class GatewayChatService {
       return Promise.resolve(true);
     }
     if (!this.methodAdvertised(GatewayRpcMethods.sessionsMessagesSubscribe)) {
-      this.logger.warn(
-        `gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`
-      );
+      this.logger.warn(`gateway does not advertise ${GatewayRpcMethods.sessionsMessagesSubscribe}; streaming unavailable`);
       this.retireTranscriptSinks(sessionKey);
       return Promise.resolve(false);
     }
-    const attempt = this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
-      .then((): boolean => {
+    const attempt: Promise<boolean> = this.send(GatewayRpcMethods.sessionsMessagesSubscribe, { sessionKeys: [sessionKey] })
+      .then(() => {
         this.subscribedSessions.add(sessionKey);
-        void this.catchUpHistory(sessionKey, opts);
+        // Every sink may have left while the RPC was in flight.
+        this.releaseSubscription(sessionKey);
+        if (this.subscribedSessions.has(sessionKey)) {
+          void this.catchUpHistory(sessionKey, allowUnscopedCatchUp);
+        }
         return true;
       })
-      .catch((err: Error): boolean => {
+      .catch((err: Error) => {
         this.logger.warn(`sessions.messages.subscribe failed ${err.message}`);
-        if (this.pendingSubscribeBySession.get(sessionKey) !== attempt) {
-          return false;
-        }
-        const runSink = this.runSinksBySession.get(sessionKey);
-        this.runSinksBySession.delete(sessionKey);
-        if (runSink) {
-          this.removeTranscriptSink(sessionKey, runSink);
-          if (opts?.onFailure) {
-            // Terminal delivery belongs to the caller (error + done in one
-            // path); the catch only retires the sinks.
-            opts.onFailure(err);
-          } else {
-            // No failure callback (resume path): finalize the streaming row
-            // so an active run does not stay `running` forever.
-            this.terminallyDeliveredSinks.add(runSink);
-            runSink({ type: 'done' });
-          }
+        if (this.pendingSubscribeBySession.get(sessionKey) === attempt) {
+          this.failUnobservableRun(sessionKey, err);
         }
         return false;
       })
@@ -1899,511 +1180,495 @@ export class GatewayChatService {
     return attempt;
   }
 
+  /** End a session's run whose subscription failed with error + done. */
+  private failUnobservableRun(sessionKey: string, err: Error): void {
+    const runSink = this.runSinksBySession.get(sessionKey);
+    if (!runSink) {
+      return;
+    }
+    const unsent = this.preAckSends.get(sessionKey)?.issued === false;
+    this.detachRunSink(sessionKey, runSink);
+    runSink({
+      type: 'error',
+      message: unsent
+        ? this.subscribeAbortedMessage(sessionKey)
+        : `Transcript subscription for "${sessionKey}" failed: ${err.message}. The response may not appear in this thread.`,
+    });
+    runSink({ type: 'done' });
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Inbound frames                                                    */
+  /* ---------------------------------------------------------------- */
+
+  private handleMessage(data: unknown): void {
+    const frame = parseFrame(data);
+    if (!frame) return;
+    if (frame.type === 'res') {
+      this.settleRequest(frame);
+      return;
+    }
+    if (frame.event === GatewayEvents.sessionMessage) {
+      this.routeSessionMessage(frame);
+    } else if (frame.event === GatewayEvents.sessionEnd) {
+      this.routeSessionEnd(frame);
+    }
+  }
+
+  private settleRequest(res: RpcResponseFrame): void {
+    const request = this.pending.get(res.id);
+    if (!request) return;
+    this.pending.delete(res.id);
+    if (res.ok === true) {
+      request.resolve(res.payload);
+    } else {
+      request.reject(new Error(`gateway rpc error code=${errorCode(res.error)}`));
+    }
+  }
+
   /**
-   * Catch-up after reconnect: pull transcript tail with the stored delta
-   * cursor, deduplicating by messageId so resumed streams do not replay
-   * already-rendered messages. Never crashes on unknown payload shapes.
-   *
-   * Catch-up is reserved for a known cursor/resume path: replaying an
-   * unscoped history tail into the first subscription of a normal send
-   * would duplicate prior assistant messages into the new turn. The run
-   * sink is snapshotted BEFORE the chat.history RPC: run sinks must never
-   * receive catch-up replay, and a send that registers its sink while the
-   * RPC is in flight is exactly the raced case — capturing after the await
-   * would treat the new send's sink as the catch-up-era sink, so once its
-   * ack cleared the pre-ack marker neither exclusion below would match and
-   * replayed rows (with their `done`) would flow into the fresh turn. The
-   * snapshot also decides whether a settled catch-up may retire the run
-   * sink: only the sink that already existed when the catch-up started, and
-   * is not still pre-ack, may be retired by the replay tail. Exclusions are
-   * checked per delivery against the CURRENT run sink, so a sink registered
-   * mid-replay is excluded too; a send that raced this catch-up must not
-   * receive a replayed `done`, or the ack's ownership check plus the
-   * finalization would prematurely complete the new response before its own
-   * first frame arrives.
-   *
-   * An already-seen complete assistant row still needs terminal recovery:
-   * the live stream may have delivered the full frame and then dropped
-   * before session_end, so sinks never got `done` and an active run would
-   * stay `running` forever — the duplicate text delivery is skipped but the
-   * finalization is re-emitted (repeat `done` is idempotent for consumers)
-   * unless a later row re-opens the tail. Only complete assistant rows may
-   * enter the seen-set: streaming delta rows share their messageId with the
-   * later completed row (same contract as seedHistory/
-   * isCompleteAssistantFrame), and remembering a delta would make the next
-   * catch-up skip the completed row, leaving the resumed thread streaming
-   * forever. A completed assistant history row (full text, no delta) must
-   * also finalize: replaying only its text would leave subscribers
-   * streaming forever, since catch-up never replays a session_end for it.
-   * Any non-duplicate row that is not a final assistant row (user rows map
-   * to no chat event) re-opens the replay tail: the live run answering that
-   * trailing prompt must keep its sink.
-   *
-   * The run sink is retired only when the replayed tail ends on a completed
-   * assistant row whose finalization was delivered to it (seen rows,
-   * boundary-skipped rows, or unseen finalized rows recovered from the
-   * replay): the run is over, and leaving it in runSinksBySession would make
-   * the next send select queueMode 'steer' against a finished run and keep
-   * routing future deltas into the old callback. A final row followed by
-   * further deltas means the stream continued, so the run sink must stay. A run sink registered by a
-   * send that raced this catch-up stays registered: its response is still
-   * in flight and a replayed finalization must not retire it.
+   * Route a `session.message` to its session's sinks. Frames of an aborting
+   * session are dropped. Frames that may belong to an issued, unacknowledged
+   * send are buffered until its ack reveals the resolved session. Keyless
+   * frames route only when exactly one session has sinks; unroutable frames
+   * are dropped, never guessed.
    */
-  private async catchUpHistory(sessionKey: string, opts?: { allowUnscopedCatchUp?: boolean }): Promise<void> {
-    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+  private routeSessionMessage(evt: SessionEvent): void {
+    const payload = payloadFields(evt);
+    const routed = this.sinkForSession(payload.sessionKey);
+    const key = routed?.key ?? asNonEmptyString(payload.sessionKey);
+    if (key && this.abortingSessions.has(key)) {
+      const messageId = completeFrameId(payload);
+      if (messageId) this.rememberSeen(key, messageId);
       return;
     }
-    // A cursor-less seeded history (gateway returned messages but no
-    // deltaCursor) still provides a catch-up boundary: the seeded row
-    // fingerprints skip the already-rendered tail while rows after it
-    // replay. Without a cursor AND without a seeded boundary the replay
-    // would be pure duplication, so it stays disabled there.
-    if (
-      !this.deltaCursorBySession.has(sessionKey) &&
-      !opts?.allowUnscopedCatchUp &&
-      !this.seededCatchUpFingerprints.has(sessionKey)
-    ) {
+    if (!routed) {
+      if (key) this.bufferForIssuedSends(evt, key);
       return;
     }
-    const catchUpStartRunSink = this.runSinksBySession.get(sessionKey);
-    try {
-      const requestCursor = this.deltaCursorBySession.get(sessionKey);
-      const payload = (await this.send(GatewayRpcMethods.chatHistory, {
-        sessionKey,
-        deltaCursor: requestCursor,
-      })) as {
-        messages?: Array<Record<string, unknown>>;
-        deltaCursor?: unknown;
-        cursor?: unknown;
-      } | null;
-      if (!payload || !Array.isArray(payload.messages)) {
-        return;
-      }
-      const cursor = asNonEmptyString(payload.deltaCursor ?? payload.cursor);
-      if (cursor) {
-        this.deltaCursorBySession.set(sessionKey, cursor);
-      }
-      // The seeded fingerprint boundary is a cursor-less-only mechanism:
-      // with a cursor the gateway already restricts the payload to rows
-      // after the cursor, so consuming seeded fingerprints there could
-      // swallow a fresh keyless row that merely matches the first seeded
-      // row (e.g. two identical consecutive assistant replies).
-      const cursorless = (requestCursor === undefined || requestCursor === null) && cursor === null;
-      let lastRowFinalized = false;
-      let lastFinalWasRecovery = false;
-      // Whether the last finalization came from a recovery branch (seen
-      // row, boundary-skipped row, or unseen finalized row recovered from
-      // the replay): only those may retire the catch-up-start run sink,
-      // because their `done` reflects a response that was already rendered
-      // or recovered locally. An unseen final row must not retire a pre-ack
-      // or raced sink, whose live final frame must still claim the row; the
-      // catch-up-start sink IS finalized by it — a completed row in the
-      // replayed history means the response finished server-side, so its
-      // live final frame will not arrive and the recovered done is the only
-      // terminal.
-      const isPreAckRunSink = (sink: (event: ChatEvent) => void): boolean =>
-        this.preAckSendKeys.has(sessionKey) && this.runSinksBySession.get(sessionKey) === sink;
-      const isRacedRunSink = (sink: (event: ChatEvent) => void): boolean =>
-        this.runSinksBySession.get(sessionKey) === sink && sink !== catchUpStartRunSink;
-      // Replay delivery to run sinks: pre-ack and raced run sinks are
-      // excluded — a replayed finalizing `done` must not complete a send
-      // whose own response is still in flight. The run sink present at
-      // catch-up start DOES consume replayed rows: the persistent
-      // transcript sink is suspended while its run streams, so rows
-      // appended while the socket was down would otherwise reach no sink
-      // at all. Delta-only rows are still withheld from it — replayed
-      // chunks cannot be deduped against chunks the live stream already
-      // delivered — their content is recovered when the row's finalized
-      // (full-text) form replays or streams and the complete frame is
-      // diffed against the streamed prefix.
-      const seeded = this.seededCatchUpFingerprints.get(sessionKey);
-      // Cursor-less boundary alignment: a history tail is a sliding
-      // window, so a new row can shift the seeded tail (e.g. [A,B,C] ->
-      // [B,C,D]) and a row-by-row prefix match would no longer find the
-      // boundary and replay already-rendered keyless rows a second time.
-      // Instead, align by the longest suffix of the seeded boundary that
-      // equals a prefix of the replayed rows and skip exactly that
-      // overlap; rows outside the overlap still replay.
-      let seededSkip = 0;
-      if (seeded && cursorless && payload.messages.length > 0) {
-        const replayed = payload.messages.map((row) => GatewayChatService.rowFingerprint(row));
-        for (let overlap = Math.min(seeded.length, replayed.length); overlap > 0; overlap--) {
-          let aligned = true;
-          for (let i = 0; i < overlap; i++) {
-            if (seeded[seeded.length - overlap + i] !== replayed[i]) {
-              aligned = false;
-              break;
-            }
-          }
-          if (aligned) {
-            seededSkip = overlap;
-            break;
-          }
-        }
-      }
-      // Locally seen messageIds within this catch-up payload: duplicate
-      // rows inside one snapshot must dedupe against each other even when
-      // the global seen-set is not advanced (see the rememberSeen guard
-      // below).
-      const catchUpSeen = new Set<string>();
-      for (const row of payload.messages) {
-        const rowPayload = row as { role?: unknown; text?: unknown; delta?: unknown };
-        // Skip rows covered by the aligned seeded boundary: these were
-        // already rendered into the thread and must not be appended a
-        // second time (this keeps a cursor-less history-backed resume from
-        // duplicating keyless rows, which the messageId seen-set cannot
-        // dedupe).
-        if (seeded && cursorless && seededSkip > 0) {
-          seededSkip--;
-          // A boundary-skipped row can be the in-flight response that was
-          // still streaming when the post-ack seed was taken: the run's live
-          // final frame may never arrive (e.g. the socket dropped mid-run),
-          // so skipping it silently would leave the thread streaming forever.
-          // Finalize it like the seen-row branch — but only while a run sink
-          // is registered (otherwise these are already-finalized rendered
-          // rows and a repeat done is pure noise), and never to the pre-ack
-          // or raced run sinks, whose live final frames must still claim
-          // the row.
-          // A row with completed `text` is final even when it also carries a
-          // `delta` (mixed frame): the same contract mapHistoryMessages uses
-          // to keep such rows' text as canonical content. Treating the delta
-          // as a streaming marker here would render the text without a `done`
-          // and leave the resumed run `running`.
-          const skippedIsFinalAssistantRow =
-            !(typeof rowPayload.role === 'string' && rowPayload.role !== 'assistant') &&
-            typeof rowPayload.text === 'string' &&
-            rowPayload.text.length > 0;
-          if (skippedIsFinalAssistantRow && this.runSinksBySession.has(sessionKey)) {
-            const skippedSinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
-            // Deliver the row content before finalizing: the post-ack seed does
-            // not enter the seen-set, so a boundary-skipped final row may be a
-            // response whose live final frame was missed before catch-up and
-            // whose text was never rendered into the thread. Emitting only
-            // `done` would mark the run complete with the response invisible.
-            // The same prefix handling as the unseen-row replay applies: the
-            // delta bookkeeping yields only the unrendered remainder.
-            const mappedRow = mapSessionEventToChatEvent({
-              event: GatewayEvents.sessionMessage,
-              payload: row as Record<string, unknown>,
-            });
-            const adjustedRow = this.adjustCompleteFrameEvents(
-              sessionKey,
-              row as { messageId?: unknown; text?: unknown; delta?: unknown },
-              mappedRow
-            );
-            for (const chatEvent of adjustedRow) {
-              for (const skippedSink of skippedSinks) {
-                if (isPreAckRunSink(skippedSink) || isRacedRunSink(skippedSink)) {
-                  continue;
-                }
-                skippedSink(chatEvent);
-              }
-            }
-            for (const skippedSink of skippedSinks) {
-              if (isPreAckRunSink(skippedSink) || isRacedRunSink(skippedSink)) {
-                continue;
-              }
-              skippedSink({ type: 'done' });
-            }
-            lastRowFinalized = true;
-            lastFinalWasRecovery = true;
-          }
-          continue;
-        }
-        const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
-        // Finality keys on completed `text` alone: a mixed delta+text history
-        // row is final content (mapHistoryMessages keeps its text as
-        // canonical). Requiring an empty delta would treat the replayed row as
-        // non-final — its text would render without a `done`, stranding the
-        // resumed run in `running`.
-        const isFinalAssistantRow =
-          isAssistantRole &&
-          typeof rowPayload.text === 'string' &&
-          rowPayload.text.length > 0;
-        const messageId = asNonEmptyString(row.messageId);
-        const seen =
-          messageId != null &&
-          (this.hasSeen(sessionKey, messageId) || catchUpSeen.has(messageId));
-        if (messageId && isFinalAssistantRow && seen) {
-          const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
-          for (const sink of sinks) {
-            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
-              continue;
-            }
-            sink({ type: 'done' });
-          }
-          lastRowFinalized = true;
-          lastFinalWasRecovery = true;
-          continue;
-        }
-        if (messageId && seen) {
-          continue;
-        }
-        // A complete unseen assistant row may be the in-flight response of a
-        // local run (pre-ack send, raced send, or an active stream) whose
-        // live final frame must still claim the messageId — remembering it here would
-        // make the frame gate drop the response from the UI. Only rows processed while no local run owns
-        // the session are known to belong to the catch-up boundary and may
-        // enter the seen-set; cursor and fingerprint-boundary replay rules
-        // already cover duplication for the skipped rows.
-        if (messageId && isFinalAssistantRow) {
-          catchUpSeen.add(messageId);
-          if (!this.hasOwnedRun(sessionKey)) {
-            this.rememberSeen(sessionKey, messageId);
-          }
-        }
-        const mapped = mapSessionEventToChatEvent({
-          event: GatewayEvents.sessionMessage,
-          payload: row as Record<string, unknown>,
-        });
-        const adjusted = this.adjustCompleteFrameEvents(sessionKey, row, mapped);
-        const isDeltaOnlyRow =
-          typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0 &&
-          !(typeof rowPayload.text === 'string' && rowPayload.text.length > 0);
-        const sinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
-        for (const chatEvent of adjusted) {
-          for (const sink of sinks) {
-            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
-              continue;
-            }
-            if (
-              sink === catchUpStartRunSink &&
-              this.runSinksBySession.get(sessionKey) === sink &&
-              isDeltaOnlyRow
-            ) {
-              continue;
-            }
-            sink(chatEvent);
-          }
-        }
-        if (isFinalAssistantRow) {
-          let recoveredStartRunSink = false;
-          for (const sink of sinks) {
-            if (isPreAckRunSink(sink) || isRacedRunSink(sink)) {
-              continue;
-            }
-            if (sink === catchUpStartRunSink && this.runSinksBySession.get(sessionKey) === sink) {
-              recoveredStartRunSink = true;
-            }
-            sink({ type: 'done' });
-          }
-          // The recovered sink's run is over: remember the row so any late
-          // re-emission of the same completed frame is filtered instead of
-          // re-rendered into the restored transcript sink.
-          if (recoveredStartRunSink && messageId) {
-            this.rememberSeen(sessionKey, messageId);
-          }
-          lastRowFinalized = true;
-          lastFinalWasRecovery = true;
-        } else {
-          lastRowFinalized = false;
-          lastFinalWasRecovery = false;
-        }
-      }
-      // Advance the boundary to the latest processed tail: every row of
-      // this payload is now rendered into the thread, so a later catch-up
-      // must skip them again. Without this, an id-less assistant response
-      // rendered after the original seed is re-appended by the next
-      // cursor-less catch-up (the messageId seen-set cannot dedupe it).
-      // In-flight assistant rows stay excluded: a delta row replayed into
-      // sinks here is superseded by the finalized row the run delivers, so
-      // a later catch-up must still be able to replay that final form.
-      this.setCatchUpBoundary(sessionKey, payload.messages);
-      if (
-        lastRowFinalized && lastFinalWasRecovery && !this.preAckSendKeys.has(sessionKey)
-      ) {
-        const runSink = this.runSinksBySession.get(sessionKey);
-        if (runSink && runSink === catchUpStartRunSink) {
-          this.runSinksBySession.delete(sessionKey);
-          this.removeTranscriptSink(sessionKey, runSink);
-        }
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`chat.history catch-up failed ${message}`);
+    const send = this.preAckSends.get(routed.key);
+    if (send && this.buffersFrames(send)) {
+      this.bufferPreAckFrame({ evt, key: routed.key, sends: new Set([send.id]) });
+      return;
+    }
+    this.deliverSessionMessage(evt, routed.key, this.sinksExcludingUnsentRun(routed));
+  }
+
+  /**
+   * Route a `session_end`. An end for an issued, unacknowledged send (or for
+   * a sinkless key that may be its resolved key) is buffered for its ack. An
+   * end arriving before a send issued `chat.send` belongs to a previous run:
+   * only the observers complete. Keyless ends resolve to the single active
+   * run or the single observed session, and are dropped when ambiguous.
+   */
+  private routeSessionEnd(evt: SessionEvent): void {
+    const key = this.resolveSessionEndKey(payloadFields(evt).sessionKey);
+    if (!key || this.abortingSessions.has(key)) {
+      return;
+    }
+    const send = this.preAckSends.get(key);
+    if (send && this.buffersFrames(send)) {
+      this.bufferPreAckFrame({ evt, key, sends: new Set([send.id]) });
+      return;
+    }
+    if (send) {
+      this.finalizeSessionObservers(key);
+      return;
+    }
+    if (this.sessionSinks(key).length === 0 && this.bufferForIssuedSends(evt, key)) {
+      return;
+    }
+    this.finalizeSessionEnd(key);
+  }
+
+  private resolveSessionEndKey(sessionKey: unknown): string | null {
+    if (!isKeyless(sessionKey)) {
+      return asNonEmptyString(sessionKey);
+    }
+    const runKeys = [...this.runSinksBySession.keys()];
+    return runKeys.length === 1 ? runKeys[0] : this.soleSessionKey();
+  }
+
+  /** Sinks for a frame's session key; a missing key falls back to the only observed session. */
+  private sinkForSession(sessionKey: unknown): { key: string; sinks: ChatSink[] } | null {
+    const key = isKeyless(sessionKey) ? this.soleSessionKey() : asNonEmptyString(sessionKey);
+    if (!key) return null;
+    const sinks = this.sessionSinks(key);
+    return sinks.length > 0 ? { key, sinks } : null;
+  }
+
+  private soleSessionKey(): string | null {
+    const keys = [...this.sinkSessionKeys()];
+    return keys.length === 1 ? keys[0] : null;
+  }
+
+  /** A send that has not issued `chat.send` owns no frame: an earlier run's output reaches observers only. */
+  private sinksExcludingUnsentRun(routed: { key: string; sinks: ChatSink[] }): ChatSink[] {
+    const send = this.preAckSends.get(routed.key);
+    return send ? routed.sinks.filter((sink) => sink !== send.sink) : routed.sinks;
+  }
+
+  /** Complete a session's observers without touching the run sink of a send that has not started. */
+  private finalizeSessionObservers(sessionKey: string): void {
+    const runSink = this.runSinksBySession.get(sessionKey);
+    this.clearSessionDeltaBookkeeping(sessionKey);
+    for (const sink of this.sessionSinks(sessionKey)) {
+      if (sink !== runSink) sink({ type: 'done' });
     }
   }
 
-  /** Whether hello-ok advertises the given RPC method (unknown-tolerant). */
-  private methodAdvertised(method: string): boolean {
-    const methods = this.hello?.features?.methods;
-    if (!Array.isArray(methods)) {
-      return true;
-    }
-    return methods.includes(method);
-  }
-
-  /** Whether a run on this session is locally owned (a registered run sink
-   *  or a still pre-ack send): runs owned by the gateway or another client
-   *  are invisible here, so callers gating aborts on this must skip them. */
-  hasOwnedRun(sessionKey: string): boolean {
-    return this.runSinksBySession.has(sessionKey) || this.preAckSendKeys.has(sessionKey);
-  }
-
-  /** Abort the run for one session: RPC `chat.abort` targeted at the given
-   *  session key (falls back to the last active session); completes that
-   *  session's sink. A session key from the calling thread avoids aborting
-   *  another thread's run. Runs while disconnected still retire the local
-   *  sinks and complete the callback, so a later reconnect cannot re-subscribe
-   *  a cancelled run.
-   *
-   *  A pre-ack send cancelled by this abort never reaches its send
-   *  acknowledgement/catch, so its pre-ack registration and any frames
-   *  buffered on its behalf would linger forever: a later catch-up could
-   *  treat a fresh run sink on this session as pre-ack-protected and skip
-   *  finalizing it, and orphaned buffered frames could replay into a later
-   *  send — both are retired here. With no pre-ack send remaining, every
-   *  buffered frame was held for a send that can no longer be acknowledged,
-   *  keyed or not, so they are dropped wholesale. Only the aborted run's
-   *  sink is retired, from both sink roles: the run sink also lives in the
-   *  transcript set, so removing it stops late events for the cancelled run,
-   *  while persistent resume sinks owned by other threads subscribed to this
-   *  session must survive — retiring them would silently cut those threads
-   *  off from later messages and catch-up. */
-  abort(sessionKey?: string): void {
-    const key = sessionKey ?? this.activeSessionKey;
-    if (!key) {
-      return;
-    }
-    const runSink = this.runSinksBySession.get(key);
-    // A send still awaiting its pre-send history/subscribe RPCs has not
-    // issued `chat.send`, so the gateway has no run to abort for this
-    // client: a remote `chat.abort` here could cancel an unrelated run
-    // owned by the gateway or another client. A registered run sink alone
-    // does not prove `chat.send` was issued (the sink is registered before
-    // those RPCs), so a still-pre-ack send counts as remote-issued only
-    // once past `chat.send` (`preAckSendIssuedKeys`); a non-pre-ack run
-    // sink is a remote-issued/leftover run. Cancel such a send locally
-    // only — the never-acknowledged registration and its buffered frames
-    // are still retired below.
-    const remoteRunIssued =
-      this.preAckSendIssuedKeys.has(key) ||
-      (runSink !== undefined && !this.preAckSendKeys.has(key));
-    this.runSinksBySession.delete(key);
-    this.preAckSendKeys.delete(key);
-    this.preAckSendIssuedKeys.delete(key);
-    this.preAckSendOwners.delete(key);
-    // Aborting tears the run down (its terminal events come from this flow,
-    // not session.end): clear the run's delta trackers too so the next run
-    // on this session does not inherit a prefix it never streamed.
-    this.clearSessionDeltaBookkeeping(key);
-    if (this.preAckSendKeys.size === 0) {
-      this.preAckBufferedFrames = [];
-      this.preAckSettledSends = [];
-    } else {
-      this.discardPreAckFramesForSend(key);
-    }
+  /** Finish a session's run on `session_end`: every sink gets `done`, the run sink is retired,
+   *  and resume-only sinks stay subscribed. */
+  private finalizeSessionEnd(sessionKey: string): void {
+    const sinks = this.sessionSinks(sessionKey);
+    const runSink = this.runSinksBySession.get(sessionKey);
     if (runSink) {
-      this.removeTranscriptSink(key, runSink);
+      this.detachRunSink(sessionKey, runSink);
     }
-    if (!this.connected) {
-      runSink?.({ type: 'done' });
-      return;
-    }
-    if (!remoteRunIssued) {
-      return;
-    }
-    this.abortingSessions.add(key);
-    void this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
-      .catch((err: Error) => {
-        this.logger.warn(`chat.abort failed ${err.message}`);
-      })
-      .finally(() => {
-        this.abortingSessions.delete(key);
-        if (runSink) {
-          runSink({ type: 'done' });
-        }
-      });
-  }
-
-  /** Suspend the shared client: close the socket, reject pending RPCs and
-   *  stop the reconnect loop until the next connect()/updateConnection().
-   *  Unlike dispose() the instance stays valid — threads keep lifecycle
-   *  references (abort/hasOwnedRun) — but an authenticated socket no longer
-   *  lingers receiving transcript events after a transport switch to acpx.
-   *  Each active remote run is explicitly aborted (best-effort
-   *  `chat.abort` fired while the socket is still writable) so the gateway
-   *  stops generating for a transport it will no longer serve; locally the
-   *  sinks are retired with `done` so streaming threads finalize instead of
-   *  waiting on events that can no longer arrive. Resume-only sinks are
-   *  dropped silently: the provider forgets idle threads' callbacks on a
-   *  transport switch and reopens their sessions afterwards, so keeping them
-   *  would resubscribe orphans next to the new sinks and duplicate delivery.
-   *  Pre-ack send state is cleared before pending RPCs are rejected, so
-   *  the rejected subscribe/history continuations see they no longer own
-   *  their send and bail instead of delivering a second terminal. */
-  suspend(): void {
-    this.suspended = true;
-    this.connectPromise = null;
-    this.connectGeneration += 1;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    for (const sessionKey of this.runSinksBySession.keys()) {
-      // Same class as abort(): a pre-ack send still awaiting its
-      // history/subscribe RPCs has started no remote run, so it must not
-      // trigger a remote `chat.abort` here — only sends past `chat.send`
-      // (or sinks left from already-issued runs) warrant one.
-      if (this.connected && (this.preAckSendIssuedKeys.has(sessionKey) || !this.preAckSendKeys.has(sessionKey))) {
-        this.abortingSessions.delete(sessionKey);
-        void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
-          .catch((err: Error) => {
-            this.logger.warn(`chat.abort failed during suspend ${err.message}`);
-          });
-      }
-    }
-    // Cleared first: the closing socket drops server subscriptions, so no unsubscribe RPCs.
-    this.subscribedSessions.clear();
-    this.pendingSubscribeBySession.clear();
-    this.finishRunSinksLocally();
-    this.transcriptSinksBySession.clear();
-    this.clearPreAckState();
-    this.rejectAllPending('gateway transport suspended');
-    // Suspension tears down every run (each sink above already got `done`):
-    // leaving their delta records would corrupt the next run's dedup after
-    // reconnect, so the whole bookkeeping resets with the transport.
-    this.deltaTextByMessage.clear();
-    this.deltaTextNoIdBySession.clear();
-    if (this.ws) {
-      const oldWs = this.ws;
-      this.ws = null;
-      this.connected = false;
-      try { oldWs.close(); } catch { /* already closed */ }
-    } else {
-      this.connected = false;
-    }
-  }
-
-  /** Complete every run sink with `done` and drop it from both sink roles. */
-  private finishRunSinksLocally(): void {
-    const runs = [...this.runSinksBySession];
-    this.runSinksBySession.clear();
-    for (const [sessionKey, sink] of runs) {
-      this.removeTranscriptSink(sessionKey, sink);
+    this.clearSessionDeltaBookkeeping(sessionKey);
+    for (const sink of sinks) {
       sink({ type: 'done' });
     }
   }
 
-  /** Tear the client down for good. Remote runs are left running (a later
-   *  window resumes them); local run sinks finish with `done`. */
-  dispose(): void {
-    this.disposed = true;
-    this.connectGeneration += 1;
-    this.connectPromise = null;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
+  /** Map, dedupe and fan out one session.message to the given sinks. */
+  private deliverSessionMessage(evt: SessionEvent, sessionKey: string, sinks: ChatSink[]): void {
+    const events = mapSessionEventToChatEvent(evt);
+    if (events.length === 0) {
+      return;
     }
-    // Cleared first: the closing socket drops server subscriptions, so no unsubscribe RPCs.
-    this.subscribedSessions.clear();
-    this.pendingSubscribeBySession.clear();
-    this.finishRunSinksLocally();
-    this.clearPreAckState();
-    this.rejectAllPending('gateway client disposed');
-    const ws = this.ws;
-    this.ws = null;
-    this.connected = false;
-    try { ws?.close(); } catch { /* already closed */ }
+    for (const chatEvent of this.dedupeFrameEvents(sessionKey, payloadFields(evt), events)) {
+      for (const sink of sinks) {
+        sink(chatEvent);
+      }
+    }
+  }
+
+  /** A complete frame whose id was already delivered (e.g. replayed around a reconnect) keeps
+   *  only its non-text facets: tool status and usage updates must still land. */
+  private dedupeFrameEvents(sessionKey: string, payload: MessageFields, events: ChatEvent[]): ChatEvent[] {
+    const messageId = completeFrameId(payload);
+    if (messageId && this.hasSeen(sessionKey, messageId)) {
+      return events.filter((e) => e.type !== 'text');
+    }
+    if (messageId) {
+      this.rememberSeen(sessionKey, messageId);
+    }
+    return this.adjustCompleteFrameEvents(sessionKey, payload, events);
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Pre-ack buffering                                                 */
+  /* ---------------------------------------------------------------- */
+
+  /** Frames may already stream for this send's run: its own `chat.send`, or the issued send it replaced. */
+  private buffersFrames(send: PendingSend): boolean {
+    return send.issued || send.continuesIssuedRun;
+  }
+
+  private issuedSendIds(): Set<string> {
+    return new Set([...this.preAckSends.values()].filter((send) => this.buffersFrames(send)).map((send) => send.id));
+  }
+
+  /** Buffer a frame for a sinkless session that may be the resolved key of any issued send. */
+  private bufferForIssuedSends(evt: SessionEvent, key: string): boolean {
+    const sends = this.issuedSendIds();
+    if (sends.size === 0) {
+      return false;
+    }
+    this.bufferPreAckFrame({ evt, key, sends });
+    return true;
+  }
+
+  private bufferPreAckFrame(frame: BufferedFrame): void {
+    this.preAckBufferedFrames.push(frame);
+    if (this.preAckBufferedFrames.length > PRE_ACK_BUFFER_LIMIT) {
+      this.preAckBufferedFrames.shift();
+    }
+  }
+
+  /** Forget a send that will never be acknowledged; frames no other send may own are dropped. */
+  private untagBufferedFrames(sendId: string): void {
+    this.retagBufferedFrames(sendId, null);
+  }
+
+  /** Hand a replaced send's frames to its successor, or drop its claim when there is none. */
+  private retagBufferedFrames(sendId: string, successorId: string | null): void {
+    this.preAckBufferedFrames = this.preAckBufferedFrames.filter((frame) => {
+      if (!frame.sends.delete(sendId)) return true;
+      if (successorId) frame.sends.add(successorId);
+      return frame.sends.size > 0;
+    });
+  }
+
+  /** Replay the frames an acknowledged send owns, in arrival order: those buffered for it under
+   *  its resolved key. Its other frames belonged to other sessions and lose its tag. */
+  private settleBufferedFrames(sendId: string, resolvedKey: string): void {
+    const claimed: BufferedFrame[] = [];
+    this.preAckBufferedFrames = this.preAckBufferedFrames.filter((frame) => {
+      if (!frame.sends.delete(sendId)) return true;
+      if (frame.key === resolvedKey) claimed.push(frame);
+      return frame.key !== resolvedKey && frame.sends.size > 0;
+    });
+    for (const frame of claimed) {
+      this.replayBufferedFrame(frame);
+    }
+  }
+
+  private replayBufferedFrame(frame: BufferedFrame): void {
+    if (frame.evt.event === GatewayEvents.sessionEnd) {
+      this.finalizeSessionEnd(frame.key);
+      return;
+    }
+    const routed = this.sinkForSession(frame.key);
+    if (routed) {
+      this.deliverSessionMessage(frame.evt, frame.key, this.sinksExcludingUnsentRun(routed));
+    }
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* Dedupe bookkeeping                                                */
+  /* ---------------------------------------------------------------- */
+
+  private hasSeen(sessionKey: string, messageId: string): boolean {
+    return this.seenMessageIdsBySession.get(sessionKey)?.has(messageId) ?? false;
+  }
+
+  /** Remember a complete message for one session (oldest evicted at the cap). A repeat must
+   *  not evict: churn would let old history rows replay after a reconnect. */
+  private rememberSeen(sessionKey: string, messageId: string): void {
+    const seen = this.seenMessageIdsBySession.get(sessionKey) ?? new Set<string>();
+    this.seenMessageIdsBySession.set(sessionKey, seen);
+    if (seen.has(messageId)) {
+      return;
+    }
+    if (seen.size >= SEEN_MESSAGE_LIMIT) {
+      const [oldest] = seen;
+      seen.delete(oldest);
+    }
+    seen.add(messageId);
+  }
+
+  private hasCatchUpBoundary(sessionKey: string): boolean {
+    return this.deltaCursorBySession.has(sessionKey) || this.seededCatchUpFingerprints.has(sessionKey);
+  }
+
+  /** Store the fingerprints of rendered rows, latest first to go. A still-streaming delta-only
+   *  row is left out: a later cursor-less catch-up must replay its finalized form. */
+  private setCatchUpBoundary(sessionKey: string, rows: HistoryRow[]): void {
+    const fingerprints = rows.filter((row) => !isDeltaOnlyRow(row)).map(rowFingerprint);
+    this.seededCatchUpFingerprints.set(sessionKey, fingerprints.slice(-SEEDED_FINGERPRINT_LIMIT));
+  }
+
+  private messageKey(sessionKey: string, messageId: string): string {
+    return sessionKey + '\u0000' + messageId;
+  }
+
+  /**
+   * A frame's full `text` must not re-emit what its message already
+   * streamed as deltas (`he` + `hello` would render `hehello`): when the
+   * full text extends the rendered prefix only the remainder is emitted; a
+   * diverging full text is kept intact (a duplicated tail beats lost
+   * content). The prefix counts only what the mapper renders: without a
+   * messageId a frame carrying full text renders that text alone, so its
+   * delta stays invisible. A delta-free full text completes the message.
+   */
+  private adjustCompleteFrameEvents(sessionKey: string, payload: MessageFields, events: ChatEvent[]): ChatEvent[] {
+    if (!events.some((e) => e.type === 'text')) {
+      return events;
+    }
+    const messageId = asNonEmptyString(payload.messageId);
+    const delta = asString(payload.delta, '');
+    const fullText = asString(payload.text, '');
+    const key = messageId ? this.messageKey(sessionKey, messageId) : sessionKey;
+    const store = messageId ? this.deltaTextByMessage : this.deltaTextNoIdBySession;
+    const renderedDelta = messageId || !fullText ? delta : '';
+    const prefix = (store.get(key) ?? '') + renderedDelta;
+    if (!fullText) {
+      this.touchDeltaRecord(store, key, prefix);
+      return events;
+    }
+    const extendsPrefix = fullText.startsWith(prefix);
+    if (!delta) {
+      store.delete(key);
+    } else if (extendsPrefix) {
+      this.touchDeltaRecord(store, key, fullText);
+    } else if (renderedDelta) {
+      // A diverging mixed frame keeps the delta prefix, so the later completion still renders.
+      this.touchDeltaRecord(store, key, prefix);
+    }
+    if (!prefix || !extendsPrefix) {
+      return events;
+    }
+    // The mapper emits the full text as the frame's last text event.
+    const fullTextIndex = events.map((e) => e.type).lastIndexOf('text');
+    const remainder = fullText.slice(prefix.length);
+    return events.flatMap((e, i) => {
+      if (i !== fullTextIndex) return [e];
+      return remainder ? [{ type: 'text' as const, text: remainder }] : [];
+    });
+  }
+
+  /** Least-recently-updated eviction: an actively streaming message is re-inserted
+   *  on every update so it outlives idle records past the cap. */
+  private touchDeltaRecord(store: Map<string, string>, key: string, text: string): void {
+    store.delete(key);
+    store.set(key, text);
+    if (store.size > DELTA_TRACK_LIMIT) {
+      const [stalest] = store.keys();
+      store.delete(stalest);
+    }
+  }
+
+  /** A finished or torn-down run leaves no delta record that would make the next run
+   *  treat its first cumulative frame as already streamed. */
+  private clearSessionDeltaBookkeeping(sessionKey: string): void {
+    this.deltaTextNoIdBySession.delete(sessionKey);
+    const prefix = sessionKey + '\u0000';
+    for (const key of [...this.deltaTextByMessage.keys()]) {
+      if (key.startsWith(prefix)) {
+        this.deltaTextByMessage.delete(key);
+      }
+    }
+  }
+
+  private clearDeltaBookkeeping(): void {
+    this.deltaTextByMessage.clear();
+    this.deltaTextNoIdBySession.clear();
+  }
+
+  /* ---------------------------------------------------------------- */
+  /* History catch-up                                                  */
+  /* ---------------------------------------------------------------- */
+
+  /**
+   * Replay the transcript rows a session's sinks missed (e.g. while the
+   * socket was down): the tail after the stored delta cursor, or — without
+   * one — the tail minus the rows the seeded fingerprint boundary already
+   * covers. Without a cursor, a boundary or `allowUnscopedCatchUp` the
+   * replay would be pure duplication, so it is skipped.
+   *
+   * Observers receive every unrendered row and a `done` per final assistant
+   * row. The run sink present when the catch-up started receives the rows
+   * too (delta-only chunks excepted: they cannot be deduped against chunks
+   * the live stream delivered) and, when the tail ends on a final assistant
+   * row, its single `done`: the run finished server-side. A run sink that is
+   * still pre-ack or registered during the RPC receives nothing, since its
+   * own response is still in flight.
+   */
+  private async catchUpHistory(sessionKey: string, allowUnscopedCatchUp: boolean): Promise<void> {
+    if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
+      return;
+    }
+    const requestCursor = this.deltaCursorBySession.get(sessionKey);
+    if (requestCursor === undefined && !allowUnscopedCatchUp && !this.seededCatchUpFingerprints.has(sessionKey)) {
+      return;
+    }
+    const startRunSink = this.runSinksBySession.get(sessionKey);
+    try {
+      const payload = await this.send(GatewayRpcMethods.chatHistory, { sessionKey, deltaCursor: requestCursor });
+      const { messages, deltaCursor, cursor } = (payload ?? {}) as { messages?: unknown; deltaCursor?: unknown; cursor?: unknown };
+      if (!Array.isArray(messages)) {
+        return;
+      }
+      const nextCursor = asNonEmptyString(deltaCursor ?? cursor);
+      if (nextCursor) {
+        this.deltaCursorBySession.set(sessionKey, nextCursor);
+      }
+      const rows = historyRows(messages);
+      // With a cursor the gateway already cut the payload: a boundary match there could swallow a fresh identical row.
+      const seeded = requestCursor === undefined && !nextCursor ? this.seededCatchUpFingerprints.get(sessionKey) : undefined;
+      this.replayRows(sessionKey, rows, seeded ? boundaryOverlap(seeded, rows) : 0, startRunSink);
+      this.setCatchUpBoundary(sessionKey, rows);
+    } catch (err) {
+      this.logger.warn(`chat.history catch-up failed ${(err as Error).message}`);
+    }
+  }
+
+  private replayRows(sessionKey: string, rows: HistoryRow[], boundarySkip: number, startRunSink: ChatSink | undefined): void {
+    const replayRunSink = (): ChatSink | undefined => {
+      const runSink = this.runSinksBySession.get(sessionKey);
+      return runSink && runSink === startRunSink && !this.preAckSends.has(sessionKey) ? runSink : undefined;
+    };
+    const observers = (): ChatSink[] =>
+      this.sessionSinks(sessionKey).filter(
+        (sink) => sink !== startRunSink && sink !== this.runSinksBySession.get(sessionKey)
+      );
+    const replayedIds = new Set<string>();
+    const lastIndex = rows.length - 1;
+    rows.forEach((row, index) => {
+      const messageId = asNonEmptyString(row.messageId);
+      const final = isFinalAssistantRow(row);
+      const seen = messageId !== null && (this.hasSeen(sessionKey, messageId) || replayedIds.has(messageId));
+      if (index < boundarySkip || seen) {
+        if (index === lastIndex && final) {
+          this.recoverRenderedTail(sessionKey, row, seen, observers(), replayRunSink());
+        } else if (final && (seen || this.runSinksBySession.has(sessionKey))) {
+          // An observer may still stream this row if its live session_end was missed.
+          for (const sink of observers()) sink({ type: 'done' });
+        }
+        return;
+      }
+      if (messageId && final) {
+        replayedIds.add(messageId);
+        // A local run's live final frame must still claim its own response.
+        if (!this.hasOwnedRun(sessionKey)) this.rememberSeen(sessionKey, messageId);
+      }
+      const events = this.adjustCompleteFrameEvents(sessionKey, row, this.mapHistoryRow(row));
+      const runSink = isDeltaOnlyRow(row) ? undefined : replayRunSink();
+      const sinks = runSink ? [...observers(), runSink] : observers();
+      for (const chatEvent of events) {
+        for (const sink of sinks) sink(chatEvent);
+      }
+      if (final) {
+        for (const sink of observers()) sink({ type: 'done' });
+      }
+    });
+    const tail = rows[lastIndex];
+    const runSink = replayRunSink();
+    if (tail && isFinalAssistantRow(tail) && runSink) {
+      this.completeReplayedRun(sessionKey, runSink, tail);
+    }
+  }
+
+  /**
+   * The tail row was rendered already (seen, or covered by the boundary),
+   * yet the stream may have dropped before its `session_end`: finalize the
+   * observers. A boundary row never entered the seen-set when it was seeded
+   * mid-run, so while a run is registered its text may never have rendered
+   * and the unrendered remainder is delivered first.
+   */
+  private recoverRenderedTail(
+    sessionKey: string,
+    row: HistoryRow,
+    seen: boolean,
+    observers: ChatSink[],
+    runSink: ChatSink | undefined
+  ): void {
+    const recoverText = !seen && this.runSinksBySession.has(sessionKey);
+    if (!seen && !recoverText) {
+      return;
+    }
+    if (recoverText) {
+      const sinks = runSink ? [...observers, runSink] : observers;
+      for (const chatEvent of this.adjustCompleteFrameEvents(sessionKey, row, this.mapHistoryRow(row))) {
+        for (const sink of sinks) sink(chatEvent);
+      }
+    }
+    for (const sink of observers) sink({ type: 'done' });
+  }
+
+  /** The replayed tail finished the run that was streaming when the catch-up started. */
+  private completeReplayedRun(sessionKey: string, runSink: ChatSink, tail: HistoryRow): void {
+    this.detachRunSink(sessionKey, runSink);
+    this.clearSessionDeltaBookkeeping(sessionKey);
+    const messageId = asNonEmptyString(tail.messageId);
+    // A late re-emission of the finished row must be filtered, not re-rendered.
+    if (messageId) this.rememberSeen(sessionKey, messageId);
+    runSink({ type: 'done' });
+  }
+
+  private mapHistoryRow(row: HistoryRow): ChatEvent[] {
+    return mapSessionEventToChatEvent({ event: GatewayEvents.sessionMessage, payload: row });
   }
 }
