@@ -311,7 +311,7 @@ export class GatewayChatService {
    *  frame records the pre-ack sends in flight at arrival — a settled send's
    *  frames must be attributable to it so its failure can discard them instead
    *  of draining them into another run's sink. */
-  private preAckBufferedFrames: Array<{ evt: SessionEvent; sends: Set<string> }> = [];
+  private preAckBufferedFrames: Array<{ evt: SessionEvent; sends: Set<string>; resolvedKey?: string }> = [];
   /** Settled pre-ack sends as requested→resolved key pairs. Drain routes a
    *  buffered frame only when its session key is the RESOLVED key of a settled
    *  send that the frame was buffered for: the previous global settled-key set
@@ -562,7 +562,14 @@ export class GatewayChatService {
     this.deltaTextByMessage.clear();
     this.deltaTextNoIdBySession.clear();
     for (const sessionKey of [...this.transcriptSinksBySession.keys()]) {
-      if (this.connected && this.runSinksBySession.has(sessionKey)) {
+      if (
+        this.connected &&
+        this.runSinksBySession.has(sessionKey) &&
+        // Same class as abort()/suspend(): a pre-ack send still awaiting its
+        // history/subscribe RPCs has started no remote run, so it must not
+        // trigger a remote `chat.abort` on the new gateway here.
+        (this.preAckSendIssuedKeys.has(sessionKey) || !this.preAckSendKeys.has(sessionKey))
+      ) {
         this.abortingSessions.add(sessionKey);
         void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
           .catch((err: Error) => {
@@ -1121,7 +1128,7 @@ export class GatewayChatService {
         // the one send whose requested key matches, not every in-flight send:
         // drain attribution must stay per-send, or a frame held for this send
         // could be drained into another send's remapped sink.
-        this.preAckBufferedFrames.push({ evt, sends: new Set([routed.key]) });
+        this.preAckBufferedFrames.push({ evt, sends: new Set([routed.key]), resolvedKey: routed.key });
       } else if (routed) {
         if (this.abortingSessions.has(routed.key)) {
           if (this.isCompleteAssistantFrame(payload)) {
@@ -1178,7 +1185,7 @@ export class GatewayChatService {
         // drain re-routes it; the send's failure path discards it wholesale.
         // The frame is tagged with the one send whose requested key matches,
         // mirroring the session.message attribution rule.
-        this.preAckBufferedFrames.push({ evt, sends: new Set([endKey]) });
+        this.preAckBufferedFrames.push({ evt, sends: new Set([endKey]), resolvedKey: endKey });
         return;
       }
       if (
@@ -1632,18 +1639,23 @@ export class GatewayChatService {
       // send cannot be determined and the frame is dropped. With no pre-ack
       // send left, survivors belong to settled sends, so the gate still
       // applies with the same correlation rule.
+      // Keyless frames are correlated too: when buffered, `sinkForSession`
+      // resolved an unambiguous single session and its key was preserved in
+      // `resolvedKey` — using it here keeps a fast gateway that omits
+      // `sessionKey` from losing its response/terminal frames at drain time.
       const payloadKey = typeof payload.sessionKey === 'string' ? payload.sessionKey : null;
-      const mapping = payloadKey
+      const correlationKey = payloadKey ?? buffered.resolvedKey ?? null;
+      const mapping = correlationKey
         ? this.preAckSettledSends.filter(
-            (settled) => settled.resolved === payloadKey && buffered.sends.has(settled.requested)
+            (settled) => settled.resolved === correlationKey && buffered.sends.has(settled.requested)
           )
         : [];
       const owners = new Set(mapping.map((settled) => settled.requested));
       if (
-        !payloadKey ||
+        !correlationKey ||
         mapping.length === 0 ||
         owners.size !== 1 ||
-        this.preAckSettledSends.filter((settled) => settled.resolved === payloadKey).length !== 1
+        this.preAckSettledSends.filter((settled) => settled.resolved === correlationKey).length !== 1
       ) {
         leftover.push(buffered);
         continue;
@@ -2179,10 +2191,16 @@ export class GatewayChatService {
     // A send still awaiting its pre-send history/subscribe RPCs has not
     // issued `chat.send`, so the gateway has no run to abort for this
     // client: a remote `chat.abort` here could cancel an unrelated run
-    // owned by the gateway or another client. Cancel such a send locally
+    // owned by the gateway or another client. A registered run sink alone
+    // does not prove `chat.send` was issued (the sink is registered before
+    // those RPCs), so a still-pre-ack send counts as remote-issued only
+    // once past `chat.send` (`preAckSendIssuedKeys`); a non-pre-ack run
+    // sink is a remote-issued/leftover run. Cancel such a send locally
     // only — the never-acknowledged registration and its buffered frames
     // are still retired below.
-    const remoteRunIssued = runSink !== undefined || this.preAckSendIssuedKeys.has(key);
+    const remoteRunIssued =
+      this.preAckSendIssuedKeys.has(key) ||
+      (runSink !== undefined && !this.preAckSendKeys.has(key));
     this.runSinksBySession.delete(key);
     this.preAckSendKeys.delete(key);
     this.preAckSendIssuedKeys.delete(key);

@@ -258,7 +258,14 @@ function imageMimeByPath(p: string): string {
  *  dev/ino match, fd-link location) with the trusted-side read: the bytes are
  *  read from the verified handle and re-canonicalization is re-checked after
  *  the read, so the emitted content is exactly what was validated. Returns
- *  null when any check fails. */
+ *  null when any check fails.
+ *
+ *  Size is bounded before and after the read: a large user-selected image
+ *  would otherwise be base64-expanded in memory with no limit, spike memory,
+ *  and make the prompt exceed the Gateway's maximum payload — files over
+ *  MAX_IMAGE_BYTES are rejected instead (stat before read keeps the expansion
+ *  from even starting; the post-read length check closes the swap window). */
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
@@ -272,6 +279,9 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     }
     try {
         const opened = await handle.stat();
+        if (opened.size > MAX_IMAGE_BYTES) {
+            return null;
+        }
         const current = await fsp.lstat(p);
         if (opened.dev !== current.dev || opened.ino !== current.ino ||
             !opened.isFile() || !current.isFile() ||
@@ -283,6 +293,9 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
             return null;
         }
         const bytes = await handle.readFile();
+        if (bytes.length > MAX_IMAGE_BYTES) {
+            return null;
+        }
         if ((await fsp.realpath(p)) !== p) {
             return null;
         }
