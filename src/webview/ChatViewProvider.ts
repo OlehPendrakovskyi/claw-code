@@ -6,6 +6,7 @@ import { TextEncoder } from 'util';
 import { ChatEvent, ChatService } from '../chat/ChatService';
 import { getWebviewContent } from './content';
 import { GRID_DIMENSIONS } from './content-js';
+import { envWithAbsolutePath, resolveGitExecutable } from './gitExecutable';
 import {
     CONTEXT_CODE_MAX_BYTES,
     SLASH_COMMANDS,
@@ -127,6 +128,8 @@ type SendTicket = {
     transportSettled: boolean;
     /** Order of the send's start: of two claims on one session the earlier holds it. */
     order: number;
+    /** The working folder, resolved once at the send's start: its git context, mentions and run all use it. */
+    cwd: string | undefined;
 };
 
 const ATTACH_OUTSIDE_WORKSPACE = 'Attach';
@@ -164,6 +167,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private knownMainSessionKeys = new Set<string>();
     /** Gateway identity the allowlist was built from; a URL/token change invalidates it. */
     private allowlistGatewayId: string | null = null;
+    /** The file of the last active text editor, kept while a chat panel has focus. */
+    private lastActiveFileUri: vscode.Uri | undefined;
     /** When the allowlist was last fetched, to rate-limit refetches for a key it lacks. */
     private allowlistFetchedAt = 0;
     private resumeStarted = false;
@@ -219,7 +224,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.visibleThreadIds = [initialThread.id];
         this.activeThreadId = initialThread.id;
 
-        this.editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(() => {
+        this.editorChangeDisposable = vscode.window.onDidChangeActiveTextEditor(editor => {
+            // Focusing a chat panel clears the active editor; the last file stays the working folder's hint.
+            if (editor?.document.uri.scheme === 'file') {
+                this.lastActiveFileUri = editor.document.uri;
+            }
             this.pushRecommendations();
         });
         this.selectionChangeDisposable = vscode.window.onDidChangeTextEditorSelection(() => {
@@ -570,6 +579,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         };
     }
 
+    /** The user's `chat.contextMax`, which beats both the model default and the agent's reported window. */
+    private contextMaxOverride(): number | undefined {
+        const override = vscode.workspace.getConfiguration('openclaw').get<number>('chat.contextMax');
+        return override && override > 0 ? override : undefined;
+    }
+
     private getContextMaxForModel(model: string): number {
         const defaults: Record<string, number> = {
             codex: 128_000,
@@ -579,9 +594,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             ollama: 32_000,
             opencode: 128_000,
         };
-        const config = vscode.workspace.getConfiguration('openclaw');
-        const override = config.get<number>('chat.contextMax');
-        if (override && override > 0) {
+        const override = this.contextMaxOverride();
+        if (override) {
             return override;
         }
         const lower = model.toLowerCase();
@@ -623,7 +637,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.isStreaming = false;
         thread.status = 'cancelled';
         // The epoch-dropped `done` would never commit the partial reply.
-        this.commitPendingAssistantText(thread, CANCELLED_REPLY_MARKER);
+        this.commitPendingAssistantText(thread, { suffix: CANCELLED_REPLY_MARKER });
         settleRunToolEntries(thread, 'cancelled');
         // The epoch-dropped `done` will not restore the suspended transcript sink.
         this.restoreSuspendedTranscriptSink(thread);
@@ -833,8 +847,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const pendingBefore = [...thread.pendingAttachments];
         this.emitState();
         try {
-            const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args));
-            const mentions = await this.resolveMentions(userText);
+            const context = await gatherEditorContext(cmd.contextType, (args) => this.runGit(args, ticket.cwd));
+            const mentions = await this.resolveMentions(userText, ticket.cwd);
             this.reportNotAttached(mentions.rejected);
             if (mentions.accepted.length > 0) {
                 await this.addAttachments(thread, mentions.accepted, { guard: () => this.sendOwnsThread(thread, ticket) });
@@ -862,10 +876,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Git output for slash-command context, read to one byte past the context cap and then
      *  stopped: a longer diff reaches the prompt marked truncated, never as "no diff". */
-    private runGit(args: string): Promise<string> {
-        const cwd = this.getWorkspaceCwd();
-        if (!cwd) {
-            return Promise.resolve('');
+    private async runGit(args: string, cwd: string | undefined): Promise<string> {
+        const git = cwd ? await resolveGitExecutable() : undefined;
+        if (!cwd || !git) {
+            return '';
         }
         return new Promise(resolve => {
             const limit = CONTEXT_CODE_MAX_BYTES + 1;
@@ -878,7 +892,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     resolve(output);
                 }
             };
-            const child = spawn('git', args.split(' '), { cwd, stdio: ['ignore', 'pipe', 'ignore'] });
+            const child = spawn(git, args.split(' '), { cwd, env: envWithAbsolutePath(), stdio: ['ignore', 'pipe', 'ignore'] });
             child.stdout.on('data', (chunk: Buffer) => {
                 chunks.push(chunk);
                 size += chunk.length;
@@ -1027,7 +1041,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
             }
 
-            const mentions = await this.resolveMentions(text);
+            const mentions = await this.resolveMentions(text, ticket.cwd);
             this.reportNotAttached(mentions.rejected);
             if (mentions.accepted.length > 0) {
                 // Canonical spelling and (path + range) keys, matching what addAttachments stored.
@@ -1100,12 +1114,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.emitState();
     }
 
-    /** Commit the streamed text as its own assistant row now, in order; its markdown renders into the row. */
-    private commitPendingAssistantText(thread: ChatThreadState, suffix = ''): void {
+    /** Commit the streamed text as its own assistant row now, in order; its markdown renders into the row.
+     *  Only a run's normal `done` marks it completed: a stopped or failed partial is no /compact summary. */
+    private commitPendingAssistantText(thread: ChatThreadState, options: { suffix?: string; completed?: boolean } = {}): void {
         if (!thread.pendingAssistantText) {
             return;
         }
-        const row: { role: 'assistant'; content: string; html?: string } = { role: 'assistant', content: thread.pendingAssistantText + suffix };
+        const row: { role: 'assistant'; content: string; html?: string; completed?: boolean } = {
+            role: 'assistant',
+            content: thread.pendingAssistantText + (options.suffix ?? ''),
+            ...(options.completed ? { completed: true } : {}),
+        };
         thread.pendingAssistantText = '';
         thread.messages.push(row);
         void renderMarkdown(row.content).then(
@@ -1133,6 +1152,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             threadId: thread.id,
             expectedEpoch: thread.eventEpoch,
             cleared: false,
+            cwd: this.getWorkspaceCwd(),
             transportKnown,
             settleTransport: () => {
                 ticket.transportSettled = true;
@@ -1268,7 +1288,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         ticket: SendTicket,
         history: ConversationTurn[]
     ): Promise<boolean> {
-        const cwd = this.getWorkspaceCwd();
+        const cwd = ticket.cwd;
         if (!cwd) {
             const errMsg = 'No workspace folder open. Open a folder to use chat.';
             thread.messages.push({ role: 'error', content: errMsg });
@@ -1739,7 +1759,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this.emitState();
                 break;
             case 'done':
-                this.commitPendingAssistantText(thread);
+                this.commitPendingAssistantText(thread, { completed: true });
                 if (this.isTranscriptEventDuringSend(thread, epochScope)) {
                     this.emitState();
                     break;
@@ -1765,7 +1785,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 break;
             case 'usage':
                 thread.lastUsage = event.usage;
-                thread.contextTokens = event.usage.totalTokens;
+                // The gateway reports no context size of its own; acpx fills the meter from `contextUsage`.
+                if (epochScope === 'binding' || this.backendFor(thread) instanceof GatewayChatService) {
+                    thread.contextTokens = event.usage.totalTokens;
+                }
+                this.emitState();
+                break;
+            case 'contextUsage':
+                thread.contextTokens = event.usedTokens;
+                if (event.windowTokens !== undefined && !this.contextMaxOverride()) {
+                    thread.contextMax = event.windowTokens;
+                }
                 this.emitState();
                 break;
             case 'error':
@@ -2530,11 +2560,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Resolve @file mentions to workspace-scoped real paths; symlink escapes and
      *  missing targets are rejected, with the reason, before an attachment is accepted. */
-    private async resolveMentions(text: string): Promise<{ accepted: FileMention[]; rejected: string[] }> {
+    private async resolveMentions(text: string, cwd: string | undefined): Promise<{ accepted: FileMention[]; rejected: string[] }> {
         const accepted: FileMention[] = [];
         const rejected: string[] = [];
         for (const mention of parseFileMentions(text)) {
-            const real = await this.firstExistingRealpath(this.mentionCandidates(mention.path));
+            const real = await this.firstExistingRealpath(this.mentionCandidates(mention.path, cwd));
             if (!real) {
                 rejected.push(`${mention.path} (not found)`);
             } else if (await this.isWorkspaceScoped(real)) {
@@ -2547,20 +2577,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return { accepted, rejected };
     }
 
-    /** Where a mentioned path may live: as given when absolute, else under the root its
-     *  multi-root folder-name prefix names, then under each root, the working folder first. */
-    private mentionCandidates(mentionPath: string): string[] {
+    /** Where a mentioned path may live: as given when absolute, else under the working folder,
+     *  then (multi-root only, as asRelativePath writes it) under the root its folder-name prefix
+     *  names, then under the other roots. */
+    private mentionCandidates(mentionPath: string, cwd: string | undefined): string[] {
         if (path.isAbsolute(mentionPath)) {
             return [path.resolve(mentionPath)];
         }
-        const cwd = this.getWorkspaceCwd();
-        const folders = [...(vscode.workspace.workspaceFolders ?? [])]
-            .sort((a, b) => Number(b.uri.fsPath === cwd) - Number(a.uri.fsPath === cwd));
+        const folders = vscode.workspace.workspaceFolders ?? [];
         const [head, ...rest] = mentionPath.split(/[\\/]/);
-        const prefixed = folders
-            .filter(folder => folder.name !== undefined && folder.name === head && rest.length > 0)
-            .map(folder => path.resolve(folder.uri.fsPath, ...rest));
-        return [...prefixed, ...folders.map(folder => path.resolve(folder.uri.fsPath, mentionPath))];
+        const prefixed = folders.length > 1 && rest.length > 0
+            ? folders.filter(folder => folder.name === head).map(folder => path.resolve(folder.uri.fsPath, ...rest))
+            : [];
+        const roots = [cwd, ...folders.map(folder => folder.uri.fsPath).filter(root => root !== cwd)]
+            .filter((root): root is string => root !== undefined);
+        const [cwdCandidate, ...otherRoots] = roots.map(root => path.resolve(root, mentionPath));
+        return [cwdCandidate, ...prefixed, ...otherRoots].filter((candidate): candidate is string => candidate !== undefined);
     }
 
     private async firstExistingRealpath(candidates: string[]): Promise<string | null> {
@@ -2627,7 +2659,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Insert an @file mention for the editor selection into the chat view the user is looking at. */
     async insertSelectionMention(): Promise<void> {
-        const context = await gatherEditorContext('selection', (args) => this.runGit(args));
+        const context = await gatherEditorContext('selection', (args) => this.runGit(args, this.getWorkspaceCwd()));
         if (!context.filePath) {
             return;
         }
@@ -2697,18 +2729,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** The working folder for runs, git and file search: the workspace folder holding the
-     *  active editor's file, else the first folder. */
+    /** The working folder for runs, git and file search: the innermost workspace folder holding
+     *  the active editor's file, or the last one active while a chat panel has focus, else the first folder. */
     private getWorkspaceCwd(): string | undefined {
-        const folders = vscode.workspace.workspaceFolders ?? [];
-        const activeFile = vscode.window.activeTextEditor?.document.uri;
-        const activeFolder = activeFile?.scheme === 'file'
-            ? folders.find(folder => {
-                const rel = path.relative(folder.uri.fsPath, activeFile.fsPath);
-                return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
-            })
-            : undefined;
-        return (activeFolder ?? folders[0])?.uri.fsPath;
+        const activeFile = this.activeFileUri();
+        const activeFolder = activeFile ? vscode.workspace.getWorkspaceFolder(activeFile) : undefined;
+        return (activeFolder ?? vscode.workspace.workspaceFolders?.[0])?.uri.fsPath;
+    }
+
+    private activeFileUri(): vscode.Uri | undefined {
+        const active = vscode.window.activeTextEditor?.document.uri;
+        return active?.scheme === 'file' ? active : this.lastActiveFileUri;
     }
 }
 

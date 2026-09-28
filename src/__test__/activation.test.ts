@@ -261,9 +261,11 @@ describe('extension activation', () => {
                 'openclaw.dashboardUrl',
                 'openclaw.gateway.url',
                 'openclaw.gateway.transport',
+                'openclaw.gateway.protocolVersion',
             ];
-            const machineScoped = (key: string): boolean => settings[key].scope === 'machine';
-            expect(userOnly.filter(key => !machineScoped(key))).toEqual([]);
+            // application, not machine: a remote window (WSL, SSH, container) ignores local machine-scoped values.
+            const applicationScoped = (key: string): boolean => settings[key].scope === 'application';
+            expect(userOnly.filter(key => !applicationScoped(key))).toEqual([]);
             expect(userOnly.filter(key => !String(settings[key].description).includes('User settings only'))).toEqual([]);
         });
 

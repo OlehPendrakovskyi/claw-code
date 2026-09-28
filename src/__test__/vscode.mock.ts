@@ -63,13 +63,24 @@ export const commands = {
     executeCommand: jest.fn(),
 };
 
+type MockWorkspaceFolder = { name?: string; uri: { fsPath: string } };
+
+function workspaceFolderList(): MockWorkspaceFolder[] | undefined {
+    return workspace.workspaceFolders;
+}
+
 export const workspace = {
     getConfiguration: jest.fn(() => ({
         get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
         update: jest.fn(),
         inspect: jest.fn(() => undefined),
     })),
-    workspaceFolders: undefined,
+    workspaceFolders: undefined as MockWorkspaceFolder[] | undefined,
+    /** The innermost folder holding the uri, like VS Code's. */
+    getWorkspaceFolder: jest.fn((uri: { fsPath: string }): MockWorkspaceFolder | undefined =>
+        [...(workspaceFolderList() ?? [])]
+            .filter(folder => uri.fsPath === folder.uri.fsPath || uri.fsPath.startsWith(`${folder.uri.fsPath}/`))
+            .sort((a, b) => b.uri.fsPath.length - a.uri.fsPath.length)[0]),
     onDidChangeConfiguration: jest.fn(() => createDisposable()),
     fs: {
         readFile: jest.fn(),

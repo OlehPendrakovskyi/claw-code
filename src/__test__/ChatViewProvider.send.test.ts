@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { ChatEvent } from '../chat/ChatService';
 
 const mockResolve = jest.fn();
@@ -14,10 +15,11 @@ jest.mock('../webview/chatServiceFactory', () => ({
 jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
 // Identity realpath keeps mention resolution off the disk; the attachment
-// reader's /proc fd check still needs the real one.
+// reader's /proc fd check, and the on-disk workspace roots of the mention tests, need the real one.
 jest.mock('fs', () => {
     const actual = jest.requireActual('fs');
-    const realpath = async (p: string): Promise<string> => p.startsWith('/proc/') ? actual.promises.realpath(p) : p;
+    const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/tmp/claw-roots-');
+    const realpath = async (p: string): Promise<string> => needsDisk(p) ? actual.promises.realpath(p) : p;
     return { ...actual, promises: { ...actual.promises, realpath } };
 });
 
@@ -1568,6 +1570,55 @@ describe('ChatViewProvider send lifecycle', () => {
             expect(threadOf(webview, 'thread-1').messages.map(m => m.role === 'tool' ? 'tool' : m.content)).toEqual(['go', 'before', 'tool', 'after']);
         });
 
+        it('fills the acpx context meter from context usage, and the per-turn readout from turn usage', async () => {
+            const webview = makeProvider();
+            mockResolve.mockResolvedValue(acpxChoice());
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+            const run = lastAcpxRun()[4];
+
+            run({ type: 'contextUsage', usedTokens: 40_000, windowTokens: 200_000 });
+            run({ type: 'usage', usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } });
+            await flush();
+
+            expect(threadOf(webview, 'thread-1')).toMatchObject({
+                contextTokens: 40_000,
+                contextMax: 200_000,
+                lastUsage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+            });
+        });
+
+        it('keeps filling the meter from gateway turn usage, which reports no context size', async () => {
+            const webview = makeProvider();
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+            lastGatewayRun().onEvent({ type: 'usage', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 900 } });
+            await flush();
+            expect(threadOf(webview, 'thread-1').contextTokens).toBe(900);
+        });
+
+        it('marks only a reply its run finished normally as completed', async () => {
+            const webview = makeProvider();
+            const replies = (): Array<Record<string, unknown>> => threadOf(webview, 'thread-1').messages.filter(m => m.role === 'assistant');
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'one' });
+            lastGatewayRun().onEvent({ type: 'text', text: 'finished' });
+            lastGatewayRun().onEvent({ type: 'done' });
+            await flush();
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'two' });
+            lastGatewayRun().onEvent({ type: 'text', text: 'failed' });
+            lastGatewayRun().onEvent({ type: 'error', message: 'boom' });
+            await flush();
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'three' });
+            lastGatewayRun().onEvent({ type: 'text', text: 'stopped' });
+            await flush();
+            await webview.send({ type: 'cancel', threadId: 'thread-1' });
+            await flush();
+
+            expect(replies().map(m => [m.content, m.completed])).toEqual([
+                ['finished', true],
+                ['failed', undefined],
+                ['stopped\n\n*Stopped.*', undefined],
+            ]);
+        });
+
         it('keeps a stopped partial answer as a rendered row marked stopped', async () => {
             const webview = makeProvider();
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
@@ -1595,14 +1646,6 @@ describe('ChatViewProvider send lifecycle', () => {
                 (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = undefined;
             });
 
-            it('resolves a folder-prefixed mention against the folder it names', async () => {
-                const webview = makeProvider();
-                const reads = jest.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
-
-                await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @lib/util.ts' });
-
-                expect(reads.mock.calls[0][0].map(a => a.path)).toEqual(['/ws/lib/util.ts']);
-            });
 
             it('accepts a pick from any workspace folder', async () => {
                 const webview = makeProvider();
@@ -1618,6 +1661,88 @@ describe('ChatViewProvider send lifecycle', () => {
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
 
                 expect(lastAcpxRun()[1]).toBe('/ws/lib');
+            });
+
+            it('runs in the innermost of nested folders', async () => {
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [
+                    { name: 'ws', uri: vscode.Uri.file('/ws') },
+                    { name: 'lib', uri: vscode.Uri.file('/ws/lib') },
+                ];
+                (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = { document: { uri: vscode.Uri.file('/ws/lib/util.ts') } };
+                const webview = makeProvider();
+                mockResolve.mockResolvedValue(acpxChoice());
+
+                await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+
+                expect(lastAcpxRun()[1]).toBe('/ws/lib');
+            });
+
+            it('keeps the last active editor\'s folder while a chat panel has focus', async () => {
+                const webview = makeProvider();
+                const editorListeners = jest.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls;
+                const onEditorChange = editorListeners[editorListeners.length - 1][0];
+                onEditorChange({ document: { uri: vscode.Uri.file('/ws/lib/util.ts') } } as vscode.TextEditor);
+                onEditorChange(undefined);
+                mockResolve.mockResolvedValue(acpxChoice());
+
+                await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+
+                expect(lastAcpxRun()[1]).toBe('/ws/lib');
+            });
+        });
+
+        describe('mentions on disk', () => {
+            let base: string;
+            const reads = (): jest.SpyInstance => jest.spyOn(viewMessaging, 'readAttachments')
+                .mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
+            const files = (...relative: string[]): void => relative.forEach(file => {
+                actualFs.mkdirSync(path.dirname(`${base}/${file}`), { recursive: true });
+                actualFs.writeFileSync(`${base}/${file}`, 'x');
+            });
+            const roots = (...names: string[]): void => {
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders =
+                    names.map(name => ({ name, uri: vscode.Uri.file(`${base}/${name}`) }));
+            };
+
+            beforeEach(() => {
+                base = actualFs.mkdtempSync('/tmp/claw-roots-');
+            });
+
+            afterEach(() => {
+                actualFs.rmSync(base, { recursive: true, force: true });
+            });
+
+            it('resolves a folder-prefixed mention against the folder it names', async () => {
+                files('app/other.ts', 'lib/util.ts');
+                roots('app', 'lib');
+                const webview = makeProvider();
+                const read = reads();
+
+                await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @lib/util.ts' });
+
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/lib/util.ts`]);
+            });
+
+            it('prefers a path under the working folder over a folder-name prefix', async () => {
+                files('app/lib/util.ts', 'lib/util.ts');
+                roots('app', 'lib');
+                const webview = makeProvider();
+                const read = reads();
+
+                await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @lib/util.ts' });
+
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/app/lib/util.ts`]);
+            });
+
+            it('never reads a single root\'s name as a folder prefix', async () => {
+                files('pkg/pkg/README.md', 'pkg/README.md');
+                roots('pkg');
+                const webview = makeProvider();
+                const read = reads();
+
+                await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @pkg/README.md' });
+
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/pkg/pkg/README.md`]);
             });
         });
 
