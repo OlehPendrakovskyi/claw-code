@@ -146,49 +146,70 @@ export function enrichAttachmentsForWebview(
     }));
 }
 
+/** Link schemes a rendered reply may keep; anything else could run script
+ *  or reach the editor's own URI handlers when clicked. */
+const SAFE_LINK_SCHEME = /^(?:https?|mailto):/i;
+const URL_SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+
+const NAMED_ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/** Decode the entities the markdown renderer writes into an attribute, once,
+ *  as the browser does before it resolves the URL. */
+function decodeAttributeValue(value: string): string {
+    // Numeric references decode even without their semicolon.
+    return value.replace(/&(?:#(\d+);?|#x([0-9a-f]+);?|(amp|lt|gt|quot|apos);)/gi, (entity, dec, hex, named) => {
+        if (named !== undefined) {
+            return NAMED_ENTITIES[named.toLowerCase()];
+        }
+        const codePoint = dec !== undefined ? Number(dec) : parseInt(hex, 16);
+        return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : entity;
+    });
+}
+
+/** `value` without the leading C0 controls and spaces a URL parser skips. */
+function stripLeadingControls(value: string): string {
+    let start = 0;
+    while (start < value.length && value.charCodeAt(start) <= 0x20) {
+        start += 1;
+    }
+    return value.slice(start);
+}
+
+/** Whether a link target keeps its href: relative, or an allowed scheme. */
+function isSafeHref(rawValue: string): boolean {
+    // Browsers also drop ASCII tab and newline anywhere in a URL.
+    const href = stripLeadingControls(decodeAttributeValue(rawValue).replace(/[\t\n\r]/g, ''));
+    return !URL_SCHEME.test(href) || SAFE_LINK_SCHEME.test(href);
+}
+
+/** The renderer escapes raw HTML but keeps any link scheme, so unsafe hrefs are neutralized here. */
+function neutralizeUnsafeLinks(html: string): string {
+    return html.replace(/(<a\b[^>]*?\shref=")([^"]*)(")/gi, (match, before, value, after) =>
+        isSafeHref(value) ? match : `${before}#${after}`
+    );
+}
+
 /** Convert markdown text to sanitized HTML for the webview. */
 export async function renderMarkdown(text: string): Promise<string> {
     try {
-        return await markdownToHTML(text, { sanitize: true });
+        return neutralizeUnsafeLinks(await markdownToHTML(text, { sanitize: true }));
     } catch (err) {
         log.warn('markdownToHTML failed, using fallback', err);
         return escapeHtml(text);
     }
 }
 
-/** Escape HTML-significant characters in plain text. */
-export function escapeHtml(text: string): string {
+function escapeHtml(text: string): string {
     return text
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-}
-
-/** Escape glob-significant characters in a search pattern. */
-export function escapeGlob(str: string): string {
-    return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
 }
 
 function frameFileBody(filePath: string, content: string): string {
     return frameTaggedBlock('file', { path: filePath }, content);
-}
-
-/** Returns the canonical attachment path only when it still resolves to the
- *  validated location (rejects a post-validation symlink swap), or null. */
-async function safeCanonicalPath(p: string): Promise<string | null> {
-    try {
-        const real = await fsp.realpath(p);
-        // Attachments store the canonical realpath, so a still-valid file
-        // resolves to exactly the stored spelling on any filesystem. A
-        // case-folded comparison gated on process.platform would also accept
-        // a swap to a differently-spelled different file on case-sensitive
-        // volumes (e.g. macOS APFS case-sensitive), so any mismatch —
-        // including case-only — means the path now resolves elsewhere and is
-        // dropped.
-        return real === p ? real : null;
-    } catch {
-        return null;
-    }
 }
 
 /** Whether an opened handle still refers to the file at canonical path
@@ -242,19 +263,9 @@ function imageMimeByPath(p: string): string {
     }
 }
 
-/** Read an image attachment through the verified handle and return a data URI.
- *
- *  Extends verifyStableImagePath's checks (canonical path, O_NOFOLLOW open,
- *  dev/ino match, fd-link location) with the trusted-side read: the bytes are
- *  read from the verified handle and re-canonicalization is re-checked after
- *  the read, so the emitted content is exactly what was validated. Returns
- *  null when any check fails.
- *
- *  Size is bounded before and after the read: a large user-selected image
- *  would otherwise be base64-expanded in memory with no limit, spike memory,
- *  and make the prompt exceed the Gateway's maximum payload — files over
- *  MAX_IMAGE_BYTES are rejected instead (stat before read keeps the expansion
- *  from even starting; the post-read length check closes the swap window). */
+/** Cap for image attachments: a large image would otherwise be
+ *  base64-expanded in memory with no limit and overflow the Gateway's
+ *  maximum payload. */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 /** Cap for text attachment reads: bounds the transfer itself so a file that
@@ -339,50 +350,6 @@ async function readBounded(handle: fsp.FileHandle, maxBytes: number, statSize: n
     return Buffer.concat(chunks, total);
 }
 
-async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
-    if (await safeCanonicalPath(p) === null) {
-        return null;
-    }
-    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
-    let handle: fsp.FileHandle;
-    try {
-        handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow | openNonBlock);
-    } catch {
-        return null;
-    }
-    try {
-        const opened = await handle.stat();
-        if (opened.size > MAX_IMAGE_BYTES) {
-            return null;
-        }
-        const current = await fsp.lstat(p);
-        if (opened.dev !== current.dev || opened.ino !== current.ino ||
-            !opened.isFile() || !current.isFile() ||
-            (await fsp.realpath(p)) !== p) {
-            return null;
-        }
-        if (!(await handleIsAtPath(handle, p))) {
-            return null;
-        }
-        // Bounded read: a file that grows after stat() would make readFile()
-        // load the whole new contents before any length check, so loop the
-        // transfer up to MAX_IMAGE_BYTES + 1 and reject anything that
-        // overflows; the loop also rules out a short read truncating the image.
-        const payload = await readBounded(handle, MAX_IMAGE_BYTES, opened.size);
-        if (payload.length > MAX_IMAGE_BYTES) {
-            return null;
-        }
-        if ((await fsp.realpath(p)) !== p) {
-            return null;
-        }
-        return payload;
-    } catch {
-        return null;
-    } finally {
-        await handle.close();
-    }
-}
-
 const UNREADABLE_MARKER = '[Could not read file]';
 const AGGREGATE_LIMIT_MARKER = '[Attachment skipped: aggregate attachment size limit reached]';
 const FILE_SIZE_LIMIT_MARKER = '[Attachment skipped: file exceeds size limit]';
@@ -409,10 +376,12 @@ function snapshotFileName(name: string): string {
     return `${randomUUID()}-${stem}${keptExtension}`;
 }
 
-/** Read a text attachment through a verified handle (steps 1-4 of the
- *  hardening described on {@link readAttachments}). Throws on any failed
- *  check, and AttachmentTooLargeError when the file exceeds `maxBytes`. */
-async function readVerifiedTextBytes(p: string, maxBytes: number): Promise<Buffer> {
+/** Read an attachment through a verified handle (steps 1-5 of the hardening
+ *  described on {@link readAttachments}), so the bytes returned are exactly
+ *  those of the validated file. Throws on any failed check, and
+ *  AttachmentTooLargeError when the file exceeds `maxBytes`. */
+async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
+    // Exact match: even a case-only difference can be another file on a case-sensitive volume.
     if ((await fsp.realpath(p)) !== p) {
         throw new Error('attachment path no longer canonical');
     }
@@ -438,6 +407,9 @@ async function readVerifiedTextBytes(p: string, maxBytes: number): Promise<Buffe
         const bytes = await readBounded(handle, maxBytes, opened.size);
         if (bytes.length > maxBytes) {
             throw new AttachmentTooLargeError();
+        }
+        if ((await fsp.realpath(p)) !== p) {
+            throw new Error('attachment path changed during read');
         }
         return bytes;
     } finally {
@@ -522,12 +494,6 @@ export async function readAttachments(
         }
     };
 
-    const emitNote = (message: string) => {
-        if (!emitIfFits(message)) {
-            attachmentsDropped = true;
-        }
-    };
-
     // Created lazily on the first temp-file image so text-only sends never
     // touch the filesystem outside the workspace.
     let snapshotDir: string | null = null;
@@ -562,12 +528,16 @@ export async function readAttachments(
         }
     };
 
+    const rejectionMarker = (err: unknown) => err instanceof AttachmentTooLargeError ? FILE_SIZE_LIMIT_MARKER : UNREADABLE_MARKER;
+
     const emitImage = async (att: Attachment) => {
         // Read through the verified handle and emitted from bytes: handing the
         // path downstream would reopen a TOCTOU window at the reader's open.
-        const bytes = await readVerifiedImageBytes(att.path);
-        if (bytes === null) {
-            emitNote(UNREADABLE_MARKER);
+        let bytes: Buffer;
+        try {
+            bytes = await readVerifiedBytes(att.path, MAX_IMAGE_BYTES);
+        } catch (err) {
+            emitRejection(att.path, rejectionMarker(err));
             return;
         }
         if (imageMode === 'inline') {
@@ -590,7 +560,7 @@ export async function readAttachments(
         }
         const snapshotPath = await writeSnapshot(att.name, bytes);
         if (snapshotPath === null) {
-            emitNote(UNREADABLE_MARKER);
+            emitRejection(att.path, UNREADABLE_MARKER);
             return;
         }
         if (!emitIfFits(`<image path="${escapeXmlAttr(snapshotPath)}" />`)) {
@@ -606,7 +576,7 @@ export async function readAttachments(
             // A ranged mention is capped after slicing, so the raw read only
             // needs the memory bound of the inline cap.
             const readLimit = att.lineStart != null ? ATTACHMENT_TEXT_MAX_BYTES : textLimit;
-            const bytes = await readVerifiedTextBytes(att.path, readLimit);
+            const bytes = await readVerifiedBytes(att.path, readLimit);
             // NUL cannot travel in an execve argument and marks binary content.
             if (bytes.includes(0)) {
                 emitRejection(att.path, BINARY_FILE_MARKER);
@@ -617,14 +587,11 @@ export async function readAttachments(
             if (Buffer.byteLength(text, 'utf8') > textLimit) {
                 throw new AttachmentTooLargeError();
             }
-            if ((await fsp.realpath(att.path)) !== att.path) {
-                throw new Error('attachment path changed during read');
-            }
             if (!emitIfFits(frameFileBody(att.path, text))) {
                 emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             }
         } catch (err) {
-            emitRejection(att.path, err instanceof AttachmentTooLargeError ? FILE_SIZE_LIMIT_MARKER : UNREADABLE_MARKER);
+            emitRejection(att.path, rejectionMarker(err));
         }
     };
 
@@ -694,94 +661,105 @@ export function appendToolMessage(
     });
 }
 
-/** Handle a webview file-search request, preferring open editors then ripgrep. */
-export async function handleFileSearch(query: string, webview: vscode.Webview, cwd: string): Promise<void> {
-    const limit = 15;
-    type FileSearchResult = {name: string; path: string; relativePath: string};
+type FileSearchResult = { name: string; path: string; relativePath: string };
 
-    if (!query) {
-        const openFiles: FileSearchResult[] = [];
-        try {
-            for (const group of vscode.window.tabGroups.all) {
-                for (const tab of group.tabs) {
-                    if (tab.input instanceof vscode.TabInputText) {
-                        const uri = tab.input.uri;
-                        openFiles.push({
-                            name: path.basename(uri.fsPath),
-                            path: uri.fsPath,
-                            relativePath: cwd ? path.relative(cwd, uri.fsPath) : uri.fsPath
-                        });
-                    }
-                }
+const FILE_SEARCH_RESULT_LIMIT = 15;
+const FILE_SEARCH_EXCLUDE = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}';
+/** Files the name-glob pass asks for before falling back to a full scan. */
+const FILE_SEARCH_GLOB_MAX_RESULTS = 30;
+/** Bounds the fallback scan so a keystroke never enumerates a huge workspace. */
+const FILE_SEARCH_SCAN_MAX_RESULTS = 5000;
+/** No file name is longer, so a longer query cannot match a name glob. */
+const FILE_NAME_MAX_CHARS = 255;
+/** Glob syntax (and its escape) differs between VS Code's matcher and
+ *  ripgrep, so a query using any of it only goes through the literal scan. */
+const GLOB_SYNTAX = /[[\]{}()*?!\\,]/;
+
+function toFileSearchResult(uri: vscode.Uri, cwd: string): FileSearchResult {
+    return {
+        name: path.basename(uri.fsPath),
+        path: uri.fsPath,
+        relativePath: cwd ? path.relative(cwd, uri.fsPath) : uri.fsPath,
+    };
+}
+
+function openEditorFiles(cwd: string): FileSearchResult[] {
+    const files: FileSearchResult[] = [];
+    for (const group of vscode.window.tabGroups.all) {
+        for (const tab of group.tabs) {
+            if (tab.input instanceof vscode.TabInputText) {
+                files.push(toFileSearchResult(tab.input.uri, cwd));
             }
-        } catch {
         }
+    }
+    return files;
+}
 
+/** Rank for sorting: name prefix, name substring, path prefix, anything else. */
+function fileMatchRank(file: FileSearchResult, lowerQuery: string): number {
+    const lowerName = file.name.toLowerCase();
+    if (lowerName.startsWith(lowerQuery)) {
+        return 0;
+    }
+    if (lowerName.includes(lowerQuery)) {
+        return 1;
+    }
+    return file.relativePath.toLowerCase().startsWith(lowerQuery) ? 2 : 3;
+}
+
+async function findWorkspaceFiles(pattern: string, maxResults: number): Promise<vscode.Uri[]> {
+    try {
+        return await vscode.workspace.findFiles(pattern, FILE_SEARCH_EXCLUDE, maxResults);
+    } catch (err) {
+        log.warn(`file search for ${pattern} failed`, err);
+        return [];
+    }
+}
+
+async function searchWorkspaceFiles(trimmedQuery: string, cwd: string): Promise<FileSearchResult[]> {
+    const lowerQuery = trimmedQuery.toLowerCase();
+    const matches = new Map<string, FileSearchResult>();
+    const collect = (uris: vscode.Uri[]) => {
+        for (const file of uris.map(uri => toFileSearchResult(uri, cwd))) {
+            const matchesQuery = file.name.toLowerCase().includes(lowerQuery) || file.relativePath.toLowerCase().includes(lowerQuery);
+            if (matchesQuery && !matches.has(file.path)) {
+                matches.set(file.path, file);
+            }
+        }
+    };
+    if (!lowerQuery) {
+        collect(await findWorkspaceFiles('**/*', FILE_SEARCH_GLOB_MAX_RESULTS));
+        return [...matches.values()].sort((a, b) => a.relativePath.length - b.relativePath.length);
+    }
+    if (!GLOB_SYNTAX.test(trimmedQuery) && trimmedQuery.length <= FILE_NAME_MAX_CHARS) {
+        collect(await findWorkspaceFiles(`**/*${trimmedQuery}*`, FILE_SEARCH_GLOB_MAX_RESULTS));
+    }
+    // The glob is case-sensitive and sees only names, so directory and case-insensitive hits need the scan.
+    if (matches.size < FILE_SEARCH_RESULT_LIMIT) {
+        collect(await findWorkspaceFiles('**/*', FILE_SEARCH_SCAN_MAX_RESULTS));
+    }
+    return [...matches.values()].sort((a, b) =>
+        fileMatchRank(a, lowerQuery) - fileMatchRank(b, lowerQuery) || a.relativePath.length - b.relativePath.length
+    );
+}
+
+/** Answer a webview file-search request: open editors for an empty query, else workspace files. */
+/** `replyFields` ride along on the reply, e.g. to tie it to the request. */
+export async function handleFileSearch(
+    query: string,
+    webview: vscode.Webview,
+    cwd: string,
+    replyFields: Record<string, unknown> = {}
+): Promise<void> {
+    if (!query) {
+        const openFiles = openEditorFiles(cwd);
         if (openFiles.length > 0) {
-            webview.postMessage({ type: 'fileSearchResults', files: openFiles.slice(0, limit) });
+            webview.postMessage({ type: 'fileSearchResults', ...replyFields, files: openFiles.slice(0, FILE_SEARCH_RESULT_LIMIT) });
             return;
         }
     }
-
-    const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**}';
-    const lowerQuery = query.trim().toLowerCase();
-    const escaped = lowerQuery ? escapeGlob(query) : '';
-    const pattern = escaped ? `**/*${escaped}*` : '**/*';
-    const toFileResult = (uri: vscode.Uri): FileSearchResult => ({
-        name: path.basename(uri.fsPath),
-        path: uri.fsPath,
-        relativePath: cwd ? path.relative(cwd, uri.fsPath) : uri.fsPath
-    });
-    const matchesQuery = (file: FileSearchResult): boolean => (
-        !lowerQuery ||
-        file.name.toLowerCase().includes(lowerQuery) ||
-        file.relativePath.toLowerCase().includes(lowerQuery)
-    );
-    const scoreFile = (file: FileSearchResult): number => {
-        if (!lowerQuery) {
-            return file.relativePath.length;
-        }
-        const lowerName = file.name.toLowerCase();
-        const lowerPath = file.relativePath.toLowerCase();
-        if (lowerName.startsWith(lowerQuery)) {
-            return 0;
-        }
-        if (lowerName.includes(lowerQuery)) {
-            return 1;
-        }
-        if (lowerPath.startsWith(lowerQuery)) {
-            return 2;
-        }
-        return 3;
-    };
-    const sortFiles = (files: FileSearchResult[]): FileSearchResult[] => files.sort((a, b) => {
-        const scoreDiff = scoreFile(a) - scoreFile(b);
-        if (scoreDiff !== 0) {
-            return scoreDiff;
-        }
-        return a.relativePath.length - b.relativePath.length;
-    });
-    const appendUniqueFiles = (target: FileSearchResult[], files: FileSearchResult[]): void => {
-        const seen = new Set(target.map(file => file.path));
-        for (const file of files) {
-            if (seen.has(file.path)) {
-                continue;
-            }
-            seen.add(file.path);
-            target.push(file);
-        }
-    };
-
-    const files: FileSearchResult[] = [];
-    const uris = await vscode.workspace.findFiles(pattern, exclude, 30);
-    appendUniqueFiles(files, uris.map(toFileResult).filter(matchesQuery));
-
-    if (lowerQuery && files.length < limit) {
-        const fallbackUris = await vscode.workspace.findFiles('**/*', exclude);
-        appendUniqueFiles(files, fallbackUris.map(toFileResult).filter(matchesQuery));
-    }
-
-    webview.postMessage({ type: 'fileSearchResults', files: sortFiles(files).slice(0, limit) });
+    const files = await searchWorkspaceFiles(query.trim(), cwd);
+    webview.postMessage({ type: 'fileSearchResults', ...replyFields, files: files.slice(0, FILE_SEARCH_RESULT_LIMIT) });
 }
 
 /** Gather editor context (selection, diagnostics, file) for slash commands. */

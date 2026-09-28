@@ -47,8 +47,10 @@ export class GatewayConfigService {
    */
   static getGatewaySettings(): GatewaySettings {
     const config = vscode.workspace.getConfiguration('openclaw');
-    const url = config.get<string>('gateway.url')?.trim() || 'ws://127.0.0.1:18789';
-    const rawTransport = config.get<string>('gateway.transport') ?? 'auto';
+    // settings.json is hand-editable, so either value may have any JSON type.
+    const rawUrl: unknown = config.get('gateway.url');
+    const url = (typeof rawUrl === 'string' ? rawUrl.trim() : '') || 'ws://127.0.0.1:18789';
+    const rawTransport: unknown = config.get('gateway.transport');
     const transport: GatewayTransport =
       rawTransport === 'gateway' || rawTransport === 'acpx' ? rawTransport : 'auto';
     return { url, transport };

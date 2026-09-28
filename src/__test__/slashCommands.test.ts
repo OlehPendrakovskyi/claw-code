@@ -122,6 +122,43 @@ describe('slashCommands', () => {
             });
             expect(prompt).toContain('+const a = 1;');
         });
+
+        it('opens every command prompt with its own instruction', () => {
+            for (const command of SLASH_COMMANDS) {
+                const [instruction] = buildSlashPrompt(command.name, '', {}).split('\n\n');
+                expect(instruction).toMatch(/^[A-Z][^\n]+\.$/);
+            }
+        });
+    });
+
+    describe('buildSlashPrompt context selection', () => {
+        const fullContext = {
+            selection: 'SELECTION', fileContent: 'FILE', diagnostics: 'DIAG', gitDiff: 'DIFF', gitStaged: 'STAGED',
+        };
+        const labels = (prompt: string) => [...prompt.matchAll(/label="([^"]+)"/g)].map(match => match[1]);
+
+        it.each([
+            ['explain', fullContext, ['Selected Code']],
+            ['explain', { fileContent: 'FILE' }, ['File Content']],
+            ['harden', fullContext, ['File Content']],
+            ['harden', { selection: 'SELECTION' }, []],
+            ['fix', fullContext, ['Code', 'Diagnostics']],
+            ['fix', { fileContent: 'FILE' }, ['File Content']],
+            ['review', fullContext, ['Git Diff']],
+            ['review', { fileContent: 'FILE' }, ['File Content']],
+            ['review', {}, []],
+            ['commit', fullContext, ['Staged Changes']],
+            ['commit', { fileContent: 'FILE' }, []],
+            ['plan', fullContext, []],
+        ])('/%s frames the context it needs', (command, context, expected) => {
+            expect(labels(buildSlashPrompt(command, '', context))).toEqual(expected);
+        });
+
+        it('names the file and language ahead of the framed context', () => {
+            const prompt = buildSlashPrompt('explain', '  why?  ', { filePath: 'a.ts', languageId: 'ts', selection: 'x' });
+            expect(prompt).toMatch(/File: a\.ts\nLanguage: ts\n\n<context-/);
+            expect(prompt.endsWith('User request: why?')).toBe(true);
+        });
     });
 
     describe('keepUtf8Tail', () => {

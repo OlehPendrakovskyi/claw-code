@@ -286,5 +286,60 @@ describe('ChatServiceFactory.resolve', () => {
 
             await expect(pending).resolves.toMatchObject({ transport: 'acpx' });
         });
+
+        it('does not make every later send wait again for the same hung migration', async () => {
+            jest.useFakeTimers();
+            jest.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            const factory = new ChatServiceFactory(contextStub());
+            const first = factory.resolve();
+            await jest.advanceTimersByTimeAsync(5000);
+            await first;
+
+            const settled = jest.fn();
+            void factory.resolve().then(settled);
+            await jest.advanceTimersByTimeAsync(0);
+
+            expect(settled).toHaveBeenCalledWith(expect.objectContaining({ transport: 'acpx' }));
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
+        });
+
+        it('retries an incomplete migration on the next send', async () => {
+            jest.mocked(migrateLegacyGatewayToken).mockResolvedValueOnce('incomplete').mockResolvedValueOnce('completed');
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+            await factory.resolve();
+            await factory.resolve();
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
+        });
+
+        it('retries a migration that failed, and still resolves the send', async () => {
+            jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            const factory = new ChatServiceFactory(contextStub());
+            await expect(factory.resolve()).resolves.toMatchObject({ transport: 'acpx' });
+            await factory.resolve();
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
+        });
+    });
+
+    describe('dispose', () => {
+        it('disposes the cached gateway client and builds a fresh one on the next gateway send', async () => {
+            mockConnect.mockResolvedValue(undefined);
+            const factory = new ChatServiceFactory(contextStub());
+            const first = await factory.resolve();
+            factory.dispose();
+            const second = await factory.resolve();
+
+            expect(jest.mocked(first.service as GatewayChatService).dispose).toHaveBeenCalledTimes(1);
+            expect(second.service).not.toBe(first.service);
+            expect(GatewayChatService).toHaveBeenCalledTimes(2);
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+        });
+
+        it('is safe without a gateway client', () => {
+            expect(() => new ChatServiceFactory(contextStub()).dispose()).not.toThrow();
+        });
     });
 });

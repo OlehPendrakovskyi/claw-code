@@ -1,5 +1,13 @@
 import * as vscode from 'vscode';
-import { isValidGatewayUrl, migrateLegacyGatewayToken, promptForGatewayToken, sendsTokenInCleartext } from '../core/gatewayConfig';
+import {
+  getGatewaySettings,
+  getGatewayToken,
+  isValidGatewayUrl,
+  migrateLegacyGatewayToken,
+  promptForGatewayToken,
+  sendsTokenInCleartext,
+  setGatewayToken,
+} from '../core/gatewayConfig';
 
 type Level = 'global' | 'workspace' | 'folder';
 
@@ -298,7 +306,96 @@ describe('GatewayConfigService', () => {
         });
     });
 
+    describe('getGatewaySettings', () => {
+        const useRawSettings = (values: Record<string, unknown>) => {
+            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                get: (key: string) => values[key],
+            } as Pick<vscode.WorkspaceConfiguration, 'get'> as vscode.WorkspaceConfiguration);
+        };
+
+        it('defaults to the local gateway in auto mode', () => {
+            useRawSettings({});
+            expect(getGatewaySettings()).toEqual({ url: 'ws://127.0.0.1:18789', transport: 'auto' });
+        });
+
+        it('trims the URL and keeps a known transport', () => {
+            useRawSettings({ 'gateway.url': '  wss://gw.example  ', 'gateway.transport': 'acpx' });
+            expect(getGatewaySettings()).toEqual({ url: 'wss://gw.example', transport: 'acpx' });
+        });
+
+        it.each([[42, 'gateway'], [{ url: 'x' }, 'bogus'], ['   ', 7]])(
+            'falls back for a hand-edited url %p and transport %p', (url, transport) => {
+                useRawSettings({ 'gateway.url': url, 'gateway.transport': transport });
+                expect(getGatewaySettings()).toEqual({
+                    url: 'ws://127.0.0.1:18789',
+                    transport: transport === 'gateway' ? 'gateway' : 'auto',
+                });
+            });
+    });
+
+    describe('gateway token storage', () => {
+        it('reads a missing token as empty', async () => {
+            await expect(getGatewayToken(makeContext(secrets()).secrets)).resolves.toBe('');
+            await expect(getGatewayToken(makeContext(secrets('tok')).secrets)).resolves.toBe('tok');
+        });
+
+        it('stores a token and deletes on an empty one', async () => {
+            const store = secrets();
+            await setGatewayToken(makeContext(store).secrets, 'tok');
+            await setGatewayToken(makeContext(store).secrets, '');
+            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'tok');
+            expect(store.delete).toHaveBeenCalledWith('openclaw.gateway.token');
+        });
+    });
+
+    describe('migrateLegacyGatewayToken without workspace folders', () => {
+        it('migrates the user setting when no folder is open', async () => {
+            const model = new SettingsModel().set('global', 'legacy-token');
+            useSettings(model);
+            (vscode.workspace as { workspaceFolders: unknown }).workspaceFolders = undefined;
+            const store = secrets();
+            await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
+            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'legacy-token');
+        });
+
+        it('logs a cleanup failure that is not an Error', async () => {
+            const model = new SettingsModel().set('global', 'legacy-token');
+            useSettings(model);
+            const configuration = model.configuration(undefined);
+            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                ...configuration,
+                update: jest.fn(async () => { throw 'EACCES'; }),
+            });
+            await expect(migrateLegacyGatewayToken(makeContext(secrets()))).resolves.toBe('incomplete');
+        });
+    });
+
     describe('promptForGatewayToken', () => {
+        it('keeps the stored token when the prompt is cancelled', async () => {
+            const store = secrets('kept');
+            (vscode.window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+            await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(false);
+            expect(store.store).not.toHaveBeenCalled();
+            expect(store.delete).not.toHaveBeenCalled();
+        });
+
+        it('clears the token when a blank value is entered', async () => {
+            const store = secrets('old');
+            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('   ');
+            await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(true);
+            expect(store.delete).toHaveBeenCalled();
+            expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Gateway token cleared.');
+        });
+
+        it('keeps serializing token writes after one of them fails', async () => {
+            const failing = { ...secrets(), store: jest.fn(async () => { throw new Error('keyring locked'); }) };
+            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('tok');
+            await expect(promptForGatewayToken(makeContext(failing))).rejects.toThrow('keyring locked');
+            const store = secrets();
+            await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(true);
+            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'tok');
+        });
+
         it('stores the typed token only after an in-flight migration finished', async () => {
             const model = new SettingsModel().set('global', 'legacy-token');
             useSettings(model);

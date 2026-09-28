@@ -156,6 +156,9 @@ describe('fileMentions', () => {
     });
 
     describe('parseFileMentions backtracking', () => {
+        // Linear parses take ~10 ms; quadratic backtracking on these inputs
+        // takes many seconds, so the bound tolerates a loaded CI machine.
+        const LINEAR_PARSE_MAX_MS = 1000;
         const parsesQuickly = (text: string) => {
             const started = Date.now();
             parseFileMentions(text);
@@ -163,16 +166,16 @@ describe('fileMentions', () => {
         };
 
         it('rejects a long punctuation run ending in a bare # in linear time', () => {
-            expect(parsesQuickly('@' + '.'.repeat(100_000) + '#')).toBeLessThan(100);
+            expect(parsesQuickly('@' + '.'.repeat(100_000) + '#')).toBeLessThan(LINEAR_PARSE_MAX_MS);
         });
 
         it('rejects long punctuation after a #L range in linear time', () => {
-            expect(parsesQuickly('@a.ts#L1' + ','.repeat(100_000) + '#')).toBeLessThan(100);
-            expect(parsesQuickly('@a.ts#L' + '1'.repeat(100_000) + '#')).toBeLessThan(100);
+            expect(parsesQuickly('@a.ts#L1' + ','.repeat(100_000) + '#')).toBeLessThan(LINEAR_PARSE_MAX_MS);
+            expect(parsesQuickly('@a.ts#L' + '1'.repeat(100_000) + '#')).toBeLessThan(LINEAR_PARSE_MAX_MS);
         });
 
         it('parses many adjacent quoted mentions in linear time', () => {
-            expect(parsesQuickly(' @"x""'.repeat(20_000))).toBeLessThan(100);
+            expect(parsesQuickly(' @"x""'.repeat(20_000))).toBeLessThan(LINEAR_PARSE_MAX_MS);
         });
     });
 
@@ -192,6 +195,33 @@ describe('fileMentions', () => {
 
         it('strips punctuation between the path and its range', () => {
             expect(parseFileMentions('@a.ts,#L3')).toEqual([{ path: 'a.ts', lineStart: 3, lineEnd: 3 }]);
+        });
+
+        it('skips a mention whose path is empty or only punctuation', () => {
+            expect(parseFileMentions('@"" and @... and @"",')).toEqual([]);
+            expect(parseFileMentions('@"" then @b.ts')).toEqual([{ path: 'b.ts' }]);
+        });
+
+        it('keeps the same file once per distinct range', () => {
+            expect(parseFileMentions('@a.ts#L1 @a.ts#L2 @a.ts#L1 @a.ts')).toEqual([
+                { path: 'a.ts', lineStart: 1, lineEnd: 1 },
+                { path: 'a.ts', lineStart: 2, lineEnd: 2 },
+                { path: 'a.ts' },
+            ]);
+        });
+    });
+
+    describe('buildMention start-only ranges', () => {
+        it('writes a start line without an end, clamping it to line 1', () => {
+            expect(buildMention('a.ts', 4)).toBe('@a.ts#L4');
+            expect(buildMention('a.ts', -3)).toBe('@a.ts#L1');
+            expect(buildMention('a.ts', 0, 0)).toBe('@a.ts#L1');
+        });
+
+        it('round-trips paths the unquoted form cannot express', () => {
+            for (const filePath of ['a#b.ts', 'we@ird.ts', 'say "hi".ts', 'ends.', 'tab\there.ts']) {
+                expect(parseFileMentions(buildMention(filePath, 2, 3))).toEqual([{ path: filePath, lineStart: 2, lineEnd: 3 }]);
+            }
         });
     });
 });

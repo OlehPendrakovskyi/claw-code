@@ -23,7 +23,12 @@ jest.mock('fs', () => {
             realpath: (p: fs.PathLike) => (globalThis as any).__realpathImpl(p),
             rm: (...args: Parameters<typeof FspType.rm>) =>
                 ((globalThis as any).__rmImpl ?? actual.promises.rm)(...args),
+            lstat: (...args: Parameters<typeof FspType.lstat>) =>
+                ((globalThis as any).__lstatImpl ?? actual.promises.lstat)(...args),
             mkdtemp: async (prefix: string) => {
+                if ((globalThis as any).__mkdtempError) {
+                    throw (globalThis as any).__mkdtempError;
+                }
                 const dir = await actual.promises.mkdtemp(prefix);
                 (globalThis as any).__createdDirs?.push(dir);
                 return dir;
@@ -36,6 +41,8 @@ beforeEach(() => {
 });
 afterEach(() => {
     (globalThis as any).__realpathImpl = undefined;
+    (globalThis as any).__lstatImpl = undefined;
+    (globalThis as any).__mkdtempError = undefined;
     realpathImpl = (p) => realFsp.realpath(p as string);
 });
 
@@ -410,6 +417,183 @@ describe('viewMessaging', () => {
             )).rejects.toThrow('EIO');
             expect(createdDirs).toHaveLength(1);
             expect(fs.existsSync(createdDirs[0])).toBe(false);
+        });
+    });
+    describe('readAttachments verification', () => {
+        const posixOnly = process.platform === 'win32' ? it.skip : it;
+        const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        let dir: string;
+
+        const writeFixture = (name: string, content: string | Buffer) => {
+            const file = path.join(dir, name);
+            fs.writeFileSync(file, content);
+            return file;
+        };
+        const readOne = (file: string, type: 'file' | 'image' = 'file', imageMode: 'inline' | 'tempFile' = 'inline') =>
+            readAttachments([{ name: path.basename(file), path: file, type }], { imageMode });
+
+        beforeEach(() => {
+            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-verify-')));
+        });
+
+        afterEach(() => {
+            Object.defineProperty(process, 'platform', originalPlatform);
+            fs.rmSync(dir, { recursive: true, force: true });
+        });
+
+        posixOnly('rejects a path that no longer resolves to itself before opening it', async () => {
+            const file = writeFixture('a.txt', 'secret');
+            const link = path.join(dir, 'link.txt');
+            fs.symlinkSync(file, link);
+            for (const type of ['file', 'image'] as const) {
+                const { prompt } = await readOne(link, type);
+                expect(prompt).toContain('[Could not read file]');
+                expect(prompt).not.toContain('secret');
+            }
+        });
+
+        posixOnly('rejects a file swapped between open and the identity check', async () => {
+            const file = writeFixture('a.txt', 'original');
+            const other = writeFixture('b.txt', 'other');
+            (globalThis as any).__lstatImpl = (p: fs.PathLike) => realFsp.lstat(p === file ? other : p);
+            const { prompt } = await readOne(file);
+            expect(prompt).toContain('[Could not read file]');
+            expect(prompt).not.toContain('original');
+        });
+
+        posixOnly('rejects a directory', async () => {
+            const sub = path.join(dir, 'sub');
+            fs.mkdirSync(sub);
+            expect((await readOne(sub)).prompt).toContain('[Could not read file]');
+        });
+
+        posixOnly('rejects a text file that grows past the cap after stat', async () => {
+            const file = writeFixture('grow.txt', 'g'.repeat(60 * 1024));
+            realpathImpl = async (p: fs.PathLike) => {
+                if (/^\/proc\/self\/fd\//.test(p as string)) {
+                    fs.appendFileSync(file, 'g'.repeat(10 * 1024));
+                }
+                return realFsp.realpath(p as string);
+            };
+            Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
+            const { prompt } = await readOne(file, 'file', 'tempFile');
+            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+        });
+
+        posixOnly('reads without O_NOFOLLOW or an fd check on Windows', async () => {
+            const file = writeFixture('w.txt', 'windows body');
+            Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'win32' });
+            expect((await readOne(file)).prompt).toContain('windows body');
+        });
+
+        posixOnly('reports an oversized image as over the size limit', async () => {
+            const image = writeFixture('huge.png', Buffer.alloc(10 * 1024 * 1024 + 1));
+            const { prompt } = await readOne(image, 'image');
+            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+            expect(prompt).not.toContain('<image');
+        });
+
+        posixOnly('reports a missing image as unreadable, framed with its path', async () => {
+            const { prompt } = await readOne(path.join(dir, 'gone.png'), 'image');
+            expect(prompt).toMatch(/<file-[0-9a-f-]+ path="[^"]*gone\.png">\n\[Could not read file\]/);
+        });
+    });
+
+    describe('readAttachments images', () => {
+        const posixOnly = process.platform === 'win32' ? it.skip : it;
+        let dir: string;
+        let createdDirs: string[];
+
+        const writeImage = (name: string, size = 4) => {
+            const file = path.join(dir, name);
+            fs.writeFileSync(file, Buffer.alloc(size, 1));
+            return { name, path: file, type: 'image' as const };
+        };
+
+        beforeEach(() => {
+            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-img-')));
+            createdDirs = [];
+            (globalThis as any).__createdDirs = createdDirs;
+        });
+
+        afterEach(() => {
+            (globalThis as any).__createdDirs = undefined;
+            for (const created of [dir, ...createdDirs]) {
+                fs.rmSync(created, { recursive: true, force: true });
+            }
+        });
+
+        posixOnly.each([
+            ['a.png', 'image/png'], ['a.JPG', 'image/jpeg'], ['a.jpeg', 'image/jpeg'], ['a.gif', 'image/gif'],
+            ['a.webp', 'image/webp'], ['a.bmp', 'image/bmp'], ['a.svg', 'image/svg+xml'],
+            ['a.ico', 'image/vnd.microsoft.icon'], ['a.tif', 'image/tiff'], ['a.tiff', 'image/tiff'],
+            ['a.raw', 'application/octet-stream'],
+        ])('inlines %s as a %s data URI', async (name, mime) => {
+            const { prompt } = await readAttachments([writeImage(name)]);
+            expect(prompt).toBe(`<image data="data:${mime};base64,AQEBAQ==" />`);
+        });
+
+        posixOnly('rejects an inline image the payload budget cannot carry', async () => {
+            const { prompt } = await readAttachments([writeImage('a.png', 3000)], {
+                reservedPromptBytes: 20 * 1024 * 1024 - 1000,
+            });
+            expect(prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
+            expect(prompt).not.toContain('base64');
+        });
+
+        posixOnly('rejects an inline image whose section framing overflows the budget', async () => {
+            const { prompt } = await readAttachments([writeImage('a.png', 3)], {
+                reservedPromptBytes: 20 * 1024 * 1024 - 10,
+            });
+            expect(prompt).not.toContain('base64');
+        });
+
+        posixOnly('snapshots several images into one private directory and removes it on dispose', async () => {
+            const { prompt, dispose } = await readAttachments([writeImage('a.png'), writeImage('b.png')], { imageMode: 'tempFile' });
+            const paths = [...prompt.matchAll(/<image path="([^"]+)"/g)].map(match => match[1]);
+            expect(paths).toHaveLength(2);
+            expect(new Set(paths.map(p => path.dirname(p))).size).toBe(1);
+            expect(fs.statSync(paths[0]).mode & 0o777).toBe(0o600);
+            await dispose();
+            expect(paths.some(p => fs.existsSync(p))).toBe(false);
+        });
+
+        posixOnly('truncates an overlong extension with the name instead of keeping it', async () => {
+            const { prompt, dispose } = await readAttachments(
+                [{ ...writeImage('a.png'), name: `${'n'.repeat(240)}.${'x'.repeat(20)}` }],
+                { imageMode: 'tempFile' }
+            );
+            const snapshotPath = /<image path="([^"]+)"/.exec(prompt)![1];
+            expect(Buffer.byteLength(path.basename(snapshotPath))).toBe(255);
+            expect(path.extname(snapshotPath)).toBe('');
+            await dispose();
+        });
+
+        posixOnly('caps the bytes snapshotted in one send', async () => {
+            const sevenMiB = 7 * 1024 * 1024;
+            const { prompt, dispose } = await readAttachments(
+                [writeImage('a.png', sevenMiB), writeImage('b.png', sevenMiB), writeImage('c.png', sevenMiB)],
+                { imageMode: 'tempFile' }
+            );
+            expect([...prompt.matchAll(/<image path=/g)]).toHaveLength(2);
+            expect(prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
+            await dispose();
+        });
+
+        posixOnly('reports an image whose snapshot cannot be written as unreadable', async () => {
+            (globalThis as any).__mkdtempError = new Error('ENOSPC');
+            const { prompt, dispose } = await readAttachments([writeImage('a.png')], { imageMode: 'tempFile' });
+            expect(prompt).toContain('[Could not read file]');
+            expect(prompt).not.toContain('<image');
+            await expect(dispose()).resolves.toBeUndefined();
+        });
+
+        posixOnly('touches no temp directory for text-only sends', async () => {
+            const file = path.join(dir, 'a.txt');
+            fs.writeFileSync(file, 'text');
+            const { dispose } = await readAttachments([{ name: 'a.txt', path: file, type: 'file' }], { imageMode: 'tempFile' });
+            await dispose();
+            expect(createdDirs).toEqual([]);
         });
     });
 });

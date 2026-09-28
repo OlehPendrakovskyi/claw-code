@@ -317,13 +317,9 @@ function composeSlashPrompt(
     transcript: string | undefined,
     caps: ContextCaps
 ): string {
-    const instruction = COMMAND_INSTRUCTIONS[commandName] ?? '';
     const contextBlock = formatContext(context, contextType, caps);
 
-    const sections: string[] = [];
-    if (instruction) {
-        sections.push(instruction);
-    }
+    const sections = [COMMAND_INSTRUCTIONS[commandName]];
     if (transcript) {
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the

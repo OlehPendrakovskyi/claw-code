@@ -50,6 +50,8 @@ export class ChatServiceFactory {
   /** Completes once legacy-token migration has finished: gateway resolution
    *  waits for it so a valid legacy token is never mistaken for a missing one. */
   private migrationDone: Promise<void> | null = null;
+  /** A migration one send already gave up waiting for: later sends skip the wait. */
+  private abandonedMigration: Promise<void> | null = null;
   /** Suspended clients hold no runs, so switching away again must not
    *  re-invalidate threads on every acpx send. */
   private gatewaySuspended = false;
@@ -66,13 +68,18 @@ export class ChatServiceFactory {
    *  is not cached: the next resolve() retries it, so the SecretStorage-only
    *  state is eventually restored without blocking the current call. */
   private async waitForMigration(): Promise<void> {
+    const migration = this.ensureMigrated();
+    if (migration === this.abandonedMigration) {
+      return;
+    }
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => resolve('timeout'), MIGRATION_WAIT_MS);
     });
-    const outcome = await Promise.race([this.ensureMigrated(), timedOut]);
+    const outcome = await Promise.race([migration, timedOut]);
     clearTimeout(timer);
     if (outcome === 'timeout') {
+      this.abandonedMigration = migration;
       log.warn('legacy gateway token migration is still running; resolving without waiting for it');
     }
   }
@@ -235,9 +242,8 @@ export class ChatServiceFactory {
       // `complete` and the pending send would be silently abandoned instead
       // of being reported as interrupted.
       this.onGatewayInvalidated?.('identity');
+      // A suspended client stays parked (no socket, no reconnect) until resolve() calls connect().
       this.gatewayService.updateConnection(url, token);
-      // updateConnection lifts the client's suspension too.
-      this.gatewaySuspended = false;
     }
     this.cachedUrl = url;
     this.cachedToken = token;
