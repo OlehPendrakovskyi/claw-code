@@ -75,6 +75,27 @@ export class ChatService {
         plan: 'You are a planning assistant. Create structured plans and break down tasks. Do not write code unless asked.\n\n',
     };
 
+    /** The prompt as acpx receives it: system prompt, chat-type prefix, prompt. */
+    private static composeFullPrompt(prompt: string, chatType: string): string {
+        const systemPrompt = vscode.workspace.getConfiguration('openclaw').get<string>('chat.systemPrompt', '');
+        const prefixed = (ChatService.CHAT_TYPE_PREFIXES[chatType] ?? '') + prompt;
+        return systemPrompt ? `${systemPrompt}\n\n${prefixed}` : prefixed;
+    }
+
+    /** UTF-8 bytes a caller's prompt may use on the acpx command line once the
+     *  system prompt and chat-type prefix are added, or null where the platform
+     *  has no per-argument limit. UTF-8 never needs fewer bytes than UTF-16
+     *  units for a code point, so a byte budget also bounds the Windows count. */
+    static promptArgBudgetBytes(chatType: string, platform: NodeJS.Platform = process.platform): number | null {
+        const limit = platform === 'linux' ? PROMPT_ARG_MAX_BYTES
+            : platform === 'win32' ? PROMPT_ARG_MAX_WINDOWS_CHARS
+            : null;
+        if (limit === null) {
+            return null;
+        }
+        return Math.max(0, limit - Buffer.byteLength(ChatService.composeFullPrompt('', chatType), 'utf8'));
+    }
+
     sendMessage(
         prompt: string,
         cwd: string,
@@ -93,15 +114,8 @@ export class ChatService {
         const thinkingLevel = config.get<string>('chat.thinkingLevel', 'medium');
         const temperature = config.get<number>('chat.temperature', 0.7);
         const maxTokens = config.get<number>('chat.maxTokens', 0);
-        const systemPrompt = config.get<string>('chat.systemPrompt', '');
-
-        const prefix = ChatService.CHAT_TYPE_PREFIXES[chatType] ?? '';
-        let fullPrompt = prefix + prompt;
-        if (systemPrompt) {
-            fullPrompt = systemPrompt + '\n\n' + fullPrompt;
-        }
         // spawn() throws on NUL in any argument.
-        fullPrompt = fullPrompt.replace(/\0/g, '\uFFFD');
+        const fullPrompt = ChatService.composeFullPrompt(prompt, chatType).replace(/\0/g, '\uFFFD');
 
         // A spawn can fail with 'error' and still fire 'close' (or emit both
         // after a kill), so the run must complete exactly once: the first

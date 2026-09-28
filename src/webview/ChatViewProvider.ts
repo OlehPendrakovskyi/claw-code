@@ -117,6 +117,10 @@ function resetUsage(thread: ChatThreadState): void {
     thread.lastUsage = null;
 }
 
+/** A prompt, or a builder that fits it to the acpx argument budget once the
+ *  transport is resolved (undefined: no per-argument limit applies). */
+type PromptSource = string | ((maxBytes: number | undefined) => string);
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'openclaw.chat';
 
@@ -788,7 +792,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 })
                 .join('\n\n')
             : undefined;
-        const augmented = buildSlashPrompt(commandName, userText, context, transcript);
+        // Built once the transport is known, so it can fit the acpx argument budget.
+        const augmented: PromptSource = (maxBytes) => buildSlashPrompt(commandName, userText, context, transcript, maxBytes);
         const displayText = `/${commandName}${userText.trim() ? ' ' + userText.trim() : ''}`;
         const attachments = [...thread.pendingAttachments];
 
@@ -1018,7 +1023,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Send a queued user prompt through the resolved backend. */
     private async sendPrompt(
         thread: ChatThreadState,
-        basePrompt: string,
+        prompt: PromptSource,
         attachments: Attachment[],
         sendEpoch: number
     ): Promise<void> {
@@ -1160,6 +1165,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.eventEpoch += 1;
             runEpoch = thread.eventEpoch;
         }
+        // CLI transports carry the prompt as one command-line argument, so the
+        // platform's argument budget bounds prompt and attachments together.
+        const argvLimitBytes = choice.service instanceof GatewayChatService
+            ? null
+            : ChatService.promptArgBudgetBytes(thread.currentChatType);
+        const basePrompt = typeof prompt === 'string'
+            ? prompt
+            : prompt(argvLimitBytes === null ? undefined : attachments.length > 0 ? Math.floor(argvLimitBytes / 2) : argvLimitBytes);
         // Transport-specific: the gateway takes images inline (it cannot read
         // this machine's disk), CLI transports take temp-file paths to fit argv.
         let promptToSend = basePrompt;
@@ -1174,13 +1187,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
                     reservedArgvBytes:
                         Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES,
+                    argvLimitBytes,
                 }
             );
             disposeAttachments = attachmentResult.dispose;
             // Superseded during the read: the snapshots never reached a child, so remove them here.
             if (!this.threads.has(thread.id) ||
                 thread.status !== 'running' ||
-                thread.eventEpoch !== sendEpoch) {
+                thread.eventEpoch !== runEpoch) {
                 void disposeAttachments?.();
                 return;
             }

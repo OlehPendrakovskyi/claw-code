@@ -420,6 +420,29 @@ describe('ChatViewProvider', () => {
         });
     });
 
+    describe('sending with attachments', () => {
+        it('sends the prompt once the attachments are read', async () => {
+            const dir = jest.requireActual<typeof import('fs')>('fs').mkdtempSync('/tmp/claw-send-');
+            const file = `${dir}/note.txt`;
+            jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
+            try {
+                const { sidebar } = makeProvider();
+                await sidebar.send({ type: 'attachFile', threadId: 'thread-1', filePath: file });
+                await flush();
+
+                await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
+                await flush();
+
+                const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0]);
+                expect(sent).toHaveLength(1);
+                expect(sent[0]).toContain('with attachment');
+                expect(sent[0]).toContain(file);
+            } finally {
+                jest.requireActual<typeof import('fs')>('fs').rmSync(dir, { recursive: true, force: true });
+            }
+        });
+    });
+
     describe('inbound message validation', () => {
         it('never routes a message with an unknown threadId to the active thread', async () => {
             const { sidebar } = makeProvider();

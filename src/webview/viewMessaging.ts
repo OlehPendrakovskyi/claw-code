@@ -283,16 +283,10 @@ const ATTACHMENT_TEXT_ARG_MAX_BYTES = 64 * 1024;
  *  and the send fails despite passing every check here. */
 const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 
-/** Aggregate argv budget for CLI transports (`imageMode: 'tempFile'`): the
- *  whole prompt travels as ONE execve argument (`args.push('exec', prompt)`),
- *  so Linux's per-argument limit (MAX_ARG_STRLEN, ~128 KiB) bounds the
- *  attachments plus the base prompt together — not each file alone. Two
- *  allowed 64 KiB text attachments, or one attachment plus a large base
- *  prompt, would still fail the spawn with E2BIG under per-file caps alone.
- *  The 32 KiB headroom below the kernel limit covers the CLI prefix,
- *  configured system prompt, and argument framing; callers subtract the
- *  base prompt's bytes via `reservedArgvBytes` so attachments and prompt
- *  jointly stay inside the limit. */
+/** Default argv budget for CLI transports (`imageMode: 'tempFile'`), where the
+ *  whole prompt travels as ONE argument. Linux and Windows callers pass their
+ *  exact limit as `argvLimitBytes`; this covers platforms that only cap the
+ *  argv+env total (macOS, BSD). */
 const ATTACHMENT_ARGV_TOTAL_MAX_BYTES = 96 * 1024;
 
 /** Aggregate cap on the raw validated image bytes materialized as temp-file
@@ -485,8 +479,12 @@ export async function readAttachments(
         reservedPromptBytes?: number;
         /** Bytes of the final prompt (base prompt, not attachments) already
          *  known to the caller — subtracted from the CLI argv budget so
-         *  attachments plus prompt jointly stay inside MAX_ARG_STRLEN. */
+         *  attachments plus prompt jointly stay inside the argument limit. */
         reservedArgvBytes?: number;
+        /** The platform's argument budget for the whole prompt (see
+         *  ChatService.promptArgBudgetBytes); defaults to
+         *  ATTACHMENT_ARGV_TOTAL_MAX_BYTES where the platform sets none. */
+        argvLimitBytes?: number | null;
     }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
@@ -495,7 +493,7 @@ export async function readAttachments(
     // execve argv element, where images charge only their path framing since
     // their bytes live on disk.
     const transportBudget = imageMode === 'tempFile'
-        ? Math.max(0, ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0))
+        ? Math.max(0, (options?.argvLimitBytes ?? ATTACHMENT_ARGV_TOTAL_MAX_BYTES) - (options?.reservedArgvBytes ?? 0))
         : Math.max(0, ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0));
     const textLimit = imageMode === 'tempFile' ? ATTACHMENT_TEXT_ARG_MAX_BYTES : ATTACHMENT_TEXT_MAX_BYTES;
     let transportBytes = 0;

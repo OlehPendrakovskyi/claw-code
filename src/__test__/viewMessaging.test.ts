@@ -77,6 +77,27 @@ describe('viewMessaging', () => {
     describe('readAttachments text budget', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
 
+        posixOnly('honours the caller\'s platform argument limit over the default budget', async () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-argv-'));
+            try {
+                const file = path.join(fs.realpathSync(dir), 'forty.txt');
+                fs.writeFileSync(file, 'a'.repeat(40 * 1024));
+                const withinDefault = await readAttachments([{ name: 'forty.txt', path: file, type: 'file' }], {
+                    imageMode: 'tempFile',
+                });
+                const windowsSized = await readAttachments([{ name: 'forty.txt', path: file, type: 'file' }], {
+                    imageMode: 'tempFile',
+                    argvLimitBytes: 30 * 1024,
+                });
+                expect(withinDefault.prompt).toContain('a'.repeat(40 * 1024));
+                expect(windowsSized.prompt).not.toContain('a'.repeat(1024));
+                expect(windowsSized.prompt).toContain('size limit');
+            } finally {
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
+
         posixOnly('caps text attachments at the CLI argument budget for tempFile mode', async () => {
             const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-text-'));
             try {

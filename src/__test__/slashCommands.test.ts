@@ -254,4 +254,33 @@ describe('slashCommands', () => {
             expect(a).not.toBe(b);
         });
     });
+
+    describe('buildSlashPrompt byte budget', () => {
+        it('shrinks the transcript until the prompt fits, keeping the latest turns', () => {
+            const transcript = `OLD ${'x'.repeat(60 * 1024)} NEWEST`;
+            const prompt = buildSlashPrompt('compact', '', {}, transcript, 20 * 1024);
+            expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(20 * 1024);
+            expect(prompt).toContain('NEWEST');
+            expect(prompt).not.toContain('OLD');
+        });
+
+        it('shrinks code and diagnostics together to fit', () => {
+            const prompt = buildSlashPrompt(
+                'fix',
+                'please',
+                { selection: 'c'.repeat(40 * 1024), diagnostics: 'd'.repeat(10 * 1024) },
+                undefined,
+                16 * 1024
+            );
+            expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(16 * 1024);
+            expect(prompt).toContain('User request: please');
+            expect(prompt).toContain('ddd');
+        });
+
+        it('returns the default-capped prompt when it already fits', () => {
+            const unbounded = buildSlashPrompt('explain', 'why', { selection: 'short' });
+            const bounded = buildSlashPrompt('explain', 'why', { selection: 'short' }, undefined, 1024 * 1024);
+            expect(bounded.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, 'ID')).toBe(unbounded.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, 'ID'));
+        });
+    });
 });

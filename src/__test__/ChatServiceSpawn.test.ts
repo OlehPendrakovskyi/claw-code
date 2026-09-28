@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import {
     ChatService,
@@ -106,6 +107,27 @@ describe('ChatService.sendMessage', () => {
 
         it('leaves macOS prompts to the total argv limit that spawn reports itself', () => {
             expect(describePromptArgOverflow('x'.repeat(PROMPT_ARG_MAX_BYTES * 4), 'darwin')).toBeNull();
+        });
+    });
+
+    describe('promptArgBudgetBytes', () => {
+        afterEach(() => {
+            jest.mocked(vscode.workspace.getConfiguration).mockReset();
+        });
+
+        it('subtracts the system prompt and chat-type prefix from the platform limit', () => {
+            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                get: (key: string, fallback?: unknown) => (key === 'chat.systemPrompt' ? 'S'.repeat(1000) : fallback),
+            } as vscode.WorkspaceConfiguration);
+            const plain = ChatService.promptArgBudgetBytes('chat', 'linux')!;
+            const coded = ChatService.promptArgBudgetBytes('code', 'linux')!;
+            expect(plain).toBe(PROMPT_ARG_MAX_BYTES - 1002);
+            expect(coded).toBeLessThan(plain);
+            expect(ChatService.promptArgBudgetBytes('chat', 'win32')).toBe(PROMPT_ARG_MAX_WINDOWS_CHARS - 1002);
+        });
+
+        it('has no per-argument budget on macOS', () => {
+            expect(ChatService.promptArgBudgetBytes('chat', 'darwin')).toBeNull();
         });
     });
 });

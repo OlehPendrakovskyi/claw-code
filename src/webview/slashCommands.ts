@@ -133,10 +133,12 @@ const COMMAND_INSTRUCTIONS: Record<string, string> = {
 };
 
 /** Per-field UTF-8 caps for editor context: the acpx transport passes the
- *  whole prompt as ONE execve argument (MAX_ARG_STRLEN, 128 KiB on Linux), so
- *  code + diagnostics must leave room for attachments and the system prompt. */
+ *  whole prompt as ONE command-line argument, so code + diagnostics must leave
+ *  room for attachments and the system prompt. */
 export const CONTEXT_CODE_MAX_BYTES = 32 * 1024;
 export const CONTEXT_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
+
+type ContextCaps = { code: number; diagnostics: number; transcript: number };
 
 export function escapeXmlAttr(str: string): string {
     return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
@@ -163,12 +165,9 @@ function frameContextField(label: string, value: string, maxBytes: number): stri
     return '\n' + frameTaggedBlock('context', attributes, keepUtf8Head(value, maxBytes));
 }
 
-function frameCode(label: string, value: string): string {
-    return frameContextField(label, value, CONTEXT_CODE_MAX_BYTES);
-}
-
-function formatContext(ctx: EditorContext, contextType: ContextType): string {
+function formatContext(ctx: EditorContext, contextType: ContextType, caps: ContextCaps): string {
     const parts: string[] = [];
+    const frameCode = (label: string, value: string) => frameContextField(label, value, caps.code);
 
     if (ctx.filePath) {
         parts.push(`File: ${ctx.filePath}`);
@@ -197,7 +196,7 @@ function formatContext(ctx: EditorContext, contextType: ContextType): string {
                 parts.push(frameCode('File Content', ctx.fileContent));
             }
             if (ctx.diagnostics) {
-                parts.push(frameContextField('Diagnostics', ctx.diagnostics, CONTEXT_DIAGNOSTICS_MAX_BYTES));
+                parts.push(frameContextField('Diagnostics', ctx.diagnostics, caps.diagnostics));
             }
             break;
         case 'gitDiff':
@@ -255,29 +254,71 @@ export function keepUtf8Tail(input: string, maxBytes: number): string {
     return encoded.subarray(start).toString('utf8');
 }
 
-function frameTranscript(transcript: string): string {
+function frameTranscript(transcript: string, maxBytes: number): string {
     // The oldest turns are the ones dropped when it exceeds the cap.
-    const trimmed = Buffer.byteLength(transcript, 'utf8') > COMPACT_TRANSCRIPT_MAX_BYTES;
     const attributes: Record<string, string> = { label: 'Conversation So Far' };
-    if (trimmed) {
-        attributes.truncated = `earliest turns omitted; last ${COMPACT_TRANSCRIPT_MAX_BYTES} bytes kept`;
+    if (Buffer.byteLength(transcript, 'utf8') > maxBytes) {
+        attributes.truncated = `earliest turns omitted; last ${maxBytes} bytes kept`;
     }
-    return '\n' + frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, COMPACT_TRANSCRIPT_MAX_BYTES));
+    return '\n' + frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, maxBytes));
 }
 
+const DEFAULT_CAPS: ContextCaps = {
+    code: CONTEXT_CODE_MAX_BYTES,
+    diagnostics: CONTEXT_DIAGNOSTICS_MAX_BYTES,
+    transcript: COMPACT_TRANSCRIPT_MAX_BYTES,
+};
+
+const scaleCaps = (scale: number): ContextCaps => ({
+    code: Math.floor(DEFAULT_CAPS.code * scale),
+    diagnostics: Math.floor(DEFAULT_CAPS.diagnostics * scale),
+    transcript: Math.floor(DEFAULT_CAPS.transcript * scale),
+});
+
+/** Build the prompt for a slash command. With `maxBytes` (the acpx argument
+ *  budget), every context cap shrinks by the same factor until the prompt
+ *  fits; instruction and user text are never cut, so a prompt they alone
+ *  overflow is left for the transport to refuse. */
 export function buildSlashPrompt(
     commandName: string,
     userText: string,
     context: EditorContext,
-    transcript?: string
+    transcript?: string,
+    maxBytes?: number
 ): string {
     const cmd = SLASH_COMMANDS.find(c => c.name === commandName);
     if (!cmd) {
         return userText;
     }
+    const build = (caps: ContextCaps) => composeSlashPrompt(commandName, cmd.contextType, userText, context, transcript, caps);
+    const full = build(DEFAULT_CAPS);
+    if (maxBytes === undefined || Buffer.byteLength(full, 'utf8') <= maxBytes) {
+        return full;
+    }
+    // Prompt size grows monotonically with the scale, so bisect for the largest fit.
+    let low = 0;
+    let high = 1;
+    for (let step = 0; step < 20; step += 1) {
+        const mid = (low + high) / 2;
+        if (Buffer.byteLength(build(scaleCaps(mid)), 'utf8') <= maxBytes) {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    return build(scaleCaps(low));
+}
 
+function composeSlashPrompt(
+    commandName: string,
+    contextType: ContextType,
+    userText: string,
+    context: EditorContext,
+    transcript: string | undefined,
+    caps: ContextCaps
+): string {
     const instruction = COMMAND_INSTRUCTIONS[commandName] ?? '';
-    const contextBlock = formatContext(context, cmd.contextType);
+    const contextBlock = formatContext(context, contextType, caps);
 
     const sections: string[] = [];
     if (instruction) {
@@ -287,7 +328,7 @@ export function buildSlashPrompt(
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the
         // command has no prior turns to compress.
-        sections.push(frameTranscript(transcript));
+        sections.push(frameTranscript(transcript, caps.transcript));
     }
     if (contextBlock) {
         sections.push(contextBlock);
