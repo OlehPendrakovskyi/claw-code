@@ -140,8 +140,12 @@ export const CONTEXT_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
 
 type ContextCaps = { code: number; diagnostics: number; transcript: number };
 
+/** Escape for a double- or single-quoted attribute value. Control characters
+ *  (newlines included) are encoded too, so an untrusted value such as a POSIX
+ *  filename cannot break out onto a line of its own in the prompt. */
 export function escapeXmlAttr(str: string): string {
-    return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/[&<>"'\u0000-\u001f\u007f]/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
 /** Frame `body` in an element whose name carries a fresh random id. The body
@@ -169,11 +173,17 @@ function formatContext(ctx: EditorContext, contextType: ContextType, caps: Conte
     const parts: string[] = [];
     const frameCode = (label: string, value: string) => frameContextField(label, value, caps.code);
 
+    // File name and language are untrusted too (a POSIX filename may hold a
+    // newline), so they travel as escaped attributes, never as raw lines.
+    const editor: Record<string, string> = {};
     if (ctx.filePath) {
-        parts.push(`File: ${ctx.filePath}`);
+        editor.file = ctx.filePath;
     }
     if (ctx.languageId) {
-        parts.push(`Language: ${ctx.languageId}`);
+        editor.language = ctx.languageId;
+    }
+    if (Object.keys(editor).length > 0) {
+        parts.push(frameTaggedBlock('editor', editor, ''));
     }
 
     switch (contextType) {

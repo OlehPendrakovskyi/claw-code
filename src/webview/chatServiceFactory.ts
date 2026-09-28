@@ -122,6 +122,8 @@ export class ChatServiceFactory {
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
     if (!isValidGatewayUrl(settings.url)) {
+      // The cached client still holds the previous, valid endpoint's socket.
+      this.suspendGateway('identity');
       if (settings.transport === 'gateway') {
         this.onStatus?.('gateway', false);
         throw new Error('openclaw.gateway.url must be a ws:// or wss:// URL.');

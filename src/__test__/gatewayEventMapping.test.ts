@@ -149,5 +149,12 @@ describe('gatewayEventMapping', () => {
       expect(isAssistantRole('user')).toBe(false);
       expect(isAssistantRole(3)).toBe(false);
     });
+
+    it('treats null as omitted but never falsy junk as assistant', () => {
+      expect(isAssistantRole(null)).toBe(true);
+      for (const junk of [0, false, '', NaN]) {
+        expect(isAssistantRole(junk)).toBe(false);
+      }
+    });
   });
 });

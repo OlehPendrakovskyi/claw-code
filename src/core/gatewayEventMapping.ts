@@ -35,9 +35,10 @@ export function extractSessionKey(payload: unknown): string | null {
   return null;
 }
 
-/** Whether a row or frame carries assistant content: a missing role counts as assistant. */
+/** Whether a row or frame carries assistant content: an omitted or null role
+ *  counts as assistant, any other value (including falsy junk) does not. */
 export function isAssistantRole(role: unknown): boolean {
-  return !role || role === 'assistant';
+  return role === undefined || role === null || role === 'assistant';
 }
 
 function isInboundFrame(value: unknown): value is RpcInboundFrame {

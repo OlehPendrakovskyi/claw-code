@@ -167,6 +167,21 @@ describe('ChatServiceFactory.resolve', () => {
     });
 
     describe('gateway URL validation', () => {
+        it('suspends a previously connected client when the URL turns invalid', async () => {
+            mockConnect.mockResolvedValue(undefined);
+            const onInvalidated = jest.fn();
+            const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
+            await factory.resolve();
+
+            mockSettings.mockReturnValue({ url: 'not a url', transport: 'auto' });
+            await expect(factory.resolve()).resolves.toMatchObject({ transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'not a url', transport: 'gateway' });
+            await expect(factory.resolve()).rejects.toThrow('ws:// or wss://');
+
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
+            expect(onInvalidated).toHaveBeenCalledWith('identity');
+        });
+
         it('falls back to acpx in auto mode when the URL is not ws:// or wss://', async () => {
             mockSettings.mockReturnValue({ url: '127.0.0.1:18789', transport: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
