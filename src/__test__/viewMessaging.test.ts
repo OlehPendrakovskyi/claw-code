@@ -2,13 +2,18 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import * as fsp from 'fs/promises';
+import type * as FspType from 'fs/promises';
 import { readAttachments } from '../webview/viewMessaging';
+
+// The unmocked module: the default implementation must bypass the mock below,
+// whose realpath delegates through the swappable wrapper back to this
+// implementation — calling the mocked `fsp.realpath` here would recurse.
+const realFsp: typeof FspType = jest.requireActual('fs/promises');
 
 // A controllable realpath wrapper: ESM module namespaces are not redefinable,
 // so jest.spyOn cannot intercept fs/promises directly. The mock routes
 // realpath through a swappable implementation the swap test can replace.
-let realpathImpl: (p: fs.PathLike) => Promise<string> = (p) => fsp.realpath(p as string);
+let realpathImpl: (p: fs.PathLike) => Promise<string> = (p) => realFsp.realpath(p as string);
 jest.mock('fs/promises', () => {
     const actual = jest.requireActual('fs/promises');
     return {
@@ -21,7 +26,7 @@ beforeEach(() => {
 });
 afterEach(() => {
     (globalThis as any).__realpathImpl = undefined;
-    realpathImpl = (p) => fsp.realpath(p as string);
+    realpathImpl = (p) => realFsp.realpath(p as string);
 });
 
 describe('readAttachments FIFO rejection', () => {

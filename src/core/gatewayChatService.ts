@@ -372,18 +372,23 @@ export class GatewayChatService {
     );
   }
   /** Fingerprint boundary seeds must only cover rows already rendered into
-   *  the thread. An in-flight assistant row (non-empty `delta`) is still
-   *  streaming: seeding its fingerprint would make a later cursor-less
-   *  catch-up match and skip it, silently dropping a response whose live
-   *  event was missed. The row is excluded so a later catch-up replays it
-   *  once the gateway history holds its finalized form. */
+   *  the thread. A delta-ONLY assistant row (non-empty `delta`, no completed
+   *  `text`) is still streaming: seeding its fingerprint would make a later
+   *  cursor-less catch-up match and skip it, silently dropping a response
+   *  whose live event was missed. The row is excluded so a later catch-up
+   *  replays it once the gateway history holds its finalized form. Rows
+   *  carrying completed `text` — including mixed delta+text frames, whose
+   *  text is final (same contract as mapHistoryMessages) — are rendered by
+   *  the catch-up, so they belong in the boundary. */
   private static catchUpBoundaryFingerprints(rows: unknown[]): string[] {
     const fingerprints: string[] = [];
     for (const rowRaw of rows) {
       const row = rowRaw && typeof rowRaw === 'object' ? (rowRaw as Record<string, unknown>) : {};
       const isAssistant = !(typeof row.role === 'string' && row.role !== 'assistant');
+      const hasText = typeof row.text === 'string' && row.text.length > 0;
       if (
         isAssistant &&
+        !hasText &&
         typeof row.delta === 'string' &&
         row.delta.length > 0
       ) {
@@ -2004,11 +2009,15 @@ export class GatewayChatService {
           // rows and a repeat done is pure noise), and never to the pre-ack
           // or raced run sinks, whose live final frames must still claim
           // the row.
+          // A row with completed `text` is final even when it also carries a
+          // `delta` (mixed frame): the same contract mapHistoryMessages uses
+          // to keep such rows' text as canonical content. Treating the delta
+          // as a streaming marker here would render the text without a `done`
+          // and leave the resumed run `running`.
           const skippedIsFinalAssistantRow =
             !(typeof rowPayload.role === 'string' && rowPayload.role !== 'assistant') &&
             typeof rowPayload.text === 'string' &&
-            rowPayload.text.length > 0 &&
-            !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
+            rowPayload.text.length > 0;
           if (skippedIsFinalAssistantRow && this.runSinksBySession.has(sessionKey)) {
             const skippedSinks = [...(this.transcriptSinksBySession.get(sessionKey) ?? [])];
             // Deliver the row content before finalizing: the post-ack seed does
@@ -2047,11 +2056,15 @@ export class GatewayChatService {
           continue;
         }
         const isAssistantRole = !(rowPayload.role && rowPayload.role !== 'assistant');
+        // Finality keys on completed `text` alone: a mixed delta+text history
+        // row is final content (mapHistoryMessages keeps its text as
+        // canonical). Requiring an empty delta would treat the replayed row as
+        // non-final — its text would render without a `done`, stranding the
+        // resumed run in `running`.
         const isFinalAssistantRow =
           isAssistantRole &&
           typeof rowPayload.text === 'string' &&
-          rowPayload.text.length > 0 &&
-          !(typeof rowPayload.delta === 'string' && rowPayload.delta.length > 0);
+          rowPayload.text.length > 0;
         const messageId = asNonEmptyString(row.messageId);
         const seen =
           messageId != null &&
