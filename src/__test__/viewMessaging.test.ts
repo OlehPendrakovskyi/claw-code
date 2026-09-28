@@ -27,13 +27,13 @@ describe('readAttachments FIFO rejection', () => {
     });
 
     posixOnly('rejects a text attachment FIFO instead of blocking the open', async () => {
-        const prompt = await readAttachments([{ name: 'pipe', path: fifoPath, type: 'file' }]);
+        const { prompt } = await readAttachments([{ name: 'pipe', path: fifoPath, type: 'file' }]);
         expect(prompt).toContain('[Could not read file]');
         expect(prompt).not.toMatch(/openclaw-fifo-[^/\s"]*pipe"[^>]*>[\s\S]*regular file/i);
     });
 
     posixOnly('rejects an image attachment FIFO instead of blocking the open', async () => {
-        const prompt = await readAttachments([{ name: 'pipe', path: fifoPath, type: 'image' }]);
+        const { prompt } = await readAttachments([{ name: 'pipe', path: fifoPath, type: 'image' }]);
         expect(prompt).toContain('[Could not read file]');
         expect(prompt).not.toContain('<image');
     });

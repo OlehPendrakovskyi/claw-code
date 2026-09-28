@@ -1353,8 +1353,11 @@ export class GatewayChatService {
     _model: string,
     _chatType: string,
     _onEvent: (event: ChatEvent) => void,
-    onSessionResolved?: (resolvedKey: string, requestedKey: string) => void
+    onSessionResolved?: (resolvedKey: string, requestedKey: string) => void,
+    _onRunComplete?: () => void
   ): void {
+    // onRunComplete is a no-op here: Gateway images travel inline as data
+    // URIs, so no temp-file snapshot resources exist to clean up.
     if (!this.connected) {
       _onEvent({
         type: 'error',
@@ -1488,6 +1491,16 @@ export class GatewayChatService {
         // sends are still pre-ack the keys must stay for their own drains.
         if (this.preAckSendKeys.size === 0) {
           this.preAckSettledSends = [];
+        }
+        // A fast gateway can deliver `session.end` for this run before the
+        // send acknowledgement. The drain then finalizes the just-installed
+        // sink (finalizeSessionEnd deletes it from the run set and emits
+        // `done`); adding the sink back below would resurrect a completed run
+        // as a transcript sink that keeps receiving (and restoring) later
+        // session events. When the drain consumed the run, bail before
+        // re-subscribing.
+        if (this.runSinksBySession.get(key) !== _onEvent) {
+          return;
         }
         if (key !== sessionKey) {
           if (this.runSinksBySession.get(sessionKey) === _onEvent) {

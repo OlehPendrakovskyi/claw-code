@@ -380,7 +380,7 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
 export async function readAttachments(
     attachments: Attachment[],
     options?: { imageMode?: 'inline' | 'tempFile' }
-): Promise<string> {
+): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
     const sections: string[] = [];
     let totalEncodedBytes = 0;
@@ -405,7 +405,16 @@ export async function readAttachments(
                 sections.push('[Could not read file]');
                 continue;
             }
-            if (totalEncodedBytes + bytes.length > ATTACHMENT_TOTAL_MAX_BYTES) {
+            // The aggregate budget is the encoded payload size actually sent
+            // over the wire: inline images travel as a base64 data URI (~4/3
+            // of the raw bytes), while temp-file images contribute only their
+            // raw bytes (the payload carries the snapshot path, not the
+            // content). Counting raw bytes for inline images would let two
+            // allowed 10 MiB images pass a 20 MiB check while contributing
+            // ~26.7 MiB of base64, exceeding the transport payload cap.
+            const encodedBytes =
+                imageMode === 'inline' ? Math.ceil((bytes.length * 4) / 3) : bytes.length;
+            if (totalEncodedBytes + encodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
                 sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
             }
@@ -413,7 +422,7 @@ export async function readAttachments(
                 // Gateway transports receive the prompt over an RPC payload, so
                 // the bytes travel inline as a data URI and the gateway reads
                 // the image without filesystem access to this machine.
-                totalEncodedBytes += bytes.length;
+                totalEncodedBytes += encodedBytes;
                 sections.push(`<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`);
             } else {
                 // CLI transports (acpx) receive the prompt as a single spawn()
@@ -440,7 +449,7 @@ export async function readAttachments(
                     sections.push('[Could not read file]');
                     continue;
                 }
-                totalEncodedBytes += bytes.length;
+                totalEncodedBytes += encodedBytes;
                 sections.push(`<image path="${escapeXmlAttr(snapshotPath)}" />`);
             }
             continue;
@@ -504,7 +513,20 @@ export async function readAttachments(
         }
     }
 
-    return sections.join('\n\n');
+    // Temp-file mode snapshots validated image bytes into a private temp
+    // directory consumed by the CLI (acpx) process. The caller ties `dispose`
+    // to the process completion/error path (after the child has consumed the
+    // paths, including cancellation and spawn failure) so repeated image
+    // attachments cannot accumulate validated bytes and exhaust temp disk.
+    // Inline mode never creates the directory, so dispose is a no-op.
+    const dispose = async (): Promise<void> => {
+        if (snapshotDir !== null) {
+            const dir = snapshotDir;
+            snapshotDir = null;
+            await fsp.rm(dir, { recursive: true, force: true });
+        }
+    };
+    return { prompt: sections.join('\n\n'), dispose };
 }
 
 /** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.

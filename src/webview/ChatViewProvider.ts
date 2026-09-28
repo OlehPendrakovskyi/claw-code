@@ -1385,20 +1385,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // this machine), while CLI transports need a path-based snapshot to
         // keep the prompt inside spawn() argv limits.
         let promptToSend = basePrompt;
+        let disposeAttachments: (() => Promise<void>) | undefined;
         if (attachments.length > 0) {
-            const attachmentBlock = await readAttachments(
+            const attachmentResult = await readAttachments(
                 attachments,
                 { imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile' }
             );
+            disposeAttachments = attachmentResult.dispose;
             // Superseded while attachment files were being read from disk: the
             // send must not start (same gate as the checks above the backend
-            // resolution, repeated because the await opened a new window).
+            // resolution, repeated because the await opened a new window). The
+            // temp-file snapshots were never handed to a child, so they are
+            // removed here to avoid leaking validated image bytes.
             if (!this.threads.has(thread.id) ||
                 thread.status !== 'running' ||
                 thread.eventEpoch !== sendEpoch) {
+                void disposeAttachments?.();
                 return;
             }
-            promptToSend = `${attachmentBlock}\n\n${basePrompt}`;
+            promptToSend = `${attachmentResult.prompt}\n\n${basePrompt}`;
         }
         choice.service.sendMessage(
             promptToSend,
@@ -1447,7 +1452,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (suspended && suspended.sessionKey === requestedKey) {
                     suspended.sessionKey = resolvedKey;
                 }
-            }
+            },
+            // Temp-file (acpx) snapshot paths are consumed by the child only
+            // once it reads its argv, so disposal is tied to the process
+            // completion/error path to avoid accumulating temp-disk bytes on
+            // repeated image attachments. Gateway transports go inline and
+            // dispose is a no-op.
+            () => void disposeAttachments?.()
         );
     }
 

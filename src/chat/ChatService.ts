@@ -55,7 +55,8 @@ export class ChatService {
         model: string,
         chatType: string,
         onEvent: (event: ChatEvent) => void,
-        _onSessionResolved?: (resolvedKey: string, requestedKey: string) => void
+        _onSessionResolved?: (resolvedKey: string, requestedKey: string) => void,
+        onRunComplete?: () => void
     ): void {
         this.abort();
 
@@ -133,6 +134,12 @@ export class ChatService {
             }
 
             onEvent({ type: 'done' });
+            // The child has consumed (or failed to consume) its prompt, so any
+            // temp-file snapshot paths it was handed can now be removed. Runs
+            // the terminal path for normal exit, non-zero exit, error-after-
+            // spawn, and cancellation (abort kills the child, which fires
+            // `close`).
+            onRunComplete?.();
         });
 
         child.on('error', (err) => {
@@ -147,6 +154,9 @@ export class ChatService {
                     : err.message
             });
             onEvent({ type: 'done' });
+            // Spawn failure never started the child, so the snapshot paths are
+            // never consumed — remove them here to avoid leaking temp disk.
+            onRunComplete?.();
         });
     }
 
