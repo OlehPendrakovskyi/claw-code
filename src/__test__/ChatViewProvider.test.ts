@@ -339,15 +339,6 @@ describe('ChatViewProvider', () => {
             jest.mocked(vscode.workspace.asRelativePath).mockReturnValue('a.ts');
         });
 
-        it('answers the webview that asked', async () => {
-            const { provider, sidebar } = makeProvider();
-            provider.popOut();
-            const popout = lastPopOutPanel().webview;
-            await sidebar.send({ type: 'insertMention' });
-            expect(sidebar.posted.filter(m => m.type === 'insertMention')).toHaveLength(1);
-            expect(jest.mocked(popout.postMessage).mock.calls.some(([m]) => m.type === 'insertMention')).toBe(false);
-        });
-
         it('reveals the hidden chat view and delivers once its page is ready', async () => {
             const { provider, sidebar } = makeProvider();
             sidebar.view.visible = false;
@@ -466,7 +457,7 @@ describe('ChatViewProvider', () => {
             expect(threadOf(sidebar, 'thread-1').pendingAttachments).toHaveLength(0);
         });
 
-        it('writes a setting or dimension only when its value is valid for the key', async () => {
+        it('writes a dimension only when the host accepts it', async () => {
             const update = jest.fn(async () => undefined);
             const config: vscode.WorkspaceConfiguration = {
                 get: ((_section: string, defaultValue?: unknown) => defaultValue) as vscode.WorkspaceConfiguration['get'],
@@ -479,17 +470,11 @@ describe('ChatViewProvider', () => {
             getConfiguration.mockImplementation(() => config);
             try {
                 const { sidebar } = makeProvider();
-                await sidebar.send({ type: 'setSetting', key: 'chat.temperature', value: 'hot' });
-                await sidebar.send({ type: 'setSetting', key: 'chat.maxTokens', value: -5 });
-                await sidebar.send({ type: 'setSetting', key: 'chat.thinkingLevel', value: 'extreme' });
-                await sidebar.send({ type: 'setSetting', key: 'chat.agent', value: 'x' });
                 await sidebar.send({ type: 'setDimension', dimension: '9x9' });
                 expect(update).not.toHaveBeenCalled();
 
-                await sidebar.send({ type: 'setSetting', key: 'chat.temperature', value: 1.2 });
                 await sidebar.send({ type: 'setDimension', dimension: '2x3' });
                 expect(update.mock.calls).toEqual([
-                    ['chat.temperature', 1.2, vscode.ConfigurationTarget.Global],
                     ['chat.dimension', '2x3', vscode.ConfigurationTarget.Global],
                 ]);
             } finally {

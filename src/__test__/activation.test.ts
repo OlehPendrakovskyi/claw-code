@@ -1,34 +1,93 @@
-
+import * as fs from 'fs';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../extension';
+import { connect } from '../vscode/commands';
+import { migrateLegacyGatewayToken } from '../core/gatewayConfig';
+
+jest.mock('../core/gatewayConfig', () => ({
+    ...jest.requireActual('../core/gatewayConfig'),
+    migrateLegacyGatewayToken: jest.fn(async () => undefined),
+}));
+
+jest.mock('../vscode/commands', () => ({
+    ...jest.requireActual('../vscode/commands'),
+    connect: jest.fn(async () => undefined),
+}));
+
+type ConfigurationListener = (event: { affectsConfiguration(section: string): boolean }) => void;
+
+const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'));
+const contributedCommands: string[] = manifest.contributes.commands.map((c: { command: string }) => c.command);
+const settings: Record<string, { type: string | string[]; default?: unknown; enum?: unknown[] }> =
+    manifest.contributes.configuration.properties;
 
 function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscode.Disposable[] } {
     const subscriptions: vscode.Disposable[] = [];
-    // activate() awaits migrateLegacyGatewayToken(context): a mocked
-    // SecretStorage keeps that call safe even if the config mock ever
-    // reports a legacy value.
-    const secrets = {
-        get: jest.fn(async () => undefined as string | undefined),
-        store: jest.fn(async () => undefined),
-        delete: jest.fn(async () => undefined),
+    const memento: vscode.Memento = {
+        keys: () => [],
+        get: ((_key: string, defaultValue?: unknown) => defaultValue) as vscode.Memento['get'],
+        update: async () => undefined,
     };
-    const workspaceState = {
-        get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
-        update: jest.fn(async () => undefined),
+    const secrets: vscode.SecretStorage = {
+        keys: async () => [],
+        get: async () => undefined,
+        store: async () => undefined,
+        delete: async () => undefined,
+        onDidChange: () => ({ dispose: () => undefined }),
     };
-    const context = {
+    const context: Partial<vscode.ExtensionContext> = {
         extensionUri: vscode.Uri.file('/tmp/test-ext'),
-        globalState: { get: jest.fn(), update: jest.fn() },
-        workspaceState,
+        globalState: { ...memento, setKeysForSync: () => undefined },
+        workspaceState: memento,
         secrets,
         subscriptions,
-    } as unknown as vscode.ExtensionContext;
-    return { context, subscriptions };
+    };
+    return { context: context as vscode.ExtensionContext, subscriptions };
+}
+
+function registeredCommands(): string[] {
+    return jest.mocked(vscode.commands.registerCommand).mock.calls.map(call => call[0]);
+}
+
+function configurationListener(): ConfigurationListener {
+    const listener = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls[0]?.[0];
+    if (!listener) {
+        throw new Error('no configuration listener registered');
+    }
+    return listener as ConfigurationListener;
+}
+
+function withSettings(values: Record<string, unknown>): void {
+    const get = (key: string, defaultValue?: unknown): unknown => (key in values ? values[key] : defaultValue);
+    const configuration: vscode.WorkspaceConfiguration = {
+        get: get as vscode.WorkspaceConfiguration['get'],
+        has: key => key in values,
+        inspect: () => undefined,
+        update: async () => undefined,
+    };
+    jest.mocked(vscode.workspace.getConfiguration).mockImplementation(() => configuration);
+}
+
+/** Every `openclaw` key the extension reads or writes, found in source so a new read cannot skip package.json. */
+function settingKeysUsedInSource(): string[] {
+    const sourceRoot = path.join(__dirname, '..');
+    const files = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            return full === __dirname ? [] : files(full);
+        }
+        return entry.name.endsWith('.ts') ? [full] : [];
+    });
+    const access = /(?:\bconfig|getConfiguration\('openclaw'\))\s*\.(?:get|update|inspect)(?:<[^>]*>)?\(\s*'([^']+)'/g;
+    const keys = files(sourceRoot).flatMap(file => Array.from(fs.readFileSync(file, 'utf8').matchAll(access), m => m[1]));
+    return [...new Set(keys)].sort();
 }
 
 describe('extension activation', () => {
     beforeEach(() => {
         jest.clearAllMocks();
+        withSettings({});
     });
 
     it('exports activate and deactivate', () => {
@@ -36,60 +95,133 @@ describe('extension activation', () => {
         expect(typeof deactivate).toBe('function');
     });
 
-    it('activate registers commands and views without throwing', async () => {
-        const { context, subscriptions } = makeContext();
-        await activate(context);
-        expect(subscriptions.length).toBeGreaterThan(0);
-    });
-
     it('creates a status bar item', async () => {
         const { context } = makeContext();
         await activate(context);
-        expect(vscode.window.createStatusBarItem).toHaveBeenCalledWith(
-            vscode.StatusBarAlignment.Right,
-            100,
-        );
+        expect(vscode.window.createStatusBarItem).toHaveBeenCalledWith(vscode.StatusBarAlignment.Right, 100);
     });
 
-    it('registers the expected commands', async () => {
-        const { context } = makeContext();
-        await activate(context);
-        const registered = (vscode.commands.registerCommand as ReturnType<typeof jest.fn>).mock.calls.map(
-            (c: unknown[]) => c[0],
-        );
-        expect(registered).toContain('openclaw.connect');
-        expect(registered).toContain('openclaw.setup');
-        expect(registered).toContain('openclaw.harden');
-        expect(registered).toContain('openclaw.chat.open');
-        expect(registered).toContain('openclaw.chat.popOut');
-        expect(registered).toContain('openclaw.chat.newSession');
-    });
-
-    it('registers the overview tree view', async () => {
+    it('registers the overview tree view and the chat webview view', async () => {
         const { context } = makeContext();
         await activate(context);
         expect(vscode.window.createTreeView).toHaveBeenCalledWith(
             'openclaw.overview',
             expect.objectContaining({ treeDataProvider: expect.anything() }),
         );
+        expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalledWith('openclaw.chat', expect.anything());
     });
 
-    it('registers the chat webview view provider', async () => {
-        const { context } = makeContext();
+    it('hands every registration to the context for disposal', async () => {
+        const { context, subscriptions } = makeContext();
         await activate(context);
-        expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalledWith(
-            'openclaw.chat',
-            expect.anything(),
-        );
+        expect(subscriptions.length).toBeGreaterThanOrEqual(registeredCommands().length);
+        subscriptions.forEach(subscription => expect(typeof subscription.dispose).toBe('function'));
     });
 
     it('deactivate does not throw', () => {
         expect(() => deactivate()).not.toThrow();
     });
 
-    it('does not auto-connect when autoConnect is false', async () => {
-        const { context } = makeContext();
-        await activate(context);
-        expect(vscode.window.createTerminal).not.toHaveBeenCalled();
+    describe('commands', () => {
+        it('registers every command package.json contributes, each once', async () => {
+            const { context } = makeContext();
+            await activate(context);
+            const registered = registeredCommands();
+            expect(contributedCommands.filter(command => !registered.includes(command))).toEqual([]);
+            expect(new Set(registered).size).toBe(registered.length);
+        });
+
+        it('binds keys only to contributed commands', () => {
+            const bound: string[] = manifest.contributes.keybindings.map((k: { command: string }) => k.command);
+            expect(bound.filter(command => !contributedCommands.includes(command))).toEqual([]);
+        });
+    });
+
+    describe('legacy token migration', () => {
+        it('runs at activation and again only when the token setting changes', async () => {
+            const { context } = makeContext();
+            await activate(context);
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
+            configurationListener()({ affectsConfiguration: section => section === 'openclaw.chat.models' });
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
+            configurationListener()({ affectsConfiguration: section => section === 'openclaw.gateway.token' });
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
+        });
+
+        it('keeps activating when the migration rejects', async () => {
+            jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
+            const { context } = makeContext();
+            await expect(activate(context)).resolves.toBeUndefined();
+            expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
+        });
+    });
+
+    describe('auto-connect', () => {
+        afterEach(() => {
+            jest.useRealTimers();
+            Object.assign(vscode.workspace, { isTrusted: undefined });
+        });
+
+        it('does not connect when autoConnect is off', async () => {
+            jest.useFakeTimers();
+            const { context } = makeContext();
+            await activate(context);
+            jest.advanceTimersByTime(5000);
+            expect(connect).not.toHaveBeenCalled();
+        });
+
+        it('connects after the startup delay in a trusted workspace', async () => {
+            jest.useFakeTimers();
+            withSettings({ autoConnect: true });
+            Object.assign(vscode.workspace, { isTrusted: true });
+            const { context } = makeContext();
+            await activate(context);
+            jest.advanceTimersByTime(1000);
+            expect(connect).toHaveBeenCalledTimes(1);
+        });
+
+        it('does not connect once the extension is disposed inside the delay', async () => {
+            jest.useFakeTimers();
+            withSettings({ autoConnect: true });
+            Object.assign(vscode.workspace, { isTrusted: true });
+            const { context, subscriptions } = makeContext();
+            await activate(context);
+            subscriptions.forEach(subscription => subscription.dispose());
+            jest.advanceTimersByTime(1000);
+            expect(connect).not.toHaveBeenCalled();
+        });
+    });
+
+    describe('package.json settings', () => {
+        it('declares every setting the extension reads or writes', () => {
+            const undeclared = settingKeysUsedInSource().filter(key => !(`openclaw.${key}` in settings));
+            expect(undeclared).toEqual([]);
+        });
+
+        it('declares no setting the extension never touches', () => {
+            const used = new Set([...settingKeysUsedInSource(), 'gateway.token'].map(key => `openclaw.${key}`));
+            expect(Object.keys(settings).filter(key => !used.has(key))).toEqual([]);
+        });
+
+        it('gives every enum setting a default from its own enum', () => {
+            Object.entries(settings)
+                .filter(([, schema]) => schema.enum)
+                .forEach(([key, schema]) => expect([key, schema.enum]).toEqual([key, expect.arrayContaining([schema.default])]));
+        });
+
+        it('types every default like its schema', () => {
+            const typeOf = (value: unknown): string => {
+                if (Array.isArray(value)) {
+                    return 'array';
+                }
+                return Number.isInteger(value) ? 'integer' : typeof value;
+            };
+            Object.entries(settings)
+                .filter(([, schema]) => schema.default !== undefined)
+                .forEach(([key, schema]) => {
+                    const allowed = [schema.type].flat().flatMap(type => (type === 'number' ? ['number', 'integer'] : [type]));
+                    expect([key, allowed]).toEqual([key, expect.arrayContaining([typeOf(schema.default)])]);
+                });
+        });
     });
 });

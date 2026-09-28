@@ -155,8 +155,6 @@ button:hover { opacity: 0.9; }
                 addLog('info', 'RECOMMENDATIONS: ' + JSON.stringify(msg.items || []));
             } else if (type === 'slashCommands') {
                 addLog('info', 'SLASH CMDS: ' + (msg.commands ? msg.commands.length : 0) + ' commands');
-            } else if (type === 'onboardingDone') {
-                addLog('ok', 'ONBOARDING DONE');
             } else {
                 addLog('warn', 'UNKNOWN MSG: ' + JSON.stringify(msg).slice(0, 200));
             }

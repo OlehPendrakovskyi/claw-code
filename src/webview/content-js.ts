@@ -85,6 +85,7 @@ export const SESSIONS_PANEL_JS = `
                 row.addEventListener('click', function(ev) {
                     ev.stopPropagation();
                     vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '', threadId: threadId });
+                    dismissSessionsPanel();
                 });
                 return row;
             }
@@ -163,19 +164,27 @@ export const SESSIONS_PANEL_JS = `
                 if (!panel) { return; }
                 panel.remove();
                 if (options && options.restoreFocus) {
-                    var button = document.querySelector('.pane-btn[data-action="sessions"][data-thread-id="' + sessionsPanelThreadId + '"]');
+                    var button = findSessionsButton(sessionsPanelThreadId);
                     if (button) { button.focus(); }
                 }
             }
+
+            function findSessionsButton(threadId) {
+                var buttons = document.querySelectorAll('.pane-btn[data-action="sessions"]');
+                for (var i = 0; i < buttons.length; i++) {
+                    if (buttons[i].getAttribute('data-thread-id') === threadId) { return buttons[i]; }
+                }
+                return null;
+            }
 `;
+
+/** Grid layouts the host accepts for `setDimension`, mirroring the `openclaw.chat.dimension` enum. */
+export const GRID_DIMENSIONS = ['1x1', '2x2', '2x3', '3x3', '4x4'];
 
 export const CONTENT_JS = `
         (function() {
-            var _crashLog = [];
-
             function _showCrash(label, err) {
                 var msg = (err && err.stack) ? err.stack : String(err);
-                _crashLog.push({ label: label, msg: msg, ts: new Date().toISOString() });
                 console.error('[OpenClaw] ' + label + ':', err);
                 var target = document.getElementById('paneGrid') || document.body;
                 var box = document.createElement('details');
@@ -184,7 +193,7 @@ export const CONTENT_JS = `
                 box.innerHTML =
                     '<summary>' + escapeHtml(label) + '</summary>' +
                     '<pre>' + linkifyFilePaths(escapeHtml(msg)) + '</pre>' +
-                    '<div style="margin-top:6px;opacity:0.6;font-size:11px">' +
+                    '<div class="openclaw-crash-state">' +
                         'State: threads=' + (typeof state !== 'undefined' ? (state.threads || []).length : '?') +
                         ', dim=' + (typeof currentDimension !== 'undefined' ? currentDimension : '?') +
                     '</div>';
@@ -203,7 +212,6 @@ export const CONTENT_JS = `
             var paneGrid = document.getElementById('paneGrid');
             var dimensionSelect = document.getElementById('dimensionSelect');
             var btnNew = document.getElementById('btn-new');
-            var btnFlip = document.getElementById('btn-flip');
             var btnSplit = document.getElementById('btn-split');
             var btnPopout = document.getElementById('btn-popout');
 
@@ -213,10 +221,14 @@ export const CONTENT_JS = `
                 icon: c.icon,
                 placeholder: c.placeholder,
             })))};
+            var gridDimensions = ${JSON.stringify(GRID_DIMENSIONS)};
             var availableModels = [];
             var recommendations = [];
             var drafts = Object.create(null);
             var messageQueue = Object.create(null);
+            var toolGroupOpen = Object.create(null);
+            var unconfirmedSends = Object.create(null);
+            var sendCounter = 0;
             var currentDimension = '1x1';
 
             var chatTypes = [
@@ -233,18 +245,15 @@ export const CONTENT_JS = `
                 activeFileIndex: 0,
                 atMentionThreadId: '',
                 atMentionStart: -1,
+                fileSearchQuery: '',
                 fileSearchDebounce: null,
                 fileResults: [],
                 modelQuery: '',
-                dragThreadId: '',
-                settingsThinking: 'medium',
-                settingsTemp: 0.7,
-                settingsMaxTokens: 0
+                dragThreadId: ''
             };
 
             var state = {
                 activeThreadId: '',
-                visibleThreadIds: [],
                 threads: []
             };
 
@@ -253,7 +262,7 @@ export const CONTENT_JS = `
             var collapseOverrides = Object.create(null); // threadId -> true/false manual override
 
             function isValidDimension(value) {
-                return /^\\d+x\\d+$/.test(value || '');
+                return gridDimensions.indexOf(value) !== -1;
             }
 
             function getThreadById(threadId) {
@@ -287,6 +296,75 @@ export const CONTENT_JS = `
                 return escapeHtml(text).replace(/"/g, '&quot;');
             }
 
+            /** A non-negative finite number from host data, 0 otherwise: counts are spliced into markup. */
+            function toCount(value) {
+                var n = Number(value);
+                return isFinite(n) && n > 0 ? n : 0;
+            }
+
+            /** Compares attributes instead of building a selector, so no id can break or widen the query. */
+            function findThreadElement(selector, threadId) {
+                var matches = paneGrid.querySelectorAll(selector);
+                for (var i = 0; i < matches.length; i++) {
+                    if (matches[i].getAttribute('data-thread-id') === threadId) {
+                        return matches[i];
+                    }
+                }
+                return null;
+            }
+
+            function findPaneBody(threadId) {
+                var pane = findThreadElement('.pane', threadId);
+                return pane ? pane.querySelector('.pane-body') : null;
+            }
+
+            var SAFE_LINK_HREF = /^(https?:|mailto:)/i;
+
+            function removeUnsafeLinks(container) {
+                var links = container.querySelectorAll('a[href]');
+                for (var i = 0; i < links.length; i++) {
+                    if (!SAFE_LINK_HREF.test((links[i].getAttribute('href') || '').trim())) {
+                        links[i].removeAttribute('href');
+                    }
+                }
+            }
+
+            function createFileLink(filePath, line, text) {
+                var link = document.createElement('span');
+                link.className = 'file-link';
+                link.setAttribute('data-file-path', filePath);
+                if (line) {
+                    link.setAttribute('data-line', line);
+                }
+                link.setAttribute('role', 'link');
+                link.setAttribute('tabindex', '0');
+                link.textContent = text;
+                return link;
+            }
+
+            function linkifyTextNode(textNode) {
+                var text = textNode.nodeValue || '';
+                var frag = document.createDocumentFragment();
+                var lastIndex = 0;
+                // Path segments exclude spaces so the words before a path stay prose; group 1 is the path, 2 the line.
+                var filePathPattern = /((?:[a-zA-Z]:[\\\\/]|\\/|\\.{1,2}[\\\\/])?(?:[\\w.@()-]+[\\\\/])+[\\w.@()-]+\\.[a-zA-Z0-9]{1,10})(?::(\\d+)(?::\\d+)?)?/g;
+                var match;
+                while ((match = filePathPattern.exec(text))) {
+                    // The tail of a URL (https://host/a.js) is not a workspace path.
+                    if (/[:\\/]/.test(text.charAt(match.index - 1))) {
+                        continue;
+                    }
+                    frag.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+                    frag.appendChild(createFileLink(match[1], match[2] || '', match[0]));
+                    lastIndex = match.index + match[0].length;
+                }
+                if (lastIndex === 0) {
+                    return;
+                }
+                frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+                textNode.parentNode.replaceChild(frag, textNode);
+            }
+
             function linkifyFilePaths(html) {
                 if (!html || (html.indexOf('/') === -1 && html.indexOf('\\\\') === -1)) {
                     return html || '';
@@ -294,73 +372,18 @@ export const CONTENT_JS = `
 
                 var template = document.createElement('template');
                 template.innerHTML = html;
-
-                var filePathRegex = /((?:[a-zA-Z]:[\\\\/]|\\/|\\.{1,2}[\\\\/])?(?:[\\w .@()-]+[\\\\/])+[\\w .@()-]+\\.[a-zA-Z0-9]{1,10}(?::(\\d+)(?::\\d+)?)?)/g;
                 var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
                 var textNodes = [];
-
                 while (walker.nextNode()) {
                     var textNode = walker.currentNode;
+                    // Escaped plain text is a top-level node with no parent element.
                     var parent = textNode.parentElement;
-                    var value = textNode.nodeValue || '';
-                    if (!parent || !value) {
-                        continue;
-                    }
-                    if (parent.closest('a, .file-link, script, style')) {
-                        continue;
-                    }
-                    if (value.indexOf('/') === -1 && value.indexOf('\\\\') === -1) {
+                    if (parent && parent.closest('a, .file-link, script, style')) {
                         continue;
                     }
                     textNodes.push(textNode);
                 }
-
-                textNodes.forEach(function(textNode) {
-                    var text = textNode.nodeValue || '';
-                    filePathRegex.lastIndex = 0;
-                    if (!filePathRegex.test(text)) {
-                        return;
-                    }
-
-                    var frag = document.createDocumentFragment();
-                    var lastIndex = 0;
-                    var match;
-                    filePathRegex.lastIndex = 0;
-
-                    while ((match = filePathRegex.exec(text))) {
-                        var fullText = match[1];
-                        var lineNum = match[2] || '';
-                        var filePath = lineNum
-                            ? fullText.slice(0, fullText.lastIndexOf(':' + lineNum))
-                            : fullText;
-
-                        if (match.index > lastIndex) {
-                            frag.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-                        }
-
-                        var link = document.createElement('span');
-                        link.className = 'file-link';
-                        link.setAttribute('data-file-path', filePath);
-                        if (lineNum) {
-                            link.setAttribute('data-line', lineNum);
-                        }
-                        link.setAttribute('role', 'link');
-                        link.setAttribute('tabindex', '0');
-                        link.textContent = fullText;
-                        frag.appendChild(link);
-
-                        lastIndex = match.index + fullText.length;
-                    }
-
-                    if (lastIndex < text.length) {
-                        frag.appendChild(document.createTextNode(text.slice(lastIndex)));
-                    }
-
-                    if (textNode.parentNode) {
-                        textNode.parentNode.replaceChild(frag, textNode);
-                    }
-                });
-
+                textNodes.forEach(linkifyTextNode);
                 return template.innerHTML;
             }
 
@@ -422,6 +445,8 @@ export const CONTENT_JS = `
             }
 
             function formatContextGauge(used, max) {
+                used = toCount(used);
+                max = toCount(max);
                 var pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
                 var level = pct >= 90 ? 'critical' : pct >= 70 ? 'warn' : '';
                 return {
@@ -431,6 +456,10 @@ export const CONTENT_JS = `
                 };
             }
 
+            function getContextMax(thread) {
+                return toCount(thread.contextMax) || 128000;
+            }
+
             function estimateTokens(text) {
                 if (!text) { return 0; }
                 return Math.ceil(text.length / 4);
@@ -438,15 +467,15 @@ export const CONTENT_JS = `
 
             /** Usage status line: tokens of the last run plus rough context fill percent. */
             function renderUsageIndicator(thread) {
-                var usage = thread.lastUsage;
-                if (!usage || !usage.totalTokens) {
+                var totalTokens = toCount(thread.lastUsage && thread.lastUsage.totalTokens);
+                if (!totalTokens) {
                     return '';
                 }
-                var max = thread.contextMax || 128000;
-                var pct = Math.min(100, Math.round((usage.totalTokens / max) * 100));
-                return '<span class="usage-indicator" title="Last run: ' + usage.totalTokens + ' tokens (~' +
+                var max = getContextMax(thread);
+                var pct = Math.min(100, Math.round((totalTokens / max) * 100));
+                return '<span class="usage-indicator" title="Last run: ' + totalTokens + ' tokens (~' +
                     pct + '% of context)">' +
-                    formatTokenCount(usage.totalTokens) + ' tok · ' + pct + '%</span>';
+                    formatTokenCount(totalTokens) + ' tok · ' + pct + '%</span>';
             }
 
             function getThreadSpaceUsage(thread) {
@@ -461,11 +490,11 @@ export const CONTENT_JS = `
                     if (!message || message.role === 'tool') {
                         continue;
                     }
-                    estimatedTokens += estimateTokens(message.content || '');
+                    estimatedTokens += estimateTokens(String(message.content || ''));
                 }
 
-                estimatedTokens += estimateTokens(thread.pendingAssistantText || '');
-                return Math.max(thread.contextTokens || 0, estimatedTokens);
+                estimatedTokens += estimateTokens(String(thread.pendingAssistantText || ''));
+                return Math.max(toCount(thread.contextTokens), estimatedTokens);
             }
 
             function updatePaneContextUsage(paneEl, thread) {
@@ -473,7 +502,7 @@ export const CONTENT_JS = `
                     return;
                 }
 
-                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), thread.contextMax || 128000);
+                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), getContextMax(thread));
                 var fill = paneEl.querySelector('.context-bar-fill');
                 if (fill) {
                     fill.className = 'context-bar-fill' + (ctxInfo.level ? ' ' + ctxInfo.level : '');
@@ -492,12 +521,32 @@ export const CONTENT_JS = `
             }
 
 ${TOOL_STATUS_JS}
-            function renderToolMessage(message) {
+            function getToolGroupKey(entries, messageIndex) {
+                var first = entries[0] || {};
+                return messageIndex + ':' + String(first.id || first.title || '');
+            }
+
+            /** A user's expand/collapse survives re-renders until the group's default catches up with it. */
+            function rememberToolGroupOpen(threadId, key, isOpen, defaultOpen) {
+                var overrides = toolGroupOpen[threadId] || (toolGroupOpen[threadId] = Object.create(null));
+                if (isOpen === defaultOpen) {
+                    delete overrides[key];
+                } else {
+                    overrides[key] = isOpen;
+                }
+            }
+
+            function renderToolMessage(message, threadId, messageIndex) {
                 var node = document.createElement('details');
                 var entries = Array.isArray(message.entries) ? message.entries : [];
                 var status = getToolGroupStatus(entries);
+                var key = getToolGroupKey(entries, messageIndex);
+                var overrides = toolGroupOpen[threadId] || {};
+                var defaultOpen = shouldOpenToolGroup(status);
                 node.className = 'message-tool';
-                node.open = shouldOpenToolGroup(status);
+                node.setAttribute('data-tool-key', key);
+                node.setAttribute('data-default-open', String(defaultOpen));
+                node.open = key in overrides ? overrides[key] : defaultOpen;
 
                 var summary = document.createElement('summary');
                 var summaryLine = document.createElement('span');
@@ -603,12 +652,13 @@ ${TOOL_STATUS_JS}
             }
 
             function renderSlashDropdown(threadId) {
+                var threadAttr = escapeAttr(threadId);
                 var commands = getActiveSlashCommands(threadId);
                 var visible = commands.length > 0;
                 var activeIndex = Math.max(0, Math.min(composerUi.activeSlashIndex, commands.length - 1));
                 var html = commands.map(function(command, index) {
                     return '<div class="slash-item' + (index === activeIndex ? ' active' : '') + '"' +
-                        ' data-action="pick-slash" data-thread-id="' + threadId + '"' +
+                        ' data-action="pick-slash" data-thread-id="' + threadAttr + '"' +
                         ' data-command="' + escapeAttr(command.name) + '">' +
                         '<div>' + escapeHtml(command.icon) + '</div>' +
                         '<div class="slash-info">' +
@@ -621,13 +671,14 @@ ${TOOL_STATUS_JS}
             }
 
             function renderFileDropdown(threadId) {
+                var threadAttr = escapeAttr(threadId);
                 var visible = composerUi.threadId === threadId &&
                     composerUi.dropdown === 'file' &&
                     composerUi.fileResults.length > 0;
                 var activeIndex = Math.max(0, Math.min(composerUi.activeFileIndex, composerUi.fileResults.length - 1));
                 var html = composerUi.fileResults.map(function(file, index) {
                     return '<div class="file-item' + (index === activeIndex ? ' active' : '') + '"' +
-                        ' data-action="pick-file" data-thread-id="' + threadId + '"' +
+                        ' data-action="pick-file" data-thread-id="' + threadAttr + '"' +
                         ' data-path="' + escapeAttr(file.path) + '">' +
                         '<span class="file-item-name">' + escapeHtml(file.name) + '</span>' +
                         '<span class="file-item-path">' + escapeHtml(file.relativePath) + '</span>' +
@@ -641,11 +692,12 @@ ${TOOL_STATUS_JS}
             }
 
             function renderChatTypeDropdown(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'chatType';
                 var html = chatTypes.map(function(chatType) {
                     return '<div class="selector-item' +
                         (chatType.id === thread.currentChatType ? ' selected' : '') + '"' +
-                        ' data-action="select-chat-type" data-thread-id="' + thread.id + '"' +
+                        ' data-action="select-chat-type" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(chatType.id) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(chatType.label) + '</span>' +
                         '<span class="selector-item-check">&#x2713;</span>' +
@@ -655,6 +707,7 @@ ${TOOL_STATUS_JS}
             }
 
             function renderModelDropdown(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'model';
                 var models = availableModels.slice();
                 if (composerUi.modelQuery) {
@@ -664,63 +717,22 @@ ${TOOL_STATUS_JS}
                 }
                 var items = models.map(function(model) {
                     return '<div class="selector-item' + (model === thread.currentModel ? ' selected' : '') + '"' +
-                        ' data-action="select-model" data-thread-id="' + thread.id + '"' +
+                        ' data-action="select-model" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(model) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(formatModelLabel(model)) + '</span>' +
                         '<span class="selector-item-check">&#x2713;</span>' +
                     '</div>';
                 }).join('');
                 return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '">' +
-                    '<input class="selector-search" data-thread-id="' + thread.id + '"' +
+                    '<input class="selector-search" data-thread-id="' + threadAttr + '"' +
                         ' placeholder="Search models" value="' + escapeAttr(composerUi.modelQuery) + '">' +
                     items +
                 '</div>';
             }
 
-            function renderSettingsDropdown(thread) {
-                var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'settings';
-                var thinkingLevels = ['none', 'low', 'medium', 'high'];
-                var thinkingOptions = thinkingLevels.map(function(level) {
-                    return '<option value="' + level + '"' +
-                        (composerUi.settingsThinking === level ? ' selected' : '') + '>' +
-                        level.charAt(0).toUpperCase() + level.slice(1) + '</option>';
-                }).join('');
-
-                return '<div class="settings-dropdown' + (visible ? ' visible' : '') + '">' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Thinking</span>' +
-                        '<div class="settings-control">' +
-                            '<select data-setting="thinking" data-thread-id="' + thread.id + '">' +
-                                thinkingOptions +
-                            '</select>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Temperature</span>' +
-                        '<div class="settings-control" style="display:flex;align-items:center;gap:6px">' +
-                            '<input type="range" min="0" max="2" step="0.1"' +
-                                ' value="' + composerUi.settingsTemp + '"' +
-                                ' data-setting="temperature" data-thread-id="' + thread.id + '">' +
-                            '<span class="settings-value">' + composerUi.settingsTemp.toFixed(1) + '</span>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Max Tokens</span>' +
-                        '<div class="settings-control" style="display:flex;align-items:center;gap:6px">' +
-                            '<input type="range" min="0" max="16384" step="256"' +
-                                ' value="' + composerUi.settingsMaxTokens + '"' +
-                                ' data-setting="maxTokens" data-thread-id="' + thread.id + '">' +
-                            '<span class="settings-value">' +
-                                (composerUi.settingsMaxTokens > 0 ? formatTokenCount(composerUi.settingsMaxTokens) : 'auto') +
-                            '</span>' +
-                        '</div>' +
-                    '</div>' +
-                '</div>';
-            }
-
             function getFileIcon(name, type) {
                 if (type === 'image') { return '\u{1F5BC}\uFE0F'; }
-                var ext = (name.split('.').pop() || '').toLowerCase();
+                var ext = (String(name || '').split('.').pop() || '').toLowerCase();
                 switch (ext) {
                     case 'ts': case 'tsx': return '\u{1F4D8}';
                     case 'js': case 'jsx': case 'mjs': case 'cjs': return '\u{1F4D2}';
@@ -738,6 +750,7 @@ ${TOOL_STATUS_JS}
             }
 
             function renderAttachments(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var atts = thread.pendingAttachments || [];
                 if (!atts.length) { return ''; }
                 var pills = atts.map(function(file, index) {
@@ -751,7 +764,7 @@ ${TOOL_STATUS_JS}
                             escapeHtml(file.name) +
                         '</span>' +
                         '<button class="att-pill-remove" data-action="remove-attachment"' +
-                            ' data-thread-id="' + thread.id + '" data-index="' + index + '">&#x00d7;</button>' +
+                            ' data-thread-id="' + threadAttr + '" data-index="' + index + '">&#x00d7;</button>' +
                     '</span>';
                 }).join('');
                 var imageCount = atts.filter(function(a) { return a.type === 'image'; }).length;
@@ -779,14 +792,15 @@ ${TOOL_STATUS_JS}
                 }
 
                 var isOpen = !!recOpen[thread.id];
+                var threadAttr = escapeAttr(thread.id);
                 return '<div class="composer-recommendations">' +
-                    '<button class="rec-toggle' + (isOpen ? ' open' : '') + '" data-action="toggle-recs" data-thread-id="' + thread.id + '">' +
+                    '<button class="rec-toggle' + (isOpen ? ' open' : '') + '" data-action="toggle-recs" data-thread-id="' + threadAttr + '">' +
                         '<span class="rec-caret">&#x25B6;</span> suggestions' +
                     '</button>' +
                     '<div class="recommendations' + (isOpen ? ' open' : '') + '">' +
                         recommendations.map(function(rec) {
                             return '<button class="rec-chip" data-action="use-recommendation"' +
-                                ' data-thread-id="' + thread.id + '" data-command="' + escapeAttr(rec.command) + '">' +
+                                ' data-thread-id="' + threadAttr + '" data-command="' + escapeAttr(rec.command) + '">' +
                                 escapeHtml(rec.icon + ' ' + rec.label) +
                             '</button>';
                         }).join('') +
@@ -795,17 +809,17 @@ ${TOOL_STATUS_JS}
             }
 
             function renderComposer(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var chatType = chatTypes.find(function(item) { return item.id === thread.currentChatType; });
                 var draft = getDraft(thread.id);
                 var placeholder = 'Ask this thread anything...  / commands  @ files';
 
-                return '<div class="composer-shell" data-thread-id="' + thread.id + '">' +
+                return '<div class="composer-shell" data-thread-id="' + threadAttr + '">' +
                     renderFileDropdown(thread.id) +
                     renderSlashDropdown(thread.id) +
                     renderChatTypeDropdown(thread) +
                     renderModelDropdown(thread) +
-                    renderSettingsDropdown(thread) +
-                    '<div class="composer-card' + (composerUi.dragThreadId === thread.id ? ' drag-active' : '') + '" data-thread-id="' + thread.id + '">' +
+                    '<div class="composer-card' + (composerUi.dragThreadId === thread.id ? ' drag-active' : '') + '" data-thread-id="' + threadAttr + '">' +
                         '<div class="drop-overlay' + (composerUi.dragThreadId === thread.id ? ' visible' : '') + '">' +
                             '<span class="drop-overlay-icon">\u{1F4CE}</span>' +
                             '<span class="drop-overlay-label">Drop files or images to attach</span>' +
@@ -813,24 +827,20 @@ ${TOOL_STATUS_JS}
                         '<div class="composer-top">' +
                             '<div class="composer-target"><span>Thread</span><strong>' +
                                 escapeHtml(thread.title) +
-                            '</strong><span>#' + thread.index + '</span></div>' +
+                            '</strong><span>#' + escapeHtml(String(thread.index)) + '</span></div>' +
                             '<div class="composer-top-spacer"></div>' +
                             '<button class="dropdown-trigger" data-action="toggle-chat-type" data-thread-id="' +
-                                thread.id + '" title="Chat type">' +
+                                threadAttr + '" title="Chat type">' +
                                 '<span>' + escapeHtml(chatType ? chatType.label : 'Chat') + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
                             '<button class="dropdown-trigger" data-action="toggle-model" data-thread-id="' +
-                                thread.id + '" title="Model">' +
+                                threadAttr + '" title="Model">' +
                                 '<span>' + escapeHtml(formatModelLabel(thread.currentModel)) + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
-                            '<button class="dropdown-trigger" data-action="toggle-settings" data-thread-id="' +
-                                thread.id + '" title="Settings">' +
-                                '<span>&#x2699;</span>' +
-                            '</button>' +
                         '</div>' +
-                        '<textarea class="composer-input" data-thread-id="' + thread.id + '"' +
+                        '<textarea class="composer-input" data-thread-id="' + threadAttr + '"' +
                             ' rows="1" placeholder="' + escapeAttr(placeholder) + '">' +
                             escapeHtml(draft) +
                         '</textarea>' +
@@ -838,14 +848,13 @@ ${TOOL_STATUS_JS}
                         '<div class="attachments">' + renderAttachments(thread) + '</div>' +
                         renderComposerRecommendations(thread) +
                         '<div class="composer-footer">' +
-                            '<button class="btn-attach" data-action="attach" data-thread-id="' + thread.id +
+                            '<button class="btn-attach" data-action="attach" data-thread-id="' + threadAttr +
                                 '" title="Attach file">+</button>' +
                             '<span class="composer-status">' + escapeHtml(getThreadStatusDetail(thread)) + '</span>' +
                             (function() {
                                 var est = estimateTokens(draft);
                                 var hasVal = est > 0;
-                                return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') +
-                                    '" data-token-est="' + thread.id + '">' +
+                                return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') + '">' +
                                     (hasVal ? '~' + formatTokenCount(est) + ' tokens' : '') +
                                 '</span>' +
                                 renderUsageIndicator(thread);
@@ -853,7 +862,7 @@ ${TOOL_STATUS_JS}
                             (messageQueue[thread.id] ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
                             '<button class="btn-send' + (thread.isStreaming ? ' streaming' : '') + '"' +
                                 ' data-action="' + (thread.isStreaming ? 'cancel' : 'send') + '"' +
-                                ' data-thread-id="' + thread.id + '"' +
+                                ' data-thread-id="' + threadAttr + '"' +
                                 ' title="' + (thread.isStreaming ? 'Stop' : 'Send') + '">' +
                                 (thread.isStreaming ? '&#x25A0;' : '&#x2191;') +
                             '</button>' +
@@ -902,23 +911,24 @@ ${TOOL_STATUS_JS}
             }
 
             function renderPane(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var pane = document.createElement('section');
-                var statusClass = (thread.status || 'idle').toLowerCase();
+                var statusClass = String(thread.status || 'idle').toLowerCase();
                 var isCollapsed = shouldCollapseThread(thread);
                 pane.className = 'pane' +
                     (thread.id === state.activeThreadId ? ' active' : '') +
                     (isCollapsed ? ' collapsed' : '');
                 pane.dataset.threadId = thread.id;
 
-                var sourceClass = (thread.source || 'API').toLowerCase().replace(/[^a-z]/g, '');
-                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), thread.contextMax || 128000);
+                var sourceClass = String(thread.source || 'API').toLowerCase().replace(/[^a-z]/g, '');
+                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), getContextMax(thread));
 
                 pane.innerHTML =
                     '<div class="pane-header">' +
                         '<div class="pane-header-main">' +
                             '<div class="pane-title">' + escapeHtml(thread.title) + '</div>' +
                             '<div class="pane-meta">' +
-                                '<span class="pane-pill">#' + thread.index + '</span>' +
+                                '<span class="pane-pill">#' + escapeHtml(String(thread.index)) + '</span>' +
                                 '<span class="pane-pill pane-source ' + sourceClass + '">' +
                                     escapeHtml(thread.source || 'API') +
                                 '</span>' +
@@ -926,25 +936,24 @@ ${TOOL_STATUS_JS}
                                 '<span class="pane-pill">' + escapeHtml(thread.currentChatType || 'chat') + '</span>' +
                                 '<span class="pane-pill pane-context" title="Context: ' + ctxInfo.label + '">' +
                                     '<span class="context-bar">' +
-                                        '<span class="context-bar-fill ' + ctxInfo.level + '"' +
-                                            ' style="width:' + ctxInfo.pct + '%"></span>' +
+                                        '<span class="context-bar-fill ' + ctxInfo.level + '"></span>' +
                                     '</span>' +
                                     '<span class="context-label">' + ctxInfo.label + '</span>' +
                                 '</span>' +
-                                '<span class="pane-pill pane-status ' + escapeHtml(statusClass) + '">' +
+                                '<span class="pane-pill pane-status ' + escapeAttr(statusClass) + '">' +
                                     escapeHtml(getThreadStatusLabel(thread)) +
                                 '</span>' +
                             '</div>' +
                         '</div>' +
                         '<div class="pane-actions">' +
                             (currentDimension === '1x1' && state.threads.length > 1
-                                ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + thread.id + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
+                                ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + threadAttr + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
                                 : '') +
-                            '<button class="pane-btn" data-action="sessions" data-thread-id="' + thread.id + '">Sessions</button>' +
-                            '<button class="pane-btn" data-action="export" data-thread-id="' + thread.id + '">Export</button>' +
-                            '<button class="pane-btn" data-action="clear" data-thread-id="' + thread.id + '">Clear</button>' +
+                            '<button class="pane-btn" data-action="sessions" data-thread-id="' + threadAttr + '">Sessions</button>' +
+                            '<button class="pane-btn" data-action="export" data-thread-id="' + threadAttr + '">Export</button>' +
+                            '<button class="pane-btn" data-action="clear" data-thread-id="' + threadAttr + '">Clear</button>' +
                             (state.threads.length > 1
-                                ? '<button class="pane-btn" data-action="close" data-thread-id="' + thread.id + '">Close</button>'
+                                ? '<button class="pane-btn" data-action="close" data-thread-id="' + threadAttr + '">Close</button>'
                                 : '') +
                         '</div>' +
                     '</div>';
@@ -962,7 +971,7 @@ ${TOOL_STATUS_JS}
                         '</div>';
                     body.appendChild(empty);
                 } else {
-                    messages.forEach(function(message) {
+                    messages.forEach(function(message, messageIndex) {
                         if (message.role === 'tool' && hideToolActivity) {
                             var toolEntries = Array.isArray(message.entries) ? message.entries : [];
                             if (getToolGroupStatus(toolEntries) === 'done') {
@@ -971,10 +980,11 @@ ${TOOL_STATUS_JS}
                         }
                         var node = document.createElement('div');
                         if (message.role === 'tool') {
-                            node = renderToolMessage(message);
+                            node = renderToolMessage(message, thread.id, messageIndex);
                         } else if (message.role === 'assistant') {
                             node.className = 'message message-assistant';
-                            node.innerHTML = linkifyFilePaths(message.html || escapeHtml(message.content || ''));
+                            node.innerHTML = linkifyFilePaths(typeof message.html === 'string' && message.html ? message.html : escapeHtml(message.content || ''));
+                            removeUnsafeLinks(node);
                         } else if (message.role === 'error') {
                             node.className = 'message message-error';
                             node.innerHTML = linkifyFilePaths(escapeHtml(message.content || ''));
@@ -1001,6 +1011,8 @@ ${TOOL_STATUS_JS}
                 })(thread.id);
 
                 pane.appendChild(body);
+                // CSP drops style attributes parsed from markup; CSSOM writes still apply.
+                updatePaneContextUsage(pane, thread);
 
                 var composerWrap = document.createElement('div');
                 composerWrap.innerHTML = renderComposer(thread);
@@ -1014,32 +1026,20 @@ ${TOOL_STATUS_JS}
                 return pane;
             }
 
-            function cleanupDrafts() {
-                var valid = Object.create(null);
-                state.threads.forEach(function(thread) {
-                    valid[thread.id] = true;
-                    if (typeof drafts[thread.id] !== 'string') {
-                        drafts[thread.id] = '';
-                    }
-                });
-                Object.keys(drafts).forEach(function(threadId) {
-                    if (!valid[threadId]) {
-                        delete drafts[threadId];
-                    }
-                });
-                Object.keys(collapseOverrides).forEach(function(threadId) {
-                    if (!valid[threadId]) {
-                        delete collapseOverrides[threadId];
-                    }
+            function pruneClosedThreadState() {
+                var open = Object.create(null);
+                state.threads.forEach(function(thread) { open[thread.id] = true; });
+                [drafts, collapseOverrides, messageQueue, recOpen, userScrolledUp, toolGroupOpen, unconfirmedSends].forEach(function(byThread) {
+                    Object.keys(byThread).forEach(function(threadId) {
+                        if (!open[threadId]) {
+                            delete byThread[threadId];
+                        }
+                    });
                 });
             }
 
             function renderState(preserve) {
-                try {
-                    cleanupDrafts();
-                } catch (e) {
-                    console.warn('[OpenClaw] cleanupDrafts failed:', e);
-                }
+                pruneClosedThreadState();
 
                 var savedScrolls = Object.create(null);
                 try {
@@ -1073,9 +1073,9 @@ ${TOOL_STATUS_JS}
                 orderedThreads.forEach(function(thread) {
                     try {
                         if (userScrolledUp[thread.id] && savedScrolls[thread.id] != null) {
-                            var paneEl = paneGrid.querySelector('.pane[data-thread-id="' + thread.id + '"] .pane-body');
-                            if (paneEl) {
-                                paneEl.scrollTop = savedScrolls[thread.id];
+                            var paneBody = findPaneBody(thread.id);
+                            if (paneBody) {
+                                paneBody.scrollTop = savedScrolls[thread.id];
                             }
                         }
                     } catch (e) {
@@ -1086,13 +1086,15 @@ ${TOOL_STATUS_JS}
                 var restore = preserve || {};
                 if (restore.threadId) {
                     try {
-                        var textarea = paneGrid.querySelector('.composer-input[data-thread-id="' + restore.threadId + '"]');
-                        if (textarea) {
-                            textarea.focus();
+                        var field = findThreadElement(restore.selector || '.composer-input', restore.threadId);
+                        if (field) {
+                            field.focus();
                             if (typeof restore.selectionStart === 'number' && typeof restore.selectionEnd === 'number') {
-                                textarea.setSelectionRange(restore.selectionStart, restore.selectionEnd);
+                                field.setSelectionRange(restore.selectionStart, restore.selectionEnd);
                             }
-                            autoResizeTextarea(textarea);
+                            if (field.classList.contains('composer-input')) {
+                                autoResizeTextarea(field);
+                            }
                         }
                     } catch (e) {
                         console.warn('[OpenClaw] focus restore failed:', e);
@@ -1111,7 +1113,7 @@ ${TOOL_STATUS_JS}
                     return;
                 }
 
-                var shell = paneGrid.querySelector('.composer-shell[data-thread-id="' + composerUi.threadId + '"]');
+                var shell = findThreadElement('.composer-shell', composerUi.threadId);
                 if (!shell) {
                     return;
                 }
@@ -1135,12 +1137,20 @@ ${TOOL_STATUS_JS}
                 }
             }
 
+            var COMPOSER_FIELDS = ['.composer-input', '.selector-search'];
+
+            /** The focused composer text field, so a re-render can hand focus and caret back to its replacement. */
             function captureComposerFocus() {
                 var active = document.activeElement;
-                if (!active || !active.classList || !active.classList.contains('composer-input')) {
+                if (!active || typeof active.matches !== 'function') {
+                    return null;
+                }
+                var selector = COMPOSER_FIELDS.find(function(candidate) { return active.matches(candidate); });
+                if (!selector) {
                     return null;
                 }
                 return {
+                    selector: selector,
                     threadId: active.getAttribute('data-thread-id'),
                     selectionStart: active.selectionStart,
                     selectionEnd: active.selectionEnd
@@ -1182,6 +1192,11 @@ ${TOOL_STATUS_JS}
                 if (composerUi.fileSearchDebounce) {
                     clearTimeout(composerUi.fileSearchDebounce);
                 }
+                // Results for the previous query must not stay selectable while this one debounces.
+                if (composerUi.fileSearchQuery !== query) {
+                    composerUi.fileResults = [];
+                }
+                composerUi.fileSearchQuery = query;
                 composerUi.fileSearchDebounce = setTimeout(function() {
                     vscode.postMessage({ type: 'fileSearch', query: query, threadId: threadId });
                 }, 120);
@@ -1267,6 +1282,59 @@ ${TOOL_STATUS_JS}
                 });
             }
 
+            /** Held per send until the host accepts or rejects it by clientId, so a rejection can give the text back. */
+            function rememberUnconfirmedSend(threadId, text) {
+                sendCounter += 1;
+                var clientId = 'send-' + sendCounter;
+                (unconfirmedSends[threadId] = unconfirmedSends[threadId] || []).push({ clientId: clientId, text: text });
+                return clientId;
+            }
+
+            function takeUnconfirmedSend(threadId, clientId) {
+                var pending = unconfirmedSends[threadId] || [];
+                var index = pending.findIndex(function(entry) { return entry.clientId === clientId; });
+                return index < 0 ? null : pending.splice(index, 1)[0];
+            }
+
+            /** Put text back in front of the draft, e.g. a rejected send or a queued message the user stopped. */
+            function restoreToDraft(threadId, text) {
+                var current = getDraft(threadId);
+                setDraft(threadId, current ? text + '\\n\\n' + current : text);
+            }
+
+            function restoreRejectedSend(threadId, clientId) {
+                var pending = takeUnconfirmedSend(threadId, clientId);
+                if (!pending || !getThreadById(threadId)) {
+                    return;
+                }
+                restoreToDraft(threadId, pending.text);
+                renderState(captureComposerFocus());
+            }
+
+            /** Stop and Clear must not send the queued draft once the thread goes idle: it returns to the composer. */
+            function restoreQueuedMessage(threadId) {
+                var queued = messageQueue[threadId];
+                if (!queued) {
+                    return;
+                }
+                delete messageQueue[threadId];
+                restoreToDraft(threadId, queued);
+                renderState(captureComposerFocus());
+            }
+
+            function dispatchText(thread, text) {
+                var clientId = rememberUnconfirmedSend(thread.id, text);
+                var match = text.match(/^\\/([a-zA-Z]+)\\s*([\\s\\S]*)/);
+                var command = match && slashCommands.find(function(item) { return item.name === match[1].toLowerCase(); });
+                if (command) {
+                    vscode.postMessage({ type: 'slashCommand', threadId: thread.id, command: command.name, text: match[2], clientId: clientId });
+                } else {
+                    vscode.postMessage({ type: 'send', threadId: thread.id, text: text, clientId: clientId });
+                }
+                userScrolledUp[thread.id] = false;
+            }
+
+            /** Sends the draft, or queues it behind the running reply; queued drafts join rather than replace. */
             function sendThread(threadId) {
                 var thread = getThreadById(threadId);
                 var raw = getDraft(threadId).trim();
@@ -1274,40 +1342,25 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (thread.isStreaming) {
-                    messageQueue[threadId] = raw;
-                    setDraft(threadId, '');
-                    clearAtMention();
-                    closeComposerDropdowns();
-                    renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
-                    return;
+                    messageQueue[threadId] = messageQueue[threadId] ? messageQueue[threadId] + '\\n\\n' + raw : raw;
+                } else {
+                    dispatchText(thread, raw);
                 }
-
-                var match = raw.match(/^\\/([a-zA-Z]+)\\s*(.*)/);
-                if (match) {
-                    var commandName = match[1].toLowerCase();
-                    var userText = match[2] || '';
-                    var command = slashCommands.find(function(item) { return item.name === commandName; });
-                    if (command) {
-                        vscode.postMessage({
-                            type: 'slashCommand',
-                            threadId: thread.id,
-                            command: commandName,
-                            text: userText
-                        });
-                        setDraft(threadId, '');
-                        clearAtMention();
-                        closeComposerDropdowns();
-                        renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
-                        return;
-                    }
-                }
-
-                vscode.postMessage({ type: 'send', threadId: thread.id, text: raw });
-                userScrolledUp[thread.id] = false;
                 setDraft(threadId, '');
                 clearAtMention();
                 closeComposerDropdowns();
                 renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
+            }
+
+            function drainQueuedMessages() {
+                state.threads.forEach(function(thread) {
+                    var queued = messageQueue[thread.id];
+                    if (thread.isStreaming || !queued) {
+                        return;
+                    }
+                    delete messageQueue[thread.id];
+                    dispatchText(thread, queued);
+                });
             }
 
             function toggleDropdown(threadId, kind) {
@@ -1337,42 +1390,15 @@ ${TOOL_STATUS_JS}
                 });
             }
 
-            function rebuildDimensionOptions(threadCount, preferredDimension) {
-                var current = isValidDimension(preferredDimension)
-                    ? preferredDimension
-                    : (isValidDimension(dimensionSelect.value) ? dimensionSelect.value : currentDimension);
-                var count = Math.max(1, threadCount || 1);
-                var seen = Object.create(null);
-                var options = [];
-
-                function addOption(value) {
-                    if (!isValidDimension(value) || seen[value]) {
-                        return;
-                    }
-                    seen[value] = true;
-                    options.push(value);
-                }
-
-                addOption('1x1');
-                addOption(current);
-                for (var c = 1; c <= count; c++) {
-                    if (count % c === 0) {
-                        addOption(c + 'x' + (count / c));
-                    }
-                }
-
+            function renderDimensionOptions() {
                 dimensionSelect.innerHTML = '';
-                for (var i = 0; i < options.length; i++) {
-                    var opt = document.createElement('option');
-                    opt.value = options[i];
-                    opt.textContent = options[i];
-                    dimensionSelect.appendChild(opt);
-                }
-                if (isValidDimension(current) && dimensionSelect.querySelector('option[value="' + current + '"]')) {
-                    dimensionSelect.value = current;
-                } else {
-                    dimensionSelect.value = '1x1';
-                }
+                gridDimensions.forEach(function(dimension) {
+                    var option = document.createElement('option');
+                    option.value = dimension;
+                    option.textContent = dimension;
+                    dimensionSelect.appendChild(option);
+                });
+                dimensionSelect.value = currentDimension;
             }
 
             function updateGridDimension(dimension) {
@@ -1387,17 +1413,8 @@ ${TOOL_STATUS_JS}
                 currentDimension = dimensionSelect.value;
                 updateGridDimension(currentDimension);
                 vscode.postMessage({ type: 'setDimension', dimension: currentDimension });
-            });
-
-            btnFlip.addEventListener('click', function() {
-                var parts = currentDimension.split('x');
-                var flipped = parts[1] + 'x' + parts[0];
-                if (dimensionSelect.querySelector('option[value="' + flipped + '"]')) {
-                    dimensionSelect.value = flipped;
-                    currentDimension = flipped;
-                    updateGridDimension(currentDimension);
-                    vscode.postMessage({ type: 'setDimension', dimension: currentDimension });
-                }
+                // Collapsing and its toggle exist only in 1x1.
+                renderState(captureComposerFocus());
             });
 
             function openFileFromLink(fileLink) {
@@ -1452,12 +1469,13 @@ ${TOOL_STATUS_JS}
 
                 var action = actionEl.getAttribute('data-action');
                 var threadId = actionEl.getAttribute('data-thread-id');
+                // Read before activating: the active thread is never auto-collapsed.
+                var wasCollapsed = action === 'toggleCollapse' && shouldCollapseThread(getThreadById(threadId) || {});
                 if (threadId) {
                     setActiveThread(threadId);
                 }
 
                 if (action === 'toggleCollapse') {
-                    var wasCollapsed = shouldCollapseThread(getThreadById(threadId) || {});
                     collapseOverrides[threadId] = !wasCollapsed;
                     renderState(captureComposerFocus());
                     return;
@@ -1467,6 +1485,7 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (action === 'clear') {
+                    restoreQueuedMessage(threadId);
                     vscode.postMessage({ type: 'clearThread', threadId: threadId });
                     return;
                 }
@@ -1487,6 +1506,7 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (action === 'cancel') {
+                    restoreQueuedMessage(threadId);
                     vscode.postMessage({ type: 'cancel', threadId: threadId });
                     return;
                 }
@@ -1504,10 +1524,6 @@ ${TOOL_STATUS_JS}
                 }
                 if (action === 'toggle-model') {
                     toggleDropdown(threadId, 'model');
-                    return;
-                }
-                if (action === 'toggle-settings') {
-                    toggleDropdown(threadId, 'settings');
                     return;
                 }
                 if (action === 'select-chat-type') {
@@ -1533,19 +1549,13 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (action === 'pick-file') {
-                    var textarea = paneGrid.querySelector('.composer-input[data-thread-id="' + threadId + '"]');
+                    var textarea = findThreadElement('.composer-input', threadId);
                     selectFileFromDropdown(threadId, actionEl.getAttribute('data-path'), textarea);
                     return;
                 }
                 if (action === 'toggle-recs') {
                     recOpen[threadId] = !recOpen[threadId];
-                    var wrap = actionEl.closest('.composer-recommendations');
-                    if (wrap) {
-                        var list = wrap.querySelector('.recommendations');
-                        var togBtn = wrap.querySelector('.rec-toggle');
-                        if (list) { list.classList.toggle('open', !!recOpen[threadId]); }
-                        if (togBtn) { togBtn.classList.toggle('open', !!recOpen[threadId]); }
-                    }
+                    renderState(captureComposerFocus());
                     return;
                 }
                 if (action === 'use-recommendation') {
@@ -1561,19 +1571,32 @@ ${TOOL_STATUS_JS}
                 }
             });
 
+            function renderKeepingCaret(threadId, textarea) {
+                renderState({
+                    threadId: threadId,
+                    selectionStart: textarea.selectionStart,
+                    selectionEnd: textarea.selectionEnd
+                });
+            }
+
+            function handleComposerInput(textarea) {
+                var threadId = textarea.getAttribute('data-thread-id');
+                setDraft(threadId, textarea.value);
+                composerUi.threadId = threadId;
+                updateSlashState(threadId);
+                checkAtMention(threadId, textarea);
+                renderKeepingCaret(threadId, textarea);
+            }
+
             paneGrid.addEventListener('input', function(event) {
                 var textarea = event.target.closest('.composer-input');
                 if (textarea) {
-                    var threadId = textarea.getAttribute('data-thread-id');
-                    setDraft(threadId, textarea.value);
-                    composerUi.threadId = threadId;
-                    updateSlashState(threadId);
-                    checkAtMention(threadId, textarea);
-                    renderState({
-                        threadId: threadId,
-                        selectionStart: textarea.selectionStart,
-                        selectionEnd: textarea.selectionEnd
-                    });
+                    // Replacing the textarea mid-composition would abort the IME; compositionend catches up.
+                    if (event.isComposing) {
+                        setDraft(textarea.getAttribute('data-thread-id'), textarea.value);
+                        return;
+                    }
+                    handleComposerInput(textarea);
                     return;
                 }
 
@@ -1583,6 +1606,7 @@ ${TOOL_STATUS_JS}
                     composerUi.dropdown = 'model';
                     composerUi.modelQuery = search.value;
                     renderState({
+                        selector: '.selector-search',
                         threadId: composerUi.threadId,
                         selectionStart: search.selectionStart,
                         selectionEnd: search.selectionEnd
@@ -1590,28 +1614,26 @@ ${TOOL_STATUS_JS}
                 }
             });
 
-            paneGrid.addEventListener('change', function(event) {
-                var el = event.target;
-                var setting = el.getAttribute('data-setting');
-                if (!setting) { return; }
-                if (setting === 'thinking') {
-                    composerUi.settingsThinking = el.value;
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.thinkingLevel', value: el.value });
-                    renderState(captureComposerFocus());
-                } else if (setting === 'temperature') {
-                    composerUi.settingsTemp = parseFloat(el.value);
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.temperature', value: parseFloat(el.value) });
-                    renderState(captureComposerFocus());
-                } else if (setting === 'maxTokens') {
-                    composerUi.settingsMaxTokens = parseInt(el.value, 10);
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.maxTokens', value: parseInt(el.value, 10) });
-                    renderState(captureComposerFocus());
+            paneGrid.addEventListener('compositionend', function(event) {
+                var textarea = event.target.closest('.composer-input');
+                if (textarea) {
+                    handleComposerInput(textarea);
                 }
             });
 
             paneGrid.addEventListener('keydown', function(event) {
+                if (event.key === 'Escape' && composerUi.dropdown && event.target.closest('.composer-shell')) {
+                    event.preventDefault();
+                    var focus = captureComposerFocus();
+                    var restore = focus && focus.selector === '.composer-input' ? focus : { threadId: composerUi.threadId };
+                    clearAtMention();
+                    closeComposerDropdowns();
+                    renderState(restore);
+                    return;
+                }
+
                 var textarea = event.target.closest('.composer-input');
-                if (!textarea) {
+                if (!textarea || event.isComposing) {
                     return;
                 }
 
@@ -1621,36 +1643,18 @@ ${TOOL_STATUS_JS}
                     if (event.key === 'ArrowDown') {
                         event.preventDefault();
                         composerUi.activeFileIndex = Math.min(composerUi.activeFileIndex + 1, composerUi.fileResults.length - 1);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
                     if (event.key === 'ArrowUp') {
                         event.preventDefault();
                         composerUi.activeFileIndex = Math.max(composerUi.activeFileIndex - 1, 0);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
-                    if ((event.key === 'Enter' || event.key === 'Tab') && composerUi.fileResults.length) {
+                    if (event.key === 'Enter' || event.key === 'Tab') {
                         event.preventDefault();
                         selectFileFromDropdown(threadId, composerUi.fileResults[composerUi.activeFileIndex].path, textarea);
-                        return;
-                    }
-                    if (event.key === 'Escape') {
-                        event.preventDefault();
-                        clearAtMention();
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
                         return;
                     }
                 }
@@ -1660,54 +1664,27 @@ ${TOOL_STATUS_JS}
                     if (event.key === 'ArrowDown') {
                         event.preventDefault();
                         composerUi.activeSlashIndex = Math.min(composerUi.activeSlashIndex + 1, slashCommandsForThread.length - 1);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
                     if (event.key === 'ArrowUp') {
                         event.preventDefault();
                         composerUi.activeSlashIndex = Math.max(composerUi.activeSlashIndex - 1, 0);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
-                    if ((event.key === 'Enter' || event.key === 'Tab') && slashCommandsForThread.length) {
+                    if (event.key === 'Enter' || event.key === 'Tab') {
                         event.preventDefault();
                         selectSlashCommand(threadId, slashCommandsForThread[composerUi.activeSlashIndex].name);
-                        return;
-                    }
-                    if (event.key === 'Escape') {
-                        event.preventDefault();
-                        closeComposerDropdowns();
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
                         return;
                     }
                 }
 
                 if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-                    if (composerUi.dropdown === 'file' && composerUi.fileResults.length) {
-                        event.preventDefault();
-                        selectFileFromDropdown(threadId, composerUi.fileResults[composerUi.activeFileIndex].path, textarea);
-                        return;
-                    }
-                    if (composerUi.dropdown === 'slash' && slashCommandsForThread.length) {
-                        event.preventDefault();
-                        selectSlashCommand(threadId, slashCommandsForThread[composerUi.activeSlashIndex].name);
-                        return;
-                    }
                     event.preventDefault();
                     var thread = getThreadById(threadId);
-                    if (thread && thread.isStreaming) {
+                    if (thread && thread.isStreaming && !getDraft(threadId).trim()) {
+                        restoreQueuedMessage(threadId);
                         vscode.postMessage({ type: 'cancel', threadId: threadId });
                     } else {
                         sendThread(threadId);
@@ -1729,8 +1706,12 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 event.preventDefault();
-                composerUi.dragThreadId = shell.getAttribute('data-thread-id');
-                renderState();
+                var tid = shell.getAttribute('data-thread-id');
+                // A re-render swaps the nodes under the pointer and fires another dragenter.
+                if (composerUi.dragThreadId !== tid) {
+                    composerUi.dragThreadId = tid;
+                    renderState();
+                }
             });
 
             paneGrid.addEventListener('dragover', function(event) {
@@ -1779,36 +1760,27 @@ ${TOOL_STATUS_JS}
                 renderState();
             });
 
-            paneGrid.addEventListener('paste', function(event) {
-                var textarea = event.target.closest('.composer-input');
-                if (!textarea || !event.clipboardData) { return; }
-                var threadId = textarea.getAttribute('data-thread-id');
-                var items = event.clipboardData.items;
-                var filePaths = [];
-                for (var pi = 0; pi < items.length; pi++) {
-                    if (items[pi].kind === 'file') {
-                        var file = items[pi].getAsFile();
-                        if (file && file.path) {
-                            filePaths.push(file.path);
-                        }
-                    }
+            paneGrid.addEventListener('toggle', function(event) {
+                var group = event.target;
+                var pane = group.classList.contains('message-tool') ? group.closest('.pane') : null;
+                if (pane) {
+                    rememberToolGroupOpen(
+                        pane.getAttribute('data-thread-id'),
+                        group.getAttribute('data-tool-key'),
+                        group.open,
+                        group.getAttribute('data-default-open') === 'true'
+                    );
                 }
-                if (filePaths.length > 0) {
-                    event.preventDefault();
-                    vscode.postMessage({
-                        type: 'attachFiles',
-                        threadId: threadId,
-                        filePaths: filePaths
-                    });
-                }
-            });
+            }, true);
 
+            // Only when something is open: a needless re-render would drop the user's text selection.
             document.addEventListener('click', function(event) {
-                if (!event.target.closest('.composer-shell')) {
-                    closeComposerDropdowns();
-                    clearAtMention();
-                    renderState(captureComposerFocus());
+                if (event.target.closest('.composer-shell') || (!composerUi.dropdown && !composerUi.atMentionThreadId)) {
+                    return;
                 }
+                closeComposerDropdowns();
+                clearAtMention();
+                renderState(captureComposerFocus());
             });
 
             window.addEventListener('dragend', function() {
@@ -1829,39 +1801,90 @@ ${TOOL_STATUS_JS}
                 }
             });
 
+            /** Streams a reply chunk into its pane without a full re-render. */
+            function applyTextUpdate(threadId, text) {
+                var thread = getThreadById(threadId);
+                if (!thread) {
+                    return;
+                }
+                thread.pendingAssistantText = text;
+                thread.isStreaming = true;
+                thread.status = 'running';
+
+                var pane = findThreadElement('.pane', threadId);
+                if (!pane) {
+                    return;
+                }
+                var paneBody = pane.querySelector('.pane-body');
+                var pending = pane.querySelector('.message-pending');
+                if (!pending && paneBody) {
+                    var empty = paneBody.querySelector('.pane-empty');
+                    if (empty) { empty.remove(); }
+                    pending = document.createElement('div');
+                    pending.className = 'message message-assistant message-pending';
+                    pending.setAttribute('data-thread-id', threadId);
+                    paneBody.appendChild(pending);
+                }
+                if (pending) {
+                    pending.innerHTML = linkifyFilePaths(escapeHtml(text));
+                }
+                scrollPaneToBottom(paneBody, threadId);
+
+                var statusPill = pane.querySelector('.pane-status');
+                if (statusPill) {
+                    statusPill.className = 'pane-pill pane-status running';
+                    statusPill.textContent = getThreadStatusLabel(thread);
+                }
+                var sendBtn = pane.querySelector('.btn-send');
+                if (sendBtn) {
+                    sendBtn.classList.add('streaming');
+                    sendBtn.setAttribute('data-action', 'cancel');
+                    sendBtn.setAttribute('title', 'Stop');
+                    sendBtn.textContent = '\u25A0';
+                }
+                var statusDetail = pane.querySelector('.composer-status');
+                if (statusDetail) { statusDetail.textContent = getThreadStatusDetail(thread); }
+                updatePaneContextUsage(pane, thread);
+            }
+
             function _handleMessage(message) {
                 if (message.type === 'slashCommands') {
-                    slashCommands = message.commands || [];
+                    slashCommands = Array.isArray(message.commands) ? message.commands : [];
                     return;
                 }
                 if (message.type === 'recommendations') {
-                    recommendations = message.items || [];
+                    recommendations = Array.isArray(message.items) ? message.items : [];
                     renderState(captureComposerFocus());
                     return;
                 }
                 if (message.type === 'fileSearchResults') {
-                    composerUi.fileResults = message.files || [];
+                    // A reply that lands after the mention closed, for another pane or for an
+                    // older query must not revive the menu or feed Enter.
+                    if (!composerUi.atMentionThreadId || message.threadId !== composerUi.atMentionThreadId ||
+                        message.query !== composerUi.fileSearchQuery) {
+                        return;
+                    }
+                    composerUi.fileResults = Array.isArray(message.files) ? message.files : [];
+                    composerUi.activeFileIndex = 0;
                     renderState(captureComposerFocus());
-                    return;
-                }
-                if (message.type === 'onboardingDone') {
                     return;
                 }
                 if (message.type === 'insertMention') {
                     var mention = String(message.mention || '');
-                    if (mention && state.activeThreadId) {
-                        var draft = getDraft(state.activeThreadId);
-                        var nextDraft = draft ? draft + ' ' + mention : mention;
-                        setDraft(state.activeThreadId, nextDraft);
+                    var target = getActiveThread();
+                    if (mention && target) {
+                        var draft = getDraft(target.id);
+                        var nextDraft = !draft || /\\s$/.test(draft) ? draft + mention : draft + ' ' + mention;
+                        setDraft(target.id, nextDraft);
                         renderState({
-                            threadId: state.activeThreadId,
+                            threadId: target.id,
                             selectionStart: nextDraft.length,
                             selectionEnd: nextDraft.length
                         });
                     }
                     return;
                 }
-                if (message.type === 'agentsList' || message.type === 'sessionsList') {
+                if (message.type === 'sessionsList') {
                     renderSessionsPanel({
                         sessions: Array.isArray(message.sessions) ? message.sessions : [],
                         error: message.error,
@@ -1884,67 +1907,23 @@ ${TOOL_STATUS_JS}
                     badge.textContent = String(message.label || '');
                     return;
                 }
+                if (message.type === 'sendRejected') {
+                    restoreRejectedSend(String(message.threadId || ''), message.clientId);
+                    return;
+                }
+                if (message.type === 'sendAccepted') {
+                    takeUnconfirmedSend(String(message.threadId || ''), message.clientId);
+                    return;
+                }
                 if (message.type === 'textUpdate') {
-                    // Lightweight incremental update — only touch the pending element
-                    var tid = message.threadId;
-                    var liveThread = null;
-                    var pendingEl = paneGrid.querySelector('.message-pending[data-thread-id="' + tid + '"]');
-                    if (pendingEl) {
-                        pendingEl.innerHTML = linkifyFilePaths(escapeHtml(message.text));
-                    } else {
-                        // First chunk — create the pending element inside the body
-                        var paneBody = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"] .pane-body');
-                        if (paneBody) {
-                            // Remove empty placeholder if present
-                            var emptyEl = paneBody.querySelector('.pane-empty');
-                            if (emptyEl) { emptyEl.remove(); }
-                            var newPending = document.createElement('div');
-                            newPending.className = 'message message-assistant message-pending';
-                            newPending.setAttribute('data-thread-id', tid);
-                            newPending.innerHTML = linkifyFilePaths(escapeHtml(message.text));
-                            paneBody.appendChild(newPending);
-                        }
-                    }
-                    // Update the thread state in memory so full renders stay in sync
-                    for (var si = 0; si < state.threads.length; si++) {
-                        if (state.threads[si].id === tid) {
-                            state.threads[si].pendingAssistantText = message.text;
-                            state.threads[si].isStreaming = true;
-                            state.threads[si].status = 'running';
-                            liveThread = state.threads[si];
-                            break;
-                        }
-                    }
-                    // Auto-scroll if user hasn't scrolled up
-                    var scrollBody = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"] .pane-body');
-                    if (scrollBody) { scrollPaneToBottom(scrollBody, tid); }
-                    // Update status pill and send button without full rebuild
-                    var paneEl = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"]');
-                    if (paneEl) {
-                        var statusPill = paneEl.querySelector('.pane-status');
-                        if (statusPill && !statusPill.classList.contains('running')) {
-                            statusPill.className = 'pane-pill pane-status running';
-                            statusPill.textContent = 'Running';
-                        }
-                        var sendBtn = paneEl.querySelector('.btn-send');
-                        if (sendBtn && !sendBtn.classList.contains('streaming')) {
-                            sendBtn.classList.add('streaming');
-                            sendBtn.setAttribute('data-action', 'cancel');
-                            sendBtn.setAttribute('title', 'Stop');
-                            sendBtn.innerHTML = '&#x25A0;';
-                        }
-                        var statusSpan = paneEl.querySelector('.composer-status');
-                        if (statusSpan) { statusSpan.textContent = 'Generating response'; }
-                        updatePaneContextUsage(paneEl, liveThread);
-                    }
+                    applyTextUpdate(message.threadId, String(message.text || ''));
                     return;
                 }
                 if (message.type === 'state') {
                     var focus = captureComposerFocus();
                     state.activeThreadId = message.activeThreadId || '';
-                    state.visibleThreadIds = message.visibleThreadIds || [];
-                    state.threads = message.threads || [];
-                    availableModels = message.models || [];
+                    state.threads = Array.isArray(message.threads) ? message.threads : [];
+                    availableModels = Array.isArray(message.models) ? message.models.map(String) : [];
                     if (typeof message.collapseCompleted === 'boolean') {
                         collapseCompleted = message.collapseCompleted;
                     }
@@ -1954,22 +1933,10 @@ ${TOOL_STATUS_JS}
                     if (isValidDimension(message.dimension)) {
                         currentDimension = message.dimension;
                     }
-                    rebuildDimensionOptions(state.threads.length || 1, currentDimension);
                     dimensionSelect.value = currentDimension;
-                    currentDimension = dimensionSelect.value || '1x1';
                     updateGridDimension(currentDimension);
+                    drainQueuedMessages();
                     renderState(focus);
-
-                    // Drain queued messages for threads that finished streaming
-                    for (var qi = 0; qi < state.threads.length; qi++) {
-                        var t = state.threads[qi];
-                        if (!t.isStreaming && messageQueue[t.id]) {
-                            var queued = messageQueue[t.id];
-                            delete messageQueue[t.id];
-                            setDraft(t.id, queued);
-                            sendThread(t.id);
-                        }
-                    }
                 }
             }
 
@@ -1985,68 +1952,45 @@ ${SESSIONS_PANEL_JS}
                 return hasType('Files') || hasType('text/uri-list');
             }
 
+            function fileUriToPath(uri) {
+                var decoded = decodeURIComponent(uri.slice('file://'.length));
+                if (/^\\/[A-Za-z]:/.test(decoded)) {
+                    return decoded.substring(1);
+                }
+                // file://server/share/x carries the host as authority: a UNC path.
+                return decoded.charAt(0) === '/' ? decoded : '//' + decoded;
+            }
+
+            /** Local paths from a text/uri-list drag (VS Code explorer); webview File objects carry no path. */
             function extractDroppedPaths(dataTransfer) {
                 var paths = [];
-
-                function pushUnique(p) {
-                    if (p && paths.indexOf(p) === -1) {
-                        paths.push(p);
-                    }
-                }
-
-                // 1. Parse text/uri-list (VS Code explorer drags provide file:// URIs here)
+                var uriList = '';
                 try {
-                    var uriList = dataTransfer.getData('text/uri-list');
-                    if (uriList) {
-                        var lines = uriList.split(/\\r?\\n/);
-                        for (var u = 0; u < lines.length; u++) {
-                            var line = lines[u].trim();
-                            if (!line || line.charAt(0) === '#') { continue; }
-                            if (line.indexOf('file://') === 0) {
-                                // Decode the file URI to a local path
-                                var decoded = decodeURIComponent(line.replace(/^file:\\/\\//, ''));
-                                // On Windows, strip leading slash from /C:/...
-                                if (/^\\/[A-Za-z]:/.test(decoded)) {
-                                    decoded = decoded.substring(1);
-                                }
-                                pushUnique(decoded);
-                            }
-                        }
-                    }
+                    uriList = dataTransfer.getData('text/uri-list') || '';
                 } catch (e) {
                     console.warn('[OpenClaw DnD] Could not read text/uri-list:', e);
                 }
-
-                // 2. Try File objects (File.path works in Electron but is empty in webview sandbox)
-                if (!paths.length && dataTransfer.items) {
-                    for (var i = 0; i < dataTransfer.items.length; i++) {
-                        var item = dataTransfer.items[i];
-                        if (item.kind === 'file') {
-                            var file = item.getAsFile();
-                            if (file && file.path) {
-                                pushUnique(file.path);
-                            }
-                        }
+                uriList.split(/\\r?\\n/).forEach(function(rawLine) {
+                    var line = rawLine.trim();
+                    if (line.indexOf('file://') !== 0) {
+                        return;
                     }
-                }
-
-                if (!paths.length && dataTransfer.files) {
-                    for (var j = 0; j < dataTransfer.files.length; j++) {
-                        var f = dataTransfer.files[j];
-                        if (f && f.path) {
-                            pushUnique(f.path);
+                    try {
+                        var filePath = fileUriToPath(line);
+                        if (paths.indexOf(filePath) === -1) {
+                            paths.push(filePath);
                         }
+                    } catch (e) {
+                        console.warn('[OpenClaw DnD] Skipping malformed file URI:', line);
                     }
-                }
-
+                });
                 if (!paths.length) {
                     console.warn('[OpenClaw DnD] Could not extract file paths from drop. dataTransfer.types:', Array.from(dataTransfer.types));
                 }
-
                 return paths;
             }
 
-            rebuildDimensionOptions(1, currentDimension);
+            renderDimensionOptions();
             updateGridDimension(currentDimension);
             try {
                 renderState();

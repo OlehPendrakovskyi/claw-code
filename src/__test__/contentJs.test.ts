@@ -1,86 +1,158 @@
-import { SESSIONS_PANEL_JS, TOOL_STATUS_JS } from '../webview/content-js';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { DOMWindow, JSDOM, VirtualConsole } from 'jsdom';
+import { getWebviewContent } from '../webview/content';
+import { GRID_DIMENSIONS, TOOL_STATUS_JS } from '../webview/content-js';
+import type { ThreadSnapshot } from '../webview/viewMessaging';
 
-type Listener = (event: FakeEvent) => void;
-type FakeEvent = { key?: string; target?: unknown; preventDefault(): void; stopPropagation(): void };
+type Message = Record<string, unknown>;
 
-/** Just enough DOM for the sessions panel fragment. */
-class FakeElement {
-    id = '';
-    title = '';
-    textContent = '';
-    style = { cssText: '' };
-    parent: FakeElement | null = null;
-    readonly children: FakeElement[] = [];
-    private readonly attributes = new Map<string, string>();
-    private readonly listeners = new Map<string, Listener[]>();
-
-    constructor(readonly tagName: string, private readonly doc: FakeDocument) {}
-
-    setAttribute(name: string, value: string): void { this.attributes.set(name, String(value)); }
-    getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
-    appendChild(child: FakeElement): FakeElement {
-        child.parent = this;
-        this.children.push(child);
-        return child;
-    }
-    remove(): void {
-        if (this.parent) {
-            this.parent.children.splice(this.parent.children.indexOf(this), 1);
-            this.parent = null;
-        }
-    }
-    contains(node: unknown): boolean {
-        return node === this || this.children.some(child => child.contains(node));
-    }
-    focus(): void { this.doc.activeElement = this; }
-    addEventListener(type: string, listener: Listener): void {
-        this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
-    }
-    dispatch(type: string, init: Partial<FakeEvent> = {}): void {
-        const event: FakeEvent = { target: this, preventDefault() {}, stopPropagation() {}, ...init };
-        (this.listeners.get(type) ?? []).forEach(listener => listener(event));
-    }
-    find(predicate: (el: FakeElement) => boolean): FakeElement | null {
-        if (predicate(this)) {
-            return this;
-        }
-        for (const child of this.children) {
-            const found = child.find(predicate);
-            if (found) {
-                return found;
-            }
-        }
-        return null;
-    }
-}
-
-class FakeDocument {
-    activeElement: FakeElement | null = null;
-    readonly body = new FakeElement('body', this);
-    readonly buttons = new Map<string, FakeElement>();
-    readonly clickListeners = new Set<Listener>();
-
-    createElement(tagName: string): FakeElement { return new FakeElement(tagName, this); }
-    getElementById(id: string): FakeElement | null { return this.body.find(el => el.id === id); }
-    querySelector(selector: string): FakeElement | null { return this.buttons.get(selector) ?? null; }
-    addEventListener(_type: string, listener: Listener): void { this.clickListeners.add(listener); }
-    removeEventListener(_type: string, listener: Listener): void { this.clickListeners.delete(listener); }
-}
-
-type SessionsPanel = {
-    renderSessionsPanel(listing: Record<string, unknown>): void;
-    dismissSessionsPanel(options?: { restoreFocus?: boolean }): void;
-    requestSessionsPanel(threadId: string): void;
+type Webview = {
+    window: DOMWindow;
+    document: Document;
+    posted: Message[];
+    /** Style attributes the webview's CSP would have dropped from parsed markup. */
+    blockedStyles: string[];
+    crashes: string[];
+    host(message: Message): void;
 };
 
-function loadSessionsPanel(): { panel: SessionsPanel; doc: FakeDocument; posted: Array<Record<string, unknown>> } {
-    const doc = new FakeDocument();
-    const posted: Array<Record<string, unknown>> = [];
-    const vscode = { postMessage: (message: Record<string, unknown>) => posted.push(message) };
-    const panel = new Function('document', 'vscode', 'Node',
-        `${SESSIONS_PANEL_JS}; return { renderSessionsPanel, dismissSessionsPanel, requestSessionsPanel };`
-    )(doc, vscode, FakeElement) as SessionsPanel;
-    return { panel, doc, posted };
+const loaded: Webview[] = [];
+
+/** CSP `style-src 'nonce-…'` ignores style attributes parsed from markup; CSSOM writes still apply. */
+function emulateStyleAttributeCsp(window: DOMWindow, blockedStyles: string[]): void {
+    const innerHTML = Object.getOwnPropertyDescriptor(window.Element.prototype, 'innerHTML');
+    if (!innerHTML?.set) {
+        throw new Error('jsdom exposes no innerHTML setter');
+    }
+    const setInnerHTML = innerHTML.set;
+    Object.defineProperty(window.Element.prototype, 'innerHTML', {
+        ...innerHTML,
+        set(this: Element, markup: string) {
+            setInnerHTML.call(this, markup);
+            const root = this instanceof window.HTMLTemplateElement ? this.content : this;
+            root.querySelectorAll('[style]').forEach(el => {
+                blockedStyles.push(el.getAttribute('style') ?? '');
+                el.removeAttribute('style');
+            });
+        },
+    });
+}
+
+function loadWebview(): Webview {
+    const posted: Message[] = [];
+    const blockedStyles: string[] = [];
+    const crashes: string[] = [];
+    const virtualConsole = new VirtualConsole();
+    virtualConsole.on('error', (...args: unknown[]) => crashes.push(args.map(String).join(' ')));
+    virtualConsole.on('jsdomError', (err: Error) => crashes.push(err.stack ?? err.message));
+    const html = getWebviewContent({ cspSource: 'vscode-webview:' } as vscode.Webview, vscode.Uri.file('/ext'), true);
+    const dom = new JSDOM(html, {
+        runScripts: 'dangerously',
+        virtualConsole,
+        beforeParse(window) {
+            Object.assign(window, { acquireVsCodeApi: () => ({ postMessage: (message: Message) => posted.push(message) }) });
+            emulateStyleAttributeCsp(window, blockedStyles);
+        },
+    });
+    const { window } = dom;
+    const webview: Webview = {
+        window,
+        document: window.document,
+        posted,
+        blockedStyles,
+        crashes,
+        host: message => window.dispatchEvent(new window.MessageEvent('message', { data: message })),
+    };
+    loaded.push(webview);
+    return webview;
+}
+
+function thread(id: string, overrides: Message = {}): Message {
+    const base: ThreadSnapshot = {
+        id,
+        index: Number(id.replace(/\D/g, '')) || 1,
+        title: `Thread ${id}`,
+        messages: [],
+        pendingAssistantText: '',
+        pendingAttachments: [],
+        currentChatType: 'chat',
+        currentModel: 'codex',
+        permissionState: 'approve-reads',
+        isStreaming: false,
+        status: 'idle',
+        source: 'API',
+        contextTokens: 0,
+        contextMax: 128000,
+        lastUsage: null,
+    };
+    return { ...base, ...overrides };
+}
+
+function hostState(webview: Webview, threads: Message[], extra: Message = {}): void {
+    webview.host({
+        type: 'state',
+        activeThreadId: threads.length ? threads[0].id : '',
+        threads,
+        models: ['codex', 'claude'],
+        dimension: '1x1',
+        ...extra,
+    });
+}
+
+function tick(webview: Webview, ms = 0): Promise<void> {
+    return new Promise(resolve => webview.window.setTimeout(resolve, ms));
+}
+
+function byThread<T extends Element>(webview: Webview, selector: string, threadId: string): T {
+    const match = Array.from(webview.document.querySelectorAll<T>(selector))
+        .find(el => el.getAttribute('data-thread-id') === threadId);
+    if (!match) {
+        throw new Error(`no ${selector} for ${threadId}`);
+    }
+    return match;
+}
+
+function composer(webview: Webview, threadId: string): HTMLTextAreaElement {
+    return byThread<HTMLTextAreaElement>(webview, '.composer-input', threadId);
+}
+
+function paneOf(webview: Webview, threadId: string): HTMLElement {
+    return byThread<HTMLElement>(webview, '.pane', threadId);
+}
+
+function action(webview: Webview, name: string, threadId: string): HTMLElement {
+    return byThread<HTMLElement>(webview, `[data-action="${name}"]`, threadId);
+}
+
+/** Focus first: focusing an inactive pane re-renders it, so the field is looked up again afterwards. */
+function typeInto(webview: Webview, findField: () => HTMLTextAreaElement | HTMLInputElement, text: string, init: InputEventInit = {}): void {
+    findField().focus();
+    const field = findField();
+    field.value = text;
+    field.setSelectionRange(text.length, text.length);
+    field.dispatchEvent(new webview.window.InputEvent('input', { bubbles: true, ...init }));
+}
+
+function press(webview: Webview, target: Element, key: string, init: KeyboardEventInit = {}): void {
+    target.dispatchEvent(new webview.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }));
+}
+
+function click(webview: Webview, target: Element): void {
+    target.dispatchEvent(new webview.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+}
+
+function postedOfType(webview: Webview, type: string): Message[] {
+    return webview.posted.filter(message => message.type === type);
+}
+
+function dropUriList(webview: Webview, target: Element, uriList: string): void {
+    const drop = new webview.window.Event('drop', { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, 'dataTransfer', {
+        value: { types: ['text/uri-list'], getData: (type: string) => (type === 'text/uri-list' ? uriList : '') },
+    });
+    target.dispatchEvent(drop);
 }
 
 function loadToolStatus(): {
@@ -94,22 +166,28 @@ function loadToolStatus(): {
     )();
 }
 
+const XSS = '<img src=x onerror="window.pwned=1">"\'';
+
 const SESSIONS = [
     { sessionKey: 'agent:main:main', label: 'Main', hasActiveRun: true },
     { sessionKey: 'agent:coder:main', label: 'Coder', cold: true },
 ];
 
-function panelOf(doc: FakeDocument): FakeElement {
-    const panel = doc.getElementById('claw-sessions-panel');
-    expect(panel).not.toBeNull();
-    return panel!;
-}
-
-function rowsOf(doc: FakeDocument): FakeElement[] {
-    return panelOf(doc).children.filter(el => el.getAttribute('role') === 'menuitem');
+function sessionRows(webview: Webview): HTMLElement[] {
+    const panel = webview.document.getElementById('claw-sessions-panel');
+    return panel ? Array.from(panel.querySelectorAll<HTMLElement>('[role="menuitem"]')) : [];
 }
 
 describe('content-js', () => {
+    afterEach(() => {
+        const crashes = loaded.flatMap(webview => [
+            ...webview.crashes,
+            ...Array.from(webview.document.querySelectorAll('.openclaw-crash'), el => el.textContent ?? ''),
+        ]);
+        loaded.splice(0).forEach(webview => webview.window.close());
+        expect(crashes).toEqual([]);
+    });
+
     describe('tool status', () => {
         const status = loadToolStatus();
 
@@ -133,69 +211,592 @@ describe('content-js', () => {
         });
     });
 
+    describe('boot', () => {
+        it('shows an empty grid and asks the host for state and recommendations', () => {
+            const webview = loadWebview();
+            expect(webview.document.getElementById('paneGrid')?.textContent).toContain('No threads available.');
+            expect(webview.posted).toEqual([{ type: 'requestState' }, { type: 'requestRecommendations' }]);
+        });
+    });
+
+    describe('rendering', () => {
+        it.each([1, 3])('renders %i panes in order, each composer bound to its own thread', count => {
+            const webview = loadWebview();
+            const threads = Array.from({ length: count }, (_, i) => thread(`thread-${i + 1}`));
+            hostState(webview, threads);
+            const panes = Array.from(webview.document.querySelectorAll<HTMLElement>('.pane'));
+            expect(panes.map(pane => pane.dataset.threadId)).toEqual(threads.map(t => t.id));
+            panes.forEach(pane => {
+                expect(pane.querySelector('.composer-input')?.getAttribute('data-thread-id')).toBe(pane.dataset.threadId);
+            });
+        });
+
+        it('renders every untrusted string as text, never as markup', () => {
+            const webview = loadWebview();
+            const hostile = thread('t"1', {
+                title: XSS,
+                source: XSS,
+                currentModel: XSS,
+                currentChatType: XSS,
+                status: `idle" onclick="x`,
+                index: XSS,
+                contextMax: XSS,
+                contextTokens: XSS,
+                lastUsage: { totalTokens: XSS },
+                pendingAttachments: [{ name: XSS, path: XSS, type: 'file' }],
+                messages: [
+                    { role: 'user', content: XSS },
+                    { role: 'assistant', content: XSS },
+                    { role: 'error', content: XSS },
+                    { role: 'tool', entries: [{ title: XSS, status: XSS, details: XSS }] },
+                ],
+            });
+            hostState(webview, [hostile, thread('t2', { notice: XSS })], { models: [XSS] });
+            click(webview, action(webview, 'toggle-model', 't"1'));
+            expect(webview.document.querySelectorAll('img')).toHaveLength(0);
+            expect(webview.document.querySelectorAll('[onerror], [onclick]')).toHaveLength(0);
+            expect(paneOf(webview, 't"1').querySelector('.pane-title')?.textContent).toBe(XSS);
+            expect(paneOf(webview, 't2').querySelector('.pane-empty')?.textContent).toBe(XSS);
+            expect(composer(webview, 't"1')).toBeDefined();
+        });
+
+        it('strips non-web link targets from assistant HTML and keeps web links', () => {
+            const webview = loadWebview();
+            const html = '<a href="javascript:alert(1)">bad</a> <a href=" command:workbench.action.terminal.new">cmd</a> <a href="https://example.com">ok</a>';
+            hostState(webview, [thread('t1', { messages: [{ role: 'assistant', content: 'links', html }] })]);
+            const links = Array.from(webview.document.querySelectorAll('.message-assistant a'));
+            expect(links.map(link => [link.textContent, link.getAttribute('href')])).toEqual([
+                ['bad', null],
+                ['cmd', null],
+                ['ok', 'https://example.com'],
+            ]);
+        });
+
+        it('draws the context gauge through CSSOM, not style attributes the CSP drops', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { contextTokens: 32000, contextMax: 128000 })]);
+            click(webview, action(webview, 'toggle-model', 't1'));
+            const fill = paneOf(webview, 't1').querySelector<HTMLElement>('.context-bar-fill');
+            expect(fill?.style.width).toBe('25%');
+            expect(webview.blockedStyles).toEqual([]);
+        });
+
+        it('hides finished tool groups only when hideToolActivity is on', () => {
+            const webview = loadWebview();
+            const messages = [
+                { role: 'tool', entries: [{ title: 'read', status: 'done', details: '' }] },
+                { role: 'tool', entries: [{ title: 'write', status: 'running', details: '' }] },
+            ];
+            hostState(webview, [thread('t1', { messages })], { hideToolActivity: true });
+            expect(Array.from(webview.document.querySelectorAll('.message-tool-entry-title'), el => el.textContent)).toEqual(['write']);
+            hostState(webview, [thread('t1', { messages })], { hideToolActivity: false });
+            expect(webview.document.querySelectorAll('.message-tool')).toHaveLength(2);
+        });
+
+        it('keeps a tool group the user expanded open across re-renders', async () => {
+            const webview = loadWebview();
+            const messages = [{ role: 'tool', entries: [{ id: 'call-1', title: 'read', status: 'done', details: 'ok' }] }];
+            hostState(webview, [thread('t1', { messages })]);
+            const group = webview.document.querySelector<HTMLDetailsElement>('.message-tool');
+            expect(group?.open).toBe(false);
+            group!.open = true;
+            await tick(webview);
+            hostState(webview, [thread('t1', { messages })]);
+            expect(webview.document.querySelector<HTMLDetailsElement>('.message-tool')?.open).toBe(true);
+        });
+
+        it('shows a pane its own streamed text only, escaped, with the Stop control', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('a"1'), thread('b2')]);
+            webview.host({ type: 'textUpdate', threadId: 'a"1', text: XSS });
+            const pending = paneOf(webview, 'a"1').querySelector('.message-pending');
+            expect(pending?.textContent).toBe(XSS);
+            expect(webview.document.querySelectorAll('img')).toHaveLength(0);
+            expect(paneOf(webview, 'b2').querySelector('.message-pending')).toBeNull();
+            expect(paneOf(webview, 'a"1').querySelector('.btn-send')?.getAttribute('data-action')).toBe('cancel');
+            expect(paneOf(webview, 'a"1').querySelector('.pane-status')?.textContent).toBe('Running');
+        });
+
+        it('ignores streamed text for a thread it does not show', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            webview.host({ type: 'textUpdate', threadId: 'gone', text: 'hello' });
+            expect(webview.document.querySelectorAll('.message-pending')).toHaveLength(0);
+        });
+
+        it('labels the transport badge as text', () => {
+            const webview = loadWebview();
+            webview.host({ type: 'transportStatus', label: XSS });
+            webview.host({ type: 'transportStatus', label: 'gateway · connected' });
+            const badges = webview.document.querySelectorAll('#claw-transport-status');
+            expect(badges).toHaveLength(1);
+            expect(badges[0].textContent).toBe('gateway · connected');
+        });
+    });
+
+    describe('grid dimension', () => {
+        it('offers exactly the layouts the host accepts and package.json declares', () => {
+            const webview = loadWebview();
+            const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'));
+            const declared = manifest.contributes.configuration.properties['openclaw.chat.dimension'].enum;
+            const options = Array.from(webview.document.querySelectorAll<HTMLOptionElement>('#dimensionSelect option'), o => o.value);
+            expect(options).toEqual(declared);
+            expect(options).toEqual(GRID_DIMENSIONS);
+            expect(webview.document.getElementById('btn-flip')).toBeNull();
+        });
+
+        it.each(GRID_DIMENSIONS)('lays out %s and still renders every thread', dimension => {
+            const webview = loadWebview();
+            const [cols, rows] = dimension.split('x');
+            const threads = Array.from({ length: Number(cols) * Number(rows) }, (_, i) => thread(`t${i + 1}`));
+            hostState(webview, threads, { dimension });
+            const grid = webview.document.getElementById('paneGrid')!;
+            expect(grid.style.getPropertyValue('--grid-cols')).toBe(cols);
+            expect(grid.style.getPropertyValue('--grid-rows')).toBe(rows);
+            expect(webview.document.querySelectorAll('.pane')).toHaveLength(threads.length);
+            expect(webview.document.querySelector<HTMLSelectElement>('#dimensionSelect')?.value).toBe(dimension);
+        });
+
+        it('posts the chosen layout and drops the 1x1-only collapse toggles at once', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            expect(webview.document.querySelectorAll('.pane-collapse-btn')).toHaveLength(2);
+            const select = webview.document.querySelector<HTMLSelectElement>('#dimensionSelect')!;
+            select.value = '2x2';
+            select.dispatchEvent(new webview.window.Event('change', { bubbles: true }));
+            expect(postedOfType(webview, 'setDimension')).toEqual([{ type: 'setDimension', dimension: '2x2' }]);
+            expect(webview.document.querySelectorAll('.pane-collapse-btn')).toHaveLength(0);
+        });
+
+        it('ignores a dimension the host contract does not allow', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')], { dimension: '2x2' });
+            hostState(webview, [thread('t1')], { dimension: '9x9' });
+            expect(webview.document.querySelector<HTMLSelectElement>('#dimensionSelect')?.value).toBe('2x2');
+        });
+    });
+
+    describe('composer', () => {
+        it('keeps each pane draft, focus and caret through a host re-render', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            typeInto(webview, () => composer(webview, 't1'), 'draft one');
+            composer(webview, 't1').setSelectionRange(3, 3);
+            hostState(webview, [thread('t1'), thread('t2')]);
+            const input = composer(webview, 't1');
+            expect(input.value).toBe('draft one');
+            expect(composer(webview, 't2').value).toBe('');
+            expect(webview.document.activeElement).toBe(input);
+            expect(input.selectionStart).toBe(3);
+        });
+
+        it('sends on Enter with the thread id and inserts a newline on Shift+Enter', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')], { activeThreadId: 't2' });
+            typeInto(webview, () => composer(webview, 't1'), 'hello');
+            press(webview, composer(webview, 't1'), 'Enter', { shiftKey: true });
+            expect(postedOfType(webview, 'send')).toEqual([]);
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'send')).toEqual([{ type: 'send', threadId: 't1', text: 'hello', clientId: 'send-1' }]);
+            expect(composer(webview, 't1').value).toBe('');
+        });
+
+        it('does not send while an IME composition is confirming with Enter', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), 'にほん');
+            press(webview, composer(webview, 't1'), 'Enter', { isComposing: true });
+            expect(postedOfType(webview, 'send')).toEqual([]);
+        });
+
+        it('leaves the textarea in place during a composition and catches up at its end', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            const input = composer(webview, 't1');
+            typeInto(webview, () => input, '/ex', { isComposing: true });
+            expect(composer(webview, 't1')).toBe(input);
+            input.dispatchEvent(new webview.window.CompositionEvent('compositionend', { bubbles: true }));
+            expect(webview.document.querySelector('.slash-dropdown.visible')).not.toBeNull();
+        });
+
+        it('sends a slash command with its multi-line text intact', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), '/explain first line\nsecond line');
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'slashCommand')).toEqual([
+                { type: 'slashCommand', threadId: 't1', command: 'explain', text: 'first line\nsecond line', clientId: 'send-1' },
+            ]);
+        });
+
+        it('navigates the slash menu with the arrows, picks with Enter and closes on Escape', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), '/');
+            const names = () => Array.from(webview.document.querySelectorAll('.slash-item'), el => el.getAttribute('data-command'));
+            const active = () => webview.document.querySelector('.slash-item.active')?.getAttribute('data-command');
+            expect(active()).toBe(names()[0]);
+            press(webview, composer(webview, 't1'), 'ArrowDown');
+            expect(active()).toBe(names()[1]);
+            press(webview, composer(webview, 't1'), 'ArrowUp');
+            press(webview, composer(webview, 't1'), 'ArrowUp');
+            expect(active()).toBe(names()[0]);
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(composer(webview, 't1').value).toBe(`/${names()[0] ?? 'explain'} `);
+            expect(postedOfType(webview, 'send')).toEqual([]);
+
+            typeInto(webview, () => composer(webview, 't1'), '/re');
+            expect(webview.document.querySelector('.slash-dropdown.visible')).not.toBeNull();
+            press(webview, composer(webview, 't1'), 'Escape');
+            expect(webview.document.querySelector('.slash-dropdown.visible')).toBeNull();
+            expect(webview.document.activeElement).toBe(composer(webview, 't1'));
+        });
+
+        it('closes the model menu on Escape', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            click(webview, action(webview, 'toggle-model', 't1'));
+            const search = byThread<HTMLInputElement>(webview, '.selector-search', 't1');
+            search.focus();
+            press(webview, search, 'Escape');
+            expect(webview.document.querySelector('.selector-dropdown.visible')).toBeNull();
+        });
+
+        it('keeps typing in the model search box instead of jumping to the composer', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            click(webview, action(webview, 'toggle-model', 't1'));
+            typeInto(webview, () => byThread<HTMLInputElement>(webview, '.selector-search', 't1'), 'cl');
+            const search = byThread<HTMLInputElement>(webview, '.selector-search', 't1');
+            expect(webview.document.activeElement).toBe(search);
+            expect(search.value).toBe('cl');
+            expect(Array.from(webview.document.querySelectorAll('[data-action="select-model"]'), el => el.getAttribute('data-value'))).toEqual(['claude']);
+            click(webview, action(webview, 'select-model', 't1'));
+            expect(postedOfType(webview, 'setModel')).toEqual([{ type: 'setModel', threadId: 't1', model: 'claude' }]);
+        });
+
+        it('queues a draft sent during a reply and delivers it without touching the next draft', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
+            typeInto(webview, () => composer(webview, 't1'), 'follow up');
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'cancel')).toEqual([]);
+            expect(webview.document.querySelector('.queued-indicator')).not.toBeNull();
+            typeInto(webview, () => composer(webview, 't1'), 'next draft');
+            hostState(webview, [thread('t1', { status: 'complete' })]);
+            expect(postedOfType(webview, 'send')).toEqual([{ type: 'send', threadId: 't1', text: 'follow up', clientId: 'send-1' }]);
+            expect(composer(webview, 't1').value).toBe('next draft');
+            expect(webview.document.querySelector('.queued-indicator')).toBeNull();
+        });
+
+        it('gives a rejected send back to the composer, ahead of anything typed since', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            typeInto(webview, () => composer(webview, 't1'), 'lost words');
+            press(webview, composer(webview, 't1'), 'Enter');
+            typeInto(webview, () => composer(webview, 't1'), 'newer');
+            webview.host({ type: 'sendRejected', threadId: 't1', clientId: 'send-1' });
+            expect(composer(webview, 't1').value).toBe('lost words\n\nnewer');
+            expect(composer(webview, 't2').value).toBe('');
+        });
+
+        it('forgets a send once the host accepts it', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), 'delivered');
+            press(webview, composer(webview, 't1'), 'Enter');
+            webview.host({ type: 'sendAccepted', threadId: 't1', clientId: 'send-1' });
+            webview.host({ type: 'sendRejected', threadId: 't1', clientId: 'send-1' });
+            expect(composer(webview, 't1').value).toBe('');
+        });
+
+        it('keeps a send the transcript already shows until the host settles it', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), 'shown then retired');
+            press(webview, composer(webview, 't1'), 'Enter');
+            hostState(webview, [thread('t1', { messages: [{ role: 'user', content: 'shown then retired' }], isStreaming: true })]);
+            webview.host({ type: 'sendRejected', threadId: 't1', clientId: 'send-1' });
+            expect(composer(webview, 't1').value).toBe('shown then retired');
+        });
+
+        it('gives back only the rejected one of two pending sends', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            typeInto(webview, () => composer(webview, 't1'), 'first');
+            press(webview, composer(webview, 't1'), 'Enter');
+            hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
+            typeInto(webview, () => composer(webview, 't1'), 'second');
+            press(webview, composer(webview, 't1'), 'Enter');
+            hostState(webview, [thread('t1', { status: 'complete' })]);
+
+            webview.host({ type: 'sendRejected', threadId: 't1', clientId: 'send-1' });
+
+            expect(postedOfType(webview, 'send').map(m => m.text)).toEqual(['first', 'second']);
+            expect(composer(webview, 't1').value).toBe('first');
+        });
+
+        it.each(['cancel', 'clear'])('returns a queued draft to the composer on %s instead of sending it', (actionName) => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
+            typeInto(webview, () => composer(webview, 't1'), 'queued words');
+            press(webview, composer(webview, 't1'), 'Enter');
+
+            click(webview, action(webview, actionName, 't1'));
+            hostState(webview, [thread('t1', { status: 'cancelled' })]);
+
+            expect(postedOfType(webview, 'send')).toEqual([]);
+            expect(composer(webview, 't1').value).toBe('queued words');
+        });
+
+        it('stops the reply on Enter when the draft is empty', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'cancel')).toEqual([{ type: 'cancel', threadId: 't1' }]);
+        });
+    });
+
+    describe('file mentions', () => {
+        async function openMention(webview: Webview, threadId: string, text: string): Promise<void> {
+            typeInto(webview, () => composer(webview, threadId), text);
+            await tick(webview, 150);
+        }
+
+        const FILES = [
+            { name: 'a.ts', path: '/w/a.ts', relativePath: 'a.ts' },
+            { name: 'b.ts', path: '/w/b.ts', relativePath: 'b.ts' },
+        ];
+
+        it('searches for the pane, then attaches the picked file and drops the @query', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            await openMention(webview, 't1', 'see @a');
+            expect(postedOfType(webview, 'fileSearch')).toEqual([{ type: 'fileSearch', query: 'a', threadId: 't1' }]);
+            webview.host({ type: 'fileSearchResults', threadId: 't1', query: 'a', files: FILES });
+            press(webview, composer(webview, 't1'), 'ArrowDown');
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'attachFile')).toEqual([{ type: 'attachFile', threadId: 't1', filePath: '/w/b.ts' }]);
+            expect(composer(webview, 't1').value).toBe('see ');
+        });
+
+        it('ignores results that land after the mention closed', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            await openMention(webview, 't1', '@a');
+            typeInto(webview, () => composer(webview, 't1'), '@a ');
+            webview.host({ type: 'fileSearchResults', threadId: 't1', query: 'a', files: FILES });
+            typeInto(webview, () => composer(webview, 't1'), '@a @');
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'attachFile')).toEqual([]);
+            expect(postedOfType(webview, 'send')).toEqual([{ type: 'send', threadId: 't1', text: '@a @', clientId: 'send-1' }]);
+        });
+
+        it('stops offering the previous query\'s results while the next one is searched', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            await openMention(webview, 't1', '@a');
+            webview.host({ type: 'fileSearchResults', threadId: 't1', query: 'a', files: FILES });
+            typeInto(webview, () => composer(webview, 't1'), '@ab');
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'attachFile')).toEqual([]);
+        });
+
+        it('ignores results for an older query or another pane', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            await openMention(webview, 't1', '@a');
+            webview.host({ type: 'fileSearchResults', threadId: 't1', query: '', files: FILES });
+            webview.host({ type: 'fileSearchResults', threadId: 't2', query: 'a', files: FILES });
+            press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'attachFile')).toEqual([]);
+        });
+
+        it('sends from another pane instead of attaching the first pane\'s pick', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            await openMention(webview, 't1', '@a');
+            webview.host({ type: 'fileSearchResults', threadId: 't1', query: 'a', files: FILES });
+            const other = composer(webview, 't2');
+            other.value = 'hi';
+            press(webview, other, 'Enter');
+            expect(postedOfType(webview, 'attachFile')).toEqual([]);
+        });
+
+        it('appends an inserted mention to the active thread draft', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')], { activeThreadId: 't2' });
+            typeInto(webview, () => composer(webview, 't2'), 'look at ');
+            webview.host({ type: 'insertMention', mention: '@src/a.ts#L1-2' });
+            expect(composer(webview, 't2').value).toBe('look at @src/a.ts#L1-2');
+            expect(composer(webview, 't1').value).toBe('');
+        });
+    });
+
+    describe('pane actions', () => {
+        it.each([
+            ['export', 'exportThread'],
+            ['clear', 'clearThread'],
+            ['close', 'closeThread'],
+            ['attach', 'attach'],
+            ['sessions', 'requestSessions'],
+        ])('%s posts %s for its own thread', (name, type) => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            click(webview, action(webview, name, 't2'));
+            expect(postedOfType(webview, type)).toEqual([{ type, threadId: 't2' }]);
+        });
+
+        it('focuses the clicked pane on the host', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            click(webview, paneOf(webview, 't2').querySelector('.pane-title')!);
+            expect(postedOfType(webview, 'focusThread')).toEqual([{ type: 'focusThread', threadId: 't2' }]);
+            expect(paneOf(webview, 't2').classList.contains('active')).toBe(true);
+        });
+
+        it('expands an auto-collapsed pane from its toggle', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2', { status: 'complete' })]);
+            expect(paneOf(webview, 't2').classList.contains('collapsed')).toBe(true);
+            click(webview, action(webview, 'toggleCollapse', 't2'));
+            expect(paneOf(webview, 't2').classList.contains('collapsed')).toBe(false);
+        });
+
+        it('opens the suggestions of a pane that was not active', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            webview.host({ type: 'recommendations', items: [{ command: '/explain', icon: '?', label: XSS }] });
+            click(webview, action(webview, 'toggle-recs', 't2'));
+            expect(paneOf(webview, 't2').querySelector('.recommendations')?.classList.contains('open')).toBe(true);
+            expect(paneOf(webview, 't2').querySelector('.rec-chip')?.textContent).toBe(`? ${XSS}`);
+            click(webview, action(webview, 'use-recommendation', 't2'));
+            expect(composer(webview, 't2').value).toBe('/explain ');
+        });
+
+        it('leaves the transcript DOM alone when a click has nothing to close', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { messages: [{ role: 'user', content: 'copy me' }] })]);
+            const message = webview.document.querySelector('.message-user')!;
+            click(webview, message);
+            expect(webview.document.querySelector('.message-user')).toBe(message);
+        });
+
+        it('links the paths in plain-text rows, not the prose before them or URL tails', () => {
+            const webview = loadWebview();
+            const content = 'failed in src/a.ts:5:5 and see /home/x/y.ts, docs at https://host.dev/z.js';
+            hostState(webview, [thread('t1', { messages: [{ role: 'error', content }] })]);
+            const links = Array.from(webview.document.querySelectorAll('.message-error .file-link'));
+            expect(links.map(link => [link.textContent, link.getAttribute('data-file-path'), link.getAttribute('data-line')])).toEqual([
+                ['src/a.ts:5:5', 'src/a.ts', '5'],
+                ['/home/x/y.ts', '/home/x/y.ts', null],
+            ]);
+            expect(webview.document.querySelector('.message-error')?.textContent).toBe(content);
+            press(webview, links[0], 'Enter');
+            click(webview, links[1]);
+            expect(postedOfType(webview, 'openFile')).toEqual([
+                { type: 'openFile', filePath: 'src/a.ts', line: '5' },
+                { type: 'openFile', filePath: '/home/x/y.ts', line: '' },
+            ]);
+        });
+
+        it('asks for a new thread, a split and a pop-out from the header', () => {
+            const webview = loadWebview();
+            ['btn-new', 'btn-split', 'btn-popout'].forEach(id => click(webview, webview.document.getElementById(id)!));
+            expect(webview.posted.slice(2)).toEqual([{ type: 'newSession' }, { type: 'splitThread' }, { type: 'popOut' }]);
+        });
+    });
+
+    describe('drag and drop', () => {
+        it('attaches dropped explorer files, skipping a malformed URI but not its neighbours', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            const shell = byThread(webview, '.composer-shell', 't1');
+            dropUriList(webview, shell, [
+                '# comment',
+                'file:///home/me/a%20b.ts',
+                'file:///C:/work/c.ts',
+                'file:///bad%E0%A4%A.ts',
+                'file://server/share/d.ts',
+                'https://example.com/e.ts',
+            ].join('\r\n'));
+            expect(postedOfType(webview, 'attachFiles')).toEqual([{
+                type: 'attachFiles',
+                threadId: 't1',
+                filePaths: ['/home/me/a b.ts', 'C:/work/c.ts', '//server/share/d.ts'],
+            }]);
+        });
+    });
+
     describe('sessions panel', () => {
-        it('requests sessions for the pane that opened it', () => {
-            const { panel, posted } = loadSessionsPanel();
-            panel.requestSessionsPanel('thread-2');
-            expect(posted).toEqual([{ type: 'requestSessions', threadId: 'thread-2' }]);
+        function openPanel(webview: Webview, threadId: string, listing: Message = { sessions: SESSIONS }): void {
+            click(webview, action(webview, 'sessions', threadId));
+            webview.host({ type: 'sessionsList', threadId, ...listing });
+        }
+
+        it('renders a labelled menu of escaped rows and focuses the first', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            openPanel(webview, 't1', { sessions: [...SESSIONS, { sessionKey: 'k', label: XSS }] });
+            const panel = webview.document.getElementById('claw-sessions-panel');
+            expect(panel?.getAttribute('role')).toBe('menu');
+            expect(sessionRows(webview).map(row => row.textContent)).toEqual(['● Main', '❄ Coder', XSS]);
+            expect(webview.document.querySelectorAll('img')).toHaveLength(0);
+            expect(webview.document.activeElement).toBe(sessionRows(webview)[0]);
         });
 
-        it('renders a labelled menu and focuses the first row', () => {
-            const { panel, doc } = loadSessionsPanel();
-            panel.renderSessionsPanel({ sessions: SESSIONS, threadId: 'thread-1' });
-            expect(panelOf(doc).getAttribute('role')).toBe('menu');
-            expect(panelOf(doc).getAttribute('aria-label')).toBe('Sessions');
-            expect(rowsOf(doc).map(row => row.textContent)).toEqual(['● Main', '❄ Coder']);
-            expect(doc.activeElement).toBe(rowsOf(doc)[0]);
-        });
-
-        it('opens a session into the requesting thread', () => {
-            const { panel, doc, posted } = loadSessionsPanel();
-            panel.requestSessionsPanel('thread-3');
-            panel.renderSessionsPanel({ sessions: SESSIONS });
-            rowsOf(doc)[1].dispatch('click');
-            expect(posted[posted.length - 1]).toEqual({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-3' });
+        it('opens a session into the pane that asked and closes the menu', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2')]);
+            click(webview, action(webview, 'sessions', 't2'));
+            webview.host({ type: 'sessionsList', sessions: SESSIONS });
+            click(webview, sessionRows(webview)[1]);
+            expect(postedOfType(webview, 'openSession')).toEqual([{ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 't2' }]);
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
         });
 
         it('moves focus with the arrow keys, wrapping around', () => {
-            const { panel, doc } = loadSessionsPanel();
-            panel.renderSessionsPanel({ sessions: SESSIONS, threadId: 'thread-1' });
-            panelOf(doc).dispatch('keydown', { key: 'ArrowDown' });
-            expect(doc.activeElement).toBe(rowsOf(doc)[1]);
-            panelOf(doc).dispatch('keydown', { key: 'ArrowDown' });
-            expect(doc.activeElement).toBe(rowsOf(doc)[0]);
-            panelOf(doc).dispatch('keydown', { key: 'ArrowUp' });
-            expect(doc.activeElement).toBe(rowsOf(doc)[1]);
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            openPanel(webview, 't1');
+            const panel = webview.document.getElementById('claw-sessions-panel')!;
+            press(webview, panel, 'ArrowDown');
+            expect(webview.document.activeElement).toBe(sessionRows(webview)[1]);
+            press(webview, panel, 'ArrowDown');
+            expect(webview.document.activeElement).toBe(sessionRows(webview)[0]);
+            press(webview, panel, 'ArrowUp');
+            expect(webview.document.activeElement).toBe(sessionRows(webview)[1]);
         });
 
-        it('closes on Escape and returns focus to the Sessions button', () => {
-            const { panel, doc } = loadSessionsPanel();
-            const button = doc.createElement('button');
-            doc.buttons.set('.pane-btn[data-action="sessions"][data-thread-id="thread-1"]', button);
-            panel.renderSessionsPanel({ sessions: SESSIONS, threadId: 'thread-1' });
-            panelOf(doc).dispatch('keydown', { key: 'Escape' });
-            expect(doc.getElementById('claw-sessions-panel')).toBeNull();
-            expect(doc.activeElement).toBe(button);
+        it('closes on Escape and hands focus back to the Sessions button of its pane', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t"1')]);
+            openPanel(webview, 't"1');
+            press(webview, webview.document.getElementById('claw-sessions-panel')!, 'Escape');
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+            expect(webview.document.activeElement).toBe(action(webview, 'sessions', 't"1'));
         });
 
-        it('shows an explicit row when the list is empty or unavailable', () => {
-            const { panel, doc } = loadSessionsPanel();
-            panel.renderSessionsPanel({ sessions: [] });
-            expect(rowsOf(doc).map(row => row.textContent)).toEqual(['No sessions']);
-            panel.renderSessionsPanel({ sessions: [], error: 'Gateway not connected' });
-            expect(rowsOf(doc).map(row => row.textContent)).toEqual(['Gateway not connected']);
-            expect(rowsOf(doc)[0].getAttribute('aria-disabled')).toBe('true');
-            expect(doc.activeElement).toBe(rowsOf(doc)[0]);
+        it('shows an explicit disabled row when the list is empty or unavailable', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            openPanel(webview, 't1', { sessions: [] });
+            expect(sessionRows(webview).map(row => row.textContent)).toEqual(['No sessions']);
+            openPanel(webview, 't1', { sessions: [], error: XSS });
+            expect(sessionRows(webview).map(row => row.textContent)).toEqual([XSS]);
+            expect(sessionRows(webview)[0].getAttribute('aria-disabled')).toBe('true');
         });
 
-        it('drops its outside-click listener when dismissed', async () => {
-            const { panel, doc } = loadSessionsPanel();
-            panel.renderSessionsPanel({ sessions: SESSIONS, threadId: 'thread-1' });
-            await new Promise(resolve => setTimeout(resolve, 0));
-            expect(doc.clickListeners.size).toBe(1);
-            panel.dismissSessionsPanel();
-            expect(doc.clickListeners.size).toBe(0);
-            expect(doc.getElementById('claw-sessions-panel')).toBeNull();
+        it('closes on an outside click, and on the host confirming a selection', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            openPanel(webview, 't1');
+            await tick(webview);
+            click(webview, webview.document.body);
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+            openPanel(webview, 't1');
+            webview.host({ type: 'agentSelected', sessionKey: 'agent:main:main' });
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
         });
     });
 });

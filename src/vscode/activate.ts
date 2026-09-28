@@ -155,9 +155,11 @@ export async function activate(context: vscode.ExtensionContext) {
 
     if (autoConnect && vscode.workspace.isTrusted) {
         log.info('auto-connect enabled, scheduling connect');
-        setTimeout(() => {
+        const autoConnectTimer = setTimeout(() => {
             void connect();
         }, 1000);
+        // A deactivation inside the delay must not connect a disposed extension.
+        context.subscriptions.push({ dispose: () => clearTimeout(autoConnectTimer) });
     } else if (autoConnect) {
         log.info('auto-connect enabled but workspace untrusted; waiting for trust');
         context.subscriptions.push(

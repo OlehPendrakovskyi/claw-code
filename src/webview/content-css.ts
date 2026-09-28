@@ -993,70 +993,6 @@ export const CONTENT_CSS = `
             text-overflow: ellipsis;
         }
 
-        .settings-dropdown {
-            position: absolute;
-            left: 10px;
-            right: 10px;
-            bottom: calc(100% - 2px);
-            display: none;
-            max-height: 320px;
-            overflow: auto;
-            border-radius: 12px;
-            border: 1px solid var(--vscode-editorWidget-border, rgba(255, 255, 255, 0.08));
-            background: var(--vscode-editorWidget-background, var(--vscode-dropdown-background, #252526));
-            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
-            padding: 10px;
-            z-index: 10;
-        }
-
-        .settings-dropdown.visible {
-            display: block;
-        }
-
-        .settings-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 6px 4px;
-        }
-
-        .settings-row + .settings-row {
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
-        }
-
-        .settings-label {
-            font-size: 11px;
-            font-weight: 600;
-            opacity: 0.85;
-            white-space: nowrap;
-        }
-
-        .settings-control select,
-        .settings-control input[type="range"] {
-            font: inherit;
-            font-size: 11px;
-            height: 24px;
-            border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
-            color: inherit;
-            cursor: pointer;
-            padding: 0 6px;
-        }
-
-        .settings-control input[type="range"] {
-            width: 80px;
-            padding: 0;
-        }
-
-        .settings-value {
-            font-size: 10px;
-            opacity: 0.6;
-            min-width: 28px;
-            text-align: right;
-        }
-
         .recommendations {
             display: none;
             flex-direction: column;
@@ -1114,6 +1050,12 @@ export const CONTENT_CSS = `
 
         .openclaw-crash summary::before {
             content: '\\26A0';
+        }
+
+        .openclaw-crash-state {
+            margin-top: 6px;
+            opacity: 0.6;
+            font-size: 11px;
         }
 
         .openclaw-crash pre {

@@ -173,34 +173,21 @@
           ],
           "description": "Available models shown in the chat model picker"
         },
-        "openclaw.chat.thinkingLevel": {
-          "type": "string",
-          "enum": [
-            "none",
-            "low",
-            "medium",
-            "high"
-          ],
-          "default": "medium",
-          "description": "Thinking/reasoning depth for the AI model (none, low, medium, high)"
-        },
-        "openclaw.chat.temperature": {
-          "type": "number",
-          "default": 0.7,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Temperature for response generation (0 = deterministic, 2 = very creative)"
-        },
-        "openclaw.chat.maxTokens": {
-          "type": "number",
-          "default": 0,
-          "minimum": 0,
-          "description": "Maximum response tokens (0 = model default)"
-        },
         "openclaw.chat.systemPrompt": {
           "type": "string",
           "default": "",
           "description": "Custom system prompt prepended to all chat messages (leave empty for default)"
+        },
+        "openclaw.chat.contextMax": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Context window size in tokens for the usage gauge (0 = derive from the model name)"
+        },
+        "openclaw.chat.source": {
+          "type": "string",
+          "default": "",
+          "description": "Source label shown on every chat pane (leave empty to derive it from the model name)"
         },
         "openclaw.chat.dynamicSubject": {
           "type": "boolean",
@@ -285,12 +272,14 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
+    "@types/jsdom": "^21.1.7",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^26.6.2",
     "@types/vscode": "~1.138.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
     "jest": "^30.5.2",
+    "jsdom": "^26.1.0",
     "license-checker-rseidelsohn": "^5.0.1",
     "lodash": "^4.18.1",
     "oxlint": "^1.85.0",
