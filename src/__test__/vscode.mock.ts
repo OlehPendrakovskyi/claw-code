@@ -70,6 +70,7 @@ export const workspace = {
         inspect: jest.fn(() => undefined),
     })),
     workspaceFolders: undefined,
+    onDidChangeConfiguration: jest.fn(() => createDisposable()),
     fs: {
         readFile: jest.fn(),
         writeFile: jest.fn(),

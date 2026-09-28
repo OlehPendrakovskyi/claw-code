@@ -78,9 +78,20 @@ export async function activate(context: vscode.ExtensionContext) {
     // before migration finishes sees an empty SecretStorage token and falls
     // back to acpx / reports the gateway offline. Await it before the chat
     // provider becomes reachable, then register.
-    await migrateLegacyGatewayToken(context).catch((err: unknown) => {
-        log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
-    });
+    const runTokenMigration = () =>
+        migrateLegacyGatewayToken(context).catch((err: unknown) => {
+            log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
+    await runTokenMigration();
+    // A plaintext token written after activation (settings edit, settings
+    // sync, a newly added workspace folder) must not linger until reload.
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('openclaw.gateway.token')) {
+                void runTokenMigration();
+            }
+        })
+    );
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
         provider

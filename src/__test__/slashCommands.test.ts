@@ -4,6 +4,8 @@ import {
     findCommand,
     filterCommands,
     buildSlashPrompt,
+    keepUtf8Tail,
+    COMPACT_TRANSCRIPT_MAX_BYTES,
 } from '../webview/slashCommands';
 
 describe('SLASH_COMMANDS', () => {
@@ -103,5 +105,51 @@ describe('buildSlashPrompt', () => {
             gitDiff: '+const a = 1;\n-const b = 2;',
         });
         expect(prompt).toContain('+const a = 1;');
+    });
+});
+
+describe('keepUtf8Tail', () => {
+    it('returns the input unchanged when it fits', () => {
+        expect(keepUtf8Tail('héllo', 6)).toBe('héllo');
+    });
+
+    it('bounds multibyte text by encoded bytes, not UTF-16 units', () => {
+        const emoji = '😀'.repeat(40_000);
+        const kept = keepUtf8Tail(emoji, 65_536);
+        expect(Buffer.byteLength(kept, 'utf8')).toBe(65_536);
+        expect(kept).toBe('😀'.repeat(16_384));
+    });
+
+    it('drops a code point split by the cut instead of emitting a partial sequence', () => {
+        // 'aé€😀' = 1 + 2 + 3 + 4 bytes; a 5-byte tail would start inside '€'.
+        const kept = keepUtf8Tail('aé€😀', 5);
+        expect(kept).toBe('😀');
+        expect(kept).not.toContain('\uFFFD');
+    });
+
+    it('keeps the most recent text', () => {
+        expect(keepUtf8Tail('old turn\nnew turn', 8)).toBe('new turn');
+    });
+
+    it('returns an empty string for a zero or negative budget', () => {
+        expect(keepUtf8Tail('abc', 0)).toBe('');
+        expect(keepUtf8Tail('abc', -1)).toBe('');
+    });
+});
+
+describe('buildSlashPrompt transcript cap', () => {
+    it('embeds a short transcript verbatim', () => {
+        const prompt = buildSlashPrompt('compact', '', {}, 'user: hi');
+        expect(prompt).toContain('--- Conversation So Far ---\nuser: hi\n---');
+    });
+
+    it('keeps the latest turns of an oversized transcript within the byte cap and says so', () => {
+        const transcript = `FIRST-TURN ${'ж'.repeat(COMPACT_TRANSCRIPT_MAX_BYTES)} LAST-TURN`;
+        const prompt = buildSlashPrompt('compact', '', {}, transcript);
+        const body = prompt.split(/--- Conversation So Far[^\n]*\n/)[1].split('\n---')[0];
+        expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(COMPACT_TRANSCRIPT_MAX_BYTES);
+        expect(body.endsWith('LAST-TURN')).toBe(true);
+        expect(body).not.toContain('FIRST-TURN');
+        expect(prompt).toContain('earliest turns omitted');
     });
 });

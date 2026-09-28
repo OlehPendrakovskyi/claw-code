@@ -184,25 +184,23 @@ function formatContext(ctx: EditorContext, contextType: ContextType): string {
 
 /** Maximum UTF-8 bytes of conversation transcript /compact may embed.
  *  The acpx transport passes the prompt as a single execve argument, so an
- *  unbounded transcript would fail with E2BIG on long conversations; sizing
- *  it to fit the transport budget keeps /compact usable. Truncation happens on
- *  a char boundary via {@link truncateUtf8}.*/
+ *  unbounded transcript would fail with E2BIG on long conversations. */
 export const COMPACT_TRANSCRIPT_MAX_BYTES = 64 * 1024;
 
-/** Truncate `input` to at most `maxBytes` UTF-8 bytes, cutting on a char
- *  boundary so the result stays valid UTF-8. */
-export function truncateUtf8(input: string, maxBytes: number): string {
-    const asBytes = Buffer.byteLength(input,'utf8');
-    if (asBytes <= maxBytes) {
+/** The last at most `maxBytes` UTF-8 bytes of `input`, starting on a code
+ *  point boundary so the result stays valid UTF-8. */
+export function keepUtf8Tail(input: string, maxBytes: number): string {
+    const encoded = Buffer.from(input, 'utf8');
+    if (encoded.length <= maxBytes) {
         return input;
     }
-    let end = maxBytes;
-    // Step back over any continuation bytes so a multi-byte char at the
-    // boundary is not split into invalid UTF-8.
-    while (end > 0 && (input.charCodeAt(end) & 0xC0) === 0x80) {
-        end -= 1;
+    let start = encoded.length - Math.max(0, maxBytes);
+    // A continuation byte at the cut belongs to a code point that started
+    // before it; skip to the next lead byte instead of splitting it.
+    while (start < encoded.length && (encoded[start] & 0xC0) === 0x80) {
+        start += 1;
     }
-    return input.slice(0,end);
+    return encoded.subarray(start).toString('utf8');
 }
 
 export function buildSlashPrompt(
@@ -226,18 +224,12 @@ export function buildSlashPrompt(
     if (transcript) {
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the
-        // command has no prior turns to compress. The acpx transport passes
-        // the resulting prompt as one execve argument, so an unbounded transcript
-        // fails with E2BIG instead of compacting (and blows past the Gateway
-        // cap). Cap the transcript and note the trim so the summary still knows
-        // prior turns were dropped; truncation cuts on a char boundary so the
-        // result stays valid UTF-8.
-        const transcriptBytes = Buffer.byteLength(transcript, 'utf8');
-        const transcriptText = transcriptBytes <= COMPACT_TRANSCRIPT_MAX_BYTES
-            ? transcript
-            : truncateUtf8(transcript, COMPACT_TRANSCRIPT_MAX_BYTES);
-        sections.push(transcriptBytes > COMPACT_TRANSCRIPT_MAX_BYTES
-            ? `\n--- Conversation So Far (truncated; retained ${transcriptText.length} chars) ---\n${transcriptText}\n---`
+        // command has no prior turns to compress. The oldest turns are the
+        // ones dropped when it exceeds the cap, and the header says so.
+        const trimmed = Buffer.byteLength(transcript, 'utf8') > COMPACT_TRANSCRIPT_MAX_BYTES;
+        const transcriptText = keepUtf8Tail(transcript, COMPACT_TRANSCRIPT_MAX_BYTES);
+        sections.push(trimmed
+            ? `\n--- Conversation So Far (earliest turns omitted; last ${COMPACT_TRANSCRIPT_MAX_BYTES} bytes kept) ---\n${transcriptText}\n---`
             : `\n--- Conversation So Far ---\n${transcriptText}\n---`);
     }
     if (contextBlock) {

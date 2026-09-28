@@ -5,20 +5,23 @@ import * as path from 'path';
 import type * as FspType from 'fs/promises';
 import { readAttachments } from '../webview/viewMessaging';
 
-// The unmocked module: the default implementation must bypass the mock below,
-// whose realpath delegates through the swappable wrapper back to this
+// The unmocked promises API: the default implementation must bypass the mock
+// below, whose realpath delegates through the swappable wrapper back to this
 // implementation — calling the mocked `fsp.realpath` here would recurse.
-const realFsp: typeof FspType = jest.requireActual('fs/promises');
+const realFsp: typeof FspType = jest.requireActual('fs').promises;
 
-// A controllable realpath wrapper: ESM module namespaces are not redefinable,
-// so jest.spyOn cannot intercept fs/promises directly. The mock routes
-// realpath through a swappable implementation the swap test can replace.
+// A controllable realpath wrapper. viewMessaging reads `promises` from 'fs',
+// so that is the object mocked; ESM namespaces are not redefinable, which
+// rules out jest.spyOn. Tests swap `realpathImpl` to simulate path races.
 let realpathImpl: (p: fs.PathLike) => Promise<string> = (p) => realFsp.realpath(p as string);
-jest.mock('fs/promises', () => {
-    const actual = jest.requireActual('fs/promises');
+jest.mock('fs', () => {
+    const actual = jest.requireActual('fs');
     return {
         ...actual,
-        realpath: (p: fs.PathLike) => (globalThis as any).__realpathImpl(p),
+        promises: {
+            ...actual.promises,
+            realpath: (p: fs.PathLike) => (globalThis as any).__realpathImpl(p),
+        },
     };
 });
 beforeEach(() => {
@@ -94,14 +97,14 @@ describe('readAttachments text budget', () => {
             const other = path.join(dir, 'other.txt');
             fs.writeFileSync(other, 'b'.repeat(4 * 1024));
             const swapPath = path.join(dir, 'swapped.txt');
-            let reads = 0;
+            let storedPathLookups = 0;
             realpathImpl = async (p: fs.PathLike) => {
-                const resolved = fs.realpathSync(p as string);
-                // The second canonicalization (after the read) sees the swap.
-                if (resolved === realFile && ++reads > 1) {
+                // Only lookups of the stored path count: the fd-link lookup
+                // resolves to the same file but must not trigger the swap.
+                if (p === realFile && ++storedPathLookups > 1) {
                     return swapPath;
                 }
-                return resolved;
+                return realFsp.realpath(p as string);
             };
             const { prompt } = await readAttachments(
                 [
@@ -110,12 +113,111 @@ describe('readAttachments text budget', () => {
                 ],
                 { reservedPromptBytes: 20 * 1024 * 1024 - 5 * 1024 }
             );
-            // The swapped attachment is dropped without consuming budget, so
-            // the second one is still emitted.
-            expect(prompt).toContain('real.txt');
-            expect(prompt).toContain('other.txt');
+            // The swap is caught by the post-read check (the second stored-
+            // path lookup), so real.txt is dropped without consuming budget
+            // and other.txt still fits.
+            expect(storedPathLookups).toBe(2);
+            expect(prompt).not.toContain('hello');
+            expect(prompt).toContain('b'.repeat(4 * 1024));
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }
+    });
+});
+
+describe('readAttachments fd-location check', () => {
+    const posixOnly = process.platform === 'win32' ? it.skip : it;
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    let dir: string;
+    let file: string;
+    let image: string;
+
+    const setPlatform = (platform: NodeJS.Platform) => {
+        Object.defineProperty(process, 'platform', { ...originalPlatform, value: platform });
+    };
+
+    /** Route fd-link lookups to `resolveFdLink`; every other path resolves normally. */
+    const stubFdLink = (resolveFdLink: (fdPath: string) => Promise<string>) => {
+        realpathImpl = async (p: fs.PathLike) => {
+            const asString = p as string;
+            return /^\/(proc\/self|dev)\/fd\/\d+$/.test(asString)
+                ? resolveFdLink(asString)
+                : realFsp.realpath(asString);
+        };
+    };
+
+    const readText = () => readAttachments([{ name: 'note.txt', path: file, type: 'file' }]);
+    const readImage = () => readAttachments([{ name: 'pic.png', path: image, type: 'image' }]);
+
+    beforeEach(() => {
+        if (process.platform === 'win32') {
+            return;
+        }
+        // Attachments carry canonical paths, so the fixture dir is canonicalized
+        // (macOS tmpdir is itself a symlink).
+        dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fd-')));
+        file = path.join(dir, 'note.txt');
+        fs.writeFileSync(file, 'fd-anchored content');
+        image = path.join(dir, 'pic.png');
+        fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    });
+
+    afterEach(() => {
+        Object.defineProperty(process, 'platform', originalPlatform);
+        if (process.platform === 'win32') {
+            return;
+        }
+        fs.rmSync(dir, { recursive: true, force: true });
+    });
+
+    posixOnly('accepts a Linux attachment whose fd link resolves to the stored path', async () => {
+        setPlatform('linux');
+        stubFdLink(async () => file);
+        const { prompt } = await readText();
+        expect(prompt).toContain('fd-anchored content');
+    });
+
+    posixOnly('rejects a Linux attachment whose fd link points elsewhere', async () => {
+        setPlatform('linux');
+        stubFdLink(async () => '/etc/passwd');
+        const { prompt } = await readText();
+        expect(prompt).not.toContain('fd-anchored content');
+        expect(prompt).toContain('[Could not read file]');
+    });
+
+    posixOnly('fails closed on Linux when /proc/self/fd cannot be resolved', async () => {
+        setPlatform('linux');
+        stubFdLink(async () => {
+            throw new Error('ENOENT');
+        });
+        const { prompt } = await readText();
+        expect(prompt).not.toContain('fd-anchored content');
+    });
+
+    posixOnly('accepts text and images on macOS, where /dev/fd echoes its own path', async () => {
+        setPlatform('darwin');
+        stubFdLink(async (fdPath) => fdPath);
+        const text = await readText();
+        expect(text.prompt).toContain('fd-anchored content');
+        const image = await readImage();
+        expect(image.prompt).toContain('<image');
+    });
+
+    posixOnly('accepts an attachment when /dev/fd is not mounted', async () => {
+        setPlatform('freebsd');
+        stubFdLink(async () => {
+            throw new Error('ENOENT');
+        });
+        const { prompt } = await readText();
+        expect(prompt).toContain('fd-anchored content');
+    });
+
+    posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
+        setPlatform('darwin');
+        stubFdLink(async () => '/private/etc/passwd');
+        const text = await readText();
+        expect(text.prompt).not.toContain('fd-anchored content');
+        const image = await readImage();
+        expect(image.prompt).not.toContain('<image');
     });
 });
