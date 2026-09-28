@@ -2026,6 +2026,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // marker blocks sends during the rebind window, so this late switch
         // cannot strand a send on the previous key; the finally block below
         // releases the marker when this request still owns it.
+        // Revalidate the gateway identity and the allowlist immediately
+        // before the shared-key switch: the persistence await above may
+        // outlive a URL/token change, and a key learned from the previous
+        // gateway must not be activated on the new one (same stale-binding
+        // class as the open path).
+        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
+            log.warn('selectAgent: rejected session key after identity change', sessionKey);
+            return;
+        }
         gateway.setActiveSession(sessionKey);
         const reboundFrom = activeThread.sessionKey && activeThread.sessionKey !== sessionKey
             ? activeThread.sessionKey
@@ -2439,6 +2448,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (!abandonedPreviousKey || !this.threads.has(thread.id)) {
                 return;
             }
+            // A superseding open must not inherit this rebind's stale state:
+            // require that this continuation still owns the open generation
+            // and that the thread remains bound to the abandoned key. Only
+            // then is it safe to reinstate the captured sink; otherwise a
+            // newer open's binding would receive cross-session events.
+            if (thread.openGeneration !== openGen || thread.sessionKey !== abandonedPreviousKey) {
+                return;
+            }
             if (abandonedSuspendedSink) {
                 abandonedSuspendedSink.gateway.restoreSessionState(abandonedSuspendedSink.sessionKey, abandonedStateSnapshot);
                 this.suspendedTranscriptSinks.set(thread.id, abandonedSuspendedSink);
@@ -2490,6 +2507,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         // in-flight marker blocks sends during the rebind window, so this
         // late switch cannot strand a send on the previous key; the stale
         // paths above never touched the shared key, so no restore is needed.
+        // Revalidate the gateway identity and the allowlist immediately
+        // before the shared-key switch: the persistence await above may
+        // outlive a URL/token change, and a key learned from the previous
+        // gateway must not be rebound and queried on the new one.
+        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
+            log.warn('openSession: rejected session key after identity change', sessionKey);
+            restoreAbandonedRebind();
+            return;
+        }
         gateway.setActiveSession(sessionKey);
         thread.sessionKey = sessionKey;
 
