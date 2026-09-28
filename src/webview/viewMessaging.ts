@@ -513,7 +513,21 @@ export async function readAttachments(
                     continue;
                 }
                 const imageSection = `<image path="${escapeXmlAttr(snapshotPath)}" />`;
-                argvBytes += Buffer.byteLength(imageSection, 'utf8');
+                // The exact emitted section is charged against the argv budget
+                // (the cheap pre-check above only proves budget remains):
+                // accepting a snapshot whose section overruns the budget would
+                // let many images collectively exceed the per-argument spawn
+                // limit and E2BIG the acpx spawn. A rejected snapshot is
+                // removed immediately — the shared temp directory is deleted
+                // by dispose() as a whole, but the skipped image must not
+                // leave validated bytes on disk.
+                const sectionBytes = Buffer.byteLength(imageSection, 'utf8');
+                if (argvBytes + sectionBytes > argvBudget) {
+                    await fsp.rm(snapshotPath, { force: true });
+                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    continue;
+                }
+                argvBytes += sectionBytes;
                 sections.push(imageSection);
             }
             continue;
@@ -568,8 +582,12 @@ export async function readAttachments(
                 // succeeds — a swapped/disappeared file must not consume the
                 // aggregate budget and silently crowd out later attachments.
                 const encodedBytes = Buffer.byteLength(content, 'utf8');
+                // Gateway transports do not use execve, so the argv budget is
+                // CLI-only: charging a Gateway send against it (with the base
+                // prompt subtracted) would wrongly drop text attachments on
+                // ordinary /compact-sized prompts.
                 if (payloadBytes + encodedBytes > payloadBudget ||
-                    argvBytes + encodedBytes > argvBudget) {
+                    (imageMode === 'tempFile' && argvBytes + encodedBytes > argvBudget)) {
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
                 }
@@ -578,7 +596,9 @@ export async function readAttachments(
                     throw new Error('attachment path changed during read');
                 }
                 payloadBytes += encodedBytes;
-                argvBytes += encodedBytes;
+                if (imageMode === 'tempFile') {
+                    argvBytes += encodedBytes;
+                }
                 sections.push(frameFileBody(att.path, sliceLineRange(content, att.lineStart, att.lineEnd)));
             } finally {
                 await handle.close();
