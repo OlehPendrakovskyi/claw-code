@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ChatViewProvider } from '../webview/ChatViewProvider';
+import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
 import { openDebugChatPanel } from '../webview/debugPanel';
 import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
@@ -73,6 +74,8 @@ export async function activate(context: vscode.ExtensionContext) {
     void overviewProvider.refreshTools();
     log.info('overview tree view created');
 
+    // Workspace .acpxrc.json approvals must survive a restart.
+    useProjectConfigApprovalStore(context.globalState);
     const provider = new ChatViewProvider(context.extensionUri, context);
     chatViewProvider = provider;
     // Not awaited: a locked keyring must not keep the chat view and commands

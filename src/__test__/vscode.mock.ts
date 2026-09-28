@@ -92,6 +92,13 @@ export const env = {
     openExternal: jest.fn(),
 };
 
+export enum FileType {
+    Unknown = 0,
+    File = 1,
+    Directory = 2,
+    SymbolicLink = 64,
+}
+
 export enum StatusBarAlignment {
     Left = 1,
     Right = 2,
@@ -148,14 +155,23 @@ export class ThemeIcon {
 
 export class Uri {
     readonly fsPath: string;
-    private constructor(fsPath: string) {
+    readonly scheme: string;
+    private constructor(fsPath: string, scheme: string) {
         this.fsPath = fsPath;
+        this.scheme = scheme;
     }
     static file(p: string) {
-        return new Uri(p);
+        return new Uri(p, 'file');
     }
     static parse(s: string) {
-        return new Uri(s);
+        return new Uri(s, /^([a-z][a-z0-9+.-]*):/i.exec(s)?.[1] ?? 'file');
+    }
+    get path(): string {
+        return this.fsPath;
+    }
+    /** Distinct per location like the real Uri, so URI-keyed maps don't collide. */
+    toString(): string {
+        return this.scheme === 'file' ? `file://${this.fsPath}` : this.fsPath;
     }
 }
 

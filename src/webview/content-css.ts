@@ -427,6 +427,12 @@ export const CONTENT_CSS = `
             font-size: 12px;
         }
 
+        .message-notice {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            font-size: 12px;
+            font-style: italic;
+        }
+
         .message-tool {
             align-self: stretch;
             border-radius: 8px;

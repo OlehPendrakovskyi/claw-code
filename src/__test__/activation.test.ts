@@ -4,7 +4,12 @@ import * as vscode from 'vscode';
 import { activate, deactivate } from '../extension';
 import { connect, log } from '../vscode/commands';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
+import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
 
+jest.mock('../chat/acpxProjectConfig', () => ({
+    ...jest.requireActual('../chat/acpxProjectConfig'),
+    useProjectConfigApprovalStore: jest.fn(),
+}));
 jest.mock('../core/gatewayConfig', () => ({
     ...jest.requireActual('../core/gatewayConfig'),
     migrateLegacyGatewayToken: jest.fn(async () => undefined),
@@ -20,7 +25,7 @@ type ConfigurationListener = (event: { affectsConfiguration(section: string): bo
 
 const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '../../package.json'), 'utf8'));
 const contributedCommands: string[] = manifest.contributes.commands.map((c: { command: string }) => c.command);
-const settings: Record<string, { type: string | string[]; default?: unknown; enum?: unknown[] }> =
+const settings: Record<string, { type: string | string[]; default?: unknown; enum?: unknown[]; scope?: string; description?: string }> =
     manifest.contributes.configuration.properties;
 
 function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscode.Disposable[] } {
@@ -126,6 +131,12 @@ describe('extension activation', () => {
         await activate(context);
         expect(subscriptions.length).toBeGreaterThanOrEqual(registeredCommands().length);
         subscriptions.forEach(subscription => expect(typeof subscription.dispose).toBe('function'));
+    });
+
+    it('persists workspace .acpxrc.json approvals in global state', async () => {
+        const { context } = makeContext();
+        await activate(context);
+        expect(useProjectConfigApprovalStore).toHaveBeenCalledWith(context.globalState);
     });
 
     it('deactivate does not throw', () => {
@@ -234,6 +245,26 @@ describe('extension activation', () => {
         it('declares no setting the extension never touches', () => {
             const used = new Set([...settingKeysUsedInSource(), 'gateway.token'].map(key => `openclaw.${key}`));
             expect(Object.keys(settings).filter(key => !used.has(key))).toEqual([]);
+        });
+
+        it('keeps every setting that picks what runs, what is approved or what is sent out of workspace reach', () => {
+            const userOnly = [
+                'openclaw.autoConnect',
+                'openclaw.command',
+                'openclaw.hardening.mode',
+                'openclaw.hardening.command',
+                'openclaw.chat.agent',
+                'openclaw.chat.permissions',
+                'openclaw.chat.models',
+                'openclaw.chat.systemPrompt',
+                'openclaw.chat.attachOpenFile',
+                'openclaw.dashboardUrl',
+                'openclaw.gateway.url',
+                'openclaw.gateway.transport',
+            ];
+            const machineScoped = (key: string): boolean => settings[key].scope === 'machine';
+            expect(userOnly.filter(key => !machineScoped(key))).toEqual([]);
+            expect(userOnly.filter(key => !String(settings[key].description).includes('User settings only'))).toEqual([]);
         });
 
         it('gives every enum setting a default from its own enum', () => {

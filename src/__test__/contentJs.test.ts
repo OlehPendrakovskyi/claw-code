@@ -260,6 +260,39 @@ describe('content-js', () => {
             expect(composer(webview, 't"1')).toBeDefined();
         });
 
+        it('round-trips entity-like and quoting values through every attribute sink exactly', async () => {
+            const webview = loadWebview();
+            const tricky = 'a&amp;b&quot;c<d>"e\'&lt;f&#39;';
+            const id = `t${tricky}`;
+            hostState(webview, [thread(id, {
+                pendingAttachments: [{ name: tricky, path: `/w/${tricky}`, type: 'file' }],
+            })], { activeThreadId: id, models: [tricky] });
+            webview.host({ type: 'recommendations', items: [{ command: `/explain ${tricky}`, icon: '?', label: 'x' }] });
+
+            expect(paneOf(webview, id).dataset.threadId).toBe(id);
+            expect(action(webview, 'remove-attachment', id).getAttribute('aria-label')).toBe(`Remove ${tricky}`);
+            expect(paneOf(webview, id).querySelector('.att-pill-name')?.getAttribute('title')).toBe(`/w/${tricky}`);
+
+            click(webview, action(webview, 'toggle-model', id));
+            click(webview, action(webview, 'select-model', id));
+            expect(postedOfType(webview, 'setModel')).toEqual([{ type: 'setModel', threadId: id, model: tricky }]);
+
+            click(webview, action(webview, 'toggle-recs', id));
+            click(webview, action(webview, 'use-recommendation', id));
+            expect(composer(webview, id).value).toBe(`/explain ${tricky} `);
+
+            typeInto(webview, () => composer(webview, id), '@w');
+            await tick(webview, 150);
+            webview.host({ type: 'fileSearchResults', threadId: id, query: 'w', files: [{ name: tricky, path: `/w/${tricky}`, relativePath: tricky }] });
+            click(webview, action(webview, 'pick-file', id));
+            expect(postedOfType(webview, 'attachFile')).toEqual([{ type: 'attachFile', threadId: id, filePath: `/w/${tricky}` }]);
+
+            click(webview, action(webview, 'sessions', id));
+            webview.host({ type: 'sessionsList', threadId: id, sessions: [{ sessionKey: `agent:${tricky}`, label: tricky }] });
+            click(webview, sessionRows(webview)[0]);
+            expect(postedOfType(webview, 'openSession')).toEqual([{ type: 'openSession', sessionKey: `agent:${tricky}`, threadId: id }]);
+        });
+
         it('strips non-web link targets from assistant HTML and keeps web links', () => {
             const webview = loadWebview();
             const html = '<a href="javascript:alert(1)">bad</a> <a href=" command:workbench.action.terminal.new">cmd</a> <a href="https://example.com">ok</a>';
@@ -317,6 +350,21 @@ describe('content-js', () => {
             expect(paneOf(webview, 'b2').querySelector('.message-pending')).toBeNull();
             expect(paneOf(webview, 'a"1').querySelector('.btn-send')?.getAttribute('data-action')).toBe('cancel');
             expect(paneOf(webview, 'a"1').querySelector('.pane-status')?.textContent).toBe('Running');
+        });
+
+        it('shows run notices as escaped status rows after the messages, and drops them when the host does', () => {
+            const webview = loadWebview();
+            const messages = [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }];
+            hostState(webview, [thread('t1', { messages, runNotices: [XSS, 'Stopped: output limit reached.'] })]);
+            const rows = [...paneOf(webview, 't1').querySelectorAll('.pane-body > .message')];
+            expect(rows.map(row => row.className)).toEqual([
+                'message message-user', 'message message-assistant', 'message message-notice', 'message message-notice',
+            ]);
+            expect(rows[2].textContent).toBe(XSS);
+            expect(rows[2].getAttribute('role')).toBe('status');
+            expect(webview.document.querySelectorAll('img')).toHaveLength(0);
+            hostState(webview, [thread('t1', { messages, runNotices: [] })]);
+            expect(paneOf(webview, 't1').querySelectorAll('.message-notice')).toHaveLength(0);
         });
 
         it('ignores streamed text for a thread it does not show', () => {
@@ -810,6 +858,45 @@ describe('content-js', () => {
                 { type: 'openFile', filePath: 'src/a.ts', line: '5' },
                 { type: 'openFile', filePath: '/home/x/y.ts', line: '' },
             ]);
+        });
+
+        it('links a wrapped or punctuated path without its surrounding prose', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { messages: [{ role: 'error', content: 'see (src/a.ts:3). Also C:\\w\\b.py.' }] })]);
+            const links = Array.from(webview.document.querySelectorAll('.file-link'));
+            expect(links.map(link => [link.textContent, link.getAttribute('data-file-path'), link.getAttribute('data-line')])).toEqual([
+                ['src/a.ts:3', 'src/a.ts', '3'],
+                ['C:\\w\\b.py', 'C:\\w\\b.py', null],
+            ]);
+        });
+
+        it.each([
+            ['nested separators', 'a/'],
+            ['dotted runs', 'a.'],
+            ['line suffixes', '1:'],
+            ['parentheses', '(a)/'],
+        ])('linkifies adversarial %s in linear time', (_name, unit) => {
+            const webview = loadWebview();
+            const belowCap = unit.repeat(Math.floor(19000 / unit.length));
+            const huge = unit.repeat(Math.floor(1_000_000 / unit.length));
+            const startedAt = Date.now();
+            hostState(webview, [thread('t1', { messages: [
+                { role: 'error', content: belowCap },
+                { role: 'error', content: huge },
+                { role: 'tool', entries: [{ title: 'x', status: 'error', details: belowCap }] },
+            ] })]);
+            expect(Date.now() - startedAt).toBeLessThan(200);
+            expect(webview.document.querySelectorAll('.message-error')).toHaveLength(2);
+        });
+
+        it('streams reply text as plain text and links its paths once it lands', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            webview.host({ type: 'textUpdate', threadId: 't1', text: 'open src/a.ts' });
+            expect(paneOf(webview, 't1').querySelector('.message-pending')?.textContent).toBe('open src/a.ts');
+            expect(paneOf(webview, 't1').querySelector('.message-pending .file-link')).toBeNull();
+            hostState(webview, [thread('t1', { messages: [{ role: 'assistant', content: 'open src/a.ts' }] })]);
+            expect(paneOf(webview, 't1').querySelector('.message-assistant .file-link')?.getAttribute('data-file-path')).toBe('src/a.ts');
         });
 
         it('asks for a new thread, a split and a pop-out from the header', () => {

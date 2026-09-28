@@ -217,11 +217,12 @@ export const CONTENT_JS = `
                 box.open = true;
                 box.innerHTML =
                     '<summary>' + escapeHtml(label) + '</summary>' +
-                    '<pre>' + linkifyFilePaths(escapeHtml(msg)) + '</pre>' +
+                    '<pre></pre>' +
                     '<div class="openclaw-crash-state">' +
                         'State: threads=' + (typeof state !== 'undefined' ? (state.threads || []).length : '?') +
                         ', dim=' + (typeof currentDimension !== 'undefined' ? currentDimension : '?') +
                     '</div>';
+                setLinkifiedText(box.querySelector('pre'), msg);
                 target.appendChild(box);
             }
 
@@ -370,21 +371,62 @@ export const CONTENT_JS = `
                 return link;
             }
 
+            // Longer text nodes stay plain: linking is a convenience, never worth a stalled webview.
+            var MAX_LINKIFY_TEXT_LENGTH = 20000;
+            var PATH_SEGMENT = /^[\\w.@()-]+$/;
+
+            /** A token as { path, line } when it names a file, else null. Every step is linear in the token. */
+            function parseFileReference(token) {
+                if (token.indexOf('://') !== -1) {
+                    return null;
+                }
+                var lineMatch = /:(\\d+)(?::\\d+)?$/.exec(token);
+                var path = lineMatch ? token.slice(0, lineMatch.index) : token;
+                var drive = /^[a-zA-Z]:[\\\\/]/.test(path) ? path.slice(0, 3) : '';
+                var rest = path.slice(drive.length);
+                if (rest.indexOf(':') !== -1) {
+                    return null;
+                }
+                var segments = rest.split(/[\\\\/]/);
+                var isRooted = !drive && segments[0] === '';
+                var named = isRooted ? segments.slice(1) : segments;
+                if (segments.length < 2 || !named.every(function(segment) { return PATH_SEGMENT.test(segment); })) {
+                    return null;
+                }
+                if (!/.\\.[a-zA-Z0-9]{1,10}$/.test(named[named.length - 1])) {
+                    return null;
+                }
+                return { path: path, line: lineMatch ? lineMatch[1] : '' };
+            }
+
             function linkifyTextNode(textNode) {
                 var text = textNode.nodeValue || '';
+                if (text.length > MAX_LINKIFY_TEXT_LENGTH) {
+                    return;
+                }
                 var frag = document.createDocumentFragment();
                 var lastIndex = 0;
-                // Path segments exclude spaces so the words before a path stay prose; group 1 is the path, 2 the line.
-                var filePathPattern = /((?:[a-zA-Z]:[\\\\/]|\\/|\\.{1,2}[\\\\/])?(?:[\\w.@()-]+[\\\\/])+[\\w.@()-]+\\.[a-zA-Z0-9]{1,10})(?::(\\d+)(?::\\d+)?)?/g;
+                // One flat character class: runs never overlap, so the scan is linear.
+                var tokenPattern = /[\\w.@()\\/\\\\:-]+/g;
                 var match;
-                while ((match = filePathPattern.exec(text))) {
-                    // The tail of a URL (https://host/a.js) is not a workspace path.
-                    if (/[:\\/]/.test(text.charAt(match.index - 1))) {
+                while ((match = tokenPattern.exec(text))) {
+                    // Sentence punctuation and wrapping parentheses stay prose; trimmed by index, not by regex.
+                    var start = match.index;
+                    var end = start + match[0].length;
+                    while (end > start && '.:)'.indexOf(text.charAt(end - 1)) !== -1) {
+                        end -= 1;
+                    }
+                    while (start < end && text.charAt(start) === '(') {
+                        start += 1;
+                    }
+                    var token = text.slice(start, end);
+                    var reference = token && parseFileReference(token);
+                    if (!reference) {
                         continue;
                     }
-                    frag.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-                    frag.appendChild(createFileLink(match[1], match[2] || '', match[0]));
-                    lastIndex = match.index + match[0].length;
+                    frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+                    frag.appendChild(createFileLink(reference.path, reference.line, token));
+                    lastIndex = end;
                 }
                 if (lastIndex === 0) {
                     return;
@@ -393,26 +435,25 @@ export const CONTENT_JS = `
                 textNode.parentNode.replaceChild(frag, textNode);
             }
 
-            function linkifyFilePaths(html) {
-                if (!html || (html.indexOf('/') === -1 && html.indexOf('\\\\') === -1)) {
-                    return html || '';
-                }
+            /** Plain text as linked DOM, never through markup: no escaping or HTML parse on large bodies. */
+            function setLinkifiedText(container, text) {
+                var node = document.createTextNode(String(text || ''));
+                container.textContent = '';
+                container.appendChild(node);
+                linkifyTextNode(node);
+            }
 
-                var template = document.createElement('template');
-                template.innerHTML = html;
-                var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+            /** Links the paths in an element's own text, in place, leaving anchors and existing links alone. */
+            function linkifyElement(container) {
+                var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
                 var textNodes = [];
                 while (walker.nextNode()) {
-                    var textNode = walker.currentNode;
-                    // Escaped plain text is a top-level node with no parent element.
-                    var parent = textNode.parentElement;
-                    if (parent && parent.closest('a, .file-link, script, style')) {
-                        continue;
+                    var parent = walker.currentNode.parentElement;
+                    if (!parent || !parent.closest('a, .file-link, script, style')) {
+                        textNodes.push(walker.currentNode);
                     }
-                    textNodes.push(textNode);
                 }
                 textNodes.forEach(linkifyTextNode);
-                return template.innerHTML;
             }
 
             function autoResizeTextarea(textarea) {
@@ -629,7 +670,7 @@ ${TOOL_STATUS_JS}
                     header.appendChild(entryStatus);
                     var details = document.createElement('pre');
                     details.className = 'message-tool-details';
-                    details.innerHTML = linkifyFilePaths(escapeHtml(entry.details || ''));
+                    setLinkifiedText(details, entry.details);
                     item.appendChild(header);
                     item.appendChild(details);
                     toolBody.appendChild(item);
@@ -995,11 +1036,16 @@ ${TOOL_STATUS_JS}
                 var node = document.createElement('div');
                 if (message.role === 'assistant') {
                     node.className = 'message message-assistant';
-                    node.innerHTML = linkifyFilePaths(typeof message.html === 'string' && message.html ? message.html : escapeHtml(message.content || ''));
-                    removeUnsafeLinks(node);
+                    if (typeof message.html === 'string' && message.html) {
+                        node.innerHTML = message.html;
+                        removeUnsafeLinks(node);
+                        linkifyElement(node);
+                    } else {
+                        setLinkifiedText(node, message.content);
+                    }
                 } else if (message.role === 'error') {
                     node.className = 'message message-error';
-                    node.innerHTML = linkifyFilePaths(escapeHtml(message.content || ''));
+                    setLinkifiedText(node, message.content);
                 } else {
                     node.className = 'message message-user';
                     node.textContent = message.content || '';
@@ -1029,9 +1075,17 @@ ${TOOL_STATUS_JS}
                         var pending = document.createElement('div');
                         pending.className = 'message message-assistant message-pending';
                         pending.setAttribute('data-thread-id', thread.id);
-                        pending.innerHTML = linkifyFilePaths(escapeHtml(thread.pendingAssistantText));
+                        // Streaming text is linkified once it lands as a message, not on every chunk.
+                        pending.textContent = thread.pendingAssistantText;
                         body.appendChild(pending);
                     }
+                    (thread.runNotices || []).forEach(function(text) {
+                        var notice = document.createElement('div');
+                        notice.className = 'message message-notice';
+                        notice.setAttribute('role', 'status');
+                        notice.textContent = text;
+                        body.appendChild(notice);
+                    });
                 }
                 body.addEventListener('scroll', function() {
                     userScrolledUp[thread.id] = !isNearBottom(body);
@@ -1082,7 +1136,7 @@ ${TOOL_STATUS_JS}
             /** Host snapshots carry new arrays; a reference hit skips the serialisation on local re-renders. */
             function isBodyCurrent(cache, thread) {
                 if (cache.pending !== (thread.pendingAssistantText || '') || cache.notice !== (thread.notice || '') ||
-                    cache.hideToolActivity !== hideToolActivity) {
+                    cache.runNotices !== JSON.stringify(thread.runNotices || []) || cache.hideToolActivity !== hideToolActivity) {
                     return false;
                 }
                 if (cache.messagesRef === thread.messages) {
@@ -1096,6 +1150,7 @@ ${TOOL_STATUS_JS}
             function rememberBody(cache, thread) {
                 cache.pending = thread.pendingAssistantText || '';
                 cache.notice = thread.notice || '';
+                cache.runNotices = JSON.stringify(thread.runNotices || []);
                 cache.hideToolActivity = hideToolActivity;
                 cache.messagesRef = thread.messages;
                 cache.messagesJson = JSON.stringify(thread.messages || []);
@@ -2041,7 +2096,7 @@ ${TOOL_STATUS_JS}
                     paneBody.appendChild(pending);
                 }
                 if (pending) {
-                    pending.innerHTML = linkifyFilePaths(escapeHtml(text));
+                    pending.textContent = text;
                 }
                 scrollPaneToBottom(paneBody, threadId);
 

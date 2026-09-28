@@ -3,7 +3,7 @@ import type { ChatEvent } from '../chat/ChatService';
 
 const mockResolve = jest.fn();
 const mockFactoryCallbacks: {
-    onStatus?: (transport: 'gateway' | 'acpx', connected: boolean) => void;
+    onStatus?: (transport: 'gateway' | 'acpx', connected: boolean, protocolVersion: number | null) => void;
     onInvalidated?: (reason: 'identity' | 'transport') => void;
 } = {};
 
@@ -15,27 +15,7 @@ jest.mock('../webview/chatServiceFactory', () => ({
     }),
 }));
 
-jest.mock('../core/gatewayChatService', () => {
-    class GatewayChatService {
-        setActiveSession = jest.fn();
-        hasOwnedRun = jest.fn(() => false);
-        abort = jest.fn();
-        removeTranscriptSink = jest.fn();
-        rebindTranscriptSink = jest.fn();
-        clearSessionSink = jest.fn();
-        getGatewayIdentity = jest.fn(() => 'gateway-1');
-        getTransportLimits = jest.fn(() => ({ maxPayloadBytes: 26214400, maxBufferedBytes: 52428800, attachmentMaxBytes: 20971520, attachmentMaxImageBytes: 6291456 }));
-        listSessions = jest.fn(async () => ({ sessions: [] as unknown[] }));
-        getHistory = jest.fn(async (): Promise<unknown> => ({ messages: [] }));
-        seedHistory = jest.fn();
-        resumeSession = jest.fn();
-        captureSessionState = jest.fn(() => null);
-        restoreSessionState = jest.fn();
-        sendMessage = jest.fn();
-        dispose = jest.fn();
-    }
-    return { GatewayChatService, DEFAULT_SESSION_KEY: 'main' };
-});
+jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
 // Identity realpath keeps sends free of real disk I/O, so flush() is deterministic.
 jest.mock('fs', () => {
@@ -47,6 +27,7 @@ import { ChatViewProvider } from '../webview/ChatViewProvider';
 import type { GatewayChatService } from '../core/gatewayChatService';
 import { COLD_SESSION_PLACEHOLDER } from '../core/agentPicker';
 import { renderMarkdown } from '../webview/viewMessaging';
+import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
 
 type Posted = Record<string, unknown>;
 type ThreadState = {
@@ -97,7 +78,7 @@ function makeWebview(): FakeWebview {
 
 function makeGateway(): GatewayChatService {
     const gateway = new MockGatewayChatService();
-    jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: WARM_ROWS });
+    jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(WARM_ROWS));
     return gateway;
 }
 
@@ -183,7 +164,7 @@ describe('ChatViewProvider', () => {
             await sidebar.send({ type: 'newSession' });
             expect(lastState(sidebar).activeThreadId).toBe('thread-2');
 
-            jest.mocked(gateway.getHistory).mockResolvedValue({ messages: [{ role: 'user', text: 'q', messageId: 'u1' }] });
+            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'user', text: 'q', id: 'u1' }]));
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
 
@@ -202,7 +183,7 @@ describe('ChatViewProvider', () => {
         it('renders restored assistant rows through the live reply renderer', async () => {
             const { sidebar } = makeProvider();
             const text = '**bold** <img src=x onerror=alert(1)>';
-            jest.mocked(gateway.getHistory).mockResolvedValue({ messages: [{ role: 'assistant', text, messageId: 'a1' }] });
+            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'assistant', text, id: 'a1' }]));
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
 
@@ -258,7 +239,7 @@ describe('ChatViewProvider', () => {
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
             const calls = jest.mocked(gateway.sendMessage).mock.calls;
-            return calls[calls.length - 1][4];
+            return calls[calls.length - 1][0].onEvent;
         }
 
         it('marks unfinished entries done when the thread\'s own run completes', async () => {
@@ -407,7 +388,7 @@ describe('ChatViewProvider', () => {
             resolves.forEach(resolve => resolve());
             await flush();
 
-            expect(jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0])).toEqual(['second']);
+            expect(jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt)).toEqual(['second']);
         });
     });
 
@@ -418,13 +399,14 @@ describe('ChatViewProvider', () => {
             jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
             try {
                 const { sidebar } = makeProvider();
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
                 await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
                 await flush();
 
                 await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
                 await flush();
 
-                const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0]);
+                const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
                 expect(sent).toHaveLength(1);
                 expect(sent[0]).toContain('with attachment');
                 expect(sent[0]).toContain(file);
@@ -446,6 +428,7 @@ describe('ChatViewProvider', () => {
 
         it('removes an attachment only for an in-range integer index', async () => {
             const { sidebar } = makeProvider();
+            (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
             await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-a.txt'] });
             await flush();
             for (const index of [-1, 1, 0.5, '0']) {
@@ -491,16 +474,49 @@ describe('ChatViewProvider', () => {
         });
     });
 
+    describe('bootstrap', () => {
+        const slashCommandPushes = (webview: FakeWebview): Posted[] => webview.posted.filter(m => m.type === 'slashCommands');
+
+        it('pushes the slash commands once the webview had time to load', () => {
+            const { sidebar } = makeProvider();
+            jest.advanceTimersByTime(100);
+            expect(slashCommandPushes(sidebar)).toHaveLength(1);
+        });
+
+        it('pushes nothing after the provider is disposed', () => {
+            const { provider, sidebar } = makeProvider();
+            provider.dispose();
+            jest.advanceTimersByTime(100);
+            expect(slashCommandPushes(sidebar)).toEqual([]);
+        });
+
+        it('pushes nothing after the view is disposed', () => {
+            const { sidebar } = makeProvider();
+            const [onViewDisposed] = jest.mocked(sidebar.view.onDidDispose).mock.calls[0];
+            onViewDisposed();
+            jest.advanceTimersByTime(100);
+            expect(slashCommandPushes(sidebar)).toEqual([]);
+        });
+    });
+
     describe('transport status', () => {
         it('replays the last status to a newly resolved webview', async () => {
             const { provider } = makeProvider();
-            mockFactoryCallbacks.onStatus!('gateway', true);
+            mockFactoryCallbacks.onStatus!('gateway', true, 4);
             provider.popOut();
             const popoutPanel = lastPopOutPanel();
             jest.advanceTimersByTime(100);
             expect(popoutPanel.webview.postMessage).toHaveBeenCalledWith(
-                expect.objectContaining({ type: 'transportStatus', label: 'gateway · connected' })
+                expect.objectContaining({ type: 'transportStatus', protocolVersion: 4, label: 'gateway v4 · connected' })
             );
+        });
+
+        it('names only the transport when no gateway protocol was negotiated', async () => {
+            const { sidebar } = makeProvider();
+            mockFactoryCallbacks.onStatus!('gateway', false, null);
+            mockFactoryCallbacks.onStatus!('acpx', true, null);
+            const labels = sidebar.posted.filter(m => m.type === 'transportStatus').map(m => m.label);
+            expect(labels).toEqual(['gateway · offline', 'acpx · connected']);
         });
 
         it('names the transport change when it interrupts a run', async () => {
