@@ -272,6 +272,13 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
  *  grows after stat() cannot be loaded in full before any size check. */
 const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
 
+/** Cap for text attachments on CLI transports (`imageMode: 'tempFile'`): the
+ *  whole assembled prompt travels as a single execve argument, and the
+ *  per-argument limit (MAX_ARG_STRLEN, ~128 KiB on Linux) is far below the
+ *  10 MiB inline cap — a larger text attachment would fail the spawn with
+ *  E2BIG, so it is rejected up front instead of bricking the send. */
+const ATTACHMENT_TEXT_ARG_MAX_BYTES = 64 * 1024;
+
 /** Aggregate budget over all attachments in one send, counted in the encoded
  *  form that actually travels: base64 for images (4/3 of raw bytes), raw text
  *  for text files. Per-file limits alone do not bound the total, so several
@@ -507,19 +514,22 @@ export async function readAttachments(
                 // transfer so a file that grows after stat() cannot blow up
                 // memory before the size check, and a short read cannot
                 // truncate the attachment.
-                const bytes = await readBounded(handle, ATTACHMENT_TEXT_MAX_BYTES);
-                if (bytes.length > ATTACHMENT_TEXT_MAX_BYTES) {
+                const textLimit =
+                    imageMode === 'tempFile' ? ATTACHMENT_TEXT_ARG_MAX_BYTES : ATTACHMENT_TEXT_MAX_BYTES;
+                const bytes = await readBounded(handle, textLimit);
+                if (bytes.length > textLimit) {
                     throw new Error('attachment file exceeds the size limit');
                 }
                 const content = new TextDecoder().decode(bytes);
                 // Budget counts the UTF-8 bytes the prompt will carry, not
                 // the raw file length: TextDecoder maps invalid bytes to
                 // U+FFFD (three UTF-8 bytes), so a non-UTF-8 attachment can
-                // expand past the cap after this check otherwise.
+                // expand past the cap after this check otherwise. The budget
+                // is only charged after the final realpath validation below
+                // succeeds — a swapped/disappeared file must not consume the
+                // aggregate budget and silently crowd out later attachments.
                 const encodedBytes = Buffer.byteLength(content, 'utf8');
-                totalEncodedBytes += encodedBytes;
-                if (totalEncodedBytes > totalBudget) {
-                    totalEncodedBytes -= encodedBytes;
+                if (totalEncodedBytes + encodedBytes > totalBudget) {
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
                 }
@@ -527,6 +537,7 @@ export async function readAttachments(
                 if (realAfter !== real) {
                     throw new Error('attachment path changed during read');
                 }
+                totalEncodedBytes += encodedBytes;
                 sections.push(frameFileBody(att.path, sliceLineRange(content, att.lineStart, att.lineEnd)));
             } finally {
                 await handle.close();

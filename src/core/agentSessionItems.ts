@@ -102,14 +102,27 @@ export function isColdSession(row: SessionRow): boolean {
   return !WARM_PLACEMENT_STATES.has(state);
 }
 
-/** Pick the freshest activity timestamp available on the row. */
+/** Pick the freshest activity timestamp available on the row.
+ *
+ *  Rows may carry a stale `lastActivityAt` next to a newer `lastInteractionAt`,
+ *  so the candidates are compared and the newest one wins instead of the first
+ *  truthy field deciding the picker's sort order. Unparseable values are
+ *  ignored (they sort as null via the caller's `(updatedAt ?? '')`). */
 function rowUpdatedAt(row: SessionRow): string | null {
+  let freshest: string | null = null;
   for (const value of [row.lastActivityAt, row.lastInteractionAt, row.updatedAt]) {
-    if (typeof value === 'string' && value) {
-      return value;
+    if (typeof value !== 'string' || !value) {
+      continue;
+    }
+    const ts = Date.parse(value);
+    if (Number.isNaN(ts)) {
+      continue;
+    }
+    if (freshest === null || ts > Date.parse(freshest)) {
+      freshest = value;
     }
   }
-  return null;
+  return freshest;
 }
 
 /** Derive a human-readable label for a session row. */

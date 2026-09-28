@@ -426,3 +426,20 @@ describe('cold placeholder constant', () => {
     expect(COLD_SESSION_PLACEHOLDER).toContain('Session is unloaded');
   });
 });
+
+describe('toAgentSessionItems timestamp selection', () => {
+  it('sorts by the newest candidate timestamp, not the first truthy field', () => {
+    const stale = toAgentSessionItems([
+      { key: 'agent:stale:main', lastActivityAt: '2026-09-01T00:00:00Z', lastInteractionAt: '2026-09-28T00:00:00Z' },
+      { key: 'agent:mid:main', lastActivityAt: '2026-09-15T00:00:00Z' },
+    ]);
+    expect(stale.map((i) => i.sessionKey)).toEqual(['agent:stale:main', 'agent:mid:main']);
+  });
+
+  it('ignores unparseable timestamp values', () => {
+    const items = toAgentSessionItems([
+      { key: 'agent:bad:main', lastActivityAt: 'not-a-date', updatedAt: '2026-09-20T00:00:00Z' },
+    ]);
+    expect(items[0].updatedAt).toBe('2026-09-20T00:00:00Z');
+  });
+});

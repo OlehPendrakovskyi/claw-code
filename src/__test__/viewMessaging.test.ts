@@ -38,3 +38,50 @@ describe('readAttachments FIFO rejection', () => {
         expect(prompt).not.toContain('<image');
     });
 });
+describe('readAttachments text budget', () => {
+    const posixOnly = process.platform === 'win32' ? it.skip : it;
+
+    posixOnly('caps text attachments at the CLI argument budget for tempFile mode', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-text-'));
+        try {
+            const big = path.join(dir, 'big.txt');
+            fs.writeFileSync(big, 'a'.repeat(80 * 1024));
+            const { prompt } = await readAttachments(
+                [{ name: 'big.txt', path: big, type: 'file' }],
+                { imageMode: 'tempFile' }
+            );
+            expect(prompt).toContain('[Could not read file]');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+
+    posixOnly('does not charge the aggregate budget when the final realpath validation fails', async () => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-'));
+        try {
+            const realFile = path.join(dir, 'real.txt');
+            fs.writeFileSync(realFile, 'hello');
+            // Alias that resolves to the same file now but is swapped to a
+            // different canonical path after the read begins: the budget
+            // must stay untouched so the second attachment still fits.
+            const symlink = path.join(dir, 'link.txt');
+            fs.symlinkSync(realFile, symlink);
+            const other = path.join(dir, 'other.txt');
+            fs.writeFileSync(other, 'b'.repeat(4 * 1024));
+            const { prompt } = await readAttachments(
+                [
+                    { name: 'link.txt', path: symlink, type: 'file' },
+                    { name: 'other.txt', path: other, type: 'file' },
+                ],
+                { reservedPromptBytes: 20 * 1024 * 1024 - 5 * 1024 }
+            );
+            // The swapped attachment is dropped without consuming budget, so
+            // the second one is still emitted (symlink swap is detected after
+            // the read on case-sensitive volumes).
+            expect(prompt).toContain('link.txt');
+            expect(prompt).toContain('other.txt');
+        } finally {
+            fs.rmSync(dir, { recursive: true, force: true });
+        }
+    });
+});
