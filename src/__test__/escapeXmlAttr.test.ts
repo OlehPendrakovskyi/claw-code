@@ -1,4 +1,4 @@
-import { escapeXmlAttr } from '../webview/viewMessaging';
+import { escapeXmlAttr } from '../webview/slashCommands';
 
 describe('escapeXmlAttr', () => {
     it('escapes XML-attribute-significant characters', () => {

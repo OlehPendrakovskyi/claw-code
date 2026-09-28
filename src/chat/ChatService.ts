@@ -3,6 +3,32 @@ import { spawn, ChildProcess } from 'child_process';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
 
+/** Linux MAX_ARG_STRLEN: the prompt travels as ONE execve argument, and the
+ *  limit includes that argument's terminating NUL. */
+export const PROMPT_ARG_MAX_BYTES = 128 * 1024 - 1;
+
+/** Windows caps the whole command line at 32767 UTF-16 units; the rest is
+ *  headroom for the executable, the other flags and argument quoting. */
+export const PROMPT_ARG_MAX_WINDOWS_CHARS = 32767 - 2048;
+
+/** How far `prompt` is over the platform's command-line limit for one
+ *  argument, as a user-facing size, or null when it fits. macOS and the
+ *  BSDs only cap the total argv+env size, which spawn reports as an error. */
+export function describePromptArgOverflow(prompt: string, platform: NodeJS.Platform = process.platform): string | null {
+    if (platform === 'linux') {
+        const bytes = Buffer.byteLength(prompt, 'utf8');
+        return bytes > PROMPT_ARG_MAX_BYTES
+            ? `${Math.ceil(bytes / 1024)} KiB, limit ${Math.floor(PROMPT_ARG_MAX_BYTES / 1024)} KiB`
+            : null;
+    }
+    if (platform === 'win32') {
+        return prompt.length > PROMPT_ARG_MAX_WINDOWS_CHARS
+            ? `${prompt.length} characters, limit ${PROMPT_ARG_MAX_WINDOWS_CHARS}`
+            : null;
+    }
+    return null;
+}
+
 export type UsageInfo = {
     promptTokens: number;
     completionTokens: number;
@@ -74,24 +100,9 @@ export class ChatService {
         if (systemPrompt) {
             fullPrompt = systemPrompt + '\n\n' + fullPrompt;
         }
+        // spawn() throws on NUL in any argument.
+        fullPrompt = fullPrompt.replace(/\0/g, '\uFFFD');
 
-        const args = this.buildArgs(model, permissions, fullPrompt, {
-            thinkingLevel,
-            temperature,
-            maxTokens,
-        });
-
-        log.info(`spawn acpx (args=${args.length}, cwd=${cwd})`);
-        const child = spawn('acpx', args, {
-            cwd,
-            env: { ...process.env },
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        this.activeProcess = child;
-
-        let stderrBuffer = '';
-        let stdoutLineBuffer = '';
         // A spawn can fail with 'error' and still fire 'close' (or emit both
         // after a kill), so the run must complete exactly once: the first
         // terminal event owns completion and later ones are ignored.
@@ -107,6 +118,41 @@ export class ChatService {
             onEvent({ type: 'done' });
             onRunComplete?.();
         };
+
+        const overflow = describePromptArgOverflow(fullPrompt);
+        if (overflow !== null) {
+            log.error(`acpx prompt too large (${overflow})`);
+            completeRun({
+                type: 'error',
+                message: `Prompt is too large for the acpx command line (${overflow}). Remove attachments or shorten the message.`
+            });
+            return;
+        }
+
+        const args = this.buildArgs(model, permissions, fullPrompt, {
+            thinkingLevel,
+            temperature,
+            maxTokens,
+        });
+
+        log.info(`spawn acpx (args=${args.length}, cwd=${cwd})`);
+        let child: ChildProcess;
+        try {
+            child = spawn('acpx', args, {
+                cwd,
+                env: { ...process.env },
+                stdio: ['ignore', 'pipe', 'pipe']
+            });
+        } catch (err) {
+            log.error('acpx spawn threw', err);
+            completeRun({ type: 'error', message: err instanceof Error ? err.message : String(err) });
+            return;
+        }
+
+        this.activeProcess = child;
+
+        let stderrBuffer = '';
+        let stdoutLineBuffer = '';
 
         child.stdout!.on('data', (chunk: Buffer) => {
             stdoutLineBuffer += chunk.toString();
@@ -239,6 +285,20 @@ export class ChatService {
         }
     }
 
+    private static nonEmptyString(value: unknown): string | undefined {
+        return typeof value === 'string' && value !== '' ? value : undefined;
+    }
+
+    private static toolTitle(obj: Record<string, unknown>): string {
+        return ChatService.nonEmptyString(obj.title) ?? ChatService.nonEmptyString(obj.name) ??
+            ChatService.nonEmptyString(obj.tool) ?? 'tool';
+    }
+
+    private static toolIdField(value: unknown): { id?: string } {
+        const id = ChatService.nonEmptyString(value);
+        return id === undefined ? {} : { id };
+    }
+
     private mapJsonEvent(obj: Record<string, unknown>): ChatEvent | null {
         const eventType = obj.type as string | undefined;
 
@@ -260,23 +320,25 @@ export class ChatService {
         }
 
         if (eventType === 'tool_call' || eventType === 'tool_use') {
-            const title = (obj.title ?? obj.name ?? obj.tool ?? 'tool') as string;
-            const status = (obj.status ?? 'running') as string;
             return {
                 type: 'toolCall',
-                title,
-                status,
-                details: this.stringifyToolEvent(obj)
+                title: ChatService.toolTitle(obj),
+                status: ChatService.nonEmptyString(obj.status) ?? 'running',
+                details: this.stringifyToolEvent(obj),
+                ...ChatService.toolIdField(obj.id ?? obj.tool_call_id ?? obj.toolCallId),
             };
         }
 
         if (eventType === 'tool_result') {
-            const title = (obj.title ?? obj.name ?? obj.tool ?? 'tool') as string;
+            // The result carries its call's id, so the webview updates the
+            // running entry in place instead of appending a second one.
+            const failed = obj.is_error === true || obj.status === 'error';
             return {
                 type: 'toolCall',
-                title,
-                status: 'done',
-                details: this.stringifyToolEvent(obj)
+                title: ChatService.toolTitle(obj),
+                status: failed ? 'error' : 'done',
+                details: this.stringifyToolEvent(obj),
+                ...ChatService.toolIdField(obj.tool_use_id ?? obj.tool_call_id ?? obj.toolCallId ?? obj.id),
             };
         }
 

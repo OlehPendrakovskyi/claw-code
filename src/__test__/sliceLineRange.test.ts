@@ -24,8 +24,14 @@ describe('sliceLineRange', () => {
         expect(sliceLineRange(body, 3, 1)).toBe('three');
     });
 
-    it('returns empty for a start beyond the file', () => {
-        expect(sliceLineRange(body, 99)).toBe('');
+    it('marks a start beyond the file instead of returning an empty body', () => {
+        expect(sliceLineRange('only line', 50)).toBe('[Lines 50-50 are beyond the end of the file (1 lines)]');
+        expect(sliceLineRange(body, 99, 120)).toBe('[Lines 99-120 are beyond the end of the file (4 lines)]');
+    });
+
+    it('does not count the empty piece after a trailing newline as a line', () => {
+        expect(sliceLineRange('a\nb\n', 3)).toBe('[Lines 3-3 are beyond the end of the file (2 lines)]');
+        expect(sliceLineRange('a\nb\n', 2)).toBe('b');
     });
 
     it('handles CRLF line endings', () => {

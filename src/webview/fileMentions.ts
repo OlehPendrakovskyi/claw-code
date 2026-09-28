@@ -23,14 +23,18 @@ export function parseFileMentions(text: string): FileMention[] {
         return [];
     }
 
-    const mentionRegex = /(?:^|\s)@("((?:[^"]|"")*)"|([^#\s@]+?))(?:#L(\d+)(?:-(\d+))?)?(?:[.,:;)}\]]+)?(?=\s|$)/g;
+    // `(?=(…))\3` makes the unquoted path atomic: it never gives characters
+    // back, so the trailing punctuation class cannot compete with it and a
+    // failed match costs linear time (the path's own trailing punctuation is
+    // stripped below).
+    const mentionRegex = /(?:^|\s)@("((?:[^"]|"")*)"|(?=([^#\s@]+))\3)(?:#L(\d+)(?:-(\d+))?)?[.,:;)}\]]*(?=\s|$)/g;
     const mentions: FileMention[] = [];
     const seen = new Set<string>();
 
     let match: RegExpExecArray | null;
     while ((match = mentionRegex.exec(text)) !== null) {
         // Trailing sentence punctuation belongs to prose, not the path.
-        const path = match[1].startsWith('"') ? match[2].replace(/""/g, '"') : match[1].replace(/[.,:;)}\]]+$/, '');
+        const path = match[2] !== undefined ? match[2].replace(/""/g, '"') : match[1].replace(/[.,:;)}\]]+$/, '');
         if (!path) {
             continue;
         }

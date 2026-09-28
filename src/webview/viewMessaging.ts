@@ -12,7 +12,7 @@ import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, UsageInfo } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
-import { EditorContext, ContextType } from './slashCommands';
+import { EditorContext, ContextType, escapeXmlAttr, frameTaggedBlock } from './slashCommands';
 import { randomUUID } from 'crypto';
 
 /** Shared output channel for chat panel logging. */
@@ -169,22 +169,8 @@ export function escapeGlob(str: string): string {
     return str.replace(/[[\]{}()*?!\\]/g, '\\$&');
 }
 
-export function escapeXmlAttr(str: string): string {
-    return str.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
-}
-
-/** Frame a file section with a per-section unique element name. The body is
- *  embedded byte/text-faithful (never entity-escaped: the prompt path has no
- *  XML parser, so escaping would reach the model altered). Injection is
- *  still impossible: the random id is generated per section and never
- *  derived from file bytes, so file content cannot forge the closing tag;
- *  the id is carried in the element name itself — closing tags cannot carry
- *  attributes, so `</file id="...">` would be rejected by any XML-conformant
- *  parser — and `file-<uuid>` is a valid XML NCName (dashes are legal; the
- *  leading letter keeps the name from starting with a digit). */
 function frameFileBody(filePath: string, content: string): string {
-    const id = randomUUID();
-    return `<file-${id} path="${escapeXmlAttr(filePath)}">\n${content}\n</file-${id}>`;
+    return frameTaggedBlock('file', { path: filePath }, content);
 }
 
 /** Returns the canonical attachment path only when it still resolves to the
@@ -328,6 +314,10 @@ export const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
  *  acpx argument prefix around the prompt). */
 export const ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES = 4 * 1024;
 
+/** Size of each read after the stat-sized first one: those reads only prove
+ *  EOF or catch growth since stat(), so they stay small. */
+const READ_FOLLOW_UP_CHUNK_BYTES = 64 * 1024;
+
 /** Read from an opened handle until EOF or the byte budget is exhausted.
  *
  *  A single FileHandle.read() is not guaranteed to fill the requested buffer:
@@ -335,19 +325,22 @@ export const ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES = 4 * 1024;
  *  accept a truncated file or let a file that grew past the cap slip through
  *  (the short result lands under the limit). Loop until EOF or maxBytes + 1
  *  bytes are collected, so callers can reject anything above maxBytes and
- *  otherwise get the byte-faithful contents. */
-async function readBounded(handle: fsp.FileHandle, maxBytes: number): Promise<Buffer> {
+ *  otherwise get the byte-faithful contents. The first chunk is sized from
+ *  `statSize` so a small file never allocates the whole cap. */
+async function readBounded(handle: fsp.FileHandle, maxBytes: number, statSize: number): Promise<Buffer> {
     const limit = maxBytes + 1;
     const chunks: Buffer[] = [];
     let total = 0;
+    let chunkSize = Math.min(limit, statSize + 1);
     while (total < limit) {
-        const chunk = Buffer.alloc(limit - total);
+        const chunk = Buffer.allocUnsafe(Math.min(chunkSize, limit - total));
         const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
         if (bytesRead === 0) {
             break;
         }
         chunks.push(chunk.subarray(0, bytesRead));
         total += bytesRead;
+        chunkSize = READ_FOLLOW_UP_CHUNK_BYTES;
     }
     return Buffer.concat(chunks, total);
 }
@@ -381,7 +374,7 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
         // load the whole new contents before any length check, so loop the
         // transfer up to MAX_IMAGE_BYTES + 1 and reject anything that
         // overflows; the loop also rules out a short read truncating the image.
-        const payload = await readBounded(handle, MAX_IMAGE_BYTES);
+        const payload = await readBounded(handle, MAX_IMAGE_BYTES, opened.size);
         if (payload.length > MAX_IMAGE_BYTES) {
             return null;
         }
@@ -391,6 +384,68 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
         return payload;
     } catch {
         return null;
+    } finally {
+        await handle.close();
+    }
+}
+
+const UNREADABLE_MARKER = '[Could not read file]';
+const AGGREGATE_LIMIT_MARKER = '[Attachment skipped: aggregate attachment size limit reached]';
+const FILE_SIZE_LIMIT_MARKER = '[Attachment skipped: file exceeds size limit]';
+const BINARY_FILE_MARKER = '[Binary file skipped]';
+const ATTACHMENTS_DROPPED_NOTE = '[Some attachments were skipped: attachment size limit reached]';
+
+const SECTION_SEPARATOR = '\n\n';
+
+/** Longest snapshot file name: NAME_MAX is 255 bytes, minus the UUID prefix. */
+const SNAPSHOT_NAME_MAX_BYTES = 255 - 37;
+const SNAPSHOT_EXTENSION_MAX_BYTES = 16;
+
+class AttachmentTooLargeError extends Error {}
+
+/** Snapshot file name for an image: `<uuid>-<name>`, ASCII-only and within
+ *  NAME_MAX, keeping a short extension so the reader can sniff the type. */
+function snapshotFileName(name: string): string {
+    const safeName = name.replace(/[^A-Za-z0-9._-]/g, '_');
+    const extension = path.extname(safeName);
+    const keptExtension = extension.length <= SNAPSHOT_EXTENSION_MAX_BYTES ? extension : '';
+    const stem = safeName
+        .slice(0, safeName.length - keptExtension.length)
+        .slice(0, SNAPSHOT_NAME_MAX_BYTES - keptExtension.length);
+    return `${randomUUID()}-${stem}${keptExtension}`;
+}
+
+/** Read a text attachment through a verified handle (steps 1-4 of the
+ *  hardening described on {@link readAttachments}). Throws on any failed
+ *  check, and AttachmentTooLargeError when the file exceeds `maxBytes`. */
+async function readVerifiedTextBytes(p: string, maxBytes: number): Promise<Buffer> {
+    if ((await fsp.realpath(p)) !== p) {
+        throw new Error('attachment path no longer canonical');
+    }
+    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
+    const handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow | openNonBlock);
+    try {
+        const opened = await handle.stat();
+        const current = await fsp.lstat(p);
+        // O_NONBLOCK lets a FIFO or other special file pass the open; reject
+        // it here, since reading a FIFO would block the send indefinitely.
+        if (!opened.isFile() || !current.isFile()) {
+            throw new Error('attachment path is not a regular file');
+        }
+        if (opened.dev !== current.dev || opened.ino !== current.ino) {
+            throw new Error('attachment path changed during read');
+        }
+        if (!(await handleIsAtPath(handle, p))) {
+            throw new Error('attachment opened outside its canonical path');
+        }
+        if (opened.size > maxBytes) {
+            throw new AttachmentTooLargeError();
+        }
+        const bytes = await readBounded(handle, maxBytes, opened.size);
+        if (bytes.length > maxBytes) {
+            throw new AttachmentTooLargeError();
+        }
+        return bytes;
     } finally {
         await handle.close();
     }
@@ -435,286 +490,183 @@ export async function readAttachments(
     }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
-    // Two budgets track different transports: inline mode sends the prompt as
-    // an RPC payload (base64 images + text count against ATTACHMENT_TOTAL),
-    // while temp-file mode travels as a single execve argv element (text plus
-    // path framing count against ATTACHMENT_ARGV_TOTAL). Temp-file images
-    // carry their bytes on disk, not in the prompt, so they charge the argv
-    // budget only the small path-framing text they actually emit — charging
-    // their raw bytes there would wrongly crowd out every other attachment.
-    const payloadBudget = Math.max(
-        0,
-        ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0)
-    );
-    const argvBudget = Math.max(
-        0,
-        ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0)
-    );
-    let payloadBytes = 0;
-    let argvBytes = 0;
-
-    // Rejection markers carry the path/tag framing bytes too. They are
-    // charged against the same budget the rejected attachment would have
-    // used: many rejected attachments otherwise pass the per-attachment
-    // checks yet collectively exceed the aggregate transport budget (the
-    // 96 KiB acpx argv budget or the Gateway payload limit) and fail the
-    // send. Once the remaining budget no longer fits the framed marker,
-    // the framing is dropped and only the short message text is emitted.
-    const emitRejection = (filePath: string, message: string) => {
-        const framed = frameFileBody(filePath, message);
-        const budgetMax = imageMode === 'tempFile' ? argvBudget : payloadBudget;
-        const used = () => (imageMode === 'tempFile' ? argvBytes : payloadBytes);
-        const markerBytes = Buffer.byteLength(framed, 'utf8');
-        if (used() + markerBytes > budgetMax) {
-            // The framed marker does not fit. Fall back to the bare message
-            // text, but only while it still fits: many rejected attachments
-            // can otherwise let the bare markers themselves grow past the
-            // transport budget and fail the send with E2BIG/oversized RPC
-            // despite the aggregate cap. When even the bare marker no longer
-            // fits, drop this rejection entirely rather than emit it.
-            const bareBytes = Buffer.byteLength(message, 'utf8');
-            if (used() + bareBytes > budgetMax) {
-                return;
-            }
-            if (imageMode === 'tempFile') {
-                argvBytes += bareBytes;
-            } else {
-                payloadBytes += bareBytes;
-            }
-            sections.push(message);
-            return;
-        }
-        if (imageMode === 'tempFile') {
-            argvBytes += markerBytes;
-        } else {
-            payloadBytes += markerBytes;
-        }
-        sections.push(framed);
-    };
-
+    // Inline mode sends the prompt as an RPC payload (base64 images + text
+    // count against ATTACHMENT_TOTAL); temp-file mode travels as a single
+    // execve argv element, where images charge only their path framing since
+    // their bytes live on disk.
+    const transportBudget = imageMode === 'tempFile'
+        ? Math.max(0, ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0))
+        : Math.max(0, ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0));
+    const textLimit = imageMode === 'tempFile' ? ATTACHMENT_TEXT_ARG_MAX_BYTES : ATTACHMENT_TEXT_MAX_BYTES;
+    let transportBytes = 0;
     const sections: string[] = [];
+    let attachmentsDropped = false;
 
-    // Plain notes (no path framing) carry a few bytes too: charge them like
-    // any other emitted text, and drop them entirely once the budget is
-    // exhausted — losing a note beats failing the whole send.
-    const emitNote = (message: string) => {
-        const noteBytes = Buffer.byteLength(message, 'utf8');
-        if (imageMode === 'tempFile' ? argvBytes + noteBytes > argvBudget : payloadBytes + noteBytes > payloadBudget) {
-            return;
+    const fitsTransport = (bytes: number) => transportBytes + bytes <= transportBudget;
+
+    /** Push a section charged with its separator, or report that it did not fit. */
+    const emitIfFits = (section: string): boolean => {
+        const cost = Buffer.byteLength(section, 'utf8') + SECTION_SEPARATOR.length;
+        if (!fitsTransport(cost)) {
+            return false;
         }
-        if (imageMode === 'tempFile') {
-            argvBytes += noteBytes;
-        } else {
-            payloadBytes += noteBytes;
-        }
-        sections.push(message);
+        transportBytes += cost;
+        sections.push(section);
+        return true;
     };
 
-    // Directory holding snapshot copies of image bytes for transports that
-    // cannot carry inline base64 in the prompt (see the image branch below).
-    // Created lazily on the first image so text-only sends never touch the
-    // filesystem outside the workspace.
+    // Rejection markers are charged too: many rejected attachments could
+    // otherwise collectively exceed the transport budget. Past the framed
+    // marker the bare message is tried, then the rejection is dropped.
+    const emitRejection = (filePath: string, message: string) => {
+        if (!emitIfFits(frameFileBody(filePath, message)) && !emitIfFits(message)) {
+            attachmentsDropped = true;
+        }
+    };
+
+    const emitNote = (message: string) => {
+        if (!emitIfFits(message)) {
+            attachmentsDropped = true;
+        }
+    };
+
+    // Created lazily on the first temp-file image so text-only sends never
+    // touch the filesystem outside the workspace.
     let snapshotDir: string | null = null;
-    // Raw validated bytes already materialized as snapshots. Temp-file images
-    // charge only their path framing against the argv budget, so this counter
-    // enforces the separate aggregate snapshot-byte cap.
+    // Raw bytes already snapshotted, bounded separately from the argv budget.
     let snapshotBytes = 0;
 
-    for (const att of attachments) {
-        // Image paths are handed to a downstream reader, so the same
-        // re-canonicalization as text attachments applies before emitting: a
-        // path swapped for a symlink after mention validation is dropped.
-        if (att.type === 'image') {
-            // The image content is read here, through the verified handle, and
-            // emitted from bytes: handing a path to the downstream reader would
-            // reopen a TOCTOU window between this validation and that open, so
-            // the final open/read happens on the trusted side instead.
-            const bytes = await readVerifiedImageBytes(att.path);
-            if (bytes === null) {
-                emitNote('[Could not read file]');
-                continue;
-            }
-            // The budget counts the encoded size each transport actually
-            // carries: inline images travel as a base64 data URI (~4/3 of the
-            // raw bytes) against the payload budget, while temp-file images
-            // contribute only their small path-framing text to the argv
-            // budget — their bytes live in a snapshot file, not the prompt.
-            // Base64 with padding is ceil(n/3)*4 — for lengths not divisible
-            // by 3 this exceeds the ~4/3 estimate, so the padded length is
-            // counted.
-            const encodedBytes = Math.ceil(bytes.length / 3) * 4;
-            if (imageMode === 'inline') {
-                if (payloadBytes + encodedBytes > payloadBudget) {
-                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
-                    continue;
-                }
-            } else if (argvBytes + 1 > argvBudget) {
-                emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
-                continue;
-            } else if (snapshotBytes + bytes.length > ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES) {
-                // Rejected before any snapshot is created, so the aggregate
-                // snapshot bytes stay bounded without leaving temp files behind.
-                emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
-                continue;
-            }
-            if (imageMode === 'inline') {
-                // Gateway transports receive the prompt over an RPC payload, so
-                // the bytes travel inline as a data URI and the gateway reads
-                // the image without filesystem access to this machine.
-                payloadBytes += encodedBytes;
-                sections.push(`<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`);
-            } else {
-                // CLI transports (acpx) receive the prompt as a single spawn()
-                // argv element, capped far below the encoded sizes allowed here
-                // by POSIX execve per-argument limits — a multi-megabyte inline
-                // image fails with E2BIG instead of attaching. Snapshot the
-                // verified bytes into a private temp file (0600, unique dir) and
-                // hand the CLI its path: the copy is taken through the verified
-                // handle, so no attacker-controlled path is reopened downstream,
-                // and the snapshot's content is exactly what was validated.
-                if (snapshotDir === null) {
-                    try {
-                        snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chat-attach-'));
-                    } catch {
-                        emitNote('[Could not read file]');
-                        continue;
-                    }
-                }
-                const safeName = att.name.replace(/[^A-Za-z0-9._-]/g, '_');
-                const snapshotPath = path.join(snapshotDir, `${randomUUID()}-${safeName}`);
-                try {
-                    await fsp.writeFile(snapshotPath, bytes, { mode: 0o600 });
-                } catch {
-                    emitNote('[Could not read file]');
-                    continue;
-                }
-                const imageSection = `<image path="${escapeXmlAttr(snapshotPath)}" />`;
-                // The exact emitted section is charged against the argv budget
-                // (the cheap pre-check above only proves budget remains):
-                // accepting a snapshot whose section overruns the budget would
-                // let many images collectively exceed the per-argument spawn
-                // limit and E2BIG the acpx spawn. A rejected snapshot is
-                // removed immediately — the shared temp directory is deleted
-                // by dispose() as a whole, but the skipped image must not
-                // leave validated bytes on disk.
-                const sectionBytes = Buffer.byteLength(imageSection, 'utf8');
-                if (argvBytes + sectionBytes > argvBudget) {
-                    await fsp.rm(snapshotPath, { force: true });
-                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
-                    continue;
-                }
-                snapshotBytes += bytes.length;
-                argvBytes += sectionBytes;
-                sections.push(imageSection);
-            }
-            continue;
-        }
+    const writeSnapshot = async (name: string, bytes: Buffer): Promise<string | null> => {
         try {
-            const real = await fsp.realpath(att.path);
-            // The stored path is canonicalized at attachment time, so any
-            // realpath mismatch — including a case-only spelling difference,
-            // which a swap can exploit on case-sensitive volumes — means the
-            // stored path now resolves elsewhere and must be dropped.
-            if (real !== att.path) {
-                emitRejection(att.path, '[Could not read file]');
-                continue;
+            if (snapshotDir === null) {
+                snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chat-attach-'));
             }
-            const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
-            const handle = await fsp.open(real, fsConstants.O_RDONLY | noFollow | openNonBlock);
-            try {
-                const opened = await handle.stat();
-                const current = await fsp.lstat(real);
-                // A FIFO or other special file passes the O_NOFOLLOW open:
-                // O_NONBLOCK keeps the open itself from parking on a FIFO
-                // until a writer attaches, and the regular-file check below
-                // rejects the special file instead (readFile() on a FIFO
-                // would block indefinitely and hang the send — the same gate
-                // as image verification above).
-                if (!opened.isFile() || !current.isFile()) {
-                    throw new Error('attachment path is not a regular file');
-                }
-                if (opened.dev !== current.dev || opened.ino !== current.ino) {
-                    throw new Error('attachment path changed during read');
-                }
-                if (!(await handleIsAtPath(handle, real))) {
-                    throw new Error('attachment opened outside its canonical path');
-                }
-                // Same bounded-read gate as image verification: loop the
-                // transfer so a file that grows after stat() cannot blow up
-                // memory before the size check, and a short read cannot
-                // truncate the attachment.
-                const textLimit =
-                    imageMode === 'tempFile' ? ATTACHMENT_TEXT_ARG_MAX_BYTES : ATTACHMENT_TEXT_MAX_BYTES;
-                const bytes = await readBounded(handle, textLimit);
-                if (bytes.length > textLimit) {
-                    throw new Error('attachment file exceeds the size limit');
-                }
-                const content = new TextDecoder().decode(bytes);
-                // Budget counts the UTF-8 bytes the prompt will carry, not
-                // the raw file length: TextDecoder maps invalid bytes to
-                // U+FFFD (three UTF-8 bytes), so a non-UTF-8 attachment can
-                // expand past the cap after this check otherwise. The budget
-                // is only charged after the final realpath validation below
-                // succeeds — a swapped/disappeared file must not consume the
-                // aggregate budget and silently crowd out later attachments.
-                const encodedBytes = Buffer.byteLength(content, 'utf8');
-                // Gateway transports do not use execve, so the argv budget is
-                // CLI-only: charging a Gateway send against it (with the base
-                // prompt subtracted) would wrongly drop text attachments on
-                // ordinary /compact-sized prompts.
-                if (payloadBytes + encodedBytes > payloadBudget ||
-                    (imageMode === 'tempFile' && argvBytes + encodedBytes > argvBudget)) {
-                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
-                    continue;
-                }
-                const realAfter = await fsp.realpath(real);
-                if (realAfter !== real) {
-                    throw new Error('attachment path changed during read');
-                }
-                payloadBytes += encodedBytes;
-                if (imageMode === 'tempFile') {
-                    argvBytes += encodedBytes;
-                }
-                sections.push(frameFileBody(att.path, sliceLineRange(content, att.lineStart, att.lineEnd)));
-            } finally {
-                await handle.close();
-            }
+            const snapshotPath = path.join(snapshotDir, snapshotFileName(name));
+            await fsp.writeFile(snapshotPath, bytes, { mode: 0o600 });
+            return snapshotPath;
         } catch {
-            emitRejection(att.path, '[Could not read file]');
-        }
-    }
-
-    // Temp-file mode snapshots validated image bytes into a private temp
-    // directory consumed by the CLI (acpx) process. The caller ties `dispose`
-    // to the process completion/error path (after the child has consumed the
-    // paths, including cancellation and spawn failure) so repeated image
-    // attachments cannot accumulate validated bytes and exhaust temp disk.
-    // Inline mode never creates the directory, so dispose is a no-op.
-    const dispose = async (): Promise<void> => {
-        if (snapshotDir !== null) {
-            const dir = snapshotDir;
-            snapshotDir = null;
-            await fsp.rm(dir, { recursive: true, force: true });
+            return null;
         }
     };
-    return { prompt: sections.join('\n\n'), dispose };
+
+    // The caller ties `dispose` to process completion (including cancellation
+    // and spawn failure) so repeated sends cannot accumulate snapshot bytes. A
+    // failed removal keeps the directory so a later dispose can retry.
+    const dispose = async (): Promise<void> => {
+        if (snapshotDir === null) {
+            return;
+        }
+        try {
+            await fsp.rm(snapshotDir, { recursive: true, force: true });
+            snapshotDir = null;
+        } catch (err) {
+            log.warn(`Failed to remove attachment snapshots at ${snapshotDir}`, err);
+        }
+    };
+
+    const emitImage = async (att: Attachment) => {
+        // Read through the verified handle and emitted from bytes: handing the
+        // path downstream would reopen a TOCTOU window at the reader's open.
+        const bytes = await readVerifiedImageBytes(att.path);
+        if (bytes === null) {
+            emitNote(UNREADABLE_MARKER);
+            return;
+        }
+        if (imageMode === 'inline') {
+            // Padded base64 length, checked before the string is built.
+            const encodedBytes = Math.ceil(bytes.length / 3) * 4;
+            const section = fitsTransport(encodedBytes)
+                ? `<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`
+                : null;
+            if (section === null || !emitIfFits(section)) {
+                emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+            }
+            return;
+        }
+        // CLI transports cannot carry megabytes of base64 in one argv element,
+        // so the verified bytes are snapshotted into a private temp file (0600,
+        // unique dir) and the CLI gets its path.
+        if (!fitsTransport(1) || snapshotBytes + bytes.length > ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES) {
+            emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+            return;
+        }
+        const snapshotPath = await writeSnapshot(att.name, bytes);
+        if (snapshotPath === null) {
+            emitNote(UNREADABLE_MARKER);
+            return;
+        }
+        if (!emitIfFits(`<image path="${escapeXmlAttr(snapshotPath)}" />`)) {
+            await fsp.rm(snapshotPath, { force: true });
+            emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+            return;
+        }
+        snapshotBytes += bytes.length;
+    };
+
+    const emitText = async (att: Attachment) => {
+        try {
+            // A ranged mention is capped after slicing, so the raw read only
+            // needs the memory bound of the inline cap.
+            const readLimit = att.lineStart != null ? ATTACHMENT_TEXT_MAX_BYTES : textLimit;
+            const bytes = await readVerifiedTextBytes(att.path, readLimit);
+            // NUL cannot travel in an execve argument and marks binary content.
+            if (bytes.includes(0)) {
+                emitRejection(att.path, BINARY_FILE_MARKER);
+                return;
+            }
+            const text = sliceLineRange(new TextDecoder().decode(bytes), att.lineStart, att.lineEnd);
+            // Counted after decoding: invalid bytes expand to U+FFFD (3 bytes).
+            if (Buffer.byteLength(text, 'utf8') > textLimit) {
+                throw new AttachmentTooLargeError();
+            }
+            if ((await fsp.realpath(att.path)) !== att.path) {
+                throw new Error('attachment path changed during read');
+            }
+            if (!emitIfFits(frameFileBody(att.path, text))) {
+                emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+            }
+        } catch (err) {
+            emitRejection(att.path, err instanceof AttachmentTooLargeError ? FILE_SIZE_LIMIT_MARKER : UNREADABLE_MARKER);
+        }
+    };
+
+    try {
+        for (const att of attachments) {
+            await (att.type === 'image' ? emitImage(att) : emitText(att));
+        }
+    } catch (err) {
+        await dispose();
+        throw err;
+    }
+    // Never drop attachments silently; this one note rides on the framing reserve.
+    if (attachmentsDropped) {
+        sections.push(ATTACHMENTS_DROPPED_NOTE);
+    }
+    return { prompt: sections.join(SECTION_SEPARATOR), dispose };
 }
 
 /** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.
  *  A missing range returns the whole body; a non-positive start clamps to line 1;
  *  reversed ranges (end < start) collapse to the start line; CRLF is handled by
- *  splitting on `/\r?\n/` so Windows line endings do not pollute slices. */
+ *  splitting on `/\r?\n/` so Windows line endings do not pollute slices; a
+ *  start past the last line yields an explicit marker instead of an empty body. */
 export function sliceLineRange(content: string, lineStart?: number, lineEnd?: number): string {
     if (lineStart == null) {
         return content;
     }
     const lines = content.split(/\r?\n/);
     const start = Math.max(1, lineStart) - 1;
-    const end = Math.min(lines.length, Math.max(1, Math.max(lineStart, lineEnd ?? lineStart)));
-    if (start >= lines.length) {
-        return '';
+    const requestedEnd = Math.max(lineStart, lineEnd ?? lineStart);
+    const totalLines = lineCount(lines);
+    if (start >= totalLines) {
+        return `[Lines ${lineStart}-${requestedEnd} are beyond the end of the file (${totalLines} lines)]`;
     }
-    return lines.slice(start, end).join('\n');
+    return lines.slice(start, Math.min(lines.length, Math.max(1, requestedEnd))).join('\n');
+}
+
+/** Lines in a split body, not counting the empty piece after a final newline. */
+function lineCount(lines: string[]): number {
+    return lines.length > 1 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
 }
 
 /** Append or update a tool-call message in a thread snapshot.
