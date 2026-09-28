@@ -47,7 +47,7 @@ function toItem(session: SessionSummary): AgentSessionItem {
     label: session.label ?? session.agentId ?? session.key,
     agentId: session.agentId,
     hasActiveRun: session.hasActiveRun,
-    updatedAt: isNil(session.lastActivityMs) || isFinite(session.lastActivityMs) ? null : new Date(session.lastActivityMs).toISOString(),
+    updatedAt: isNil(session.lastActivityMs) || !isFinite(session.lastActivityMs) ? null : new Date(session.lastActivityMs).toISOString(),
     cold: session.cold,
   };
 }
