@@ -1,13 +1,15 @@
 import { EventEmitter } from 'events';
+import { Writable } from 'stream';
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
+import * as acpxLauncher from '../chat/acpxLauncher';
 import {
     ABORT_KILL_GRACE_MS,
     ChatService,
     ChatEvent,
+    PROMPT_MAX_BYTES,
     STDERR_TAIL_MAX_CHARS,
     STDOUT_LINE_MAX_CHARS,
-    PROMPT_ARG_MAX_BYTES,
 } from '../chat/ChatService';
 
 jest.mock('child_process', () => ({ spawn: jest.fn() }));
@@ -15,12 +17,21 @@ jest.mock('child_process', () => ({ spawn: jest.fn() }));
 const spawnMock = jest.mocked(spawn);
 const getConfigurationMock = jest.mocked(vscode.workspace.getConfiguration);
 
-type FakeChild = ChildProcess & { stdout: EventEmitter; stderr: EventEmitter };
+type FakeChild = ChildProcess & { stdin: Writable; stdout: EventEmitter; stderr: EventEmitter; stdinBytes: Buffer[] };
 
 /** A child that `spawned: false` models as never started: Node leaves its pid unset. */
 function fakeChild({ spawned = true } = {}): FakeChild {
+    const stdinBytes: Buffer[] = [];
+    const stdin = new Writable({
+        write(chunk: Buffer, _encoding, callback) {
+            stdinBytes.push(chunk);
+            callback();
+        },
+    });
     return Object.assign(new EventEmitter() as ChildProcess, {
         pid: spawned ? 4242 : undefined,
+        stdin,
+        stdinBytes,
         stdout: new EventEmitter(),
         stderr: new EventEmitter(),
         kill: jest.fn(),
@@ -50,9 +61,26 @@ function start(prompt = 'hello', options: RunOptions = {}) {
     return { child, ...send(prompt, options) };
 }
 
+/** The prompt text the child read from stdin, decoded from its ACP content block. */
+function stdinPrompt(child: FakeChild): string {
+    const blocks = JSON.parse(Buffer.concat(child.stdinBytes).toString('utf8')) as { type: string; text: string }[];
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].type).toBe('text');
+    return blocks[0].text;
+}
+
+function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { ...original, value: platform });
+    try {
+        return run();
+    } finally {
+        Object.defineProperty(process, 'platform', original);
+    }
+}
+
 const jsonLines = (...lines: object[]) => Buffer.from(lines.map(line => JSON.stringify(line)).join('\n') + '\n');
 const spawnedArgs = () => spawnMock.mock.calls[0][1] as string[];
-const spawnedPrompt = () => spawnedArgs()[spawnedArgs().length - 1];
 const types = (events: ChatEvent[]) => events.map(e => e.type);
 const PERMISSION_FLAGS = ['--approve-all', '--deny-all', '--approve-reads'];
 const acpUpdate = (update: object) => ({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's', update } });
@@ -72,10 +100,22 @@ describe('ChatService.sendMessage', () => {
         jest.useRealTimers();
     });
 
-    describe('argv', () => {
-        it('passes the prompt after `--` so a leading dash is never parsed as a flag', () => {
-            start('--agent=sh -c evil');
-            expect(spawnedArgs()).toEqual(['--format', 'json', '--approve-reads', 'codex', 'exec', '--', '--agent=sh -c evil']);
+    describe('launch', () => {
+        it('sends the prompt on stdin, never on the command line', () => {
+            const { child } = start('--agent=sh -c evil');
+            expect(spawnedArgs()).toEqual(['--format', 'json', '--approve-reads', 'codex', 'exec', '--file', '-']);
+            expect(stdinPrompt(child)).toBe('--agent=sh -c evil');
+            expect(child.stdin.writableEnded).toBe(true);
+        });
+
+        it.each([
+            ['NUL', 'before\0after'],
+            ['quotes and newlines', ' "a" \'b\'\n\r\nc\t '],
+            ['multibyte text', 'ж€😀'],
+            ['a leading `[` acpx would parse as content blocks', '[1, 2]'],
+        ])('keeps %s verbatim', (_label, prompt) => {
+            const { child } = start(prompt);
+            expect(stdinPrompt(child)).toBe(prompt);
         });
 
         it('always names the agent, so acpx never substitutes its own configured default', () => {
@@ -117,22 +157,53 @@ describe('ChatService.sendMessage', () => {
 
         it('prefixes the system prompt and the chat-type instruction to the prompt', () => {
             useSettings({ 'chat.systemPrompt': 'SYS' });
-            start('question', { chatType: 'review' });
-            expect(spawnedPrompt()).toMatch(/^SYS\n\nYou are a code reviewer\.[^\n]*\n\nquestion$/);
+            const { child } = start('question', { chatType: 'review' });
+            expect(stdinPrompt(child)).toMatch(/^SYS\n\nYou are a code reviewer\.[^\n]*\n\nquestion$/);
         });
 
-        it('replaces NUL characters before they reach spawn', () => {
-            start('before\0after');
-            expect(spawnedArgs().some(arg => arg.includes('\0'))).toBe(false);
-            expect(spawnedPrompt()).toContain('before\x1Aafter');
-        });
-
-        it('starts acpx in its own process group on POSIX so abort reaches the agent', () => {
-            start();
+        it('starts acpx without a shell in its own process group on POSIX so abort reaches the agent', () => {
+            withPlatform('linux', () => start());
+            expect(spawnMock.mock.calls[0][0]).toBe('acpx');
             expect(spawnMock.mock.calls[0][2]).toEqual(expect.objectContaining({
-                detached: process.platform !== 'win32',
-                stdio: ['ignore', 'pipe', 'pipe'],
+                detached: true,
+                shell: false,
+                stdio: ['pipe', 'pipe', 'pipe'],
             }));
+        });
+
+        it('runs the resolved Node launch on Windows, not the acpx shim', () => {
+            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({
+                command: 'C:\\Code\\Code.exe',
+                args: ['C:\\npm\\node_modules\\acpx\\dist\\cli.js'],
+                env: { ELECTRON_RUN_AS_NODE: '1' },
+            });
+            try {
+                const { child } = withPlatform('win32', () => start('hi'));
+                expect(spawnMock).toHaveBeenCalledWith(
+                    'C:\\Code\\Code.exe',
+                    ['C:\\npm\\node_modules\\acpx\\dist\\cli.js', '--format', 'json', '--approve-reads', 'codex', 'exec', '--file', '-'],
+                    expect.objectContaining({
+                        detached: false,
+                        shell: false,
+                        windowsHide: true,
+                        env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1' }),
+                    }));
+                expect(stdinPrompt(child)).toBe('hi');
+            } finally {
+                resolve.mockRestore();
+            }
+        });
+
+        it('explains a missing acpx without spawning when no launch resolves', () => {
+            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue(null);
+            try {
+                const { events, onRunComplete } = send('hi');
+                expect(spawnMock).not.toHaveBeenCalled();
+                expect(events).toEqual([{ type: 'error', message: 'acpx not found. Install it with: npm i -g acpx' }, { type: 'done' }]);
+                expect(onRunComplete).toHaveBeenCalledTimes(1);
+            } finally {
+                resolve.mockRestore();
+            }
         });
 
         it.each(['--agent=sh', '-x', 'exec', 'sessions', 'a b', 'x;y'])('refuses the agent name %p without spawning', (model) => {
@@ -142,21 +213,20 @@ describe('ChatService.sendMessage', () => {
             expect(onRunComplete).toHaveBeenCalledTimes(1);
         });
 
-        const perArgumentLimited = process.platform === 'linux' || process.platform === 'win32' ? it : it.skip;
-        const linuxOnly = process.platform === 'linux' ? it : it.skip;
-
-        linuxOnly('keeps a NUL-heavy prompt within the budget it was fitted to', () => {
-            const budget = ChatService.promptArgBudgetBytes('chat')!;
-            const { events } = start('\0'.repeat(budget));
-            expect(events).toEqual([]);
-            expect(Buffer.byteLength(spawnedPrompt(), 'utf8')).toBe(budget);
-        });
-
-        perArgumentLimited('refuses a prompt over the argument limit without spawning, completing once', () => {
-            const { events, onRunComplete } = send('x'.repeat(PROMPT_ARG_MAX_BYTES + 1));
+        it('refuses a prompt over the size cap without spawning, completing once', () => {
+            const { events, onRunComplete } = send('x'.repeat(PROMPT_MAX_BYTES + 1));
             expect(spawnMock).not.toHaveBeenCalled();
             expect(types(events)).toEqual(['error', 'done']);
             expect((events[0] as { message: string }).message).toContain('too large');
+            expect(onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
+        it('survives acpx closing stdin early and still completes exactly once', () => {
+            const { child, events, onRunComplete } = start();
+            expect(() => child.stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }))).not.toThrow();
+            child.stderr.emit('data', Buffer.from('bad flag'));
+            child.emit('close', 2, null);
+            expect(events).toEqual([{ type: 'error', message: 'bad flag' }, { type: 'done' }]);
             expect(onRunComplete).toHaveBeenCalledTimes(1);
         });
 
@@ -169,10 +239,10 @@ describe('ChatService.sendMessage', () => {
 
         it('completes the run with an error when spawn throws synchronously', () => {
             spawnMock.mockImplementation(() => {
-                throw new Error('spawn E2BIG');
+                throw new Error('spawn EMFILE');
             });
             const { events, onRunComplete } = send('hello');
-            expect(events).toEqual([{ type: 'error', message: 'spawn E2BIG' }, { type: 'done' }]);
+            expect(events).toEqual([{ type: 'error', message: 'spawn EMFILE' }, { type: 'done' }]);
             expect(onRunComplete).toHaveBeenCalledTimes(1);
         });
     });

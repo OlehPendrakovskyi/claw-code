@@ -132,13 +132,10 @@ const COMMAND_INSTRUCTIONS: Record<string, string> = {
         'Summarize the conversation so far into a compact context handoff: key decisions, current state, open questions, and next steps. Keep it concise.',
 };
 
-/** Per-field UTF-8 caps for editor context: the acpx transport passes the
- *  whole prompt as ONE command-line argument, so code + diagnostics must leave
- *  room for attachments and the system prompt. */
+/** Per-field UTF-8 caps for editor context, so one huge file or diff cannot
+ *  crowd out the request itself. */
 export const CONTEXT_CODE_MAX_BYTES = 32 * 1024;
 export const CONTEXT_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
-
-type ContextCaps = { code: number; diagnostics: number; transcript: number };
 
 /** Escape for a double- or single-quoted attribute value. Control characters
  *  (newlines included) are encoded too, so an untrusted value such as a POSIX
@@ -169,9 +166,9 @@ function frameContextField(label: string, value: string, maxBytes: number): stri
     return '\n' + frameTaggedBlock('context', attributes, keepUtf8Head(value, maxBytes));
 }
 
-function formatContext(ctx: EditorContext, contextType: ContextType, caps: ContextCaps): string {
+function formatContext(ctx: EditorContext, contextType: ContextType): string {
     const parts: string[] = [];
-    const frameCode = (label: string, value: string) => frameContextField(label, value, caps.code);
+    const frameCode = (label: string, value: string) => frameContextField(label, value, CONTEXT_CODE_MAX_BYTES);
 
     // File name and language are untrusted too (a POSIX filename may hold a
     // newline), so they travel as escaped attributes, never as raw lines.
@@ -206,7 +203,7 @@ function formatContext(ctx: EditorContext, contextType: ContextType, caps: Conte
                 parts.push(frameCode('File Content', ctx.fileContent));
             }
             if (ctx.diagnostics) {
-                parts.push(frameContextField('Diagnostics', ctx.diagnostics, caps.diagnostics));
+                parts.push(frameContextField('Diagnostics', ctx.diagnostics, CONTEXT_DIAGNOSTICS_MAX_BYTES));
             }
             break;
         case 'gitDiff':
@@ -228,8 +225,7 @@ function formatContext(ctx: EditorContext, contextType: ContextType, caps: Conte
     return parts.join('\n');
 }
 
-/** Maximum UTF-8 bytes of conversation transcript /compact may embed; /compact
- *  carries no editor context, so this plus attachments fits the acpx argv. */
+/** Maximum UTF-8 bytes of conversation transcript /compact may embed. */
 export const COMPACT_TRANSCRIPT_MAX_BYTES = 64 * 1024;
 
 /** The first at most `maxBytes` UTF-8 bytes of `input`, ending on a code
@@ -264,77 +260,33 @@ export function keepUtf8Tail(input: string, maxBytes: number): string {
     return encoded.subarray(start).toString('utf8');
 }
 
-function frameTranscript(transcript: string, maxBytes: number): string {
+function frameTranscript(transcript: string): string {
     // The oldest turns are the ones dropped when it exceeds the cap.
     const attributes: Record<string, string> = { label: 'Conversation So Far' };
-    if (Buffer.byteLength(transcript, 'utf8') > maxBytes) {
-        attributes.truncated = `earliest turns omitted; last ${maxBytes} bytes kept`;
+    if (Buffer.byteLength(transcript, 'utf8') > COMPACT_TRANSCRIPT_MAX_BYTES) {
+        attributes.truncated = `earliest turns omitted; last ${COMPACT_TRANSCRIPT_MAX_BYTES} bytes kept`;
     }
-    return '\n' + frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, maxBytes));
+    return '\n' + frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, COMPACT_TRANSCRIPT_MAX_BYTES));
 }
 
-const DEFAULT_CAPS: ContextCaps = {
-    code: CONTEXT_CODE_MAX_BYTES,
-    diagnostics: CONTEXT_DIAGNOSTICS_MAX_BYTES,
-    transcript: COMPACT_TRANSCRIPT_MAX_BYTES,
-};
-
-const scaleCaps = (scale: number): ContextCaps => ({
-    code: Math.floor(DEFAULT_CAPS.code * scale),
-    diagnostics: Math.floor(DEFAULT_CAPS.diagnostics * scale),
-    transcript: Math.floor(DEFAULT_CAPS.transcript * scale),
-});
-
-/** Build the prompt for a slash command. With `maxBytes` (the acpx argument
- *  budget), every context cap shrinks by the same factor until the prompt
- *  fits; instruction and user text are never cut, so a prompt they alone
- *  overflow is left for the transport to refuse. */
 export function buildSlashPrompt(
     commandName: string,
     userText: string,
     context: EditorContext,
-    transcript?: string,
-    maxBytes?: number
+    transcript?: string
 ): string {
     const cmd = SLASH_COMMANDS.find(c => c.name === commandName);
     if (!cmd) {
         return userText;
     }
-    const build = (caps: ContextCaps) => composeSlashPrompt(commandName, cmd.contextType, userText, context, transcript, caps);
-    const full = build(DEFAULT_CAPS);
-    if (maxBytes === undefined || Buffer.byteLength(full, 'utf8') <= maxBytes) {
-        return full;
-    }
-    // Prompt size grows monotonically with the scale, so bisect for the largest fit.
-    let low = 0;
-    let high = 1;
-    for (let step = 0; step < 20; step += 1) {
-        const mid = (low + high) / 2;
-        if (Buffer.byteLength(build(scaleCaps(mid)), 'utf8') <= maxBytes) {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    return build(scaleCaps(low));
-}
-
-function composeSlashPrompt(
-    commandName: string,
-    contextType: ContextType,
-    userText: string,
-    context: EditorContext,
-    transcript: string | undefined,
-    caps: ContextCaps
-): string {
-    const contextBlock = formatContext(context, contextType, caps);
+    const contextBlock = formatContext(context, cmd.contextType);
 
     const sections = [COMMAND_INSTRUCTIONS[commandName]];
     if (transcript) {
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the
         // command has no prior turns to compress.
-        sections.push(frameTranscript(transcript, caps.transcript));
+        sections.push(frameTranscript(transcript));
     }
     if (contextBlock) {
         sections.push(contextBlock);

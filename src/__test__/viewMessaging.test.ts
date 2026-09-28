@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type * as FspType from 'fs/promises';
+import { PROMPT_MAX_BYTES } from '../chat/ChatService';
 import { readAttachments, log } from '../webview/viewMessaging';
 
 // The unmocked promises API: the default implementation must bypass the mock
@@ -84,38 +85,15 @@ describe('viewMessaging', () => {
     describe('readAttachments text budget', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
 
-        posixOnly('honours the caller\'s platform argument limit over the default budget', async () => {
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-argv-'));
-            try {
-                const file = path.join(fs.realpathSync(dir), 'forty.txt');
-                fs.writeFileSync(file, 'a'.repeat(40 * 1024));
-                const withinDefault = await readAttachments([{ name: 'forty.txt', path: file, type: 'file' }], {
-                    imageMode: 'tempFile',
-                });
-                const windowsSized = await readAttachments([{ name: 'forty.txt', path: file, type: 'file' }], {
-                    imageMode: 'tempFile',
-                    argvLimitBytes: 30 * 1024,
-                });
-                expect(withinDefault.prompt).toContain('a'.repeat(40 * 1024));
-                expect(windowsSized.prompt).not.toContain('a'.repeat(1024));
-                expect(windowsSized.prompt).toContain('size limit');
-            } finally {
-                fs.rmSync(dir, { recursive: true, force: true });
-            }
-        });
-
-
-        posixOnly('caps text attachments at the CLI argument budget for tempFile mode', async () => {
+        posixOnly('gives text attachments the same size cap on both transports', async () => {
             const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-text-'));
             try {
-                const big = path.join(dir, 'big.txt');
-                fs.writeFileSync(big, 'a'.repeat(80 * 1024));
-                const { prompt } = await readAttachments(
-                    [{ name: 'big.txt', path: big, type: 'file' }],
-                    { imageMode: 'tempFile' }
-                );
-                expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
-                expect(prompt).not.toContain('[Could not read file]');
+                const big = path.join(fs.realpathSync(dir), 'big.txt');
+                fs.writeFileSync(big, 'a'.repeat(200 * 1024));
+                for (const imageMode of ['inline', 'tempFile'] as const) {
+                    const { prompt } = await readAttachments([{ name: 'big.txt', path: big, type: 'file' }], { imageMode });
+                    expect(prompt).toContain('a'.repeat(200 * 1024));
+                }
             } finally {
                 fs.rmSync(dir, { recursive: true, force: true });
             }
@@ -261,7 +239,6 @@ describe('viewMessaging', () => {
 
     describe('readAttachments content limits', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
-        const ARGV_BUDGET = 96 * 1024;
         let dir: string;
 
         const writeFixture = (name: string, content: string | Buffer) => {
@@ -287,7 +264,7 @@ describe('viewMessaging', () => {
             }
         });
 
-        posixOnly('slices a ranged mention before applying the CLI size cap', async () => {
+        posixOnly('slices a ranged mention before applying the size cap', async () => {
             const lines = Array.from({ length: 3000 }, (_, i) => `line ${i + 1} ${'x'.repeat(40)}`);
             const file = writeFixture('big.ts', lines.join('\n'));
             const { prompt } = await readAttachments(
@@ -307,8 +284,8 @@ describe('viewMessaging', () => {
             expect(prompt).toContain('wanted');
         });
 
-        posixOnly('rejects a ranged slice that still exceeds the CLI size cap', async () => {
-            const file = writeFixture('one-line.ts', 'z'.repeat(80 * 1024));
+        posixOnly('rejects a ranged slice that still exceeds the size cap', async () => {
+            const file = writeFixture('one-line.ts', 'z'.repeat(10 * 1024 * 1024 + 1));
             const { prompt } = await readAttachments(
                 [{ name: 'one-line.ts', path: file, type: 'file', lineStart: 1 }],
                 { imageMode: 'tempFile' }
@@ -316,12 +293,12 @@ describe('viewMessaging', () => {
             expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
 
-        posixOnly('charges the section framing, not just the file bytes, against the argv budget', async () => {
+        posixOnly('charges the section framing, not just the file bytes, against the payload budget', async () => {
             const content = 'c'.repeat(1000);
             const file = writeFixture('exact.txt', content);
             const { prompt } = await readAttachments(
                 [{ name: 'exact.txt', path: file, type: 'file' }],
-                { imageMode: 'tempFile', reservedArgvBytes: ARGV_BUDGET - content.length }
+                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES - content.length }
             );
             expect(prompt).not.toContain(content);
             expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(content.length);
@@ -331,7 +308,7 @@ describe('viewMessaging', () => {
             const file = writeFixture('a.txt', 'content');
             const { prompt } = await readAttachments(
                 [{ name: 'a.txt', path: file, type: 'file' }],
-                { imageMode: 'tempFile', reservedArgvBytes: ARGV_BUDGET }
+                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES }
             );
             expect(prompt).toBe('[Some attachments were skipped: attachment size limit reached]');
         });
@@ -413,7 +390,7 @@ describe('viewMessaging', () => {
             // the fresh snapshot is removed through the failing rm.
             await expect(readAttachments(
                 [{ name: 'pic.png', path: image, type: 'image' }],
-                { imageMode: 'tempFile', reservedArgvBytes: 96 * 1024 - 20 }
+                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES - 20 }
             )).rejects.toThrow('EIO');
             expect(createdDirs).toHaveLength(1);
             expect(fs.existsSync(createdDirs[0])).toBe(false);
@@ -468,7 +445,7 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('rejects a text file that grows past the cap after stat', async () => {
-            const file = writeFixture('grow.txt', 'g'.repeat(60 * 1024));
+            const file = writeFixture('grow.txt', 'g'.repeat(10 * 1024 * 1024 - 1024));
             realpathImpl = async (p: fs.PathLike) => {
                 if (/^\/proc\/self\/fd\//.test(p as string)) {
                     fs.appendFileSync(file, 'g'.repeat(10 * 1024));

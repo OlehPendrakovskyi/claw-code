@@ -1,16 +1,13 @@
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import { StringDecoder } from 'string_decoder';
+import { resolveAcpxLaunch } from './acpxLauncher';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
 
-/** Linux MAX_ARG_STRLEN: the prompt travels as ONE execve argument, and the
- *  limit includes that argument's terminating NUL. */
-export const PROMPT_ARG_MAX_BYTES = 128 * 1024 - 1;
-
-/** Windows caps the whole command line at 32767 UTF-16 units; the rest is
- *  headroom for the executable and the other flags. */
-export const PROMPT_ARG_MAX_WINDOWS_CHARS = 32767 - 2048;
+/** Largest prompt acpx is sent on stdin; attachments are budgeted against
+ *  the same size, which leaves the system prompt its framing reserve. */
+export const PROMPT_MAX_BYTES = 20 * 1024 * 1024;
 
 /** A stdout line still missing its newline past this size is dropped
  *  instead of growing the buffer without bound. */
@@ -31,47 +28,7 @@ const DEFAULT_AGENT = 'codex';
 /** An agent name cannot start with `-`, so it never parses as an acpx flag. */
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-/** Length of `arg` on a Windows command line once libuv quotes it for CreateProcess. */
-function windowsQuotedLength(arg: string): number {
-    if (!/[ \t"]/.test(arg)) {
-        return arg.length;
-    }
-    if (!/["\\]/.test(arg)) {
-        return arg.length + 2;
-    }
-    let length = 2;
-    let pendingBackslashes = 0;
-    for (const unit of arg) {
-        if (unit === '\\') {
-            pendingBackslashes += 1;
-            continue;
-        }
-        // Backslashes before a quote are doubled and the quote itself escaped.
-        length += unit === '"' ? pendingBackslashes * 2 + 2 : pendingBackslashes + unit.length;
-        pendingBackslashes = 0;
-    }
-    // Trailing backslashes are doubled so they do not escape the closing quote.
-    return length + pendingBackslashes * 2;
-}
-
-/** How far `prompt` is over the platform's command-line limit for one
- *  argument, as a user-facing size, or null when it fits. macOS and the
- *  BSDs only cap the total argv+env size, which spawn reports as an error. */
-export function describePromptArgOverflow(prompt: string, platform: NodeJS.Platform = process.platform): string | null {
-    if (platform === 'linux') {
-        const bytes = Buffer.byteLength(prompt, 'utf8');
-        return bytes > PROMPT_ARG_MAX_BYTES
-            ? `${Math.ceil(bytes / 1024)} KiB, limit ${Math.floor(PROMPT_ARG_MAX_BYTES / 1024)} KiB`
-            : null;
-    }
-    if (platform === 'win32') {
-        const quotedLength = windowsQuotedLength(prompt);
-        return quotedLength > PROMPT_ARG_MAX_WINDOWS_CHARS
-            ? `${quotedLength} characters, limit ${PROMPT_ARG_MAX_WINDOWS_CHARS}`
-            : null;
-    }
-    return null;
-}
+const ACPX_NOT_FOUND_MESSAGE = 'acpx not found. Install it with: npm i -g acpx';
 
 export type UsageInfo = {
     promptTokens: number;
@@ -335,6 +292,13 @@ class AcpxRun {
         child.stderr?.on('data', (chunk: Buffer) => this.onStderr(this.stderrDecoder.write(chunk)));
         child.on('close', (code: number | null, signal: NodeJS.Signals | null) => this.onClose(code, signal));
         child.on('error', (err: NodeJS.ErrnoException) => this.onError(err));
+        // EPIPE: acpx exited before reading its prompt, which its exit reports.
+        child.stdin?.on('error', (err: Error) => log.warn(`acpx stdin: ${err.message}`));
+    }
+
+    /** acpx reads stdin to EOF before it starts the agent. */
+    writePrompt(payload: Buffer): void {
+        this.child.stdin?.end(payload);
     }
 
     /** Ends the run for its listener now and stops the process tree; the
@@ -427,7 +391,7 @@ class AcpxRun {
     private onError(err: NodeJS.ErrnoException): void {
         log.error('acpx spawn error', err);
         const message = err.code === 'ENOENT' || err.message.includes('ENOENT')
-            ? 'acpx not found. Install it with: npm i -g acpx'
+            ? ACPX_NOT_FOUND_MESSAGE
             : err.message;
         this.finish({ type: 'error', message });
         // A child that never started emits no reliable 'close'.
@@ -518,24 +482,6 @@ export class ChatService {
         return systemPrompt ? `${systemPrompt}\n\n${prefixed}` : prefixed;
     }
 
-    /** UTF-8 bytes a caller's prompt may use on the acpx command line once the
-     *  system prompt and chat-type prefix are added, or null where the platform
-     *  has no per-argument limit. Any prompt within it passes the send-time
-     *  check ({@link describePromptArgOverflow}), whatever its content. */
-    static promptArgBudgetBytes(chatType: string, platform: NodeJS.Platform = process.platform): number | null {
-        if (platform !== 'linux' && platform !== 'win32') {
-            return null;
-        }
-        const prefix = ChatService.composeFullPrompt('', chatType);
-        if (platform === 'linux') {
-            return Math.max(0, PROMPT_ARG_MAX_BYTES - Buffer.byteLength(prefix, 'utf8'));
-        }
-        // Quoting at worst doubles every UTF-16 unit (`"` -> `\"`, and each
-        // backslash before it) plus the two wrapping quotes; a code point
-        // never takes more UTF-16 units than UTF-8 bytes.
-        return Math.max(0, Math.floor((PROMPT_ARG_MAX_WINDOWS_CHARS - 2) / 2) - prefix.length);
-    }
-
     sendMessage(
         prompt: string,
         cwd: string,
@@ -554,26 +500,31 @@ export class ChatService {
         }
         const configuredPermissions = vscode.workspace.getConfiguration('openclaw').get<string>('chat.permissions', 'approve-reads');
         const permissions = ChatService.getPermissionsForChatType(chatType, configuredPermissions);
-        // spawn() throws on NUL in any argument; SUB takes the same single
-        // byte and unit, so a prompt fitted to the budget still fits.
-        const fullPrompt = ChatService.composeFullPrompt(prompt, chatType).replace(/\0/g, '\x1A');
-
-        const overflow = describePromptArgOverflow(fullPrompt);
-        if (overflow !== null) {
-            log.error(`acpx prompt too large (${overflow})`);
+        const fullPrompt = ChatService.composeFullPrompt(prompt, chatType);
+        const promptBytes = Buffer.byteLength(fullPrompt, 'utf8');
+        if (promptBytes > PROMPT_MAX_BYTES) {
+            const size = `${Math.ceil(promptBytes / 1024 / 1024)} MiB, limit ${PROMPT_MAX_BYTES / 1024 / 1024} MiB`;
+            log.error(`acpx prompt too large (${size})`);
             completeWithoutProcess(onEvent, onRunComplete,
-                `Prompt is too large for the acpx command line (${overflow}). Remove attachments or shorten the message.`);
+                `Prompt is too large for acpx (${size}). Remove attachments or shorten the message.`);
+            return;
+        }
+        const launch = resolveAcpxLaunch();
+        if (launch === null) {
+            completeWithoutProcess(onEvent, onRunComplete, ACPX_NOT_FOUND_MESSAGE);
             return;
         }
 
-        const args = ChatService.buildArgs(agent, permissions, fullPrompt);
-        log.info(`spawn acpx (args=${args.length}, cwd=${cwd})`);
+        const args = [...launch.args, ...ChatService.buildArgs(agent, permissions)];
+        log.info(`spawn ${launch.command} (args=${args.length}, cwd=${cwd})`);
         let child: ChildProcess;
         try {
-            child = spawn('acpx', args, {
+            child = spawn(launch.command, args, {
                 cwd,
-                env: { ...process.env },
-                stdio: ['ignore', 'pipe', 'pipe'],
+                env: { ...process.env, ...launch.env },
+                stdio: ['pipe', 'pipe', 'pipe'],
+                shell: false,
+                windowsHide: true,
                 // Its own process group, so abort can signal the agent acpx starts too.
                 detached: process.platform !== 'win32',
             });
@@ -587,6 +538,7 @@ export class ChatService {
                 this.activeRun = null;
             }
         });
+        this.activeRun.writePrompt(ChatService.encodePrompt(fullPrompt));
     }
 
     abort(): void {
@@ -607,11 +559,16 @@ export class ChatService {
         return AGENT_NAME_PATTERN.test(agent) && !ACPX_VERBS.has(agent);
     }
 
-    private static buildArgs(agent: string, permissions: string, prompt: string): string[] {
+    private static buildArgs(agent: string, permissions: string): string[] {
         // The agent is always named: omitted, acpx would run the user's own
-        // configured defaultAgent instead. `--` keeps a prompt that starts
-        // with `-` from parsing as a flag.
-        return ['--format', 'json', ChatService.permissionFlag(permissions), agent, 'exec', '--', prompt];
+        // configured defaultAgent instead.
+        return ['--format', 'json', ChatService.permissionFlag(permissions), agent, 'exec', '--file', '-'];
+    }
+
+    /** acpx trims stdin text and parses one starting with `[` as content
+     *  blocks, so the prompt goes as a text block to arrive verbatim. */
+    private static encodePrompt(fullPrompt: string): Buffer {
+        return Buffer.from(JSON.stringify([{ type: 'text', text: fullPrompt }]), 'utf8');
     }
 
     private static permissionFlag(permissions: string): string {

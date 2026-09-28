@@ -10,7 +10,7 @@ import { promises as fsp, constants as fsConstants } from 'fs';
 const openNonBlock = process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK;
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
-import { ChatService, UsageInfo } from '../chat/ChatService';
+import { ChatService, PROMPT_MAX_BYTES, UsageInfo } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
 import { EditorContext, ContextType, escapeXmlAttr, frameTaggedBlock } from './slashCommands';
 import { randomUUID } from 'crypto';
@@ -272,13 +272,6 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
  *  grows after stat() cannot be loaded in full before any size check. */
 const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
 
-/** Cap for text attachments on CLI transports (`imageMode: 'tempFile'`): the
- *  whole assembled prompt travels as a single execve argument, and the
- *  per-argument limit (MAX_ARG_STRLEN, ~128 KiB on Linux) is far below the
- *  10 MiB inline cap — a larger text attachment would fail the spawn with
- *  E2BIG, so it is rejected up front instead of bricking the send. */
-const ATTACHMENT_TEXT_ARG_MAX_BYTES = 64 * 1024;
-
 /** Aggregate budget over all attachments in one send, counted in the encoded
  *  form that actually travels: base64 for images (4/3 of raw bytes), raw text
  *  for text files. Per-file limits alone do not bound the total, so several
@@ -291,21 +284,16 @@ const ATTACHMENT_TEXT_ARG_MAX_BYTES = 64 * 1024;
  *  pass `reservedPromptBytes` to subtract the final prompt's size plus a
  *  framing slack from the budget — otherwise a large enough prompt plus a
  *  fully-budgeted attachment set exceeds the transport's maximum payload
- *  and the send fails despite passing every check here. */
-const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
-
-/** Default argv budget for CLI transports (`imageMode: 'tempFile'`), where the
- *  whole prompt travels as ONE argument. Linux and Windows callers pass their
- *  exact limit as `argvLimitBytes`; this covers platforms that only cap the
- *  argv+env total (macOS, BSD). */
-const ATTACHMENT_ARGV_TOTAL_MAX_BYTES = 96 * 1024;
+ *  and the send fails despite passing every check here. acpx caps its whole
+ *  prompt at the same size. */
+const ATTACHMENT_TOTAL_MAX_BYTES = PROMPT_MAX_BYTES;
 
 /** Aggregate cap on the raw validated image bytes materialized as temp-file
- *  snapshots for CLI transports (`imageMode: 'tempFile'`). Temp-file images are
- *  deliberately excluded from the argv budget (their bytes travel on disk, not
- *  in the prompt), so without this cap a user could attach many 10 MiB images
- *  and accumulate multi-gigabyte snapshot copies in the temp directory before
- *  the spawn. The cap keeps the materialized bytes in line with the inline
+ *  snapshots for CLI transports (`imageMode: 'tempFile'`). Temp-file images
+ *  charge only their path framing to the payload budget (their bytes travel
+ *  on disk, not in the prompt), so without this cap a user could attach many
+ *  10 MiB images and accumulate multi-gigabyte snapshot copies in the temp
+ *  directory before the spawn. The cap keeps the materialized bytes in line with the inline
  *  transport's aggregate payload budget, so the two transports bound the same
  *  total. */
 const ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
@@ -314,10 +302,6 @@ const ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
  *  history, and per-section decoration around the attachments also fit
  *  under the transport's payload cap. */
 export const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
-
-/** Small framing slack for the CLI argv budget (attachment framing plus the
- *  acpx argument prefix around the prompt). */
-export const ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES = 4 * 1024;
 
 /** Size of each read after the stat-sized first one: those reads only prove
  *  EOF or catch growth since stat(), so they stay small. */
@@ -449,25 +433,12 @@ export async function readAttachments(
     options?: {
         imageMode?: 'inline' | 'tempFile';
         reservedPromptBytes?: number;
-        /** Bytes of the final prompt (base prompt, not attachments) already
-         *  known to the caller — subtracted from the CLI argv budget so
-         *  attachments plus prompt jointly stay inside the argument limit. */
-        reservedArgvBytes?: number;
-        /** The platform's argument budget for the whole prompt (see
-         *  ChatService.promptArgBudgetBytes); defaults to
-         *  ATTACHMENT_ARGV_TOTAL_MAX_BYTES where the platform sets none. */
-        argvLimitBytes?: number | null;
     }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
-    // Inline mode sends the prompt as an RPC payload (base64 images + text
-    // count against ATTACHMENT_TOTAL); temp-file mode travels as a single
-    // execve argv element, where images charge only their path framing since
-    // their bytes live on disk.
-    const transportBudget = imageMode === 'tempFile'
-        ? Math.max(0, (options?.argvLimitBytes ?? ATTACHMENT_ARGV_TOTAL_MAX_BYTES) - (options?.reservedArgvBytes ?? 0))
-        : Math.max(0, ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0));
-    const textLimit = imageMode === 'tempFile' ? ATTACHMENT_TEXT_ARG_MAX_BYTES : ATTACHMENT_TEXT_MAX_BYTES;
+    // Inline images charge their base64 to the budget; temp-file images only
+    // their path framing, since their bytes live on disk.
+    const transportBudget = Math.max(0, ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0));
     let transportBytes = 0;
     const sections: string[] = [];
     let attachmentsDropped = false;
@@ -497,7 +468,7 @@ export async function readAttachments(
     // Created lazily on the first temp-file image so text-only sends never
     // touch the filesystem outside the workspace.
     let snapshotDir: string | null = null;
-    // Raw bytes already snapshotted, bounded separately from the argv budget.
+    // Raw bytes already snapshotted, bounded separately from the payload budget.
     let snapshotBytes = 0;
 
     const writeSnapshot = async (name: string, bytes: Buffer): Promise<string | null> => {
@@ -551,9 +522,8 @@ export async function readAttachments(
             }
             return;
         }
-        // CLI transports cannot carry megabytes of base64 in one argv element,
-        // so the verified bytes are snapshotted into a private temp file (0600,
-        // unique dir) and the CLI gets its path.
+        // The CLI agent reads images from disk, so the verified bytes are snapshotted
+        // into a private temp file (0600, unique dir) and the CLI gets its path.
         if (!fitsTransport(1) || snapshotBytes + bytes.length > ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES) {
             emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             return;
@@ -573,18 +543,15 @@ export async function readAttachments(
 
     const emitText = async (att: Attachment) => {
         try {
-            // A ranged mention is capped after slicing, so the raw read only
-            // needs the memory bound of the inline cap.
-            const readLimit = att.lineStart != null ? ATTACHMENT_TEXT_MAX_BYTES : textLimit;
-            const bytes = await readVerifiedBytes(att.path, readLimit);
-            // NUL cannot travel in an execve argument and marks binary content.
+            const bytes = await readVerifiedBytes(att.path, ATTACHMENT_TEXT_MAX_BYTES);
+            // NUL marks binary content.
             if (bytes.includes(0)) {
                 emitRejection(att.path, BINARY_FILE_MARKER);
                 return;
             }
             const text = sliceLineRange(new TextDecoder().decode(bytes), att.lineStart, att.lineEnd);
             // Counted after decoding: invalid bytes expand to U+FFFD (3 bytes).
-            if (Buffer.byteLength(text, 'utf8') > textLimit) {
+            if (Buffer.byteLength(text, 'utf8') > ATTACHMENT_TEXT_MAX_BYTES) {
                 throw new AttachmentTooLargeError();
             }
             if (!emitIfFits(frameFileBody(att.path, text))) {
