@@ -245,6 +245,9 @@ function imageMimeByPath(p: string): string {
         case '.webp': return 'image/webp';
         case '.bmp': return 'image/bmp';
         case '.svg': return 'image/svg+xml';
+        case '.ico': return 'image/vnd.microsoft.icon';
+        case '.tif':
+        case '.tiff': return 'image/tiff';
         default: return 'application/octet-stream';
     }
 }
