@@ -2690,6 +2690,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway.setActiveSession(sessionKey);
         const thread = this.getActiveThread();
         if (thread) {
+            // A send that started while this bootstrap was awaiting gateway
+            // resolution captured the thread's key: reassigning the persisted
+            // key here would change that key and let sendPrompt's resolved-key
+            // check retire the live request, silently discarding the message.
+            // Defer the rebind instead — the run's done handler re-flushes the
+            // deferred resume once the thread is idle again.
+            if (thread.isStreaming || (thread.status as string) === 'running') {
+                this.deferredResumes.set(thread.id, { sessionKey, historyRendered: false });
+                return;
+            }
             thread.sessionKey = sessionKey;
             const resumeEventEpoch = thread.eventEpoch;
             const resumeBindingEpoch = thread.bindingEpoch;

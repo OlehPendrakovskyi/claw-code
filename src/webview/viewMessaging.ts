@@ -270,6 +270,15 @@ const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 /** Cap for text attachment reads: bounds the transfer itself so a file that
  *  grows after stat() cannot be loaded in full before any size check. */
 const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Aggregate budget over all attachments in one send, counted in the encoded
+ *  form that actually travels: base64 for images (4/3 of raw bytes), raw text
+ *  for text files. Per-file limits alone do not bound the total, so several
+ *  allowed 10 MiB images (~13.3 MiB base64 each) could exceed the Gateway's
+ *  maximum payload while everything was already materialized in memory.
+ *  Set below the Gateway's 25 MiB payload cap so prompt framing and history
+ *  still fit alongside the attachments. */
+const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
@@ -345,6 +354,7 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
  */
 export async function readAttachments(attachments: Attachment[]): Promise<string> {
     const sections: string[] = [];
+    let totalEncodedBytes = 0;
 
     for (const att of attachments) {
         // Image paths are handed to a downstream reader, so the same
@@ -358,6 +368,13 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
             const dataUri = await readVerifiedImageDataUri(att.path);
             if (dataUri === null) {
                 sections.push('[Could not read file]');
+                continue;
+            }
+            const dataPart = dataUri.slice(dataUri.indexOf(',') + 1);
+            totalEncodedBytes += dataPart.length;
+            if (totalEncodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
+                totalEncodedBytes -= dataPart.length;
+                sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
             }
             sections.push(`<image data="${dataUri}" />`);
@@ -403,6 +420,12 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                     throw new Error('attachment file exceeds the size limit');
                 }
                 const content = new TextDecoder().decode(bytes.subarray(0, byteCount));
+                totalEncodedBytes += byteCount;
+                if (totalEncodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
+                    totalEncodedBytes -= byteCount;
+                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    continue;
+                }
                 const realAfter = await fsp.realpath(real);
                 if (realAfter !== real) {
                     throw new Error('attachment path changed during read');
