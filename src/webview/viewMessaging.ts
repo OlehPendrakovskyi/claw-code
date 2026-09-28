@@ -441,7 +441,53 @@ export async function readAttachments(
     let payloadBytes = 0;
     let argvBytes = 0;
 
+    // Rejection markers carry the path/tag framing bytes too. They are
+    // charged against the same budget the rejected attachment would have
+    // used: many rejected attachments otherwise pass the per-attachment
+    // checks yet collectively exceed the aggregate transport budget (the
+    // 96 KiB acpx argv budget or the Gateway payload limit) and fail the
+    // send. Once the remaining budget no longer fits the framed marker,
+    // the framing is dropped and only the short message text is emitted.
+    const emitRejection = (filePath: string, message: string) => {
+        const framed = frameFileBody(filePath, message);
+        const budgetMax = imageMode === 'tempFile' ? argvBudget : payloadBudget;
+        const markerBytes = Buffer.byteLength(framed, 'utf8');
+        if ((imageMode === 'tempFile' ? argvBytes : payloadBytes) + markerBytes > budgetMax) {
+            const bare = message;
+            const bareBytes = Buffer.byteLength(bare, 'utf8');
+            if (imageMode === 'tempFile') {
+                argvBytes += bareBytes;
+            } else {
+                payloadBytes += bareBytes;
+            }
+            sections.push(bare);
+            return;
+        }
+        if (imageMode === 'tempFile') {
+            argvBytes += markerBytes;
+        } else {
+            payloadBytes += markerBytes;
+        }
+        sections.push(framed);
+    };
+
     const sections: string[] = [];
+
+    // Plain notes (no path framing) carry a few bytes too: charge them like
+    // any other emitted text, and drop them entirely once the budget is
+    // exhausted — losing a note beats failing the whole send.
+    const emitNote = (message: string) => {
+        const noteBytes = Buffer.byteLength(message, 'utf8');
+        if (imageMode === 'tempFile' ? argvBytes + noteBytes > argvBudget : payloadBytes + noteBytes > payloadBudget) {
+            return;
+        }
+        if (imageMode === 'tempFile') {
+            argvBytes += noteBytes;
+        } else {
+            payloadBytes += noteBytes;
+        }
+        sections.push(message);
+    };
 
     // Directory holding snapshot copies of image bytes for transports that
     // cannot carry inline base64 in the prompt (see the image branch below).
@@ -460,7 +506,7 @@ export async function readAttachments(
             // the final open/read happens on the trusted side instead.
             const bytes = await readVerifiedImageBytes(att.path);
             if (bytes === null) {
-                sections.push('[Could not read file]');
+                emitNote('[Could not read file]');
                 continue;
             }
             // The budget counts the encoded size each transport actually
@@ -474,11 +520,11 @@ export async function readAttachments(
             const encodedBytes = Math.ceil(bytes.length / 3) * 4;
             if (imageMode === 'inline') {
                 if (payloadBytes + encodedBytes > payloadBudget) {
-                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                     continue;
                 }
             } else if (argvBytes + 1 > argvBudget) {
-                sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                 continue;
             }
             if (imageMode === 'inline') {
@@ -500,7 +546,7 @@ export async function readAttachments(
                     try {
                         snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chat-attach-'));
                     } catch {
-                        sections.push('[Could not read file]');
+                        emitNote('[Could not read file]');
                         continue;
                     }
                 }
@@ -509,7 +555,7 @@ export async function readAttachments(
                 try {
                     await fsp.writeFile(snapshotPath, bytes, { mode: 0o600 });
                 } catch {
-                    sections.push('[Could not read file]');
+                    emitNote('[Could not read file]');
                     continue;
                 }
                 const imageSection = `<image path="${escapeXmlAttr(snapshotPath)}" />`;
@@ -524,7 +570,7 @@ export async function readAttachments(
                 const sectionBytes = Buffer.byteLength(imageSection, 'utf8');
                 if (argvBytes + sectionBytes > argvBudget) {
                     await fsp.rm(snapshotPath, { force: true });
-                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                     continue;
                 }
                 argvBytes += sectionBytes;
@@ -539,7 +585,7 @@ export async function readAttachments(
             // which a swap can exploit on case-sensitive volumes — means the
             // stored path now resolves elsewhere and must be dropped.
             if (real !== att.path) {
-                sections.push(frameFileBody(att.path, '[Could not read file]'));
+                emitRejection(att.path, '[Could not read file]');
                 continue;
             }
             const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
@@ -588,7 +634,7 @@ export async function readAttachments(
                 // ordinary /compact-sized prompts.
                 if (payloadBytes + encodedBytes > payloadBudget ||
                     (imageMode === 'tempFile' && argvBytes + encodedBytes > argvBudget)) {
-                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                     continue;
                 }
                 const realAfter = await fsp.realpath(real);
@@ -604,7 +650,7 @@ export async function readAttachments(
                 await handle.close();
             }
         } catch {
-            sections.push(frameFileBody(att.path, '[Could not read file]'));
+            emitRejection(att.path, '[Could not read file]');
         }
     }
 

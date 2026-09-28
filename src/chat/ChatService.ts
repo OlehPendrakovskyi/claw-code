@@ -131,6 +131,13 @@ export class ChatService {
 
         child.on('close', (code) => {
             log.info(`acpx exited code=${code}`);
+            // If a spawn error already settled this run, any buffered stdout
+            // is stale: delivering it after 'done' can re-open a thread as
+            // running or pollute a replacement run, so post-terminal output
+            // is a no-op.
+            if (settled) {
+                return;
+            }
             if (stdoutLineBuffer.trim()) {
                 const event = this.parseLine(stdoutLineBuffer.trim());
                 if (event) {

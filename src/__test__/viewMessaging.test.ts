@@ -2,7 +2,27 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as fsp from 'fs/promises';
 import { readAttachments } from '../webview/viewMessaging';
+
+// A controllable realpath wrapper: ESM module namespaces are not redefinable,
+// so jest.spyOn cannot intercept fs/promises directly. The mock routes
+// realpath through a swappable implementation the swap test can replace.
+let realpathImpl: (p: fs.PathLike) => Promise<string> = (p) => fsp.realpath(p as string);
+jest.mock('fs/promises', () => {
+    const actual = jest.requireActual('fs/promises');
+    return {
+        ...actual,
+        realpath: (p: fs.PathLike) => (globalThis as any).__realpathImpl(p),
+    };
+});
+beforeEach(() => {
+    (globalThis as any).__realpathImpl = (p: fs.PathLike) => realpathImpl(p);
+});
+afterEach(() => {
+    (globalThis as any).__realpathImpl = undefined;
+    realpathImpl = (p) => fsp.realpath(p as string);
+});
 
 describe('readAttachments FIFO rejection', () => {
     const posixOnly = process.platform === 'win32' ? it.skip : it;
@@ -61,24 +81,33 @@ describe('readAttachments text budget', () => {
         try {
             const realFile = path.join(dir, 'real.txt');
             fs.writeFileSync(realFile, 'hello');
-            // Alias that resolves to the same file now but is swapped to a
-            // different canonical path after the read begins: the budget
-            // must stay untouched so the second attachment still fits.
-            const symlink = path.join(dir, 'link.txt');
-            fs.symlinkSync(realFile, symlink);
+            // The input is canonical, so the pre-open realpath passes. The
+            // post-read re-canonicalization is mocked to observe a swapped
+            // path (a swap racing between read and final validation on a
+            // case-sensitive volume): the swap must be detected there and
+            // the budget left untouched so the second attachment fits.
             const other = path.join(dir, 'other.txt');
             fs.writeFileSync(other, 'b'.repeat(4 * 1024));
+            const swapPath = path.join(dir, 'swapped.txt');
+            let reads = 0;
+            realpathImpl = async (p: fs.PathLike) => {
+                const resolved = fs.realpathSync(p as string);
+                // The second canonicalization (after the read) sees the swap.
+                if (resolved === realFile && ++reads > 1) {
+                    return swapPath;
+                }
+                return resolved;
+            };
             const { prompt } = await readAttachments(
                 [
-                    { name: 'link.txt', path: symlink, type: 'file' },
+                    { name: 'real.txt', path: realFile, type: 'file' },
                     { name: 'other.txt', path: other, type: 'file' },
                 ],
                 { reservedPromptBytes: 20 * 1024 * 1024 - 5 * 1024 }
             );
             // The swapped attachment is dropped without consuming budget, so
-            // the second one is still emitted (symlink swap is detected after
-            // the read on case-sensitive volumes).
-            expect(prompt).toContain('link.txt');
+            // the second one is still emitted.
+            expect(prompt).toContain('real.txt');
             expect(prompt).toContain('other.txt');
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
