@@ -568,6 +568,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } else {
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
+            thread.openGeneration += 1;
+            thread.openInFlightGen = null;
             backend.abort();
         }
         thread.messages = [];
