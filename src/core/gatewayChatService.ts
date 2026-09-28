@@ -2283,8 +2283,14 @@ export class GatewayChatService {
     this.pendingSubscribeBySession.clear();
     this.preAckSendKeys.clear();
     this.preAckSendOwners.clear();
+    this.preAckSendIssuedKeys.clear();
     this.preAckBufferedFrames = [];
     this.preAckSettledSends = [];
+    // preAckSendIssuedKeys must reset with the same teardown: leaving issued
+    // marks behind would make the next send on the same session (after
+    // reconnect) count as remotely issued while its chat.send RPC is still
+    // pending, so a cancel would fire chat.abort for a run that was never
+    // started on the new connection.
     this.rejectAllPending('gateway transport suspended');
     // Suspension tears down every run (each sink above already got `done`):
     // leaving their delta records would corrupt the next run's dedup after

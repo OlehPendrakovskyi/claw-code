@@ -20,6 +20,7 @@ import {
     postToAll,
     readAttachments,
     renderMarkdown,
+    type Attachment,
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
@@ -860,12 +861,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.maybeRenameThread(thread, displayText);
         this.emitState();
 
-        let fullPrompt = augmented;
-        if (attachments.length > 0) {
-            fullPrompt = `${await readAttachments(attachments)}\n\n${fullPrompt}`;
-        }
-
-        await this.sendPrompt(thread, fullPrompt, sendEpoch);
+        await this.sendPrompt(thread, augmented, attachments, sendEpoch);
         } catch (err) {
             thread.isStreaming = false;
             thread.status = 'error';
@@ -1084,12 +1080,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             log.info(`handleSend: pushed user msg, now ${thread.messages.length} msgs`);
             this.emitState();
 
-            let fullPrompt = text;
-            if (attachments.length > 0) {
-                fullPrompt = `${await readAttachments(attachments)}\n\n${text}`;
-            }
-
-            await this.sendPrompt(thread, fullPrompt, sendEpoch);
+            await this.sendPrompt(thread, text, attachments, sendEpoch);
         } catch (err) {
             thread.isStreaming = false;
             thread.status = 'error';
@@ -1249,7 +1240,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  that is internal invalidation, not a superseding send: refresh the
      *  captured send epoch here so the send is not stranded between the
      *  queued message and the backend handoff. */
-    private async sendPrompt(thread: ChatThreadState, fullPrompt: string, sendEpoch: number): Promise<void> {
+    private async sendPrompt(
+        thread: ChatThreadState,
+        basePrompt: string,
+        attachments: Attachment[],
+        sendEpoch: number
+    ): Promise<void> {
         if (thread.eventEpoch !== sendEpoch) {
             return;
         }
@@ -1383,8 +1379,29 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.eventEpoch += 1;
             runEpoch = thread.eventEpoch;
         }
+        // Attachment representation is transport-specific, so it is built only
+        // after the backend for THIS send is resolved: gateway transports take
+        // images inline as data URIs (the gateway has no filesystem access to
+        // this machine), while CLI transports need a path-based snapshot to
+        // keep the prompt inside spawn() argv limits.
+        let promptToSend = basePrompt;
+        if (attachments.length > 0) {
+            const attachmentBlock = await readAttachments(
+                attachments,
+                { imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile' }
+            );
+            // Superseded while attachment files were being read from disk: the
+            // send must not start (same gate as the checks above the backend
+            // resolution, repeated because the await opened a new window).
+            if (!this.threads.has(thread.id) ||
+                thread.status !== 'running' ||
+                thread.eventEpoch !== sendEpoch) {
+                return;
+            }
+            promptToSend = `${attachmentBlock}\n\n${basePrompt}`;
+        }
         choice.service.sendMessage(
-            fullPrompt,
+            promptToSend,
             cwd,
             thread.currentModel,
             thread.currentChatType,

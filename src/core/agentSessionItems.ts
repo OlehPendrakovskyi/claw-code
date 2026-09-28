@@ -171,8 +171,13 @@ export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will lo
  *
  * A history row can appear twice for one messageId: first as a streaming
  * delta (partial `text`, non-empty `delta`), then as the completed row.
- * Delta rows are skipped so the completed row survives deduplication —
+ * Delta-only rows are skipped so the completed row survives deduplication —
  * keeping the first (partial) row would truncate the restored transcript.
+ * Rows carrying BOTH a delta and completed text are kept: the gateway emits
+ * mixed frames with the full text (the delta is an un-rendered partial the
+ * mapper never renders), so dropping the row would lose its content on
+ * restore, and its text being final means recording the id cannot shadow a
+ * longer completed row.
  */
 export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
   if (!payload || typeof payload !== 'object') {
@@ -206,12 +211,11 @@ export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
     // on restore); dedupe by messageId while retaining rows without an id.
     // An empty string id is missing, not a dedup key: keying it would drop
     // every idless history row after the first.
-    // A non-empty `delta` marks the row as still-streaming (partial text):
-    // skip it without recording the id, otherwise the id would shadow the
-    // completed row that follows and truncate the restored transcript.
-    if (typeof rec.delta === 'string' && rec.delta) {
-      continue;
-    }
+    // Only delta-ONLY rows would need skipping here, and those never reach
+    // this point (their empty text fails the check above): a non-empty
+    // `delta` alongside usable `text` marks a mixed frame whose text is
+    // already the completed content, so the row is kept and its id recorded
+    // — skipping mixed rows would silently drop restored transcript rows.
     if (messageId) {
       if (seenIds.has(messageId)) {
         continue;

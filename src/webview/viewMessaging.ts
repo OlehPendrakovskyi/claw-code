@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as os from 'os';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
 
@@ -304,7 +305,7 @@ async function readBounded(handle: fsp.FileHandle, maxBytes: number): Promise<Bu
     return Buffer.concat(chunks, total);
 }
 
-async function readVerifiedImageDataUri(p: string): Promise<string | null> {
+async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
     }
@@ -341,7 +342,7 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
         if ((await fsp.realpath(p)) !== p) {
             return null;
         }
-        return `data:${imageMimeByPath(p)};base64,${payload.toString('base64')}`;
+        return payload;
     } catch {
         return null;
     } finally {
@@ -376,9 +377,19 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
  *  On Windows the fd link is unavailable, so the swap-revert window there
  *  relies on the dev/ino comparison alone.
  */
-export async function readAttachments(attachments: Attachment[]): Promise<string> {
+export async function readAttachments(
+    attachments: Attachment[],
+    options?: { imageMode?: 'inline' | 'tempFile' }
+): Promise<string> {
+    const imageMode = options?.imageMode ?? 'inline';
     const sections: string[] = [];
     let totalEncodedBytes = 0;
+
+    // Directory holding snapshot copies of image bytes for transports that
+    // cannot carry inline base64 in the prompt (see the image branch below).
+    // Created lazily on the first image so text-only sends never touch the
+    // filesystem outside the workspace.
+    let snapshotDir: string | null = null;
 
     for (const att of attachments) {
         // Image paths are handed to a downstream reader, so the same
@@ -386,22 +397,52 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         // path swapped for a symlink after mention validation is dropped.
         if (att.type === 'image') {
             // The image content is read here, through the verified handle, and
-            // emitted as bytes: handing a path to the downstream reader would
+            // emitted from bytes: handing a path to the downstream reader would
             // reopen a TOCTOU window between this validation and that open, so
             // the final open/read happens on the trusted side instead.
-            const dataUri = await readVerifiedImageDataUri(att.path);
-            if (dataUri === null) {
+            const bytes = await readVerifiedImageBytes(att.path);
+            if (bytes === null) {
                 sections.push('[Could not read file]');
                 continue;
             }
-            const dataPart = dataUri.slice(dataUri.indexOf(',') + 1);
-            totalEncodedBytes += dataPart.length;
-            if (totalEncodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
-                totalEncodedBytes -= dataPart.length;
+            if (totalEncodedBytes + bytes.length > ATTACHMENT_TOTAL_MAX_BYTES) {
                 sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
             }
-            sections.push(`<image data="${dataUri}" />`);
+            if (imageMode === 'inline') {
+                // Gateway transports receive the prompt over an RPC payload, so
+                // the bytes travel inline as a data URI and the gateway reads
+                // the image without filesystem access to this machine.
+                totalEncodedBytes += bytes.length;
+                sections.push(`<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`);
+            } else {
+                // CLI transports (acpx) receive the prompt as a single spawn()
+                // argv element, capped far below the encoded sizes allowed here
+                // by POSIX execve per-argument limits — a multi-megabyte inline
+                // image fails with E2BIG instead of attaching. Snapshot the
+                // verified bytes into a private temp file (0600, unique dir) and
+                // hand the CLI its path: the copy is taken through the verified
+                // handle, so no attacker-controlled path is reopened downstream,
+                // and the snapshot's content is exactly what was validated.
+                if (snapshotDir === null) {
+                    try {
+                        snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chat-attach-'));
+                    } catch {
+                        sections.push('[Could not read file]');
+                        continue;
+                    }
+                }
+                const safeName = att.name.replace(/[^A-Za-z0-9._-]/g, '_');
+                const snapshotPath = path.join(snapshotDir, `${randomUUID()}-${safeName}`);
+                try {
+                    await fsp.writeFile(snapshotPath, bytes, { mode: 0o600 });
+                } catch {
+                    sections.push('[Could not read file]');
+                    continue;
+                }
+                totalEncodedBytes += bytes.length;
+                sections.push(`<image path="${escapeXmlAttr(snapshotPath)}" />`);
+            }
             continue;
         }
         try {
