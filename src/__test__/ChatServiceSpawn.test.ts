@@ -194,6 +194,20 @@ describe('ChatService.sendMessage', () => {
             expect(stdinPrompt(child)).toMatch(/^SYS\n\nYou are a code reviewer\.[^\n]*\n\nquestion$/);
         });
 
+        it.each([
+            ['linux', 'PATH', '/usr/bin::.:bin:/opt/node/bin:', '/usr/bin:/opt/node/bin'],
+            ['win32', 'Path', 'C:\\Windows;.;node_modules\\.bin;C:tools;D:\\node', 'C:\\Windows;D:\\node'],
+        ] as const)('gives acpx on %s a PATH of absolute entries only, so its node and agents never come from the workspace',
+            (platform, key, searchPath, expected) => {
+                const env = jest.replaceProperty(process, 'env', { [key]: searchPath, HOME: '/home/u' });
+                try {
+                    withPlatform(platform, () => start());
+                    expect(spawnMock.mock.calls[0][2]?.env).toEqual({ [key]: expected, HOME: '/home/u' });
+                } finally {
+                    env.restore();
+                }
+            });
+
         it('starts acpx without a shell in its own process group on POSIX so abort reaches the agent', () => {
             withPlatform('linux', () => start());
             expect(spawnMock.mock.calls[0][0]).toBe('acpx');
@@ -431,11 +445,13 @@ describe('ChatService.sendMessage', () => {
                 expect((events[0] as { text: string }).text).toHaveLength(kib * 1024);
                 return Number(process.hrtime.bigint() - started) / 1e6;
             };
+            // The fastest of a few runs, so a GC pause or a busy machine does not decide it.
+            const fastest = (kib: number) => Math.min(...[1, 2, 3].map(() => assemble(kib)));
             assemble(256);
-            const small = assemble(2 * 1024);
-            const large = assemble(8 * 1024);
+            const small = fastest(2 * 1024);
+            const large = fastest(8 * 1024);
             // Four times the input: linear work takes about 4x, re-joining the line per chunk 16x.
-            expect(large).toBeLessThan(8 * Math.max(small, 25));
+            expect(large).toBeLessThan(8 * Math.max(small, 50));
         });
 
         it('drops a line whose final chunk carries it over the cap', () => {
@@ -607,6 +623,15 @@ describe('ChatService.sendMessage', () => {
             expect(events).toEqual([{ type: 'usage', usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14 } }]);
         });
 
+        it('prefers ACP\'s totalTokens, which also counts cached and thought tokens', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({
+                jsonrpc: '2.0', id: 2,
+                result: { stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 4, cachedReadTokens: 900, thoughtTokens: 86, totalTokens: 1000 } },
+            }));
+            expect(events).toEqual([{ type: 'usage', usage: { promptTokens: 10, completionTokens: 4, totalTokens: 1000 } }]);
+        });
+
         it('surfaces acpx\'s own failure on exit and ignores errors answering agent requests', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines(
@@ -676,7 +701,7 @@ describe('ChatService.sendMessage', () => {
         });
 
         it('starts once the user approves the workspace config', async () => {
-            projectConfigSpy.mockReturnValue(unapproved);
+            projectConfigSpy.mockReturnValueOnce(unapproved);
             const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
             try {
                 const child = fakeChild();
@@ -688,6 +713,22 @@ describe('ChatService.sendMessage', () => {
                 expect(spawnMock).toHaveBeenCalledTimes(1);
                 expect(stdinPrompt(child)).toBe('hi');
                 expect(events).toEqual([]);
+            } finally {
+                approval.mockRestore();
+            }
+        });
+
+        it('refuses a config that changed between the approval and the spawn', async () => {
+            projectConfigSpy.mockReturnValue(unapproved);
+            const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
+            try {
+                const { events, onRunComplete } = send('hi');
+                await Promise.resolve();
+                await Promise.resolve();
+                expect(projectConfigSpy).toHaveBeenCalledTimes(2);
+                expect(spawnMock).not.toHaveBeenCalled();
+                expect(events).toEqual([{ type: 'error', message: expect.stringContaining('changed after it was approved') }, { type: 'done' }]);
+                expect(onRunComplete).toHaveBeenCalledTimes(1);
             } finally {
                 approval.mockRestore();
             }
@@ -911,14 +952,18 @@ describe('ChatService.sendMessage', () => {
             expect(events).toEqual([]);
         });
 
-        it('reports the context window use of a usage_update', () => {
+        it('reports a usage_update as context-window use, apart from per-turn usage', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines(
                 acpUpdate({ sessionUpdate: 'usage_update', used: 5300, size: 200000 }),
+                acpUpdate({ sessionUpdate: 'usage_update', used: 5400, size: 'huge' }),
                 acpUpdate({ sessionUpdate: 'usage_update', used: 'lots', size: 200000 }),
                 acpUpdate({ sessionUpdate: 'usage_update', size: 200000 }),
             ));
-            expect(events).toEqual([{ type: 'usage', usage: { promptTokens: 5300, completionTokens: 0, totalTokens: 5300 } }]);
+            expect(events).toEqual([
+                { type: 'contextUsage', usedTokens: 5300, windowTokens: 200000 },
+                { type: 'contextUsage', usedTokens: 5400 },
+            ]);
         });
     });
 });

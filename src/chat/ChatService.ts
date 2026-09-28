@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { childEnv, resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
@@ -43,6 +43,7 @@ const NODE_NOT_FOUND_MESSAGE = 'Node.js not found on PATH; acpx needs it to run.
 const ACPX_PERMISSION_DENIED_EXIT = 5;
 const PERMISSIONS_DENIED_NOTICE = 'Some tool permissions were denied.';
 const IMAGES_NOT_SENT_NOTICE = 'This agent does not accept images, so they were sent as notes instead.';
+const PROJECT_CONFIG_CHANGED_MESSAGE = 'Chat did not start: this workspace\'s .acpxrc.json changed after it was approved. Send again to review it.';
 const PROJECT_CONFIG_REFUSED_MESSAGE = 'Chat did not start: this workspace\'s .acpxrc.json was not approved. It can change the commands acpx runs for agents and MCP servers.';
 
 /** Permission modes from least to most restrictive. */
@@ -81,7 +82,10 @@ export type UsageInfo = {
 export type ChatEvent =
     | { type: 'text'; text: string }
     | { type: 'toolCall'; title: string; status: string; details: string; id?: string }
+    /** One turn's token counts, for the per-turn usage readout. */
     | { type: 'usage'; usage: UsageInfo }
+    /** How full the agent's context window is now; `windowTokens` is its size when known. */
+    | { type: 'contextUsage'; usedTokens: number; windowTokens?: number }
     /** A status line for the user, never part of the assistant's answer. */
     | { type: 'notice'; text: string }
     | { type: 'done' }
@@ -130,8 +134,10 @@ function promptResultEvents(stopReason: string, usage: JsonRecord | undefined): 
     const events: ChatEvent[] = [];
     const inputTokens = tokenCount(usage?.inputTokens) ?? 0;
     const outputTokens = tokenCount(usage?.outputTokens) ?? 0;
-    if (inputTokens > 0 || outputTokens > 0) {
-        events.push({ type: 'usage', usage: { promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens } });
+    // ACP's total also counts cached and thought tokens, which the two parts leave out.
+    const totalTokens = tokenCount(usage?.totalTokens) ?? inputTokens + outputTokens;
+    if (totalTokens > 0) {
+        events.push({ type: 'usage', usage: { promptTokens: inputTokens, completionTokens: outputTokens, totalTokens } });
     }
     const notice = Object.prototype.hasOwnProperty.call(STOP_REASON_NOTICES, stopReason) ? STOP_REASON_NOTICES[stopReason] : undefined;
     if (notice !== undefined) {
@@ -140,10 +146,14 @@ function promptResultEvents(stopReason: string, usage: JsonRecord | undefined): 
     return events;
 }
 
-/** ACP `usage_update`: `used` is the tokens now in the context window. */
+/** ACP `usage_update`: `used` tokens are in a context window of `size`. */
 function contextUsage(update: JsonRecord): ChatEvent | null {
-    const used = tokenCount(update.used);
-    return used === undefined ? null : { type: 'usage', usage: { promptTokens: used, completionTokens: 0, totalTokens: used } };
+    const usedTokens = tokenCount(update.used);
+    if (usedTokens === undefined) {
+        return null;
+    }
+    const windowTokens = tokenCount(update.size);
+    return windowTokens === undefined ? { type: 'contextUsage', usedTokens } : { type: 'contextUsage', usedTokens, windowTokens };
 }
 
 /** ACP tool-call statuses in the webview's vocabulary. */
@@ -705,11 +715,16 @@ export class ChatService {
                 return;
             }
             this.pendingApproval = null;
-            if (approved) {
-                this.startRun(run, payload, fallback);
-            } else {
+            if (!approved) {
                 completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_REFUSED_MESSAGE);
+                return;
             }
+            // Re-checked at the last moment; acpx still reads the file again itself right after.
+            if (checkProjectConfig(run.cwd).status !== 'trusted') {
+                completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_CHANGED_MESSAGE);
+                return;
+            }
+            this.startRun(run, payload, fallback);
         };
         requestProjectConfigApproval(projectConfig).then(settle, (err: unknown) => {
             log.error('acpx project config approval failed', err);
@@ -725,7 +740,7 @@ export class ChatService {
         try {
             child = spawn(run.launch.command, run.args, {
                 cwd: run.cwd,
-                env: { ...process.env },
+                env: childEnv(),
                 stdio: ['pipe', 'pipe', 'pipe'],
                 shell: false,
                 windowsHide: true,

@@ -65,6 +65,29 @@ describe('viewMessaging', () => {
             ])).toEqual([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }, { role: 'user', content: 'q2' }]);
         });
 
+        it('starts from a /compact reply that completed, the summary first', () => {
+            expect(conversationHistory([
+                { role: 'user', content: 'old' },
+                { role: 'assistant', content: 'old answer', completed: true },
+                { role: 'user', content: '/compact' },
+                { role: 'assistant', content: 'SUMMARY', completed: true },
+                { role: 'user', content: 'new' },
+            ])).toEqual([{ role: 'assistant', content: 'SUMMARY' }, { role: 'user', content: 'new' }]);
+        });
+
+        it('keeps the history when the /compact reply was stopped or failed', () => {
+            expect(conversationHistory([
+                { role: 'user', content: 'old' },
+                { role: 'assistant', content: 'old answer', completed: true },
+                { role: 'user', content: '/compact' },
+                { role: 'assistant', content: 'Here is a summ' },
+            ])).toEqual([
+                { role: 'user', content: 'old' },
+                { role: 'assistant', content: 'old answer' },
+                { role: 'assistant', content: 'Here is a summ' },
+            ]);
+        });
+
         it('does not take a message merely starting with /compact for the command', () => {
             expect(conversationHistory([
                 { role: 'user', content: '/compacted notes' },

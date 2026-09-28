@@ -22,7 +22,13 @@ export const log = vscode.window.createOutputChannel('OpenClaw Chat', { log: tru
 
 /** A chat message rendered in the webview. */
 export type ChatMessage =
-    | { role: 'user' | 'assistant' | 'error'; content: string; html?: string }
+    | {
+        role: 'user' | 'assistant' | 'error';
+        content: string;
+        html?: string;
+        /** On an assistant row: its run ended normally (not stopped, failed or cut short). */
+        completed?: boolean;
+    }
     | {
         role: 'tool';
         entries: Array<{ title: string; status: string; details: string; id?: string }>;
@@ -33,8 +39,9 @@ function isCompactCommand(message: ChatMessage): boolean {
     return message.role === 'user' && /^\/compact(?:\s|$)/.test(message.content);
 }
 
-/** The user and assistant turns an agent without its own memory needs:
- *  from the latest /compact summary on (the summary first), else all. */
+/** The user and assistant turns an agent without its own memory needs: from
+ *  the latest /compact summary on (the summary first), else all. Only a reply
+ *  marked `completed` counts as a summary; a stopped one is an ordinary turn. */
 export function conversationHistory(messages: readonly ChatMessage[]): ConversationTurn[] {
     const turns: ConversationTurn[] = [];
     let afterCompact = false;
@@ -42,7 +49,7 @@ export function conversationHistory(messages: readonly ChatMessage[]): Conversat
         if (message.role !== 'user' && message.role !== 'assistant') {
             continue;
         }
-        if (afterCompact && message.role === 'assistant') {
+        if (afterCompact && message.role === 'assistant' && message.completed === true) {
             // The summary replaces everything it compacted.
             turns.length = 0;
         }

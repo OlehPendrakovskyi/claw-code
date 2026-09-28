@@ -67,7 +67,8 @@ const entryCache = new Map<string, AcpxEntry>();
 
 /** Windows cannot spawn npm's `acpx.cmd` without a shell, so acpx's JS entry
  *  runs under Node instead; POSIX runs `acpx` itself through its shebang. Only
- *  absolute PATH entries count on either, so the workspace cannot plant one. */
+ *  absolute PATH entries count on either, and the child must get the same
+ *  PATH ({@link childEnv}), or the shebang's `node` could still come from the workspace. */
 export function resolveAcpxLaunch(
     platform: NodeJS.Platform = process.platform,
     env: Env = process.env,
@@ -90,10 +91,12 @@ export function resolveAcpxLaunch(
     return node === undefined ? { missing: 'node' } : { command: node, args: [entry.script] };
 }
 
+function posixSearchDirs(searchPath: string): string[] {
+    return searchPath.split(':').filter(dir => path.posix.isAbsolute(dir));
+}
+
 function findPosixLaunch(searchPath: string, host: LauncherHost): AcpxLaunch | AcpxLaunchFailure {
-    const command = searchPath
-        .split(':')
-        .filter(dir => path.posix.isAbsolute(dir))
+    const command = posixSearchDirs(searchPath)
         .map(dir => path.posix.join(dir, ACPX))
         .find(candidate => host.isExecutable(candidate));
     return command === undefined ? { missing: ACPX } : { command, args: [] };
@@ -114,6 +117,17 @@ function cachedEntry(dirs: string[], pathExt: string, host: LauncherHost): AcpxE
         entryCache.delete(key);
     }
     return entry;
+}
+
+/** `env` with PATH cut to its absolute entries, in order: acpx's `#!/usr/bin/env node`
+ *  and every agent command acpx runs resolve through it, so none can reach the workspace. */
+export function childEnv(platform: NodeJS.Platform = process.platform, env: Env = process.env): Env {
+    const key = platform === 'win32' ? Object.keys(env).find(name => name.toUpperCase() === 'PATH') : 'PATH';
+    if (key === undefined || env[key] === undefined) {
+        return { ...env };
+    }
+    const dirs = platform === 'win32' ? searchDirs(env[key]) : posixSearchDirs(env[key]);
+    return { ...env, [key]: dirs.join(platform === 'win32' ? ';' : ':') };
 }
 
 /** Windows env names are case-insensitive, a plain copy of the env is not. */

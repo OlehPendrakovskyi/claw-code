@@ -2,19 +2,26 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { execFileSync } from 'child_process';
 import type * as ProjectConfigModule from '../chat/acpxProjectConfig';
 
 let showWarningMock = jest.mocked(vscode.window.showWarningMessage);
+let showTextDocumentMock = jest.fn();
 
 /** A fresh module with its own vscode mock, so session approvals never leak between tests. */
 function freshModule(): typeof ProjectConfigModule {
     let module: typeof ProjectConfigModule | undefined;
     jest.isolateModules(() => {
-        showWarningMock = jest.mocked(jest.requireActual<typeof vscode>('vscode').window.showWarningMessage);
+        const isolatedVscode = jest.requireActual<typeof vscode>('vscode');
+        showWarningMock = jest.mocked(isolatedVscode.window.showWarningMessage);
+        showTextDocumentMock = jest.fn(async () => undefined);
+        Object.assign(isolatedVscode.window, { showTextDocument: showTextDocumentMock });
         module = jest.requireActual('../chat/acpxProjectConfig');
     });
     return module!;
 }
+
+const posixOnly = process.platform === 'win32' ? it.skip : it;
 
 function memoryStore() {
     const values = new Map<string, unknown>();
@@ -59,6 +66,28 @@ describe('acpxProjectConfig', () => {
         it('reports a config path it cannot read as a file', () => {
             fs.mkdirSync(configPath);
             expect(config.checkProjectConfig(workspace)).toEqual({ status: 'unreadable', configPath });
+        });
+
+        posixOnly('refuses a symlink to a device instead of reading it without end', () => {
+            fs.symlinkSync('/dev/zero', configPath);
+            expect(config.checkProjectConfig(workspace)).toEqual({ status: 'unreadable', configPath });
+        });
+
+        posixOnly('refuses a FIFO without waiting for a writer', () => {
+            execFileSync('mkfifo', [configPath]);
+            expect(config.checkProjectConfig(workspace)).toEqual({ status: 'unreadable', configPath });
+        });
+
+        it('refuses a config over 256 KiB', () => {
+            fs.writeFileSync(configPath, `{"x":"${'y'.repeat(256 * 1024)}"}`);
+            expect(config.checkProjectConfig(workspace)).toEqual({ status: 'unreadable', configPath });
+        });
+
+        posixOnly('follows a symlink to a regular file, as acpx does', () => {
+            const target = path.join(workspace, 'real.json');
+            fs.writeFileSync(target, '{}');
+            fs.symlinkSync(target, configPath);
+            expect(config.checkProjectConfig(workspace).status).toBe('unapproved');
         });
     });
 
@@ -106,12 +135,36 @@ describe('acpxProjectConfig', () => {
             expect(reloaded.checkProjectConfig(workspace)).toEqual({ status: 'trusted' });
         });
 
-        it('shows a bounded preview of a large config', async () => {
-            fs.writeFileSync(configPath, `{"x":"${'y'.repeat(10000)}"}`);
-            showWarningMock.mockResolvedValue(undefined);
-            await config.requestProjectConfigApproval(unapproved());
-            const options = showWarningMock.mock.calls[0][1] as vscode.MessageOptions;
-            expect(options.detail!.length).toBeLessThan(2200);
+        describe('for a config too long to preview', () => {
+            beforeEach(() => {
+                fs.writeFileSync(configPath, `{"x":"${'y'.repeat(10000)}"}`);
+            });
+
+            it('offers only to open the file, from a bounded preview', async () => {
+                showWarningMock.mockResolvedValue(undefined);
+                await expect(config.requestProjectConfigApproval(unapproved())).resolves.toBe(false);
+                const [, options, ...actions] = showWarningMock.mock.calls[0];
+                expect((options as vscode.MessageOptions).detail!.length).toBeLessThan(2300);
+                expect(actions).toEqual(['Open File to Review']);
+                expect(showTextDocumentMock).not.toHaveBeenCalled();
+            });
+
+            it('approves once the full file was opened and then allowed', async () => {
+                showWarningMock.mockResolvedValueOnce('Open File to Review' as never).mockResolvedValueOnce('Allow and Run' as never);
+                await expect(config.requestProjectConfigApproval(unapproved())).resolves.toBe(true);
+                expect(showTextDocumentMock).toHaveBeenCalledWith(expect.objectContaining({ fsPath: configPath }), { preview: true });
+                expect(config.checkProjectConfig(workspace)).toEqual({ status: 'trusted' });
+            });
+
+            it('refuses when the file changed while it was open for review', async () => {
+                const check = unapproved();
+                showWarningMock.mockResolvedValueOnce('Open File to Review' as never).mockImplementationOnce(async () => {
+                    fs.writeFileSync(configPath, '{"agents":{"codex":{"argv":["sh"]}}}');
+                    return 'Allow and Run' as never;
+                });
+                await expect(config.requestProjectConfigApproval(check)).resolves.toBe(false);
+                expect(config.checkProjectConfig(workspace).status).toBe('unapproved');
+            });
         });
     });
 });
