@@ -54,6 +54,33 @@ export class GatewayConfigService {
     return { url, transport };
   }
 
+  /** Whether `url` is a `ws:` or `wss:` URL, without fragment, that the gateway client can open. */
+  static isValidGatewayUrl(url: string): boolean {
+    return GatewayConfigService.parseUrl(url) !== null;
+  }
+
+  /** Whether a token sent to `url` would cross the network unencrypted:
+   *  plain `ws:` to anything but a loopback host. */
+  static sendsTokenInCleartext(url: string): boolean {
+    const parsed = GatewayConfigService.parseUrl(url);
+    return parsed !== null && parsed.protocol === 'ws:' && !GatewayConfigService.isLoopbackHost(parsed.hostname);
+  }
+
+  private static parseUrl(url: string): URL | null {
+    try {
+      const parsed = new URL(url);
+      // The ws client throws synchronously on a fragment, so it is invalid here.
+      const isWebSocket = parsed.protocol === 'ws:' || parsed.protocol === 'wss:';
+      return isWebSocket && parsed.hash === '' && !url.includes('#') ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private static isLoopbackHost(hostname: string): boolean {
+    return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+  }
+
   /**
    * Read the gateway token from SecretStorage.
    * Returns an empty string when no token is stored.
@@ -84,18 +111,15 @@ export class GatewayConfigService {
    * finished no-op that callers may cache), and `incomplete` when plaintext
    * is still present afterwards so callers can retry later.
    *
-   * Runs are serialized: activation, the chat factory and the settings
-   * listener may trigger it concurrently, and overlapping runs would race
-   * their SecretStorage writes and scope cleanups.
+   * Runs are serialized with each other and with token saves: activation,
+   * the chat factory and the settings listener may trigger it concurrently,
+   * and a run that read SecretStorage as empty would overwrite a token saved
+   * meanwhile.
    */
   static migrateLegacyGatewayToken(
     context: vscode.ExtensionContext
   ): Promise<LegacyTokenMigrationResult> {
-    const run = GatewayConfigService.migrationQueue.then(() =>
-      GatewayConfigService.runLegacyTokenMigration(context)
-    );
-    GatewayConfigService.migrationQueue = run.catch(() => undefined);
-    return run;
+    return GatewayConfigService.serialized(() => GatewayConfigService.runLegacyTokenMigration(context));
   }
 
   /**
@@ -111,14 +135,22 @@ export class GatewayConfigService {
     if (value === undefined) {
       return false;
     }
-    await GatewayConfigService.setGatewayToken(context.secrets, value.trim());
+    await GatewayConfigService.serialized(() =>
+      GatewayConfigService.setGatewayToken(context.secrets, value.trim())
+    );
     void vscode.window.showInformationMessage(
       value.trim() ? 'Gateway token saved to SecretStorage.' : 'Gateway token cleared.'
     );
     return true;
   }
 
-  private static migrationQueue: Promise<unknown> = Promise.resolve();
+  private static secretWriteQueue: Promise<unknown> = Promise.resolve();
+
+  private static serialized<T>(task: () => Promise<T>): Promise<T> {
+    const run = GatewayConfigService.secretWriteQueue.then(task);
+    GatewayConfigService.secretWriteQueue = run.catch(() => undefined);
+    return run;
+  }
 
   private static cleanupWarningShown = false;
 
@@ -132,9 +164,13 @@ export class GatewayConfigService {
     const legacyToken = sites
       .map((site) => (typeof site.value === 'string' ? site.value.trim() : ''))
       .find((value) => value !== '');
-    if (legacyToken && !(await GatewayConfigService.getGatewayToken(context.secrets))) {
+    const storedToken = await GatewayConfigService.getGatewayToken(context.secrets);
+    if (legacyToken && !storedToken) {
       await GatewayConfigService.setGatewayToken(context.secrets, legacyToken);
     }
+    // Most likely a rotation typed into settings.json, which never replaces
+    // the saved token.
+    const ignoredDifferentToken = legacyToken !== undefined && storedToken !== '' && legacyToken !== storedToken;
     for (const site of sites) {
       try {
         await site.config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, site.target, site.overrideInLanguage);
@@ -146,6 +182,12 @@ export class GatewayConfigService {
     // or a location the Configuration API cannot write (remote user settings,
     // policy), leaves the value in place without throwing.
     if (GatewayConfigService.findLegacyTokenSites().length === 0) {
+      if (ignoredDifferentToken) {
+        void vscode.window.showInformationMessage(
+          'A gateway token found in settings was removed without replacing the saved one. ' +
+          'Run "OpenClaw: Connect to Gateway" to change the token.'
+        );
+      }
       return 'completed';
     }
     if (!GatewayConfigService.cleanupWarningShown) {
@@ -253,6 +295,8 @@ type LegacyTokenSite = {
 
 /** Backward-compatible delegates over {@link GatewayConfigService}. */
 export const getGatewaySettings = GatewayConfigService.getGatewaySettings;
+export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
+export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
 export const getGatewayToken = GatewayConfigService.getGatewayToken;
 export const setGatewayToken = GatewayConfigService.setGatewayToken;
 export const migrateLegacyGatewayToken = GatewayConfigService.migrateLegacyGatewayToken;

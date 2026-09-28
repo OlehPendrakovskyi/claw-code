@@ -74,15 +74,14 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const provider = new ChatViewProvider(context.extensionUri, context);
     chatViewProvider = provider;
-    // Gateway resolution must not race the legacy-token migration: a send
-    // before migration finishes sees an empty SecretStorage token and falls
-    // back to acpx / reports the gateway offline. Await it before the chat
-    // provider becomes reachable, then register.
+    // Not awaited: a locked keyring must not keep the chat view and commands
+    // unregistered. Token consumers wait for the migration through
+    // ChatServiceFactory.ensureMigrated, and runs are serialized.
     const runTokenMigration = () =>
         migrateLegacyGatewayToken(context).catch((err: unknown) => {
             log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
         });
-    await runTokenMigration();
+    void runTokenMigration();
     // A plaintext token written after activation (settings edit, settings
     // sync, a newly added workspace folder) must not linger until reload.
     context.subscriptions.push(

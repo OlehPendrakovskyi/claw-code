@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { migrateLegacyGatewayToken } from '../core/gatewayConfig';
+import { isValidGatewayUrl, migrateLegacyGatewayToken, promptForGatewayToken, sendsTokenInCleartext } from '../core/gatewayConfig';
 
 type Level = 'global' | 'workspace' | 'folder';
 
@@ -102,7 +102,7 @@ const secrets = (existing?: string) => ({
     delete: jest.fn(async () => undefined),
 });
 
-const makeContext = (secretStore: ReturnType<typeof secrets>) =>
+const makeContext = (secretStore: Pick<vscode.SecretStorage, 'get' | 'store' | 'delete'>) =>
     ({ secrets: secretStore } as unknown as vscode.ExtensionContext);
 
 const useSettings = (model: SettingsModel, folders: vscode.Uri[] = [], api: typeof vscode = vscode) => {
@@ -197,6 +197,38 @@ describe('GatewayConfigService', () => {
             expect(model.has('global')).toBe(false);
         });
 
+        it('tells the user when a settings token differs from the saved one instead of dropping it silently', async () => {
+            const model = new SettingsModel().set('global', 'rotated-token');
+            useSettings(model);
+            const store = secrets('existing-secret-token');
+
+            await migrateLegacyGatewayToken(makeContext(store));
+
+            expect(store.store).not.toHaveBeenCalled();
+            expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
+                expect.stringContaining('OpenClaw: Connect to Gateway')
+            );
+        });
+
+        it('does not claim the settings token was removed when cleanup is incomplete', async () => {
+            const model = new SettingsModel().set('global', 'rotated-token');
+            model.stuck.add(SettingsModel.slot('global', undefined, undefined));
+            useSettings(model);
+
+            await expect(migrateLegacyGatewayToken(makeContext(secrets('existing-secret-token')))).resolves.toBe('incomplete');
+
+            expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+        });
+
+        it('does not notify when the settings token equals the saved one', async () => {
+            const model = new SettingsModel().set('global', 'same-token');
+            useSettings(model);
+
+            await migrateLegacyGatewayToken(makeContext(secrets('same-token')));
+
+            expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+        });
+
         it('clears a blank or non-string legacy value without storing it', async () => {
             const model = new SettingsModel().set('global', '   ').set('workspace', 42);
             useSettings(model);
@@ -263,6 +295,54 @@ describe('GatewayConfigService', () => {
 
             expect(results).toEqual(['completed', 'noop']);
             expect(store.store).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    describe('promptForGatewayToken', () => {
+        it('stores the typed token only after an in-flight migration finished', async () => {
+            const model = new SettingsModel().set('global', 'legacy-token');
+            useSettings(model);
+            let stored: string | undefined;
+            const store = {
+                get: jest.fn(async () => stored),
+                store: jest.fn(async (_key: string, value: string) => { stored = value; }),
+                delete: jest.fn(async () => undefined),
+            };
+            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('typed-token');
+
+            await Promise.all([
+                migrateLegacyGatewayToken(makeContext(store)),
+                promptForGatewayToken(makeContext(store)),
+            ]);
+
+            expect(stored).toBe('typed-token');
+        });
+    });
+
+    describe('gateway URL checks', () => {
+        it.each(['ws://127.0.0.1:18789', 'wss://gateway.example/path', 'ws://[::1]:1', 'ws://localhost'])(
+            'accepts %s',
+            (url) => {
+                expect(isValidGatewayUrl(url)).toBe(true);
+            }
+        );
+
+        it.each(['127.0.0.1:18789', 'http://gateway.example', 'ftp://x', '', 'ws//broken', 'ws://host:1/#x', 'ws://host:1/#'])('rejects %s', (url) => {
+            expect(isValidGatewayUrl(url)).toBe(false);
+        });
+
+        it('flags plain ws:// only for non-loopback hosts', () => {
+            expect(sendsTokenInCleartext('ws://gateway.example')).toBe(true);
+            expect(sendsTokenInCleartext('ws://10.0.0.5:18789')).toBe(true);
+            expect(sendsTokenInCleartext('ws://127.0.0.1:18789')).toBe(false);
+            expect(sendsTokenInCleartext('ws://localhost:18789')).toBe(false);
+            expect(sendsTokenInCleartext('ws://[::1]:18789')).toBe(false);
+            expect(sendsTokenInCleartext('wss://gateway.example')).toBe(false);
+        });
+
+        it('does not treat a lookalike host as loopback', () => {
+            expect(sendsTokenInCleartext('ws://127.0.0.1.evil.example')).toBe(true);
+            expect(sendsTokenInCleartext('ws://localhost.evil.example')).toBe(true);
         });
     });
 });

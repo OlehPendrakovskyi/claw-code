@@ -92,6 +92,7 @@
       {
         "command": "openclaw.chat.insertSelection",
         "key": "alt+k",
+        "mac": "cmd+alt+k",
         "when": "editorTextFocus"
       }
     ],
@@ -240,13 +241,15 @@
         },
         "openclaw.gateway.token": {
           "type": "string",
+          "scope": "language-overridable",
           "description": "Legacy plaintext gateway auth token (migrated into SecretStorage on activation)",
           "deprecationMessage": "Legacy plaintext token setting: use the OpenClaw: Connect to Gateway command instead. The extension migrates it into SecretStorage and clears it from settings.json."
         },
         "openclaw.gateway.url": {
           "type": "string",
+          "scope": "machine",
           "default": "ws://127.0.0.1:18789",
-          "description": "OpenClaw Gateway WebSocket URL for the chat transport"
+          "description": "OpenClaw Gateway WebSocket URL (ws:// or wss://) for the chat transport. User settings only: the gateway token is sent to this URL, so a workspace cannot redirect it."
         },
         "openclaw.gateway.transport": {
           "type": "string",
