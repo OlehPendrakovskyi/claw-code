@@ -423,22 +423,25 @@ export async function readAttachments(
     }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
-    let totalBudget = Math.max(
+    // Two budgets track different transports: inline mode sends the prompt as
+    // an RPC payload (base64 images + text count against ATTACHMENT_TOTAL),
+    // while temp-file mode travels as a single execve argv element (text plus
+    // path framing count against ATTACHMENT_ARGV_TOTAL). Temp-file images
+    // carry their bytes on disk, not in the prompt, so they charge the argv
+    // budget only the small path-framing text they actually emit — charging
+    // their raw bytes there would wrongly crowd out every other attachment.
+    const payloadBudget = Math.max(
         0,
         ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0)
     );
-    // CLI transports carry the entire prompt in a single argv element, so
-    // the aggregate budget shrinks by the base prompt's argv share (see the
-    // ATTACHMENT_ARGV_TOTAL_MAX_BYTES comment). A budget of 0 skips every
-    // attachment rather than bricking the spawn with E2BIG.
-    if (imageMode === 'tempFile') {
-        totalBudget = Math.min(
-            totalBudget,
-            Math.max(0, ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0))
-        );
-    }
+    const argvBudget = Math.max(
+        0,
+        ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0)
+    );
+    let payloadBytes = 0;
+    let argvBytes = 0;
+
     const sections: string[] = [];
-    let totalEncodedBytes = 0;
 
     // Directory holding snapshot copies of image bytes for transports that
     // cannot carry inline base64 in the prompt (see the image branch below).
@@ -460,19 +463,21 @@ export async function readAttachments(
                 sections.push('[Could not read file]');
                 continue;
             }
-            // The aggregate budget is the encoded payload size actually sent
-            // over the wire: inline images travel as a base64 data URI (~4/3
-            // of the raw bytes), while temp-file images contribute only their
-            // raw bytes (the payload carries the snapshot path, not the
-            // content). Counting raw bytes for inline images would let two
-            // allowed 10 MiB images pass a 20 MiB check while contributing
-            // ~26.7 MiB of base64, exceeding the transport payload cap.
-            // Counting the encoded payload size actually sent: base64 with
-            // padding is ceil(n/3)*4 — for lengths not divisible by 3 this
-            // exceeds the ~4/3 estimate, so the padded length is counted.
-            const encodedBytes =
-                imageMode === 'inline' ? Math.ceil(bytes.length / 3) * 4 : bytes.length;
-            if (totalEncodedBytes + encodedBytes > totalBudget) {
+            // The budget counts the encoded size each transport actually
+            // carries: inline images travel as a base64 data URI (~4/3 of the
+            // raw bytes) against the payload budget, while temp-file images
+            // contribute only their small path-framing text to the argv
+            // budget — their bytes live in a snapshot file, not the prompt.
+            // Base64 with padding is ceil(n/3)*4 — for lengths not divisible
+            // by 3 this exceeds the ~4/3 estimate, so the padded length is
+            // counted.
+            const encodedBytes = Math.ceil(bytes.length / 3) * 4;
+            if (imageMode === 'inline') {
+                if (payloadBytes + encodedBytes > payloadBudget) {
+                    sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
+                    continue;
+                }
+            } else if (argvBytes + 1 > argvBudget) {
                 sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
             }
@@ -480,7 +485,7 @@ export async function readAttachments(
                 // Gateway transports receive the prompt over an RPC payload, so
                 // the bytes travel inline as a data URI and the gateway reads
                 // the image without filesystem access to this machine.
-                totalEncodedBytes += encodedBytes;
+                payloadBytes += encodedBytes;
                 sections.push(`<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`);
             } else {
                 // CLI transports (acpx) receive the prompt as a single spawn()
@@ -507,8 +512,9 @@ export async function readAttachments(
                     sections.push('[Could not read file]');
                     continue;
                 }
-                totalEncodedBytes += encodedBytes;
-                sections.push(`<image path="${escapeXmlAttr(snapshotPath)}" />`);
+                const imageSection = `<image path="${escapeXmlAttr(snapshotPath)}" />`;
+                argvBytes += Buffer.byteLength(imageSection, 'utf8');
+                sections.push(imageSection);
             }
             continue;
         }
@@ -562,7 +568,8 @@ export async function readAttachments(
                 // succeeds — a swapped/disappeared file must not consume the
                 // aggregate budget and silently crowd out later attachments.
                 const encodedBytes = Buffer.byteLength(content, 'utf8');
-                if (totalEncodedBytes + encodedBytes > totalBudget) {
+                if (payloadBytes + encodedBytes > payloadBudget ||
+                    argvBytes + encodedBytes > argvBudget) {
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
                 }
@@ -570,7 +577,8 @@ export async function readAttachments(
                 if (realAfter !== real) {
                     throw new Error('attachment path changed during read');
                 }
-                totalEncodedBytes += encodedBytes;
+                payloadBytes += encodedBytes;
+                argvBytes += encodedBytes;
                 sections.push(frameFileBody(att.path, sliceLineRange(content, att.lineStart, att.lineEnd)));
             } finally {
                 await handle.close();

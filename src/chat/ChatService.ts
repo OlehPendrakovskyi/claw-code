@@ -92,6 +92,21 @@ export class ChatService {
 
         let stderrBuffer = '';
         let stdoutLineBuffer = '';
+        // A spawn can fail with 'error' and still fire 'close' (or emit both
+        // after a kill), so the run must complete exactly once: the first
+        // terminal event owns completion and later ones are ignored.
+        let settled = false;
+        const completeRun = (event: ChatEvent | null) => {
+            if (settled) {
+                return;
+            }
+            settled = true;
+            if (event !== null) {
+                onEvent(event);
+            }
+            onEvent({ type: 'done' });
+            onRunComplete?.();
+        };
 
         child.stdout!.on('data', (chunk: Buffer) => {
             stdoutLineBuffer += chunk.toString();
@@ -130,16 +145,11 @@ export class ChatService {
             if (code !== 0 && code !== null) {
                 const errMsg = stderrBuffer.trim() || `acpx exited with code ${code}`;
                 log.error(`acpx error: ${errMsg}`);
-                onEvent({ type: 'error', message: errMsg });
+                completeRun({ type: 'error', message: errMsg });
+                return;
             }
 
-            onEvent({ type: 'done' });
-            // The child has consumed (or failed to consume) its prompt, so any
-            // temp-file snapshot paths it was handed can now be removed. Runs
-            // the terminal path for normal exit, non-zero exit, error-after-
-            // spawn, and cancellation (abort kills the child, which fires
-            // `close`).
-            onRunComplete?.();
+            completeRun(null);
         });
 
         child.on('error', (err) => {
@@ -147,16 +157,12 @@ export class ChatService {
             if (this.activeProcess === child) {
                 this.activeProcess = null;
             }
-            onEvent({
-                type: 'error',
-                message: err.message.includes('ENOENT')
-                    ? 'acpx not found. Install it with: npm i -g acpx'
-                    : err.message
-            });
-            onEvent({ type: 'done' });
+            const errMsg = err.message.includes('ENOENT')
+                ? 'acpx not found. Install it with: npm i -g acpx'
+                : err.message;
             // Spawn failure never started the child, so the snapshot paths are
             // never consumed — remove them here to avoid leaking temp disk.
-            onRunComplete?.();
+            completeRun({ type: 'error', message: errMsg });
         });
     }
 
