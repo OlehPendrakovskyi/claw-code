@@ -19,6 +19,7 @@ import {
     handleFileSearch,
     postToAll,
     readAttachments,
+    ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
     renderMarkdown,
     type Attachment,
     type ChatThreadState,
@@ -79,6 +80,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private allowlistGatewayId: string | null = null;
     /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
+    /** Thread whose backend is currently being resolved by sendPrompt.
+     *  invalidateGatewayRuns must not finalize that thread as an interrupted
+     *  send: the send's own transport switch triggered the invalidation, and
+     *  sendPrompt rebases its epoch and aborts/rebinds the old backend
+     *  itself after resolve returns. */
+    private resolvingThreadId: string | null = null;
+    /** Set by invalidateGatewayRuns when the thread being resolved by
+     *  sendPrompt was invalidated during its backend resolution; lets the
+     *  post-resolve guard rebase the send epoch instead of retiring the
+     *  user's message. */
+    private invalidatedDuringResolve = false;
     private threadCounter = 0;
     private readonly threads = new Map<string, ChatThreadState>();
     /** Live transcript callback per resumed session, so reopening a session
@@ -1259,11 +1271,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        const choice = await this.resolveServiceForSend(this.backendFor(thread));
+        this.invalidatedDuringResolve = false;
+        this.resolvingThreadId = thread.id;
+        let choice;
+        try {
+            choice = await this.resolveServiceForSend(this.backendFor(thread));
+        } finally {
+            this.resolvingThreadId = null;
+        }
+        const invalidatedDuringResolve = this.invalidatedDuringResolve;
+        this.invalidatedDuringResolve = false;
         if (!this.threads.has(thread.id) ||
+            thread.openInFlightGen !== null ||
             thread.status !== 'running' ||
-            thread.eventEpoch !== sendEpoch ||
-            thread.openInFlightGen !== null) {
+            (thread.eventEpoch !== sendEpoch && !invalidatedDuringResolve)) {
             if (thread.openInFlightGen !== null) {
                 log.info('sendPrompt: openSession in flight after backend resolve, send retired');
                 thread.isStreaming = false;
@@ -1389,7 +1410,17 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (attachments.length > 0) {
             const attachmentResult = await readAttachments(
                 attachments,
-                { imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile' }
+                {
+                    imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile',
+                    // The final payload is the attachment prompt plus the base
+                    // prompt (a `/compact` send can fill it with the full
+                    // transcript), so the aggregate attachment budget must
+                    // leave room for both plus RPC framing — otherwise a fully
+                    // budgeted attachment set makes the send exceed the
+                    // Gateway's maximum payload.
+                    reservedPromptBytes:
+                        Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
+                }
             );
             disposeAttachments = attachmentResult.dispose;
             // Superseded while attachment files were being read from disk: the
@@ -1559,6 +1590,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         for (const thread of this.threads.values()) {
             const backend = this.backendFor(thread);
             if (!(backend instanceof GatewayChatService)) {
+                continue;
+            }
+            if (thread.id === this.resolvingThreadId) {
+                // The send currently resolving its backend triggered this
+                // invalidation (transport fallback, tokenless auto fallback,
+                // or URL/token change). Retire its sink bookkeeping and bump
+                // epochs so updateConnection's synthetic `done` is
+                // epoch-dropped, but keep the send alive: sendPrompt rebases
+                // sendEpoch and its switch logic aborts/rebinds the old
+                // backend. Finalizing it as an interrupted send would leave
+                // the user message unsent with a misleading "send again"
+                // error.
+                thread.eventEpoch += 1;
+                thread.bindingEpoch += 1;
+                const ownCallback = this.transcriptCallbacks.get(thread.id);
+                if (ownCallback) {
+                    backend.removeTranscriptSink(ownCallback.sessionKey, ownCallback.cb);
+                }
+                this.transcriptCallbacks.delete(thread.id);
+                this.suspendedTranscriptSinks.delete(thread.id);
+                this.invalidatedDuringResolve = true;
                 continue;
             }
             if (!thread.isStreaming && thread.status !== 'running') {

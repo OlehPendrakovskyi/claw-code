@@ -278,8 +278,19 @@ const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
  *  allowed 10 MiB images (~13.3 MiB base64 each) could exceed the Gateway's
  *  maximum payload while everything was already materialized in memory.
  *  Set below the Gateway's 25 MiB payload cap so prompt framing and history
- *  still fit alongside the attachments. */
+ *  still fit alongside the attachments. The budget only bounds attachment
+ *  bytes: the caller appends the base prompt (which a `/compact` send can
+ *  fill with the full transcript) after this function returns, so callers
+ *  pass `reservedPromptBytes` to subtract the final prompt's size plus a
+ *  framing slack from the budget — otherwise a large enough prompt plus a
+ *  fully-budgeted attachment set exceeds the transport's maximum payload
+ *  and the send fails despite passing every check here. */
 const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+
+/** Slack subtracted with the reserved prompt bytes so RPC framing, message
+ *  history, and per-section decoration around the attachments also fit
+ *  under the transport's payload cap. */
+export const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
 
 /** Read from an opened handle until EOF or the byte budget is exhausted.
  *
@@ -379,9 +390,13 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
  */
 export async function readAttachments(
     attachments: Attachment[],
-    options?: { imageMode?: 'inline' | 'tempFile' }
+    options?: { imageMode?: 'inline' | 'tempFile'; reservedPromptBytes?: number }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
+    const totalBudget = Math.max(
+        0,
+        ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0)
+    );
     const sections: string[] = [];
     let totalEncodedBytes = 0;
 
@@ -414,7 +429,7 @@ export async function readAttachments(
             // ~26.7 MiB of base64, exceeding the transport payload cap.
             const encodedBytes =
                 imageMode === 'inline' ? Math.ceil((bytes.length * 4) / 3) : bytes.length;
-            if (totalEncodedBytes + encodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
+            if (totalEncodedBytes + encodedBytes > totalBudget) {
                 sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
             }
@@ -495,7 +510,7 @@ export async function readAttachments(
                 }
                 const content = new TextDecoder().decode(bytes);
                 totalEncodedBytes += bytes.length;
-                if (totalEncodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
+                if (totalEncodedBytes > totalBudget) {
                     totalEncodedBytes -= bytes.length;
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
