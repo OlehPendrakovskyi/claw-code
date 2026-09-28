@@ -92,19 +92,31 @@ export class GatewayConfigService {
     const config = vscode.workspace.getConfiguration('openclaw');
     const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
     const languageOverrides = await GatewayConfigService.discoverLanguageOverrides();
+    // Selection must follow VS Code's effective precedence (most specific
+    // first): language-scoped values override plain values at the same
+    // level, and narrower scopes win. Otherwise a `[typescript]` override
+    // holding token B could be ignored in favor of an unrelated global
+    // token A, storing the wrong credential before cleanup removes both.
     const nonEmptyScopes = [
-      inspection?.workspaceFolderValue,
-      inspection?.workspaceValue,
-      inspection?.globalValue,
       inspection?.workspaceFolderLanguageValue,
+      inspection?.workspaceFolderValue,
       inspection?.workspaceLanguageValue,
+      inspection?.workspaceValue,
       inspection?.globalLanguageValue,
-      ...languageOverrides.flatMap((entry) => [
-        ...(entry.folderUri !== undefined ? [entry.inspection?.workspaceFolderValue] : []),
-        entry.inspection?.workspaceFolderLanguageValue,
-        entry.inspection?.workspaceLanguageValue,
-        entry.inspection?.globalLanguageValue,
-      ]),
+      inspection?.globalValue,
+      ...languageOverrides.flatMap((entry) =>
+        entry.folderUri !== undefined
+          ? [
+              entry.inspection?.workspaceFolderLanguageValue,
+              entry.inspection?.workspaceFolderValue,
+              entry.inspection?.workspaceLanguageValue,
+              entry.inspection?.globalLanguageValue,
+            ]
+          : [
+              entry.inspection?.workspaceLanguageValue,
+              entry.inspection?.globalLanguageValue,
+            ]
+      ),
     ] as (string | undefined)[];
     const nonEmpty = nonEmptyScopes.find((v) => typeof v === 'string' && v) ?? '';
     const legacyDefined = nonEmptyScopes.some((v) => v !== undefined);
