@@ -2506,6 +2506,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const payload = await gateway.listSessions({});
             if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
                 thread.openGeneration !== openGen) {
+                restoreAbandonedRebind();
                 return;
             }
             const rows = parseSessionRows(payload).rows as SessionRow[];
@@ -2535,6 +2536,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const history = await gateway.getHistory(sessionKey);
         if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
             thread.eventEpoch !== historyEpoch || thread.openGeneration !== openGen) {
+            restoreAbandonedRebind();
             return;
         }
         this.bindGatewayTransportIfIdle(thread, gateway);
