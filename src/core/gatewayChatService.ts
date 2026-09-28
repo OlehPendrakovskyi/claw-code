@@ -2246,7 +2246,11 @@ export class GatewayChatService {
       this.reconnectTimer = null;
     }
     for (const [sessionKey, sink] of this.runSinksBySession) {
-      if (this.connected) {
+      // Same class as abort(): a pre-ack send still awaiting its
+      // history/subscribe RPCs has started no remote run, so it must not
+      // trigger a remote `chat.abort` here — only sends past `chat.send`
+      // (or sinks left from already-issued runs) warrant one.
+      if (this.connected && (this.preAckSendIssuedKeys.has(sessionKey) || !this.preAckSendKeys.has(sessionKey))) {
         this.abortingSessions.delete(sessionKey);
         void this.send(GatewayRpcMethods.chatAbort, { sessionKey })
           .catch((err: Error) => {
