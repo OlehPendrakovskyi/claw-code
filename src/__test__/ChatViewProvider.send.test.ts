@@ -20,6 +20,7 @@ jest.mock('../core/gatewayChatService', () => {
         rebindTranscriptSink = jest.fn();
         clearSessionSink = jest.fn();
         getGatewayIdentity = jest.fn(() => 'gateway-1');
+        getTransportLimits = jest.fn(() => ({ maxPayloadBytes: 26214400, maxBufferedBytes: 52428800, attachmentMaxBytes: 20971520, attachmentMaxImageBytes: 6291456 }));
         listSessions = jest.fn(async () => ({ sessions: [] as unknown[] }));
         getHistory = jest.fn(async (): Promise<unknown> => ({ messages: [] }));
         seedHistory = jest.fn();
@@ -78,7 +79,6 @@ const { GatewayChatService: MockGatewayChatService } =
     jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const SESSION_ROWS = [
-    { key: 'main', label: 'Default' },
     { key: 'agent:main:main', label: 'Main' },
     { key: 'agent:coder:main', label: 'Coder' },
 ];
@@ -326,7 +326,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('reports a failing attachment read in the thread', async () => {
             const webview = makeProvider();
             jest.spyOn(viewMessaging, 'readAttachments').mockRejectedValue(new Error('disk gone'));
-            await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/tmp/claw-note.txt' });
+            await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-note.txt'] });
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -387,7 +387,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const disposeSnapshots = jest.fn(async () => undefined);
             jest.spyOn(viewMessaging, 'readAttachments').mockReturnValue(read.promise);
             mockResolve.mockResolvedValue(acpxChoice());
-            await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/tmp/claw-note.txt' });
+            await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-note.txt'] });
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -528,7 +528,7 @@ describe('ChatViewProvider send lifecycle', () => {
             try {
                 const webview = makeProvider();
                 mockResolve.mockResolvedValue(acpxChoice());
-                await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: file });
+                await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
 
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
                 await flush();
@@ -800,7 +800,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:coder:main');
             jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
-            jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: [{ key: 'main', label: 'Default' }] });
+            jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: [{ key: 'agent:main:main', label: 'Main' }] });
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -1165,6 +1165,202 @@ describe('ChatViewProvider send lifecycle', () => {
             await flush();
 
             expect(workspaceState.update).toHaveBeenLastCalledWith('openclaw.lastSessionKey', undefined);
+        });
+    });
+
+    describe('review round 5', () => {
+        const persisted = (sessionKey: string): vscode.Memento => {
+            const workspaceState = makeMemento();
+            jest.mocked(workspaceState.get).mockImplementation((key: string) => key === 'openclaw.lastSessionKey' ? sessionKey : undefined);
+            return workspaceState;
+        };
+
+        it('sends from a fresh thread through the default alias and binds the canonical key from the ack', async () => {
+            jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: [{ key: 'agent:main:main', label: 'Main' }] });
+            const webview = makeProvider();
+
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'hi' });
+            lastGatewayRun()[5]!('agent:main:main', 'main');
+            lastGatewayRun()[4]({ type: 'done' });
+            await flush();
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'hi again' });
+
+            expect(gatewayPrompts()).toEqual(['hi', 'hi again']);
+            expect(jest.mocked(gateway.setActiveSession).mock.calls.map(call => call[0])).toEqual(['main', 'agent:main:main']);
+        });
+
+        it('keeps the binding and gives the draft back when the session cannot be checked', async () => {
+            const webview = makeProvider();
+            await openSession(webview, 'agent:coder:main');
+            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            jest.mocked(gateway.listSessions).mockRejectedValue(new Error('timeout'));
+
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go', clientId: 'c1' });
+            await flush();
+            expect(gatewayPrompts()).toEqual([]);
+            expect(lastMessage(webview, 'thread-1')).toEqual({ role: 'error', content: 'Could not check this session with the gateway. Send the message again in a moment.' });
+            expect(webview.posted).toContainEqual({ type: 'sendRejected', threadId: 'thread-1', clientId: 'c1' });
+            expect(gateway.clearSessionSink).not.toHaveBeenCalled();
+
+            jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: SESSION_ROWS });
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+            expect(gatewayPrompts()).toEqual(['go']);
+            expect(gateway.setActiveSession).toHaveBeenLastCalledWith('agent:coder:main');
+        });
+
+        it('refetches the allowlist before calling a bound session unknown', async () => {
+            const webview = makeProvider();
+            await openSession(webview, 'agent:coder:main');
+            jest.mocked(gateway.listSessions).mockResolvedValueOnce({ sessions: [{ key: 'agent:main:main', label: 'Main' }] });
+            await webview.send({ type: 'requestSessions', threadId: 'thread-1' });
+            jest.advanceTimersByTime(5000);
+
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+
+            expect(gatewayPrompts()).toEqual(['go']);
+            expect(gateway.setActiveSession).toHaveBeenLastCalledWith('agent:coder:main');
+            expect(gateway.clearSessionSink).not.toHaveBeenCalled();
+        });
+
+        it('drops a deferred resume when the gateway identity changes', async () => {
+            const [resumeResolve] = deferResolves(1);
+            const webview = makeProvider(persisted('agent:main:main'));
+            mockResolve.mockResolvedValue(acpxChoice());
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'acpx' });
+            resumeResolve.resolve(gatewayChoice());
+            await flush();
+
+            mockFactoryCallbacks.onInvalidated!('identity');
+            mockResolve.mockResolvedValue(gatewayChoice());
+            lastAcpxRun()[4]({ type: 'done' });
+            await flush();
+
+            expect(gateway.resumeSession).not.toHaveBeenCalled();
+        });
+
+        it('drops a deferred resume when the thread is cleared', async () => {
+            const [resumeResolve] = deferResolves(1);
+            const webview = makeProvider(persisted('agent:main:main'));
+            mockResolve.mockResolvedValue(acpxChoice());
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'acpx one' });
+            resumeResolve.resolve(gatewayChoice());
+            await flush();
+
+            await webview.send({ type: 'clearThread', threadId: 'thread-1' });
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'acpx two' });
+            mockResolve.mockResolvedValue(gatewayChoice());
+            lastAcpxRun()[4]({ type: 'done' });
+            await flush();
+
+            expect(gateway.resumeSession).not.toHaveBeenCalled();
+        });
+
+        it('resumes a session dropped by an identity change once the new gateway lists it', async () => {
+            const webview = makeProvider();
+            await openSession(webview, 'agent:main:main');
+            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            mockFactoryCallbacks.onInvalidated!('identity');
+            jest.mocked(gateway.resumeSession).mockClear();
+
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+            lastGatewayRun()[4]({ type: 'done' });
+            await flush();
+
+            expect(jest.mocked(gateway.resumeSession).mock.calls.map(call => call[0])).toEqual(['agent:main:main']);
+        });
+
+        it('does not resume a dropped session the new gateway no longer lists', async () => {
+            const webview = makeProvider();
+            await webview.send({ type: 'newSession' });
+            await openSession(webview, 'agent:coder:main');
+            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            jest.mocked(gateway.listSessions).mockResolvedValue({ sessions: [{ key: 'agent:main:main', label: 'Main' }] });
+            mockFactoryCallbacks.onInvalidated!('identity');
+            jest.mocked(gateway.resumeSession).mockClear();
+
+            await webview.send({ type: 'send', threadId: 'thread-2', text: 'go' });
+            lastGatewayRun()[4]({ type: 'done' });
+            await flush();
+            await webview.send({ type: 'requestSessions', threadId: 'thread-1' });
+            await flush();
+
+            expect(gateway.resumeSession).not.toHaveBeenCalled();
+        });
+
+        it('keeps a file attached while a send prepares for the next send', async () => {
+            const webview = makeProvider();
+            const stat = deferred<vscode.FileStat>();
+            jest.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
+
+            void webview.send({ type: 'send', threadId: 'thread-1', text: 'see @slow.ts' });
+            await flush();
+            await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/work/dropped.ts' });
+            stat.resolve({ type: 1, ctime: 0, mtime: 0, size: 1 });
+            await flush();
+
+            expect(threadOf(webview, 'thread-1').pendingAttachments).toEqual([{ name: 'dropped.ts', path: '/work/dropped.ts', type: 'file' }]);
+        });
+
+        it('keeps another client\'s reply that was streaming in when the send started', async () => {
+            const webview = makeProvider();
+            const transcript = await openSession(webview, 'agent:main:main');
+            const stat = deferred<vscode.FileStat>();
+            jest.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
+
+            void webview.send({ type: 'send', threadId: 'thread-1', text: 'see @slow.ts' });
+            await flush();
+            transcript({ type: 'text', text: 'external reply' });
+            await flush();
+            stat.resolve({ type: 1, ctime: 0, mtime: 0, size: 1 });
+            await flush();
+
+            expect(threadOf(webview, 'thread-1').messages.map(m => [m.role, m.content])).toEqual([['assistant', 'external reply'], ['user', 'see @slow.ts']]);
+        });
+
+        it('settles the tool entries of an acpx run an open aborts', async () => {
+            const webview = makeProvider();
+            await openSession(webview, 'agent:main:main');
+            mockResolve.mockResolvedValue(acpxChoice());
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'acpx' });
+            lastAcpxRun()[4]({ type: 'toolCall', title: 'Read', status: 'running', details: '' });
+            await flush();
+            jest.mocked(gateway.getHistory).mockResolvedValue(null);
+            mockResolve.mockResolvedValue(gatewayChoice());
+
+            await openSession(webview, 'agent:main:main');
+
+            const tool = threadOf(webview, 'thread-1').messages.find(m => m.role === 'tool') as { entries: Array<{ status: string }> };
+            expect(tool.entries.map(entry => entry.status)).toEqual(['cancelled']);
+        });
+
+        it('posts the state once per settings change, and not for settings it does not show', async () => {
+            const webview = makeProvider();
+            const listeners = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls;
+            const listener = listeners[listeners.length - 1][0];
+            const stateCount = (): number => webview.posted.filter(isStateMessage).length;
+            const changed = (key: string): vscode.ConfigurationChangeEvent => ({ affectsConfiguration: (section: string) => section === `openclaw.${key}` });
+            const before = stateCount();
+
+            await webview.send({ type: 'setDimension', dimension: '2x2' });
+            listener(changed('chat.dimension'));
+            await webview.send({ type: 'setModel', threadId: 'thread-1', model: 'claude' });
+            listener(changed('chat.agent'));
+
+            expect(stateCount() - before).toBe(2);
+        });
+
+        it('attaches from the file-search dropdown only a workspace file or an open editor document', async () => {
+            const webview = makeProvider();
+            (vscode.window as { tabGroups: unknown }).tabGroups = { all: [{ tabs: [{ input: new vscode.TabInputText(vscode.Uri.file('/elsewhere/open.ts')) }] }] };
+            try {
+                await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/etc/passwd' });
+                await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/work/a.ts' });
+                await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/elsewhere/open.ts' });
+
+                expect(threadOf(webview, 'thread-1').pendingAttachments.map(a => (a as { path: string }).path)).toEqual(['/work/a.ts', '/elsewhere/open.ts']);
+            } finally {
+                (vscode.window as { tabGroups: unknown }).tabGroups = { all: [] };
+            }
         });
     });
 });

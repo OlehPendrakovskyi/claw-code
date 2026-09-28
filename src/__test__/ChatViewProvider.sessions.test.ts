@@ -19,6 +19,7 @@ jest.mock('../core/gatewayChatService', () => {
         rebindTranscriptSink = jest.fn();
         clearSessionSink = jest.fn();
         getGatewayIdentity = jest.fn(() => 'gateway-1');
+        getTransportLimits = jest.fn(() => ({ maxPayloadBytes: 26214400, maxBufferedBytes: 52428800, attachmentMaxBytes: 20971520, attachmentMaxImageBytes: 6291456 }));
         listSessions = jest.fn(async () => ({ sessions: [] as unknown[] }));
         getHistory = jest.fn(async (): Promise<unknown> => ({ messages: [] }));
         seedHistory = jest.fn();
@@ -80,7 +81,6 @@ const { GatewayChatService: MockGatewayChatService } =
 const LAST_SESSION_KEY = 'openclaw.lastSessionKey';
 
 const WARM_ROWS = [
-    { key: 'main', label: 'Default' },
     { key: 'agent:main:main', label: 'Main' },
     { key: 'agent:coder:main', label: 'Coder' },
 ];

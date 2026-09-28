@@ -24,6 +24,7 @@ jest.mock('../core/gatewayChatService', () => {
         rebindTranscriptSink = jest.fn();
         clearSessionSink = jest.fn();
         getGatewayIdentity = jest.fn(() => 'gateway-1');
+        getTransportLimits = jest.fn(() => ({ maxPayloadBytes: 26214400, maxBufferedBytes: 52428800, attachmentMaxBytes: 20971520, attachmentMaxImageBytes: 6291456 }));
         listSessions = jest.fn(async () => ({ sessions: [] as unknown[] }));
         getHistory = jest.fn(async (): Promise<unknown> => ({ messages: [] }));
         seedHistory = jest.fn();
@@ -75,7 +76,6 @@ const { GatewayChatService: MockGatewayChatService } =
     jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const WARM_ROWS = [
-    { key: 'main', label: 'Default' },
     { key: 'agent:main:main', label: 'Main' },
     { key: 'agent:coder:main', label: 'Coder' },
     { key: 'agent:cold:main', label: 'Cold', placement: { state: 'provisioning' } },
@@ -418,7 +418,7 @@ describe('ChatViewProvider', () => {
             jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
             try {
                 const { sidebar } = makeProvider();
-                await sidebar.send({ type: 'attachFile', threadId: 'thread-1', filePath: file });
+                await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
                 await flush();
 
                 await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
@@ -446,7 +446,7 @@ describe('ChatViewProvider', () => {
 
         it('removes an attachment only for an in-range integer index', async () => {
             const { sidebar } = makeProvider();
-            await sidebar.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/tmp/claw-a.txt' });
+            await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-a.txt'] });
             await flush();
             for (const index of [-1, 1, 0.5, '0']) {
                 await sidebar.send({ type: 'removeAttachment', threadId: 'thread-1', index });

@@ -18,9 +18,9 @@ import {
     gatherEditorContext,
     getThreadSnapshots as buildThreadSnapshots,
     handleFileSearch,
+    openEditorFiles,
     postToAll,
     readAttachments,
-    ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
     renderMarkdown,
     type Attachment,
     type ChatMessage,
@@ -59,6 +59,9 @@ const INTERRUPTED_RUN_MESSAGES: Record<GatewayInvalidationReason, string> = {
 };
 
 const TERMINAL_TOOL_STATUSES = new Set(['done', 'error', 'failed', 'cancelled']);
+
+/** The settings emitState reads; a change to one re-emits the state. */
+const STATE_SETTINGS = ['chat.dimension', 'chat.collapseCompleted', 'chat.hideToolActivity', 'chat.models'];
 
 /** The chat types the webview composer offers. */
 const CHAT_TYPES = new Set(['chat', 'code', 'review', 'plan']);
@@ -123,6 +126,13 @@ type SendTicket = {
     transportSettled: boolean;
 };
 
+type SessionKeyStatus = 'known' | 'unknown' | 'unverifiable';
+
+/** A key missing from an allowlist younger than this is unknown without refetching the list. */
+const ALLOWLIST_RECHECK_MS = 3000;
+
+const SESSION_UNVERIFIABLE_MESSAGE = 'Could not check this session with the gateway. Send the message again in a moment.';
+
 const SEND_DURING_OPEN_MESSAGE = 'A session is being opened in this thread. Send the message again once it has loaded.';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
@@ -146,6 +156,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private knownMainSessionKeys = new Set<string>();
     /** Gateway identity the allowlist was built from; a URL/token change invalidates it. */
     private allowlistGatewayId: string | null = null;
+    /** When the allowlist was last fetched, to rate-limit refetches for a key it lacks. */
+    private allowlistFetchedAt = 0;
     private resumeStarted = false;
     /** One ticket per in-flight sendPrompt backend resolution. A resolve (this
      *  thread's or another grid thread's) can invalidate the gateway mid-flight:
@@ -204,7 +216,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
         // Snapshots carry models, layout and tool-activity settings: every webview must see an edit at once.
         this.chatConfigChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
-            if (event.affectsConfiguration('openclaw.chat')) {
+            if (STATE_SETTINGS.some(key => event.affectsConfiguration(`openclaw.${key}`))) {
                 this.emitState();
             }
         });
@@ -422,12 +434,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'setDimension':
                     if (isGridDimension(msg.dimension)) {
-                        // Re-emit once written so the other chat views (sidebar, pop-out) follow the layout.
+                        // The settings listener re-emits the state so every chat view follows the layout.
                         void Promise.resolve(vscode.workspace.getConfiguration('openclaw').update(
                             'chat.dimension',
                             msg.dimension,
                             vscode.ConfigurationTarget.Global
-                        )).then(() => this.emitState(), (err: unknown) => log.warn('setDimension: settings write failed', err));
+                        )).catch((err: unknown) => log.warn('setDimension: settings write failed', err));
                     }
                     break;
                 case 'attach':
@@ -456,10 +468,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'attachFile':
-                    if (thread && isNonEmptyString(msg.filePath)) {
+                    // Only the file-search dropdown sends it, and it offers workspace files and open editors only.
+                    if (thread && isNonEmptyString(msg.filePath) && await this.isSearchablePath(msg.filePath)) {
                         await this.addAttachments(thread, [msg.filePath]);
                     }
                     break;
+                // An OS drag-and-drop: the user picked these files themselves, wherever they live.
                 case 'attachFiles': {
                     const filePaths = Array.isArray(msg.filePaths) ? msg.filePaths.filter(isNonEmptyString) : [];
                     if (thread && filePaths.length > 0) {
@@ -613,6 +627,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         thread.messages = [];
         this.sendsRejectedDuringOpen.delete(thread.id);
+        // The cleared thread must not later replay the session it had.
+        this.deferredResumes.delete(thread.id);
         thread.pendingAssistantText = '';
         thread.pendingAttachments = [];
         thread.isStreaming = false;
@@ -803,9 +819,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 return false;
             }
 
+            this.commitPendingAssistantText(thread);
             thread.messages.push({ role: 'user', content: displayText });
             ticket.userRowShown = true;
-            thread.pendingAssistantText = '';
             thread.pendingAttachments = [];
             this.maybeRenameThread(thread, displayText);
             this.emitState();
@@ -982,10 +998,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 log.info(`handleSend: superseded during attachment resolution, thread=${thread.id}`);
                 return false;
             }
+            this.commitPendingAssistantText(thread);
             thread.messages.push({ role: 'user', content: text });
             ticket.userRowShown = true;
-            thread.pendingAssistantText = '';
-            thread.pendingAttachments = [];
+            // A file attached while the send prepared stays pending for the next one.
+            thread.pendingAttachments = thread.pendingAttachments.filter(a => !attachments.includes(a));
             this.maybeRenameThread(thread, text);
             log.info(`handleSend: pushed user msg, now ${thread.messages.length} msgs`);
             this.emitState();
@@ -997,6 +1014,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } finally {
             this.endSend(ticket);
         }
+    }
+
+    /** Another client's reply still streaming in when this thread's own send starts is kept as its own row. */
+    private commitPendingAssistantText(thread: ChatThreadState): void {
+        if (thread.pendingAssistantText) {
+            thread.messages.push({ role: 'assistant', content: thread.pendingAssistantText });
+        }
+        thread.pendingAssistantText = '';
     }
 
     /** Settles the webview's pending send by its clientId: accepted once dispatched, else rejected so the draft comes back. */
@@ -1224,11 +1249,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.sessionKey = DEFAULT_SESSION_KEY;
             }
             // A binding learned from a previous gateway identity must not be used on this one.
-            const keyAllowed = await this.isKnownMainSessionKey(choice.service, thread.sessionKey);
+            const keyStatus = await this.sessionKeyStatus(choice.service, thread.sessionKey);
             if (!this.sendOwnsThread(thread, ticket)) {
                 return false;
             }
-            if (!keyAllowed) {
+            if (keyStatus === 'unverifiable') {
+                // Keep the binding: the list may be back on the next try.
+                thread.isStreaming = false;
+                thread.status = 'error';
+                thread.messages.push({ role: 'error', content: SESSION_UNVERIFIABLE_MESSAGE });
+                this.emitState();
+                return false;
+            }
+            if (keyStatus === 'unknown') {
                 const staleKey = thread.sessionKey;
                 thread.eventEpoch += 1;
                 thread.bindingEpoch += 1;
@@ -1270,22 +1303,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.eventEpoch += 1;
         const runEpoch = thread.eventEpoch;
         ticket.expectedEpoch = runEpoch;
-        // Transport-specific: the gateway takes images inline (it cannot read
-        // this machine's disk), CLI transports take temp-file paths.
+        // Transport-specific: the gateway takes images inline in the text, acpx
+        // as ACP image blocks; the gateway's limits come from its handshake.
         let promptToSend = prompt;
         let disposeAttachments: (() => Promise<void>) | undefined;
         if (attachments.length > 0) {
             const attachmentResult = await readAttachments(
                 attachments,
-                {
-                    imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile',
-                    // The base prompt shares the payload budget with the attachments.
-                    reservedPromptBytes:
-                        Buffer.byteLength(prompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
-                }
+                choice.service instanceof GatewayChatService
+                    ? { imageMode: 'inline', basePrompt: prompt, limits: choice.service.getTransportLimits() }
+                    : { imageMode: 'contentBlock', basePrompt: prompt }
             );
             disposeAttachments = attachmentResult.dispose;
-            // Superseded during the read: the snapshots never reached a child, so remove them here.
+            // Superseded during the read: the staged images never reached a child, so release them here.
             if (!this.sendOwnsThread(thread, ticket)) {
                 void disposeAttachments?.();
                 return false;
@@ -1351,7 +1381,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     suspended.sessionKey = resolvedKey;
                 }
             },
-            // Temp-file snapshots live until the child process exits.
+            // Staged images live until the run, and any image-less retry, completes.
             () => void disposeAttachments?.()
         );
         return true;
@@ -1391,40 +1421,47 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private async flushDeferredResume(thread: ChatThreadState): Promise<void> {
         const sessionKey = this.deferredResumes.get(thread.id);
-        if (!sessionKey || thread.isStreaming || thread.status === 'running') {
+        if (!sessionKey || !this.canTakeDeferredResume(thread, sessionKey)) {
             return;
         }
         this.deferredResumes.delete(thread.id);
-        // A thread still unbound after its run (an acpx send) takes the deferred session.
-        if (thread.sessionKey !== sessionKey && thread.sessionKey !== undefined) {
+        const gateway = await this.resolveGateway();
+        // Unavailable or unverifiable for now: keep the entry so a later run end or allowlist refresh retries.
+        const status = gateway ? await this.sessionKeyStatus(gateway, sessionKey) : 'unverifiable';
+        if (!this.threads.has(thread.id) || status === 'unknown') {
             return;
         }
-        const gateway = await this.resolveGateway();
-        // Unavailable for now: keep the entry so the next run's `done` retries.
-        if (!gateway) {
-            if (this.threads.has(thread.id) && thread.sessionKey === sessionKey) {
+        if (!gateway || status === 'unverifiable' || !this.canTakeDeferredResume(thread, sessionKey)) {
+            if (this.deferredResumes.get(thread.id) === undefined && (thread.sessionKey ?? sessionKey) === sessionKey) {
                 this.deferredResumes.set(thread.id, sessionKey);
             }
             return;
         }
-        // A send started during the await: binding now would double-deliver
-        // alongside its run sink. Widened: the pre-await check narrowed the union.
-        const resumedStatus: string = thread.status;
-        if (!this.threads.has(thread.id) || thread.isStreaming || resumedStatus === 'running') {
-            this.deferredResumes.set(thread.id, sessionKey);
-            return;
-        }
+        // A thread still unbound after its run (an acpx send) takes the deferred session.
         if (thread.sessionKey === undefined) {
             thread.sessionKey = sessionKey;
             this.clearSessionBoundState(thread);
             this.bindGatewayTransportIfIdle(thread, gateway);
         }
-        if (thread.sessionKey !== sessionKey) {
-            return;
-        }
         // A deferred resume never rendered its history, so the unscoped catch-up must replay it.
         this.resumeSessionForThread(gateway, thread, sessionKey, false);
         this.emitState();
+    }
+
+    /** Idle, and bound to the deferred session or to none: binding under a live send would double-deliver alongside its run sink. */
+    private canTakeDeferredResume(thread: ChatThreadState, sessionKey: string): boolean {
+        return !thread.isStreaming && thread.status !== 'running' &&
+            (thread.sessionKey === undefined || thread.sessionKey === sessionKey);
+    }
+
+    /** A successful allowlist refresh may clear the keys that deferred resumes wait on. */
+    private flushDeferredResumes(): void {
+        for (const threadId of this.deferredResumes.keys()) {
+            const thread = this.threads.get(threadId);
+            if (thread) {
+                void this.flushDeferredResume(thread);
+            }
+        }
     }
 
     private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
@@ -1435,7 +1472,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  synthetic `done`: the epoch bumps make that `done` stale, and the sink
      *  bookkeeping goes so nothing is rebound before the allowlist re-check. */
     private invalidateGatewayRuns(reason: GatewayInvalidationReason): void {
+        // A deferral checked against the previous identity must not bind on the new one.
+        if (reason === 'identity') {
+            this.deferredResumes.clear();
+        }
         for (const thread of this.threads.values()) {
+            // Every transcript callback goes with the old client: resume it once the key passes the allowlist again.
+            const droppedKey = this.transcriptCallbacks.get(thread.id)?.sessionKey ?? this.suspendedTranscriptSinks.get(thread.id)?.sessionKey;
+            if (droppedKey !== undefined) {
+                this.deferredResumes.set(thread.id, droppedKey);
+            }
             const backend = this.backendFor(thread);
             if (!(backend instanceof GatewayChatService)) {
                 // A session callback kept across an acpx fallback is retired too; a later
@@ -1845,9 +1891,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     continue;
                 }
                 this.allowlistGatewayId = identityBefore;
+                this.allowlistFetchedAt = Date.now();
                 this.knownMainSessionKeys = new Set(
                     buildAgentSessionItems(payload).map(item => item.sessionKey)
                 );
+                this.flushDeferredResumes();
                 return payload;
             } catch (err) {
                 log.warn('session allowlist refresh failed', err);
@@ -1857,22 +1905,32 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return null;
     }
 
-    /** Whether the key is in the current gateway's allowlist. An empty list
-     *  refreshes once (restart-resume binds keys never listed); an
-     *  unverifiable key is unknown. */
     private async isKnownMainSessionKey(gateway: GatewayChatService, sessionKey: string): Promise<boolean> {
+        return (await this.sessionKeyStatus(gateway, sessionKey)) === 'known';
+    }
+
+    /** The key against the current gateway's allowlist, refetched (at most every
+     *  few seconds) for a key it lacks. The default alias needs no
+     *  listing: the gateway resolves it and the send ack names the canonical key.
+     *  A list that cannot be fetched leaves the key unverifiable, not unknown. */
+    private async sessionKeyStatus(gateway: GatewayChatService, sessionKey: string): Promise<SessionKeyStatus> {
+        if (sessionKey === DEFAULT_SESSION_KEY) {
+            return 'known';
+        }
         const gatewayId = gateway.getGatewayIdentity();
         if (this.allowlistGatewayId !== gatewayId) {
             this.allowlistGatewayId = null;
             this.knownMainSessionKeys = new Set<string>();
         }
         if (this.knownMainSessionKeys.has(sessionKey)) {
-            return true;
+            return 'known';
         }
-        if (this.knownMainSessionKeys.size === 0) {
-            await this.refreshSessionAllowlist(gateway);
+        // The key may name a session created since the last list: refetch before calling it unknown.
+        const listIsFresh = this.allowlistGatewayId !== null && Date.now() - this.allowlistFetchedAt < ALLOWLIST_RECHECK_MS;
+        if (!listIsFresh && (await this.refreshSessionAllowlist(gateway)) === null) {
+            return 'unverifiable';
         }
-        return this.knownMainSessionKeys.has(sessionKey);
+        return this.knownMainSessionKeys.has(sessionKey) ? 'known' : 'unknown';
     }
 
     /** Whether another gateway-backed thread runs on the key; acpx threads own no gateway run. */
@@ -1970,6 +2028,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.isStreaming = false;
             thread.pendingAssistantText = '';
             thread.status = 'idle';
+            settleRunToolEntries(thread, 'cancelled');
         }
         // Hoisted so an abandoned rebind can restore the previous binding.
         let abandonedPreviousKey: string | null = null;
@@ -2002,6 +2061,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.isStreaming = false;
             thread.pendingAssistantText = '';
             thread.status = 'idle';
+            settleRunToolEntries(thread, 'cancelled');
         }
         // The teardown above bumped the epoch those sends owned.
         this.retireSendsForOpen(thread, preparingSends.filter(ticket => !this.sendOwnsThread(thread, ticket)));
@@ -2350,6 +2410,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         const realCwd = await fs.promises.realpath(cwd).catch(() => cwd);
         const rel = path.relative(realCwd, canonical);
         return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+    }
+
+    /** Whether the file-search dropdown could have offered the path: a workspace file or an open editor document. */
+    private async isSearchablePath(filePath: string): Promise<boolean> {
+        const canonical = await fs.promises.realpath(filePath).catch(() => null);
+        if (canonical === null) {
+            return false;
+        }
+        const openInEditor = openEditorFiles('').some(file => file.path === filePath);
+        return openInEditor || this.isWorkspaceScoped(canonical);
     }
 
     /** Workspace-scoped paths only, for callers that ignore mention line ranges. */

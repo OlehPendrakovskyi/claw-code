@@ -113,6 +113,9 @@ describe('ChatViewProvider view sync', () => {
             sidebar.posted.splice(0);
             await sidebar.send({ type: 'setDimension', dimension: '2x2' });
             await flush();
+            // VS Code reports the written setting; that change alone re-emits the state.
+            expect(statesOf(sidebar.posted)).toEqual([]);
+            configurationListener()(changeOf('openclaw.chat.dimension'));
             expect(statesOf(sidebar.posted)).toEqual([expect.objectContaining({ dimension: '2x2' })]);
         });
     });
