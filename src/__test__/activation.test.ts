@@ -2,12 +2,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../extension';
-import { connect } from '../vscode/commands';
-import { migrateLegacyGatewayToken } from '../core/gatewayConfig';
+import { connect, log } from '../vscode/commands';
+import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 
 jest.mock('../core/gatewayConfig', () => ({
     ...jest.requireActual('../core/gatewayConfig'),
     migrateLegacyGatewayToken: jest.fn(async () => undefined),
+    promptForGatewayToken: jest.fn(async () => false),
 }));
 
 jest.mock('../vscode/commands', () => ({
@@ -50,12 +51,21 @@ function registeredCommands(): string[] {
     return jest.mocked(vscode.commands.registerCommand).mock.calls.map(call => call[0]);
 }
 
+function runCommand(id: string): unknown {
+    const call = jest.mocked(vscode.commands.registerCommand).mock.calls.find(c => c[0] === id);
+    if (!call) {
+        throw new Error(`${id} not registered`);
+    }
+    return call[1]();
+}
+
+/** Fans a change out to every registered listener: the chat view registers its own beside activate's. */
 function configurationListener(): ConfigurationListener {
-    const listener = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls[0]?.[0];
-    if (!listener) {
+    const listeners = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls.map(call => call[0] as ConfigurationListener);
+    if (!listeners.length) {
         throw new Error('no configuration listener registered');
     }
-    return listener as ConfigurationListener;
+    return event => listeners.forEach(listener => listener(event));
 }
 
 function withSettings(values: Record<string, unknown>): void {
@@ -129,6 +139,29 @@ describe('extension activation', () => {
             const registered = registeredCommands();
             expect(contributedCommands.filter(command => !registered.includes(command))).toEqual([]);
             expect(new Set(registered).size).toBe(registered.length);
+        });
+
+        it('reveals the open debug panel on a repeated debug command', async () => {
+            const { context } = makeContext();
+            await activate(context);
+            runCommand('openclaw.chat.debug');
+            runCommand('openclaw.chat.debug');
+            expect(vscode.window.createWebviewPanel).toHaveBeenCalledTimes(1);
+            const panel = jest.mocked(vscode.window.createWebviewPanel).mock.results[0].value;
+            expect(panel.reveal).toHaveBeenCalledTimes(1);
+        });
+
+        it('logs a failed gateway connect with its secrets redacted before telling the user to check the logs', async () => {
+            jest.mocked(promptForGatewayToken).mockRejectedValueOnce(new Error('store failed for token=abc123 at wss://u:pw@host/x'));
+            const { context } = makeContext();
+            await activate(context);
+            runCommand('openclaw.chat.connectGateway');
+            await new Promise(resolve => setImmediate(resolve));
+            const logged = jest.mocked(log.error).mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('connectGateway failed');
+            expect(logged).not.toContain('abc123');
+            expect(logged).not.toContain('pw@');
+            expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining('Check the logs'));
         });
 
         it('binds keys only to contributed commands', () => {

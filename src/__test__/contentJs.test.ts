@@ -281,16 +281,18 @@ describe('content-js', () => {
             expect(webview.blockedStyles).toEqual([]);
         });
 
-        it('hides finished tool groups only when hideToolActivity is on', () => {
+        it('hides done and cancelled tool groups when hideToolActivity is on, keeping running and failed ones', () => {
             const webview = loadWebview();
             const messages = [
                 { role: 'tool', entries: [{ title: 'read', status: 'done', details: '' }] },
+                { role: 'tool', entries: [{ title: 'stopped', status: 'cancelled', details: '' }] },
+                { role: 'tool', entries: [{ title: 'broke', status: 'error', details: '' }] },
                 { role: 'tool', entries: [{ title: 'write', status: 'running', details: '' }] },
             ];
             hostState(webview, [thread('t1', { messages })], { hideToolActivity: true });
-            expect(Array.from(webview.document.querySelectorAll('.message-tool-entry-title'), el => el.textContent)).toEqual(['write']);
+            expect(Array.from(webview.document.querySelectorAll('.message-tool-entry-title'), el => el.textContent)).toEqual(['broke', 'write']);
             hostState(webview, [thread('t1', { messages })], { hideToolActivity: false });
-            expect(webview.document.querySelectorAll('.message-tool')).toHaveLength(2);
+            expect(webview.document.querySelectorAll('.message-tool')).toHaveLength(4);
         });
 
         it('keeps a tool group the user expanded open across re-renders', async () => {
@@ -301,7 +303,7 @@ describe('content-js', () => {
             expect(group?.open).toBe(false);
             group!.open = true;
             await tick(webview);
-            hostState(webview, [thread('t1', { messages })]);
+            hostState(webview, [thread('t1', { messages: [...messages, { role: 'user', content: 'more' }] })]);
             expect(webview.document.querySelector<HTMLDetailsElement>('.message-tool')?.open).toBe(true);
         });
 
@@ -462,6 +464,43 @@ describe('content-js', () => {
             expect(webview.document.querySelector('.selector-dropdown.visible')).toBeNull();
         });
 
+        it('exposes the chat-type menu as a keyboard listbox', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            const trigger = action(webview, 'toggle-chat-type', 't1');
+            expect(trigger.getAttribute('aria-haspopup')).toBe('listbox');
+            expect(trigger.getAttribute('aria-expanded')).toBe('false');
+            click(webview, trigger);
+            expect(action(webview, 'toggle-chat-type', 't1').getAttribute('aria-expanded')).toBe('true');
+            const options = Array.from(webview.document.querySelectorAll<HTMLElement>('[data-action="select-chat-type"]'));
+            expect(options.map(o => [o.getAttribute('role'), o.getAttribute('aria-selected')])).toEqual([
+                ['option', 'true'], ['option', 'false'], ['option', 'false'], ['option', 'false'],
+            ]);
+            expect(webview.document.activeElement).toBe(options[0]);
+            press(webview, options[0], 'ArrowDown');
+            press(webview, webview.document.activeElement!, 'ArrowDown');
+            press(webview, webview.document.activeElement!, 'Enter');
+            expect(postedOfType(webview, 'setChatType')).toEqual([{ type: 'setChatType', threadId: 't1', chatType: 'review' }]);
+            expect(webview.document.querySelector('.selector-dropdown.visible')).toBeNull();
+        });
+
+        it('picks the first model match with Enter in the search box', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            click(webview, action(webview, 'toggle-model', 't1'));
+            expect(webview.document.activeElement?.classList.contains('selector-search')).toBe(true);
+            typeInto(webview, () => byThread<HTMLInputElement>(webview, '.selector-search', 't1'), 'cla');
+            press(webview, byThread<HTMLInputElement>(webview, '.selector-search', 't1'), 'Enter');
+            expect(postedOfType(webview, 'setModel')).toEqual([{ type: 'setModel', threadId: 't1', model: 'claude' }]);
+        });
+
+        it('names the attachment each remove button removes', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { pendingAttachments: [{ name: 'a.ts', path: '/w/a.ts', type: 'file' }] })]);
+            const remove = action(webview, 'remove-attachment', 't1');
+            expect([remove.getAttribute('aria-label'), remove.getAttribute('title')]).toEqual(['Remove a.ts', 'Remove a.ts']);
+        });
+
         it('keeps typing in the model search box instead of jumping to the composer', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1')]);
@@ -525,10 +564,8 @@ describe('content-js', () => {
             hostState(webview, [thread('t1')]);
             typeInto(webview, () => composer(webview, 't1'), 'first');
             press(webview, composer(webview, 't1'), 'Enter');
-            hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
             typeInto(webview, () => composer(webview, 't1'), 'second');
             press(webview, composer(webview, 't1'), 'Enter');
-            hostState(webview, [thread('t1', { status: 'complete' })]);
 
             webview.host({ type: 'sendRejected', threadId: 't1', clientId: 'send-1' });
 
@@ -549,11 +586,86 @@ describe('content-js', () => {
             expect(composer(webview, 't1').value).toBe('queued words');
         });
 
-        it('stops the reply on Enter when the draft is empty', () => {
+        it('stops the reply on Escape, never on an empty Enter', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
             press(webview, composer(webview, 't1'), 'Enter');
+            expect(postedOfType(webview, 'cancel')).toEqual([]);
+            expect(paneOf(webview, 't1').querySelector('.composer-status')?.textContent).toContain('Esc stops');
+            press(webview, composer(webview, 't1'), 'Escape');
             expect(postedOfType(webview, 'cancel')).toEqual([{ type: 'cancel', threadId: 't1' }]);
+        });
+
+        it('sends each queued draft as its own turn, slash commands included', () => {
+            const webview = loadWebview();
+            const running = () => hostState(webview, [thread('t1', { isStreaming: true, status: 'running' })]);
+            const idle = () => hostState(webview, [thread('t1', { status: 'complete' })]);
+            const acceptLast = () => {
+                const last = webview.posted.filter(m => m.type === 'send' || m.type === 'slashCommand').pop();
+                webview.host({ type: 'sendAccepted', threadId: 't1', clientId: last?.clientId });
+            };
+            running();
+            ['hello', '/compact', '/explain now'].forEach(text => {
+                typeInto(webview, () => composer(webview, 't1'), text);
+                if (webview.document.querySelector('.slash-dropdown.visible')) {
+                    press(webview, composer(webview, 't1'), 'Escape');
+                }
+                press(webview, composer(webview, 't1'), 'Enter');
+            });
+            webview.posted.splice(0);
+            idle();
+            idle();
+            expect(webview.posted.map(m => [m.type, m.text ?? m.command])).toEqual([['send', 'hello']]);
+            acceptLast();
+            running();
+            idle();
+            acceptLast();
+            running();
+            idle();
+            expect(webview.posted.map(m => [m.type, m.command ?? m.text, m.text])).toEqual([
+                ['send', 'hello', 'hello'],
+                ['slashCommand', 'compact', ''],
+                ['slashCommand', 'explain', 'now'],
+            ]);
+        });
+
+        it('keeps the textarea node, its leading newline and the transcript while typing', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { messages: [{ role: 'user', content: 'hi' }] })]);
+            const input = composer(webview, 't1');
+            const message = webview.document.querySelector('.message-user');
+            typeInto(webview, () => input, '\nhello');
+            expect(composer(webview, 't1')).toBe(input);
+            expect(input.value).toBe('\nhello');
+            expect(webview.document.querySelector('.message-user')).toBe(message);
+        });
+
+        it('leaves the textarea and an unchanged transcript alone on host pushes', () => {
+            const webview = loadWebview();
+            const messages = [{ role: 'user', content: 'hi' }];
+            hostState(webview, [thread('t1', { messages })]);
+            const input = composer(webview, 't1');
+            const message = webview.document.querySelector('.message-user');
+            webview.host({ type: 'recommendations', items: [] });
+            hostState(webview, [thread('t1', { messages: messages.map(m => ({ ...m })), title: 'Renamed' })]);
+            expect(composer(webview, 't1')).toBe(input);
+            expect(webview.document.querySelector('.message-user')).toBe(message);
+            expect(paneOf(webview, 't1').querySelector('.pane-title')?.textContent).toBe('Renamed');
+            hostState(webview, [thread('t1', { messages: [...messages, { role: 'assistant', content: 'yo' }] })]);
+            expect(webview.document.querySelectorAll('.message')).toHaveLength(2);
+        });
+
+        it('defers host renders while an IME composition is open and flushes at its end', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            const input = composer(webview, 't1');
+            input.focus();
+            input.dispatchEvent(new webview.window.CompositionEvent('compositionstart', { bubbles: true }));
+            hostState(webview, [thread('t1', { title: 'Renamed' })]);
+            expect(paneOf(webview, 't1').querySelector('.pane-title')?.textContent).toBe('Thread t1');
+            input.dispatchEvent(new webview.window.CompositionEvent('compositionend', { bubbles: true }));
+            expect(paneOf(webview, 't1').querySelector('.pane-title')?.textContent).toBe('Renamed');
+            expect(composer(webview, 't1')).toBe(input);
         });
     });
 
@@ -753,6 +865,31 @@ describe('content-js', () => {
             click(webview, sessionRows(webview)[1]);
             expect(postedOfType(webview, 'openSession')).toEqual([{ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 't2' }]);
             expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+        });
+
+        it('drops a reply the user no longer waits for, after typing or clicking away', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            click(webview, action(webview, 'sessions', 't1'));
+            typeInto(webview, () => composer(webview, 't1'), 'moving on');
+            webview.host({ type: 'sessionsList', threadId: 't1', sessions: SESSIONS });
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+            click(webview, action(webview, 'sessions', 't1'));
+            click(webview, webview.document.body);
+            webview.host({ type: 'sessionsList', threadId: 't1', sessions: SESSIONS });
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+            webview.host({ type: 'sessionsList', threadId: 't1', sessions: SESSIONS });
+            expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
+        });
+
+        it('leaves focus where the user put it when the list lands', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            click(webview, action(webview, 'sessions', 't1'));
+            composer(webview, 't1').focus();
+            webview.host({ type: 'sessionsList', threadId: 't1', sessions: SESSIONS });
+            expect(webview.document.getElementById('claw-sessions-panel')).not.toBeNull();
+            expect(webview.document.activeElement).toBe(composer(webview, 't1'));
         });
 
         it('moves focus with the arrow keys, wrapping around', () => {

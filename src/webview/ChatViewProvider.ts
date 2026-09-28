@@ -20,7 +20,6 @@ import {
     handleFileSearch,
     postToAll,
     readAttachments,
-    ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES,
     ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
     renderMarkdown,
     type Attachment,
@@ -110,10 +109,6 @@ function resetUsage(thread: ChatThreadState): void {
     thread.lastUsage = null;
 }
 
-/** A prompt, or a builder that fits it to the acpx argument budget once the
- *  transport is resolved (undefined: no per-argument limit applies). */
-type PromptSource = string | ((maxBytes: number | undefined) => string);
-
 /** A send's claim on its thread: the epoch it owns, advanced by the send's
  *  own rebases and by a gateway invalidation during its backend resolve. */
 type SendTicket = {
@@ -139,6 +134,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private editorChangeDisposable: vscode.Disposable | undefined;
     private selectionChangeDisposable: vscode.Disposable | undefined;
     private diagnosticChangeDisposable: vscode.Disposable | undefined;
+    private chatConfigChangeDisposable: vscode.Disposable | undefined;
     private readonly context: vscode.ExtensionContext;
     private lastSessionKey: string | null = null;
     /** Persist generation plus a serialized write chain: overlapping selections
@@ -206,6 +202,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.diagnosticChangeDisposable = vscode.languages.onDidChangeDiagnostics(() => {
             this.pushRecommendations();
         });
+        // Snapshots carry models, layout and tool-activity settings: every webview must see an edit at once.
+        this.chatConfigChangeDisposable = vscode.workspace.onDidChangeConfiguration((event) => {
+            if (event.affectsConfiguration('openclaw.chat')) {
+                this.emitState();
+            }
+        });
     }
 
     resolveWebviewView(
@@ -269,12 +271,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         });
     }
 
+    /** Reveals the open debug panel instead of orphaning it; true when one was already open. */
+    revealDebugPanel(): boolean {
+        this.debugPanel?.reveal();
+        return Boolean(this.debugPanel);
+    }
+
     attachDebugPanel(panel: vscode.WebviewPanel): void {
         this.debugPanel = panel;
         this.setupWebviewListeners(panel.webview);
         this.bootstrapWebview(panel.webview);
         panel.onDidDispose(() => {
-            this.debugPanel = undefined;
+            // A newer panel may have replaced this one; its field must survive the old one's disposal.
+            if (this.debugPanel === panel) {
+                this.debugPanel = undefined;
+            }
         });
     }
 
@@ -297,6 +308,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.editorChangeDisposable?.dispose();
         this.selectionChangeDisposable?.dispose();
         this.diagnosticChangeDisposable?.dispose();
+        this.chatConfigChangeDisposable?.dispose();
         this.chatServiceFactory.dispose();
     }
 
@@ -410,11 +422,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'setDimension':
                     if (isGridDimension(msg.dimension)) {
-                        void vscode.workspace.getConfiguration('openclaw').update(
+                        // Re-emit once written so the other chat views (sidebar, pop-out) follow the layout.
+                        void Promise.resolve(vscode.workspace.getConfiguration('openclaw').update(
                             'chat.dimension',
                             msg.dimension,
                             vscode.ConfigurationTarget.Global
-                        );
+                        )).then(() => this.emitState(), (err: unknown) => log.warn('setDimension: settings write failed', err));
                     }
                     break;
                 case 'attach':
@@ -782,8 +795,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     })
                     .join('\n\n')
                 : undefined;
-            // Built once the transport is known, so it can fit the acpx argument budget.
-            const augmented: PromptSource = (maxBytes) => buildSlashPrompt(commandName, userText, context, transcript, maxBytes);
+            const augmented = buildSlashPrompt(commandName, userText, context, transcript);
             const attachments = [...thread.pendingAttachments];
 
             if (!this.sendOwnsThread(thread, ticket)) {
@@ -1128,7 +1140,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Send a queued user prompt through the resolved backend. */
     private async sendPrompt(
         thread: ChatThreadState,
-        prompt: PromptSource,
+        prompt: string,
         attachments: Attachment[],
         ticket: SendTicket
     ): Promise<boolean> {
@@ -1258,29 +1270,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.eventEpoch += 1;
         const runEpoch = thread.eventEpoch;
         ticket.expectedEpoch = runEpoch;
-        // CLI transports carry the prompt as one command-line argument, so the
-        // platform's argument budget bounds prompt and attachments together.
-        const argvLimitBytes = choice.service instanceof GatewayChatService
-            ? null
-            : ChatService.promptArgBudgetBytes(thread.currentChatType);
-        const basePrompt = typeof prompt === 'string'
-            ? prompt
-            : prompt(argvLimitBytes === null ? undefined : attachments.length > 0 ? Math.floor(argvLimitBytes / 2) : argvLimitBytes);
         // Transport-specific: the gateway takes images inline (it cannot read
-        // this machine's disk), CLI transports take temp-file paths to fit argv.
-        let promptToSend = basePrompt;
+        // this machine's disk), CLI transports take temp-file paths.
+        let promptToSend = prompt;
         let disposeAttachments: (() => Promise<void>) | undefined;
         if (attachments.length > 0) {
             const attachmentResult = await readAttachments(
                 attachments,
                 {
                     imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile',
-                    // The base prompt shares the gateway payload and the CLI argv budget.
+                    // The base prompt shares the payload budget with the attachments.
                     reservedPromptBytes:
-                        Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
-                    reservedArgvBytes:
-                        Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES,
-                    argvLimitBytes,
+                        Buffer.byteLength(prompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
                 }
             );
             disposeAttachments = attachmentResult.dispose;
@@ -1289,7 +1290,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 void disposeAttachments?.();
                 return false;
             }
-            promptToSend = `${attachmentResult.prompt}\n\n${basePrompt}`;
+            promptToSend = `${attachmentResult.prompt}\n\n${prompt}`;
         }
         this.dispatchedRunEpochs.set(thread.id, runEpoch);
         choice.service.sendMessage(

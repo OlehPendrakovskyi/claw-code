@@ -207,7 +207,7 @@
         "openclaw.chat.hideToolActivity": {
           "type": "boolean",
           "default": false,
-          "description": "Hide completed tool-call groups in chat entirely (running groups stay visible)"
+          "description": "Hide finished tool-call groups (done or cancelled) in chat; running and failed groups stay visible"
         },
         "openclaw.chat.dimension": {
           "type": "string",

@@ -965,6 +965,11 @@ export const CONTENT_CSS = `
             flex: 1;
         }
 
+        .selector-item:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, #007fd4);
+            outline-offset: -1px;
+        }
+
         .selector-item-check {
             opacity: 0;
             font-size: 11px;

@@ -6,6 +6,7 @@ import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
+import { redactEndpoint, redactPlainSecrets } from '../core/accessInfo/redact';
 import {
     log,
     connect,
@@ -109,7 +110,9 @@ export async function activate(context: vscode.ExtensionContext) {
                         await chatViewProvider?.connectGatewayTransport();
                     }
                 })
-                .catch(() => {
+                .catch((err: unknown) => {
+                    const message = err instanceof Error ? err.message : String(err);
+                    log.error(`connectGateway failed: ${redactPlainSecrets(message.replace(/\S+:\/\/\S+/g, (url) => redactEndpoint(url)))}`);
                     void vscode.window.showErrorMessage(
                         'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
                     );
@@ -143,9 +146,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(
         vscode.commands.registerCommand('openclaw.chat.debug', () => {
-            if (chatViewProvider) {
-                const panel = openDebugChatPanel(context.extensionUri);
-                chatViewProvider.attachDebugPanel(panel);
+            if (chatViewProvider && !chatViewProvider.revealDebugPanel()) {
+                chatViewProvider.attachDebugPanel(openDebugChatPanel(context.extensionUri));
             }
         })
     );

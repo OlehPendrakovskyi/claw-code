@@ -48,13 +48,24 @@ export const SESSIONS_PANEL_JS = `
             var sessionsPanelDismiss = null;
             var sessionsPanelPendingTimer = null;
             var sessionsPanelThreadId = '';
+            var sessionsRequestThreadId = '';
             var sessionsPanelRows = [];
 
             var SESSIONS_ROW_STYLE = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
 
             function requestSessionsPanel(threadId) {
                 sessionsPanelThreadId = threadId || '';
+                sessionsRequestThreadId = sessionsPanelThreadId;
                 vscode.postMessage({ type: 'requestSessions', threadId: sessionsPanelThreadId });
+            }
+
+            /** The user moved on before the list arrived: a late reply must not open over their work. */
+            function cancelSessionsRequest() {
+                sessionsRequestThreadId = '';
+            }
+
+            function isAwaitedListing(listing) {
+                return Boolean(sessionsRequestThreadId) && (!listing.threadId || listing.threadId === sessionsRequestThreadId);
             }
 
             function describeSessionRow(session) {
@@ -117,8 +128,13 @@ export const SESSIONS_PANEL_JS = `
             }
 
             function renderSessionsPanel(listing) {
+                if (!isAwaitedListing(listing)) {
+                    return;
+                }
+                var threadId = sessionsRequestThreadId;
+                var opener = findSessionsButton(threadId);
+                var focusWasOnOpener = document.activeElement === opener || document.activeElement === document.body || !document.activeElement;
                 dismissSessionsPanel();
-                var threadId = listing.threadId || sessionsPanelThreadId;
                 sessionsPanelThreadId = threadId;
                 var panel = document.createElement('div');
                 panel.id = 'claw-sessions-panel';
@@ -137,7 +153,9 @@ export const SESSIONS_PANEL_JS = `
                 sessionsPanelRows.forEach(function(row) { panel.appendChild(row); });
                 panel.addEventListener('keydown', handleSessionsPanelKeydown);
                 document.body.appendChild(panel);
-                sessionsPanelRows[0].focus();
+                if (focusWasOnOpener) {
+                    sessionsPanelRows[0].focus();
+                }
                 // Deferred so the click that opened the panel does not dismiss it.
                 sessionsPanelPendingTimer = setTimeout(function() {
                     sessionsPanelPendingTimer = null;
@@ -151,6 +169,7 @@ export const SESSIONS_PANEL_JS = `
             }
 
             function dismissSessionsPanel(options) {
+                cancelSessionsRequest();
                 if (sessionsPanelPendingTimer !== null) {
                     clearTimeout(sessionsPanelPendingTimer);
                     sessionsPanelPendingTimer = null;
@@ -168,6 +187,12 @@ export const SESSIONS_PANEL_JS = `
                     if (button) { button.focus(); }
                 }
             }
+
+            document.addEventListener('click', function(ev) {
+                if (!(ev.target instanceof Element) || !ev.target.closest('.pane-btn[data-action="sessions"]')) {
+                    cancelSessionsRequest();
+                }
+            });
 
             function findSessionsButton(threadId) {
                 var buttons = document.querySelectorAll('.pane-btn[data-action="sessions"]');
@@ -227,6 +252,9 @@ export const CONTENT_JS = `
             var drafts = Object.create(null);
             var messageQueue = Object.create(null);
             var toolGroupOpen = Object.create(null);
+            var paneCache = Object.create(null);
+            var composing = false;
+            var renderDeferred = false;
             var unconfirmedSends = Object.create(null);
             var sendCounter = 0;
             var currentDimension = '1x1';
@@ -426,7 +454,7 @@ export const CONTENT_JS = `
             function getThreadStatusDetail(thread) {
                 switch (thread.status) {
                     case 'running':
-                        return 'Generating response';
+                        return 'Generating response \u00b7 Esc stops';
                     case 'complete':
                         return 'Response complete';
                     case 'error':
@@ -643,7 +671,7 @@ ${TOOL_STATUS_JS}
             function renderSlashHint(threadId) {
                 var commands = getActiveSlashCommands(threadId);
                 if (!commands.length) {
-                    return '';
+                    return '<div class="slash-hint"></div>';
                 }
                 var activeIndex = Math.max(0, Math.min(composerUi.activeSlashIndex, commands.length - 1));
                 var command = commands[activeIndex];
@@ -695,15 +723,16 @@ ${TOOL_STATUS_JS}
                 var threadAttr = escapeAttr(thread.id);
                 var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'chatType';
                 var html = chatTypes.map(function(chatType) {
-                    return '<div class="selector-item' +
-                        (chatType.id === thread.currentChatType ? ' selected' : '') + '"' +
+                    var selected = chatType.id === thread.currentChatType;
+                    return '<div class="selector-item' + (selected ? ' selected' : '') + '"' +
+                        ' role="option" tabindex="-1" aria-selected="' + selected + '"' +
                         ' data-action="select-chat-type" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(chatType.id) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(chatType.label) + '</span>' +
                         '<span class="selector-item-check">&#x2713;</span>' +
                     '</div>';
                 }).join('');
-                return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '">' + html + '</div>';
+                return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '" role="listbox" aria-label="Chat type">' + html + '</div>';
             }
 
             function renderModelDropdown(thread) {
@@ -716,7 +745,9 @@ ${TOOL_STATUS_JS}
                     });
                 }
                 var items = models.map(function(model) {
-                    return '<div class="selector-item' + (model === thread.currentModel ? ' selected' : '') + '"' +
+                    var selected = model === thread.currentModel;
+                    return '<div class="selector-item' + (selected ? ' selected' : '') + '"' +
+                        ' role="option" tabindex="-1" aria-selected="' + selected + '"' +
                         ' data-action="select-model" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(model) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(formatModelLabel(model)) + '</span>' +
@@ -725,8 +756,8 @@ ${TOOL_STATUS_JS}
                 }).join('');
                 return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '">' +
                     '<input class="selector-search" data-thread-id="' + threadAttr + '"' +
-                        ' placeholder="Search models" value="' + escapeAttr(composerUi.modelQuery) + '">' +
-                    items +
+                        ' aria-label="Search models" placeholder="Search models" value="' + escapeAttr(composerUi.modelQuery) + '">' +
+                    '<div role="listbox" aria-label="Model">' + items + '</div>' +
                 '</div>';
             }
 
@@ -764,6 +795,7 @@ ${TOOL_STATUS_JS}
                             escapeHtml(file.name) +
                         '</span>' +
                         '<button class="att-pill-remove" data-action="remove-attachment"' +
+                            ' aria-label="Remove ' + escapeAttr(file.name) + '" title="Remove ' + escapeAttr(file.name) + '"' +
                             ' data-thread-id="' + threadAttr + '" data-index="' + index + '">&#x00d7;</button>' +
                     '</span>';
                 }).join('');
@@ -779,15 +811,13 @@ ${TOOL_STATUS_JS}
 
             var recOpen = Object.create(null);
 
-            function renderComposerRecommendations(thread) {
-                var showRecommendations = Boolean(
-                    thread &&
-                    recommendations.length > 0 &&
-                    (thread.messages || []).length === 0 &&
-                    !thread.pendingAssistantText
-                );
+            function showsRecommendations(thread) {
+                return Boolean(thread && recommendations.length > 0 &&
+                    (thread.messages || []).length === 0 && !thread.pendingAssistantText);
+            }
 
-                if (!showRecommendations) {
+            function renderComposerRecommendations(thread) {
+                if (!showsRecommendations(thread)) {
                     return '<div class="composer-recommendations hidden"></div>';
                 }
 
@@ -830,20 +860,20 @@ ${TOOL_STATUS_JS}
                             '</strong><span>#' + escapeHtml(String(thread.index)) + '</span></div>' +
                             '<div class="composer-top-spacer"></div>' +
                             '<button class="dropdown-trigger" data-action="toggle-chat-type" data-thread-id="' +
-                                threadAttr + '" title="Chat type">' +
+                                threadAttr + '" title="Chat type" aria-haspopup="listbox"' +
+                                ' aria-expanded="' + (composerUi.threadId === thread.id && composerUi.dropdown === 'chatType') + '">' +
                                 '<span>' + escapeHtml(chatType ? chatType.label : 'Chat') + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
                             '<button class="dropdown-trigger" data-action="toggle-model" data-thread-id="' +
-                                threadAttr + '" title="Model">' +
+                                threadAttr + '" title="Model" aria-haspopup="listbox"' +
+                                ' aria-expanded="' + (composerUi.threadId === thread.id && composerUi.dropdown === 'model') + '">' +
                                 '<span>' + escapeHtml(formatModelLabel(thread.currentModel)) + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
                         '</div>' +
                         '<textarea class="composer-input" data-thread-id="' + threadAttr + '"' +
-                            ' rows="1" placeholder="' + escapeAttr(placeholder) + '">' +
-                            escapeHtml(draft) +
-                        '</textarea>' +
+                            ' rows="1" placeholder="' + escapeAttr(placeholder) + '"></textarea>' +
                         renderSlashHint(thread.id) +
                         '<div class="attachments">' + renderAttachments(thread) + '</div>' +
                         renderComposerRecommendations(thread) +
@@ -859,7 +889,7 @@ ${TOOL_STATUS_JS}
                                 '</span>' +
                                 renderUsageIndicator(thread);
                             })() +
-                            (messageQueue[thread.id] ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
+                            (getQueue(thread.id).length ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
                             '<button class="btn-send' + (thread.isStreaming ? ' streaming' : '') + '"' +
                                 ' data-action="' + (thread.isStreaming ? 'cancel' : 'send') + '"' +
                                 ' data-thread-id="' + threadAttr + '"' +
@@ -910,21 +940,12 @@ ${TOOL_STATUS_JS}
                 return expandedThreads.concat(collapsedThreads);
             }
 
-            function renderPane(thread) {
+            function renderPaneHeader(thread, isCollapsed) {
                 var threadAttr = escapeAttr(thread.id);
-                var pane = document.createElement('section');
                 var statusClass = String(thread.status || 'idle').toLowerCase();
-                var isCollapsed = shouldCollapseThread(thread);
-                pane.className = 'pane' +
-                    (thread.id === state.activeThreadId ? ' active' : '') +
-                    (isCollapsed ? ' collapsed' : '');
-                pane.dataset.threadId = thread.id;
-
                 var sourceClass = String(thread.source || 'API').toLowerCase().replace(/[^a-z]/g, '');
                 var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), getContextMax(thread));
-
-                pane.innerHTML =
-                    '<div class="pane-header">' +
+                return '<div class="pane-header">' +
                         '<div class="pane-header-main">' +
                             '<div class="pane-title">' + escapeHtml(thread.title) + '</div>' +
                             '<div class="pane-meta">' +
@@ -957,10 +978,38 @@ ${TOOL_STATUS_JS}
                                 : '') +
                         '</div>' +
                     '</div>';
+            }
 
+            function isHiddenToolGroup(message) {
+                if (message.role !== 'tool' || !hideToolActivity) {
+                    return false;
+                }
+                var status = getToolGroupStatus(Array.isArray(message.entries) ? message.entries : []);
+                return status === 'done' || status === 'cancelled';
+            }
+
+            function renderMessage(message, threadId, messageIndex) {
+                if (message.role === 'tool') {
+                    return renderToolMessage(message, threadId, messageIndex);
+                }
+                var node = document.createElement('div');
+                if (message.role === 'assistant') {
+                    node.className = 'message message-assistant';
+                    node.innerHTML = linkifyFilePaths(typeof message.html === 'string' && message.html ? message.html : escapeHtml(message.content || ''));
+                    removeUnsafeLinks(node);
+                } else if (message.role === 'error') {
+                    node.className = 'message message-error';
+                    node.innerHTML = linkifyFilePaths(escapeHtml(message.content || ''));
+                } else {
+                    node.className = 'message message-user';
+                    node.textContent = message.content || '';
+                }
+                return node;
+            }
+
+            function renderPaneBody(thread) {
                 var body = document.createElement('div');
                 body.className = 'pane-body';
-
                 var messages = thread.messages || [];
                 if (messages.length === 0 && !thread.pendingAssistantText) {
                     var empty = document.createElement('div');
@@ -972,29 +1021,10 @@ ${TOOL_STATUS_JS}
                     body.appendChild(empty);
                 } else {
                     messages.forEach(function(message, messageIndex) {
-                        if (message.role === 'tool' && hideToolActivity) {
-                            var toolEntries = Array.isArray(message.entries) ? message.entries : [];
-                            if (getToolGroupStatus(toolEntries) === 'done') {
-                                return;
-                            }
+                        if (!isHiddenToolGroup(message)) {
+                            body.appendChild(renderMessage(message, thread.id, messageIndex));
                         }
-                        var node = document.createElement('div');
-                        if (message.role === 'tool') {
-                            node = renderToolMessage(message, thread.id, messageIndex);
-                        } else if (message.role === 'assistant') {
-                            node.className = 'message message-assistant';
-                            node.innerHTML = linkifyFilePaths(typeof message.html === 'string' && message.html ? message.html : escapeHtml(message.content || ''));
-                            removeUnsafeLinks(node);
-                        } else if (message.role === 'error') {
-                            node.className = 'message message-error';
-                            node.innerHTML = linkifyFilePaths(escapeHtml(message.content || ''));
-                        } else {
-                            node.className = 'message message-user';
-                            node.textContent = message.content || '';
-                        }
-                        body.appendChild(node);
                     });
-
                     if (thread.pendingAssistantText) {
                         var pending = document.createElement('div');
                         pending.className = 'message message-assistant message-pending';
@@ -1003,33 +1033,140 @@ ${TOOL_STATUS_JS}
                         body.appendChild(pending);
                     }
                 }
+                body.addEventListener('scroll', function() {
+                    userScrolledUp[thread.id] = !isNearBottom(body);
+                });
+                return body;
+            }
 
-                (function(tid) {
-                    body.addEventListener('scroll', function() {
-                        userScrolledUp[tid] = !isNearBottom(body);
+            function htmlToElement(html) {
+                var template = document.createElement('template');
+                template.innerHTML = html;
+                return template.content.firstElementChild;
+            }
+
+            function childWithClass(parent, className) {
+                for (var i = 0; i < parent.children.length; i++) {
+                    if (parent.children[i].classList.contains(className)) {
+                        return parent.children[i];
+                    }
+                }
+                return null;
+            }
+
+            function replaceIfChanged(live, fresh) {
+                if (live.outerHTML !== fresh.outerHTML) {
+                    live.replaceWith(fresh);
+                }
+            }
+
+            /** Swaps only the composer parts whose markup changed; the textarea itself is never replaced. */
+            function patchComposerShell(liveShell, freshShell) {
+                var liveParts = Array.from(liveShell.children);
+                Array.from(freshShell.children).forEach(function(freshPart, index) {
+                    var livePart = liveParts[index];
+                    if (!freshPart.classList.contains('composer-card')) {
+                        replaceIfChanged(livePart, freshPart);
+                        return;
+                    }
+                    livePart.className = freshPart.className;
+                    var liveCardParts = Array.from(livePart.children);
+                    Array.from(freshPart.children).forEach(function(freshCardPart, cardIndex) {
+                        if (!freshCardPart.classList.contains('composer-input')) {
+                            replaceIfChanged(liveCardParts[cardIndex], freshCardPart);
+                        }
                     });
-                })(thread.id);
+                });
+            }
 
-                pane.appendChild(body);
+            /** Host snapshots carry new arrays; a reference hit skips the serialisation on local re-renders. */
+            function isBodyCurrent(cache, thread) {
+                if (cache.pending !== (thread.pendingAssistantText || '') || cache.notice !== (thread.notice || '') ||
+                    cache.hideToolActivity !== hideToolActivity) {
+                    return false;
+                }
+                if (cache.messagesRef === thread.messages) {
+                    return true;
+                }
+                var json = JSON.stringify(thread.messages || []);
+                cache.messagesRef = thread.messages;
+                return json === cache.messagesJson;
+            }
+
+            function rememberBody(cache, thread) {
+                cache.pending = thread.pendingAssistantText || '';
+                cache.notice = thread.notice || '';
+                cache.hideToolActivity = hideToolActivity;
+                cache.messagesRef = thread.messages;
+                cache.messagesJson = JSON.stringify(thread.messages || []);
+            }
+
+            function syncPaneBody(pane, cache, thread) {
+                var liveBody = childWithClass(pane, 'pane-body');
+                if (liveBody && isBodyCurrent(cache, thread)) {
+                    return;
+                }
+                var body = renderPaneBody(thread);
+                var savedScroll = liveBody ? liveBody.scrollTop : null;
+                if (liveBody) {
+                    liveBody.replaceWith(body);
+                } else {
+                    pane.appendChild(body);
+                }
+                rememberBody(cache, thread);
+                if (userScrolledUp[thread.id] && savedScroll !== null) {
+                    body.scrollTop = savedScroll;
+                } else {
+                    setTimeout(function() { scrollPaneToBottom(body, thread.id); }, 0);
+                }
+            }
+
+            function syncComposer(pane, thread) {
+                var freshShell = htmlToElement(renderComposer(thread));
+                var liveShell = childWithClass(pane, 'composer-shell');
+                if (liveShell) {
+                    patchComposerShell(liveShell, freshShell);
+                } else {
+                    pane.appendChild(freshShell);
+                    liveShell = freshShell;
+                }
+                // Set as a property: markup would drop a leading newline, and rewriting an equal value would cost native undo.
+                var textarea = liveShell.querySelector('.composer-input');
+                var draft = getDraft(thread.id);
+                if (textarea.value !== draft) {
+                    textarea.value = draft;
+                }
+                setTimeout(function() { autoResizeTextarea(textarea); }, 0);
+            }
+
+            /** Updates a pane in place, rebuilding only the header, transcript or composer parts whose data changed. */
+            function syncPane(pane, thread) {
+                var cache = paneCache[thread.id] || (paneCache[thread.id] = {});
+                var isCollapsed = shouldCollapseThread(thread);
+                pane.className = 'pane' +
+                    (thread.id === state.activeThreadId ? ' active' : '') +
+                    (isCollapsed ? ' collapsed' : '');
+                var headerHtml = renderPaneHeader(thread, isCollapsed);
+                var liveHeader = childWithClass(pane, 'pane-header');
+                if (!liveHeader || cache.header !== headerHtml) {
+                    var header = htmlToElement(headerHtml);
+                    if (liveHeader) {
+                        liveHeader.replaceWith(header);
+                    } else {
+                        pane.insertBefore(header, pane.firstChild);
+                    }
+                    cache.header = headerHtml;
+                }
+                syncPaneBody(pane, cache, thread);
                 // CSP drops style attributes parsed from markup; CSSOM writes still apply.
                 updatePaneContextUsage(pane, thread);
-
-                var composerWrap = document.createElement('div');
-                composerWrap.innerHTML = renderComposer(thread);
-                pane.appendChild(composerWrap.firstChild);
-
-                setTimeout(function() {
-                    scrollPaneToBottom(body, thread.id);
-                    autoResizeTextarea(pane.querySelector('.composer-input'));
-                }, 0);
-
-                return pane;
+                syncComposer(pane, thread);
             }
 
             function pruneClosedThreadState() {
                 var open = Object.create(null);
                 state.threads.forEach(function(thread) { open[thread.id] = true; });
-                [drafts, collapseOverrides, messageQueue, recOpen, userScrolledUp, toolGroupOpen, unconfirmedSends].forEach(function(byThread) {
+                [drafts, collapseOverrides, messageQueue, recOpen, userScrolledUp, toolGroupOpen, unconfirmedSends, paneCache].forEach(function(byThread) {
                     Object.keys(byThread).forEach(function(threadId) {
                         if (!open[threadId]) {
                             delete byThread[threadId];
@@ -1038,48 +1175,42 @@ ${TOOL_STATUS_JS}
                 });
             }
 
-            function renderState(preserve) {
-                pruneClosedThreadState();
-
-                var savedScrolls = Object.create(null);
-                try {
-                    var oldBodies = paneGrid.querySelectorAll('.pane-body');
-                    for (var i = 0; i < oldBodies.length; i++) {
-                        var paneEl = oldBodies[i].closest('.pane');
-                        if (paneEl && paneEl.dataset.threadId) {
-                            savedScrolls[paneEl.dataset.threadId] = oldBodies[i].scrollTop;
-                        }
+            function removeStalePanes() {
+                Array.from(paneGrid.children).forEach(function(child) {
+                    var isLivePane = child.classList.contains('pane') && getThreadById(child.getAttribute('data-thread-id'));
+                    if (!isLivePane && !child.classList.contains('openclaw-crash')) {
+                        child.remove();
                     }
-                } catch (e) {
-                    console.warn('[OpenClaw] scroll save failed:', e);
+                });
+            }
+
+            function renderState(preserve) {
+                // Touching the DOM mid-composition aborts the IME; compositionend flushes.
+                if (composing) {
+                    renderDeferred = true;
+                    return;
                 }
-
+                pruneClosedThreadState();
                 var orderedThreads = getOrderedThreads();
-                paneGrid.innerHTML = '';
-
                 if (orderedThreads.length === 0) {
                     paneGrid.innerHTML = '<div class="pane-empty"><div class="empty-detail">No threads available.</div></div>';
                     return;
                 }
+                removeStalePanes();
 
-                orderedThreads.forEach(function(thread) {
+                orderedThreads.forEach(function(thread, index) {
                     try {
-                        paneGrid.appendChild(renderPane(thread));
-                    } catch (e) {
-                        _showCrash('Render failed for thread #' + (thread.index || '?') + ' (' + thread.id + ')', e);
-                    }
-                });
-
-                orderedThreads.forEach(function(thread) {
-                    try {
-                        if (userScrolledUp[thread.id] && savedScrolls[thread.id] != null) {
-                            var paneBody = findPaneBody(thread.id);
-                            if (paneBody) {
-                                paneBody.scrollTop = savedScrolls[thread.id];
-                            }
+                        var pane = findThreadElement('.pane', thread.id);
+                        if (!pane) {
+                            pane = document.createElement('section');
+                            pane.dataset.threadId = thread.id;
+                        }
+                        syncPane(pane, thread);
+                        if (paneGrid.children[index] !== pane) {
+                            paneGrid.insertBefore(pane, paneGrid.children[index] || null);
                         }
                     } catch (e) {
-                        console.warn('[OpenClaw] scroll restore failed:', e);
+                        _showCrash('Render failed for thread #' + (thread.index || '?') + ' (' + thread.id + ')', e);
                     }
                 });
 
@@ -1088,12 +1219,12 @@ ${TOOL_STATUS_JS}
                     try {
                         var field = findThreadElement(restore.selector || '.composer-input', restore.threadId);
                         if (field) {
-                            field.focus();
-                            if (typeof restore.selectionStart === 'number' && typeof restore.selectionEnd === 'number') {
-                                field.setSelectionRange(restore.selectionStart, restore.selectionEnd);
+                            if (document.activeElement !== field) {
+                                field.focus();
                             }
-                            if (field.classList.contains('composer-input')) {
-                                autoResizeTextarea(field);
+                            if (typeof restore.selectionStart === 'number' && typeof restore.selectionEnd === 'number' &&
+                                (field.selectionStart !== restore.selectionStart || field.selectionEnd !== restore.selectionEnd)) {
+                                field.setSelectionRange(restore.selectionStart, restore.selectionEnd);
                             }
                         }
                     } catch (e) {
@@ -1311,14 +1442,18 @@ ${TOOL_STATUS_JS}
                 renderState(captureComposerFocus());
             }
 
-            /** Stop and Clear must not send the queued draft once the thread goes idle: it returns to the composer. */
+            function getQueue(threadId) {
+                return messageQueue[threadId] || [];
+            }
+
+            /** Stop and Clear must not send the queued drafts once the thread goes idle: they return to the composer. */
             function restoreQueuedMessage(threadId) {
-                var queued = messageQueue[threadId];
-                if (!queued) {
+                var queued = getQueue(threadId);
+                if (!queued.length) {
                     return;
                 }
                 delete messageQueue[threadId];
-                restoreToDraft(threadId, queued);
+                restoreToDraft(threadId, queued.join('\\n\\n'));
                 renderState(captureComposerFocus());
             }
 
@@ -1334,7 +1469,7 @@ ${TOOL_STATUS_JS}
                 userScrolledUp[thread.id] = false;
             }
 
-            /** Sends the draft, or queues it behind the running reply; queued drafts join rather than replace. */
+            /** Sends the draft, or queues it behind the running reply; each queued draft goes out as its own turn. */
             function sendThread(threadId) {
                 var thread = getThreadById(threadId);
                 var raw = getDraft(threadId).trim();
@@ -1342,7 +1477,7 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (thread.isStreaming) {
-                    messageQueue[threadId] = messageQueue[threadId] ? messageQueue[threadId] + '\\n\\n' + raw : raw;
+                    (messageQueue[threadId] = getQueue(threadId)).push(raw);
                 } else {
                     dispatchText(thread, raw);
                 }
@@ -1352,14 +1487,18 @@ ${TOOL_STATUS_JS}
                 renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
             }
 
+            /** One queued draft per idle turn, and only once the host has settled the previous send. */
             function drainQueuedMessages() {
                 state.threads.forEach(function(thread) {
-                    var queued = messageQueue[thread.id];
-                    if (thread.isStreaming || !queued) {
+                    var queued = getQueue(thread.id);
+                    if (thread.isStreaming || !queued.length || (unconfirmedSends[thread.id] || []).length) {
                         return;
                     }
-                    delete messageQueue[thread.id];
-                    dispatchText(thread, queued);
+                    var next = queued.shift();
+                    if (!queued.length) {
+                        delete messageQueue[thread.id];
+                    }
+                    dispatchText(thread, next);
                 });
             }
 
@@ -1374,6 +1513,51 @@ ${TOOL_STATUS_JS}
                     composerUi.activeFileIndex = 0;
                 }
                 renderState();
+                focusOpenedSelector(threadId, kind);
+            }
+
+            /** Keyboard users land in the menu they opened: the model search, or the chosen chat type. */
+            function focusOpenedSelector(threadId, kind) {
+                if (composerUi.threadId !== threadId || composerUi.dropdown !== kind) {
+                    return;
+                }
+                var shell = findThreadElement('.composer-shell', threadId);
+                var dropdown = shell && shell.querySelector('.selector-dropdown.visible');
+                if (!dropdown) {
+                    return;
+                }
+                var target = dropdown.querySelector('.selector-search') ||
+                    dropdown.querySelector('.selector-item.selected') || dropdown.querySelector('.selector-item');
+                if (target) {
+                    target.focus();
+                }
+            }
+
+            /** Arrows walk a selector's options, Enter or Space picks; Enter in the search picks the first match. */
+            function handleSelectorKeydown(event) {
+                var dropdown = event.target.closest('.selector-dropdown');
+                if (!dropdown) {
+                    return false;
+                }
+                var options = Array.from(dropdown.querySelectorAll('.selector-item'));
+                var option = event.target.closest('.selector-item');
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (options.length) {
+                        var step = event.key === 'ArrowDown' ? 1 : -1;
+                        var current = options.indexOf(option);
+                        var next = current === -1 ? (step > 0 ? 0 : options.length - 1) : (current + step + options.length) % options.length;
+                        options[next].focus();
+                    }
+                    return true;
+                }
+                var picksOption = event.key === 'Enter' || (event.key === ' ' && option);
+                if (picksOption && (option || options[0])) {
+                    event.preventDefault();
+                    (option || options[0]).click();
+                    return true;
+                }
+                return false;
             }
 
             btnNew.addEventListener('click', function() {
@@ -1533,6 +1717,7 @@ ${TOOL_STATUS_JS}
                         threadId: threadId,
                         chatType: actionEl.getAttribute('data-value')
                     });
+                    renderState({ threadId: threadId });
                     return;
                 }
                 if (action === 'select-model') {
@@ -1542,6 +1727,7 @@ ${TOOL_STATUS_JS}
                         threadId: threadId,
                         model: actionEl.getAttribute('data-value')
                     });
+                    renderState({ threadId: threadId });
                     return;
                 }
                 if (action === 'pick-slash') {
@@ -1591,8 +1777,9 @@ ${TOOL_STATUS_JS}
             paneGrid.addEventListener('input', function(event) {
                 var textarea = event.target.closest('.composer-input');
                 if (textarea) {
+                    cancelSessionsRequest();
                     // Replacing the textarea mid-composition would abort the IME; compositionend catches up.
-                    if (event.isComposing) {
+                    if (event.isComposing || composing) {
                         setDraft(textarea.getAttribute('data-thread-id'), textarea.value);
                         return;
                     }
@@ -1614,14 +1801,35 @@ ${TOOL_STATUS_JS}
                 }
             });
 
-            paneGrid.addEventListener('compositionend', function(event) {
-                var textarea = event.target.closest('.composer-input');
+            paneGrid.addEventListener('compositionstart', function() {
+                composing = true;
+            });
+
+            function endComposition(textarea) {
+                composing = false;
+                renderDeferred = false;
                 if (textarea) {
                     handleComposerInput(textarea);
+                } else {
+                    renderState(captureComposerFocus());
+                }
+            }
+
+            paneGrid.addEventListener('compositionend', function(event) {
+                endComposition(event.target.closest('.composer-input'));
+            });
+
+            // A composition abandoned by a focus change fires no compositionend in every engine.
+            paneGrid.addEventListener('focusout', function() {
+                if (composing) {
+                    endComposition(null);
                 }
             });
 
             paneGrid.addEventListener('keydown', function(event) {
+                if (handleSelectorKeydown(event)) {
+                    return;
+                }
                 if (event.key === 'Escape' && composerUi.dropdown && event.target.closest('.composer-shell')) {
                     event.preventDefault();
                     var focus = captureComposerFocus();
@@ -1682,14 +1890,14 @@ ${TOOL_STATUS_JS}
 
                 if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
                     event.preventDefault();
-                    var thread = getThreadById(threadId);
-                    if (thread && thread.isStreaming && !getDraft(threadId).trim()) {
-                        restoreQueuedMessage(threadId);
-                        vscode.postMessage({ type: 'cancel', threadId: threadId });
-                    } else {
-                        sendThread(threadId);
-                    }
+                    sendThread(threadId);
                     return;
+                }
+                var thread = getThreadById(threadId);
+                if (event.key === 'Escape' && thread && thread.isStreaming) {
+                    event.preventDefault();
+                    restoreQueuedMessage(threadId);
+                    vscode.postMessage({ type: 'cancel', threadId: threadId });
                 }
             });
 
@@ -1774,8 +1982,15 @@ ${TOOL_STATUS_JS}
             }, true);
 
             // Only when something is open: a needless re-render would drop the user's text selection.
+            // The dispatch path, not target.closest: a re-render may already have detached the clicked node.
+            function isInsideComposer(event) {
+                return event.composedPath().some(function(node) {
+                    return node.classList && node.classList.contains('composer-shell');
+                });
+            }
+
             document.addEventListener('click', function(event) {
-                if (event.target.closest('.composer-shell') || (!composerUi.dropdown && !composerUi.atMentionThreadId)) {
+                if (isInsideComposer(event) || (!composerUi.dropdown && !composerUi.atMentionThreadId)) {
                     return;
                 }
                 closeComposerDropdowns();
@@ -1853,8 +2068,14 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (message.type === 'recommendations') {
-                    recommendations = Array.isArray(message.items) ? message.items : [];
-                    renderState(captureComposerFocus());
+                    // Pushed on every selection and diagnostics change: re-render only when a pane shows a difference.
+                    var nextRecommendations = Array.isArray(message.items) ? message.items : [];
+                    var changed = JSON.stringify(nextRecommendations) !== JSON.stringify(recommendations);
+                    var wasShown = state.threads.some(showsRecommendations);
+                    recommendations = nextRecommendations;
+                    if (changed && (wasShown || state.threads.some(showsRecommendations))) {
+                        renderState(captureComposerFocus());
+                    }
                     return;
                 }
                 if (message.type === 'fileSearchResults') {
@@ -1908,11 +2129,18 @@ ${TOOL_STATUS_JS}
                     return;
                 }
                 if (message.type === 'sendRejected') {
+                    // Later queued drafts would meet the same refusal: they return to the composer too.
                     restoreRejectedSend(String(message.threadId || ''), message.clientId);
+                    restoreQueuedMessage(String(message.threadId || ''));
                     return;
                 }
                 if (message.type === 'sendAccepted') {
                     takeUnconfirmedSend(String(message.threadId || ''), message.clientId);
+                    // The idle snapshot may have landed before this acknowledgement and held the queue back.
+                    if (getQueue(String(message.threadId || '')).length) {
+                        drainQueuedMessages();
+                        renderState(captureComposerFocus());
+                    }
                     return;
                 }
                 if (message.type === 'textUpdate') {

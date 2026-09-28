@@ -13,14 +13,13 @@ export function openDebugChatPanel(extensionUri: vscode.Uri): vscode.WebviewPane
     const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('');
-    const csp = panel.webview.cspSource;
 
     panel.webview.html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src ${csp} 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+      content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -92,6 +91,7 @@ button:hover { opacity: 0.9; }
     var logEl = document.getElementById('log');
     var inputEl = document.getElementById('input');
     var sendBtn = document.getElementById('send');
+    var sendCounter = 0;
 
     function addLog(level, text) {
         var line = document.createElement('div');
@@ -155,6 +155,12 @@ button:hover { opacity: 0.9; }
                 addLog('info', 'RECOMMENDATIONS: ' + JSON.stringify(msg.items || []));
             } else if (type === 'slashCommands') {
                 addLog('info', 'SLASH CMDS: ' + (msg.commands ? msg.commands.length : 0) + ' commands');
+            } else if (type === 'sendAccepted') {
+                addLog('ok', 'SEND ACCEPTED [' + msg.threadId + '] ' + (msg.clientId || ''));
+            } else if (type === 'sendRejected') {
+                addLog('err', 'SEND REJECTED [' + msg.threadId + '] ' + (msg.clientId || ''));
+            } else if (type === 'transportStatus') {
+                addLog(msg.connected ? 'ok' : 'warn', 'TRANSPORT: ' + (msg.label || ''));
             } else {
                 addLog('warn', 'UNKNOWN MSG: ' + JSON.stringify(msg).slice(0, 200));
             }
@@ -166,8 +172,10 @@ button:hover { opacity: 0.9; }
     sendBtn.addEventListener('click', function() {
         var text = inputEl.value.trim();
         if (!text) return;
-        addLog('ok', 'SEND: ' + text);
-        vscode.postMessage({ type: 'send', text: text });
+        sendCounter += 1;
+        var clientId = 'debug-' + sendCounter;
+        addLog('ok', 'SEND ' + clientId + ': ' + text);
+        vscode.postMessage({ type: 'send', text: text, clientId: clientId });
         inputEl.value = '';
     });
 
