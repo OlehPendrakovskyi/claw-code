@@ -279,6 +279,31 @@ const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
  *  Set below the Gateway's 25 MiB payload cap so prompt framing and history
  *  still fit alongside the attachments. */
 const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+
+/** Read from an opened handle until EOF or the byte budget is exhausted.
+ *
+ *  A single FileHandle.read() is not guaranteed to fill the requested buffer:
+ *  regular files can return a short read before EOF, so a one-shot read can
+ *  accept a truncated file or let a file that grew past the cap slip through
+ *  (the short result lands under the limit). Loop until EOF or maxBytes + 1
+ *  bytes are collected, so callers can reject anything above maxBytes and
+ *  otherwise get the byte-faithful contents. */
+async function readBounded(handle: fsp.FileHandle, maxBytes: number): Promise<Buffer> {
+    const limit = maxBytes + 1;
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total < limit) {
+        const chunk = Buffer.alloc(limit - total);
+        const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
+        if (bytesRead === 0) {
+            break;
+        }
+        chunks.push(chunk.subarray(0, bytesRead));
+        total += bytesRead;
+    }
+    return Buffer.concat(chunks, total);
+}
+
 async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
@@ -306,14 +331,13 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
             return null;
         }
         // Bounded read: a file that grows after stat() would make readFile()
-        // load the whole new contents before any length check, so cap the
-        // transfer at MAX_IMAGE_BYTES + 1 and reject anything that overflows.
-        const bytes = Buffer.alloc(MAX_IMAGE_BYTES + 1);
-        const { bytesRead: byteCount } = await handle.read(bytes, 0, bytes.length, 0);
-        if (byteCount > MAX_IMAGE_BYTES) {
+        // load the whole new contents before any length check, so loop the
+        // transfer up to MAX_IMAGE_BYTES + 1 and reject anything that
+        // overflows; the loop also rules out a short read truncating the image.
+        const payload = await readBounded(handle, MAX_IMAGE_BYTES);
+        if (payload.length > MAX_IMAGE_BYTES) {
             return null;
         }
-        const payload = bytes.subarray(0, byteCount);
         if ((await fsp.realpath(p)) !== p) {
             return null;
         }
@@ -411,18 +435,18 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                 if (fdPath !== null && fdPath !== real) {
                     throw new Error('attachment opened outside its canonical path');
                 }
-                // Same bounded-read gate as image verification: cap the
+                // Same bounded-read gate as image verification: loop the
                 // transfer so a file that grows after stat() cannot blow up
-                // memory before the size check.
-                const bytes = Buffer.alloc(ATTACHMENT_TEXT_MAX_BYTES + 1);
-                const { bytesRead: byteCount } = await handle.read(bytes, 0, bytes.length, 0);
-                if (byteCount > ATTACHMENT_TEXT_MAX_BYTES) {
+                // memory before the size check, and a short read cannot
+                // truncate the attachment.
+                const bytes = await readBounded(handle, ATTACHMENT_TEXT_MAX_BYTES);
+                if (bytes.length > ATTACHMENT_TEXT_MAX_BYTES) {
                     throw new Error('attachment file exceeds the size limit');
                 }
-                const content = new TextDecoder().decode(bytes.subarray(0, byteCount));
-                totalEncodedBytes += byteCount;
+                const content = new TextDecoder().decode(bytes);
+                totalEncodedBytes += bytes.length;
                 if (totalEncodedBytes > ATTACHMENT_TOTAL_MAX_BYTES) {
-                    totalEncodedBytes -= byteCount;
+                    totalEncodedBytes -= bytes.length;
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
                 }
