@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type * as FspType from 'fs/promises';
 import { stagedPromptImage } from '../chat/promptImages';
-import { readAttachments, AttachmentLimits } from '../webview/viewMessaging';
+import { conversationHistory, readAttachments, AttachmentLimits } from '../webview/viewMessaging';
 
 /** The payload readAttachments reserves beside an empty base prompt. */
 const FRAMING_RESERVE_BYTES = 1024 * 1024;
@@ -45,6 +45,34 @@ afterEach(() => {
 });
 
 describe('viewMessaging', () => {
+    describe('conversationHistory', () => {
+        it('keeps user and assistant turns only', () => {
+            expect(conversationHistory([
+                { role: 'user', content: 'q' },
+                { role: 'tool', entries: [] },
+                { role: 'error', content: 'boom' },
+                { role: 'assistant', content: 'a' },
+            ])).toEqual([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }]);
+        });
+
+        it('keeps everything before a /compact that got no summary, minus the command', () => {
+            expect(conversationHistory([
+                { role: 'user', content: 'q' },
+                { role: 'assistant', content: 'a' },
+                { role: 'user', content: '/compact' },
+                { role: 'error', content: 'failed' },
+                { role: 'user', content: 'q2' },
+            ])).toEqual([{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }, { role: 'user', content: 'q2' }]);
+        });
+
+        it('does not take a message merely starting with /compact for the command', () => {
+            expect(conversationHistory([
+                { role: 'user', content: '/compacted notes' },
+                { role: 'assistant', content: 'a' },
+            ])).toHaveLength(2);
+        });
+    });
+
     describe('readAttachments FIFO rejection', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
         const isWindows = process.platform === 'win32';
@@ -87,7 +115,7 @@ describe('viewMessaging', () => {
             try {
                 const big = path.join(fs.realpathSync(dir), 'big.txt');
                 fs.writeFileSync(big, 'a'.repeat(200 * 1024));
-                for (const imageMode of ['inline', 'contentBlock'] as const) {
+                for (const imageMode of ['attachment', 'contentBlock'] as const) {
                     const { prompt } = await readAttachments([{ name: 'big.txt', path: big, type: 'file' }], { imageMode });
                     expect(prompt).toContain('a'.repeat(200 * 1024));
                 }
@@ -212,7 +240,7 @@ describe('viewMessaging', () => {
             const text = await readText();
             expect(text.prompt).toContain('fd-anchored content');
             const imageResult = await readImage();
-            expect(imageResult.prompt).toContain('<image');
+            expect(imageResult.attachments).toHaveLength(1);
         });
 
         posixOnly('accepts an attachment when /dev/fd is not mounted', async () => {
@@ -254,7 +282,7 @@ describe('viewMessaging', () => {
 
         posixOnly('skips a text attachment containing NUL bytes as binary in both modes', async () => {
             const file = writeFixture('notes.txt', Buffer.from('hello from notepad', 'utf16le'));
-            for (const imageMode of ['inline', 'contentBlock'] as const) {
+            for (const imageMode of ['attachment', 'contentBlock'] as const) {
                 const { prompt } = await readAttachments([{ name: 'notes.txt', path: file, type: 'file' }], { imageMode });
                 expect(prompt).toContain('[Binary file skipped]');
                 expect(prompt).not.toContain('\0');
@@ -270,6 +298,22 @@ describe('viewMessaging', () => {
             );
             expect(prompt).toContain(lines.slice(0, 3).join('\n'));
             expect(prompt).not.toContain('line 4 ');
+        });
+
+        posixOnly.each([
+            [5, 10, '5-10'],
+            [5, undefined, '5'],
+            [7, 3, '7'],
+        ])('names the #L%s-%s slice it sends as lines="%s"', async (lineStart, lineEnd, label) => {
+            const file = writeFixture('ranged.ts', Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n'));
+            const { prompt } = await readAttachments([{ name: 'ranged.ts', path: file, type: 'file', lineStart, lineEnd }]);
+            expect(prompt).toMatch(new RegExp(`^<file-[0-9a-f-]{36} path="[^"]*ranged\\.ts" lines="${label}">\\nline ${lineStart}\\b`));
+        });
+
+        posixOnly('frames a whole file without a lines attribute', async () => {
+            const file = writeFixture('whole.ts', 'body');
+            const { prompt } = await readAttachments([{ name: 'whole.ts', path: file, type: 'file' }]);
+            expect(prompt).not.toContain('lines=');
         });
 
         posixOnly('charges only the sliced text of a ranged mention against the payload budget', async () => {
@@ -363,7 +407,7 @@ describe('viewMessaging', () => {
             fs.writeFileSync(file, content);
             return file;
         };
-        const readOne = (file: string, type: 'file' | 'image' = 'file', imageMode: 'inline' | 'contentBlock' = 'inline') =>
+        const readOne = (file: string, type: 'file' | 'image' = 'file', imageMode: 'attachment' | 'contentBlock' = 'attachment') =>
             readAttachments([{ name: path.basename(file), path: file, type }], { imageMode });
 
         beforeEach(() => {
@@ -458,20 +502,27 @@ describe('viewMessaging', () => {
             ['a.webp', 'image/webp'], ['a.bmp', 'image/bmp'], ['a.svg', 'image/svg+xml'],
             ['a.ico', 'image/vnd.microsoft.icon'], ['a.tif', 'image/tiff'], ['a.tiff', 'image/tiff'],
             ['a.raw', 'application/octet-stream'],
-        ])('inlines %s as a %s data URI', async (name, mime) => {
-            const { prompt } = await readAttachments([writeImage(name)]);
-            expect(prompt).toBe(`<image data="data:${mime};base64,AQEBAQ==" />`);
+        ])('hands %s to the gateway as a %s attachment, keeping it out of the prompt', async (name, mime) => {
+            const { prompt, attachments } = await readAttachments([writeImage(name)]);
+            expect(prompt).toBe('');
+            expect(attachments).toEqual([{ name, mimeType: mime, data: Buffer.alloc(4, 1) }]);
         });
 
-        posixOnly('rejects an inline image the payload budget cannot carry', async () => {
-            const { prompt } = await readAttachments([writeImage('a.png', 3000)], { limits: withBudget(1000) });
+        posixOnly('charges each gateway image what it adds to the send', async () => {
+            const wireBytes = jest.fn(() => 500);
+            const read = (budget: number) =>
+                readAttachments([writeImage('a.png', 300), writeImage('b.png', 300)], { limits: withBudget(budget), attachmentWireBytes: wireBytes });
+            expect((await read(1000)).attachments.map((a) => a.name)).toEqual(['a.png', 'b.png']);
+            const tight = await read(999);
+            expect(tight.attachments.map((a) => a.name)).toEqual(['a.png']);
+            expect(tight.prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
+            expect(wireBytes).toHaveBeenCalledWith({ name: 'a.png', mimeType: 'image/png', byteLength: 300 });
+        });
+
+        posixOnly('budgets gateway images by their base64 frame cost by default', async () => {
+            const { prompt, attachments } = await readAttachments([writeImage('a.png', 3000)], { limits: withBudget(1000) });
+            expect(attachments).toEqual([]);
             expect(prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
-            expect(prompt).not.toContain('base64');
-        });
-
-        posixOnly('rejects an inline image whose section framing overflows the budget', async () => {
-            const { prompt } = await readAttachments([writeImage('a.png', 3)], { limits: withBudget(10) });
-            expect(prompt).not.toContain('base64');
         });
 
         posixOnly('takes the per-image cap from the transport limits', async () => {

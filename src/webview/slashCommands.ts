@@ -225,8 +225,17 @@ function formatContext(ctx: EditorContext, contextType: ContextType): string {
     return parts.join('\n');
 }
 
-/** Maximum UTF-8 bytes of conversation transcript /compact may embed. */
-export const COMPACT_TRANSCRIPT_MAX_BYTES = 64 * 1024;
+/** Maximum UTF-8 bytes of conversation transcript a prompt embeds (/compact,
+ *  and the history acpx sends carry, since each exec starts fresh). */
+export const CONVERSATION_MAX_BYTES = 64 * 1024;
+
+/** A past turn as a prompt replays it. */
+export type ConversationTurn = { role: 'user' | 'assistant'; content: string };
+
+/** Turns as the `User:` / `Assistant:` transcript a conversation block holds. */
+export function formatConversation(turns: readonly ConversationTurn[]): string {
+    return turns.map(turn => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.content}`).join('\n\n');
+}
 
 /** The first at most `maxBytes` UTF-8 bytes of `input`, ending on a code
  *  point boundary so the result stays valid UTF-8. */
@@ -260,13 +269,14 @@ export function keepUtf8Tail(input: string, maxBytes: number): string {
     return encoded.subarray(start).toString('utf8');
 }
 
-function frameTranscript(transcript: string): string {
+/** `transcript` in a nonce-tagged block, capped to its latest bytes. */
+export function frameConversation(transcript: string): string {
     // The oldest turns are the ones dropped when it exceeds the cap.
     const attributes: Record<string, string> = { label: 'Conversation So Far' };
-    if (Buffer.byteLength(transcript, 'utf8') > COMPACT_TRANSCRIPT_MAX_BYTES) {
-        attributes.truncated = `earliest turns omitted; last ${COMPACT_TRANSCRIPT_MAX_BYTES} bytes kept`;
+    if (Buffer.byteLength(transcript, 'utf8') > CONVERSATION_MAX_BYTES) {
+        attributes.truncated = `earliest turns omitted; last ${CONVERSATION_MAX_BYTES} bytes kept`;
     }
-    return '\n' + frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, COMPACT_TRANSCRIPT_MAX_BYTES));
+    return frameTaggedBlock('conversation', attributes, keepUtf8Tail(transcript, CONVERSATION_MAX_BYTES));
 }
 
 export function buildSlashPrompt(
@@ -286,7 +296,7 @@ export function buildSlashPrompt(
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the
         // command has no prior turns to compress.
-        sections.push(frameTranscript(transcript));
+        sections.push('\n' + frameConversation(transcript));
     }
     if (contextBlock) {
         sections.push(contextBlock);

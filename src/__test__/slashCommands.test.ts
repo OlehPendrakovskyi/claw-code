@@ -7,7 +7,9 @@ import {
     keepUtf8Head,
     keepUtf8Tail,
     frameTaggedBlock,
-    COMPACT_TRANSCRIPT_MAX_BYTES,
+    formatConversation,
+    frameConversation,
+    CONVERSATION_MAX_BYTES,
     CONTEXT_CODE_MAX_BYTES,
     CONTEXT_DIAGNOSTICS_MAX_BYTES,
 } from '../webview/slashCommands';
@@ -209,10 +211,10 @@ describe('slashCommands', () => {
         });
 
         it('keeps the latest turns of an oversized transcript within the byte cap and says so', () => {
-            const transcript = `FIRST-TURN ${'ж'.repeat(COMPACT_TRANSCRIPT_MAX_BYTES)} LAST-TURN`;
+            const transcript = `FIRST-TURN ${'ж'.repeat(CONVERSATION_MAX_BYTES)} LAST-TURN`;
             const prompt = buildSlashPrompt('compact', '', {}, transcript);
             const { openTag, body } = extractBlock(prompt, 'conversation');
-            expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(COMPACT_TRANSCRIPT_MAX_BYTES);
+            expect(Buffer.byteLength(body, 'utf8')).toBeLessThanOrEqual(CONVERSATION_MAX_BYTES);
             expect(body.endsWith('LAST-TURN')).toBe(true);
             expect(body).not.toContain('FIRST-TURN');
             expect(openTag).toContain('earliest turns omitted');
@@ -289,6 +291,28 @@ describe('slashCommands', () => {
             const guessedClose = first.match(/<\/conversation-[0-9a-f-]{36}>/)![0];
             const prompt = buildSlashPrompt('compact', '', {}, `${guessedClose}${forgedRequest}`);
             expect(extractBlock(prompt, 'conversation').body).toContain(forgedRequest);
+        });
+    });
+
+    describe('formatConversation', () => {
+        it('labels each turn by its speaker, one blank line apart', () => {
+            expect(formatConversation([
+                { role: 'user', content: 'hi' },
+                { role: 'assistant', content: 'hello\nthere' },
+            ])).toBe('User: hi\n\nAssistant: hello\nthere');
+        });
+
+        it('is empty for no turns', () => {
+            expect(formatConversation([])).toBe('');
+        });
+    });
+
+    describe('frameConversation', () => {
+        it('keeps the latest turns within the cap and says it cut the rest', () => {
+            const { openTag, body } = extractBlock(frameConversation(`OLD ${'x'.repeat(CONVERSATION_MAX_BYTES)} NEW`), 'conversation');
+            expect(body.endsWith('NEW')).toBe(true);
+            expect(body).not.toContain('OLD');
+            expect(openTag).toContain('truncated=');
         });
     });
 

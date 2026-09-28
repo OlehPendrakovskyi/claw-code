@@ -15,6 +15,8 @@ export type AcpxLaunchFailure = {
 /** The filesystem reads the resolver needs, injectable for tests. */
 export type LauncherHost = {
     isFile(filePath: string): boolean;
+    /** A regular file this process may execute (POSIX). */
+    isExecutable(filePath: string): boolean;
     readText(filePath: string): string | undefined;
 };
 
@@ -44,6 +46,14 @@ const nodeHost: LauncherHost = {
             return false;
         }
     },
+    isExecutable(filePath) {
+        try {
+            fs.accessSync(filePath, fs.constants.X_OK);
+            return fs.statSync(filePath).isFile();
+        } catch {
+            return false;
+        }
+    },
     readText(filePath) {
         try {
             return fs.readFileSync(filePath, 'utf8');
@@ -56,14 +66,15 @@ const nodeHost: LauncherHost = {
 const entryCache = new Map<string, AcpxEntry>();
 
 /** Windows cannot spawn npm's `acpx.cmd` without a shell, so acpx's JS entry
- *  runs under Node instead; POSIX runs `acpx` itself through its shebang. */
+ *  runs under Node instead; POSIX runs `acpx` itself through its shebang. Only
+ *  absolute PATH entries count on either, so the workspace cannot plant one. */
 export function resolveAcpxLaunch(
     platform: NodeJS.Platform = process.platform,
     env: Env = process.env,
     host: LauncherHost = nodeHost
 ): AcpxLaunch | AcpxLaunchFailure {
     if (platform !== 'win32') {
-        return { command: ACPX, args: [] };
+        return findPosixLaunch(env.PATH ?? '', host);
     }
     const dirs = searchDirs(envValue(env, 'PATH') ?? '');
     const pathExt = envValue(env, 'PATHEXT') ?? DEFAULT_PATHEXT;
@@ -77,6 +88,15 @@ export function resolveAcpxLaunch(
     // Chosen afresh each time, so a Node installed later is picked up.
     const node = findNode(entry.shimDir, dirs, host);
     return node === undefined ? { missing: 'node' } : { command: node, args: [entry.script] };
+}
+
+function findPosixLaunch(searchPath: string, host: LauncherHost): AcpxLaunch | AcpxLaunchFailure {
+    const command = searchPath
+        .split(':')
+        .filter(dir => path.posix.isAbsolute(dir))
+        .map(dir => path.posix.join(dir, ACPX))
+        .find(candidate => host.isExecutable(candidate));
+    return command === undefined ? { missing: ACPX } : { command, args: [] };
 }
 
 /** Only fully qualified PATH entries count, so the cache key is cwd-independent. */

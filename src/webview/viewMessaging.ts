@@ -11,8 +11,10 @@ import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, PROMPT_MAX_BYTES, UsageInfo } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
-import { EditorContext, ContextType, frameTaggedBlock } from './slashCommands';
-import { parseTransportLimits } from '../core/gatewayHandshake';
+import { ConversationTurn, EditorContext, ContextType, frameTaggedBlock } from './slashCommands';
+import { handshakeAdapter, resolveProtocolSetting } from '../core/gatewayProtocol/registry';
+import type { GatewayProtocolAdapter } from '../core/gatewayProtocol/adapter';
+import type { SendAttachment } from '../core/gatewayProtocol/model';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 
 /** Shared output channel for chat panel logging. */
@@ -25,6 +27,32 @@ export type ChatMessage =
         role: 'tool';
         entries: Array<{ title: string; status: string; details: string; id?: string }>;
     };
+
+/** Whether `message` is the user row of a /compact command. */
+function isCompactCommand(message: ChatMessage): boolean {
+    return message.role === 'user' && /^\/compact(?:\s|$)/.test(message.content);
+}
+
+/** The user and assistant turns an agent without its own memory needs:
+ *  from the latest /compact summary on (the summary first), else all. */
+export function conversationHistory(messages: readonly ChatMessage[]): ConversationTurn[] {
+    const turns: ConversationTurn[] = [];
+    let afterCompact = false;
+    for (const message of messages) {
+        if (message.role !== 'user' && message.role !== 'assistant') {
+            continue;
+        }
+        if (afterCompact && message.role === 'assistant') {
+            // The summary replaces everything it compacted.
+            turns.length = 0;
+        }
+        afterCompact = isCompactCommand(message);
+        if (!afterCompact) {
+            turns.push({ role: message.role, content: message.content });
+        }
+    }
+    return turns;
+}
 
 /** An attachment referenced by a chat thread. */
 export type Attachment = { name: string; path: string; type: 'file' | 'image'; previewUri?: string; lineStart?: number; lineEnd?: number };
@@ -208,8 +236,17 @@ function escapeHtml(text: string): string {
         .replace(/'/g, '&#39;');
 }
 
-function frameFileBody(filePath: string, content: string): string {
-    return frameTaggedBlock('file', { path: filePath }, content);
+function frameFileBody(filePath: string, content: string, lines?: string): string {
+    return frameTaggedBlock('file', lines === undefined ? { path: filePath } : { path: filePath, lines }, content);
+}
+
+/** The range a `#L` mention sliced, as its frame names it: `5` or `5-10`. */
+function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefined {
+    if (lineStart == null) {
+        return undefined;
+    }
+    const end = Math.max(lineStart, lineEnd ?? lineStart);
+    return end === lineStart ? String(lineStart) : `${lineStart}-${end}`;
 }
 
 /** Whether an opened handle still refers to the file at canonical path
@@ -279,6 +316,14 @@ const ACPX_ATTACHMENT_LIMITS: AttachmentLimits = {
     attachmentMaxBytes: 10 * 1024 * 1024,
     attachmentMaxImageBytes: 10 * 1024 * 1024,
 };
+
+/** The gateway's adapter before any handshake: that of the newest protocol this extension speaks. */
+function defaultGatewayAdapter(): GatewayProtocolAdapter {
+    return handshakeAdapter(resolveProtocolSetting('auto'));
+}
+
+/** Bytes an image adds to a gateway send; the chat service supplies the negotiated protocol's figure. */
+export type AttachmentWireBytes = (attachment: { name: string; mimeType: string; byteLength: number }) => number;
 
 /** Slack reserved beside the base prompt so RPC framing, the chat-type and
  *  system prompts, and per-section decoration also fit the payload. */
@@ -405,17 +450,21 @@ async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
 export async function readAttachments(
     attachments: Attachment[],
     options?: {
-        /** `inline`: data-URI images in the text (the gateway); `contentBlock`:
+        /** `attachment`: images returned as gateway send attachments; `contentBlock`:
          *  images staged as ACP image blocks (acpx, whose agents read only the workspace). */
-        imageMode?: 'inline' | 'contentBlock';
+        imageMode?: 'attachment' | 'contentBlock';
         /** The prompt sent after the attachments, which shares their payload. */
         basePrompt?: string;
-        /** Defaults to acpx's limits for `contentBlock`, the gateway's for `inline`. */
+        /** Defaults to acpx's limits for `contentBlock`, the gateway's for `attachment`. */
         limits?: AttachmentLimits;
+        /** What each gateway attachment costs on the wire; defaults to the newest protocol's figure. */
+        attachmentWireBytes?: AttachmentWireBytes;
     }
-): Promise<{ prompt: string; dispose: () => Promise<void> }> {
-    const imageMode = options?.imageMode ?? 'inline';
-    const limits = options?.limits ?? (imageMode === 'inline' ? parseTransportLimits(undefined) : ACPX_ATTACHMENT_LIMITS);
+): Promise<{ prompt: string; attachments: SendAttachment[]; dispose: () => Promise<void> }> {
+    const imageMode = options?.imageMode ?? 'attachment';
+    const limits = options?.limits ?? (imageMode === 'attachment' ? defaultGatewayAdapter().defaultLimits() : ACPX_ATTACHMENT_LIMITS);
+    const attachmentWireBytes = options?.attachmentWireBytes ?? ((a) => defaultGatewayAdapter().attachmentWireBytes(a));
+    const sendAttachments: SendAttachment[] = [];
     const reserved = jsonBytes(options?.basePrompt ?? '') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES;
     const transportBudget = Math.max(0, limits.maxPayloadBytes - reserved);
     let transportBytes = 0;
@@ -463,20 +512,24 @@ export async function readAttachments(
             emitRejection(att.path, rejectionMarker(err));
             return;
         }
+        const mimeType = imageMimeByPath(att.path);
+        if (imageMode === 'attachment') {
+            const wireBytes = attachmentWireBytes({ name: att.name, mimeType, byteLength: bytes.length });
+            if (!fitsTransport(wireBytes)) {
+                emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+                return;
+            }
+            transportBytes += wireBytes;
+            sendAttachments.push({ name: att.name, mimeType, data: bytes });
+            return;
+        }
         // Padded base64 length, checked before the string is built.
         const encodedBytes = Math.ceil(bytes.length / 3) * 4;
         if (!fitsTransport(encodedBytes + IMAGE_BLOCK_FRAMING_BYTES)) {
             emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             return;
         }
-        const mimeType = imageMimeByPath(att.path);
         const data = bytes.toString('base64');
-        if (imageMode === 'inline') {
-            if (!emitIfFits(`<image data="data:${mimeType};base64,${data}" />`)) {
-                emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
-            }
-            return;
-        }
         const { id, marker } = stagePromptImage({ name: att.name, mimeType, data });
         if (!emitIfFits(marker, encodedBytes + IMAGE_BLOCK_FRAMING_BYTES)) {
             releasePromptImage(id);
@@ -499,7 +552,7 @@ export async function readAttachments(
             if (Buffer.byteLength(text, 'utf8') > limits.attachmentMaxBytes) {
                 throw new AttachmentTooLargeError();
             }
-            if (!emitIfFits(frameFileBody(att.path, text))) {
+            if (!emitIfFits(frameFileBody(att.path, text, lineRangeLabel(att.lineStart, att.lineEnd)))) {
                 emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             }
         } catch (err) {
@@ -519,7 +572,7 @@ export async function readAttachments(
     if (attachmentsDropped) {
         sections.push(ATTACHMENTS_DROPPED_NOTE);
     }
-    return { prompt: sections.join(SECTION_SEPARATOR), dispose };
+    return { prompt: sections.join(SECTION_SEPARATOR), attachments: sendAttachments, dispose };
 }
 
 /** Slice a file body to a 1-based inclusive line range when the mention carries a #L range.

@@ -15,9 +15,13 @@ describe('ChatService', () => {
     });
 
     describe('getPermissionsForChatType', () => {
-        it('forces chat mode to stay read-only', () => {
-            expect(ChatService.getPermissionsForChatType('chat', 'approve-all')).toBe('approve-reads');
-            expect(ChatService.getPermissionsForChatType('chat', 'deny-all')).toBe('approve-reads');
+        it.each([
+            ['approve-all', 'approve-reads'],
+            ['approve-reads', 'approve-reads'],
+            ['deny-all', 'deny-all'],
+            ['unknown', 'approve-reads'],
+        ])('gives chat mode the stricter of %s and read-only: %s', (configured, expected) => {
+            expect(ChatService.getPermissionsForChatType('chat', configured)).toBe(expected);
         });
 
         it.each(['code', 'review', 'plan'])('preserves configured permissions for %s mode', (chatType) => {

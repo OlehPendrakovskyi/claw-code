@@ -31,13 +31,15 @@ const NPM_PS1_SHIM = '#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyC
     + '& "$basedir/node$exe"  "$basedir/node_modules/acpx/dist/cli.js" $args\n';
 
 
-/** A Windows filesystem: case-insensitive paths mapped to file contents. */
+/** A filesystem of paths mapped to file contents, matched case-insensitively
+ *  as on Windows; every file counts as executable. */
 function fakeHost(files: Record<string, string>): LauncherHost & { reads: string[] } {
     const byPath = new Map(Object.entries(files).map(([file, text]) => [file.toLowerCase(), text]));
     const reads: string[] = [];
     return {
         reads,
         isFile: file => byPath.has(file.toLowerCase()),
+        isExecutable: file => byPath.has(file.toLowerCase()),
         readText: (file) => {
             reads.push(file);
             return byPath.get(file.toLowerCase());
@@ -80,8 +82,25 @@ function resolveOnWindows(env: Record<string, string>, files: Record<string, str
 
 describe('resolveAcpxLaunch', () => {
     describe('on POSIX', () => {
-        it.each(['linux', 'darwin'] as const)('runs acpx itself on %s, relying on its shebang', (platform) => {
-            expect(resolveAcpxLaunch(platform, {}, fakeHost({}))).toEqual({ command: 'acpx', args: [] });
+        it.each(['linux', 'darwin'] as const)('runs acpx itself on %s by its absolute path, relying on its shebang', (platform) => {
+            const host = fakeHost({ '/usr/local/bin/acpx': '' });
+            expect(resolveAcpxLaunch(platform, { PATH: '/usr/bin:/usr/local/bin' }, host)).toEqual({ command: '/usr/local/bin/acpx', args: [] });
+        });
+
+        it.each(['', '.', 'bin', 'node_modules/.bin'])('ignores the cwd-relative PATH entry %p, which the workspace could fill', (relative) => {
+            const planted = { [`${relative === '' ? '.' : relative}/acpx`]: '', 'acpx': '' };
+            expect(resolveAcpxLaunch('linux', { PATH: `${relative}:/opt/none` }, fakeHost(planted))).toEqual({ missing: 'acpx' });
+            const launch = resolveAcpxLaunch('linux', { PATH: `${relative}:/usr/bin` }, fakeHost({ ...planted, '/usr/bin/acpx': '' }));
+            expect(launch).toEqual({ command: '/usr/bin/acpx', args: [] });
+        });
+
+        it('skips a non-executable acpx', () => {
+            const host = { ...fakeHost({ '/a/acpx': '', '/b/acpx': '' }), isExecutable: (file: string) => file === '/b/acpx' };
+            expect(resolveAcpxLaunch('linux', { PATH: '/a:/b' }, host)).toEqual({ command: '/b/acpx', args: [] });
+        });
+
+        it('reports acpx missing without a PATH', () => {
+            expect(resolveAcpxLaunch('linux', {}, fakeHost({ 'acpx': '' }))).toEqual({ missing: 'acpx' });
         });
     });
 

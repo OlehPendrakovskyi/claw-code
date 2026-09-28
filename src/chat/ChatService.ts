@@ -3,7 +3,9 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { StringDecoder } from 'string_decoder';
 import { resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
+import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
 
@@ -39,8 +41,15 @@ const NODE_NOT_FOUND_MESSAGE = 'Node.js not found on PATH; acpx needs it to run.
 
 /** acpx's exit code when it denied or cancelled every permission the agent asked for. */
 const ACPX_PERMISSION_DENIED_EXIT = 5;
-const PERMISSIONS_DENIED_NOTICE = '\n\n*Some tool permissions were denied.*';
-const IMAGES_NOT_SENT_NOTICE = '*This agent does not accept images, so they were sent as notes instead.*\n\n';
+const PERMISSIONS_DENIED_NOTICE = 'Some tool permissions were denied.';
+const IMAGES_NOT_SENT_NOTICE = 'This agent does not accept images, so they were sent as notes instead.';
+const PROJECT_CONFIG_REFUSED_MESSAGE = 'Chat did not start: this workspace\'s .acpxrc.json was not approved. It can change the commands acpx runs for agents and MCP servers.';
+
+/** Permission modes from least to most restrictive. */
+const PERMISSION_STRICTNESS = ['approve-all', 'approve-reads', 'deny-all'];
+
+/** Longest ACP error detail kept in a failure message. */
+const ERROR_DETAILS_MAX_CHARS = 1000;
 
 /** acpx's detail code for a prompt block the agent's capabilities rule out. */
 const UNSUPPORTED_PROMPT_CONTENT = 'UNSUPPORTED_PROMPT_CONTENT';
@@ -73,6 +82,8 @@ export type ChatEvent =
     | { type: 'text'; text: string }
     | { type: 'toolCall'; title: string; status: string; details: string; id?: string }
     | { type: 'usage'; usage: UsageInfo }
+    /** A status line for the user, never part of the assistant's answer. */
+    | { type: 'notice'; text: string }
     | { type: 'done' }
     | { type: 'error'; message: string };
 
@@ -86,13 +97,17 @@ function nonEmptyString(value: unknown): string | undefined {
     return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-function firstNonEmptyString(...values: unknown[]): string | undefined {
-    return values.map(nonEmptyString).find(value => value !== undefined);
+/** A positive token count, or undefined for anything else. */
+function tokenCount(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
-function tokenCount(...values: unknown[]): number {
-    const count = values.map(Number).find(value => Number.isFinite(value) && value > 0);
-    return count ?? 0;
+function parseJsonRecord(text: string): JsonRecord | undefined {
+    try {
+        return asRecord(JSON.parse(text));
+    } catch {
+        return undefined;
+    }
 }
 
 function stringifyToolEvent(value: unknown): string {
@@ -101,6 +116,34 @@ function stringifyToolEvent(value: unknown): string {
     } catch {
         return '[unserializable tool event]';
     }
+}
+
+/** What the user is told when a turn stops short of `end_turn`; `cancelled` is our own abort. */
+const STOP_REASON_NOTICES: Record<string, string> = {
+    refusal: 'The agent refused to answer this request.',
+    max_tokens: 'Stopped: output limit reached.',
+    max_turn_requests: 'Stopped: turn request limit reached.',
+};
+
+/** The prompt turn's usage (ACP `Usage`) and a notice for a short stop. */
+function promptResultEvents(stopReason: string, usage: JsonRecord | undefined): ChatEvent[] {
+    const events: ChatEvent[] = [];
+    const inputTokens = tokenCount(usage?.inputTokens) ?? 0;
+    const outputTokens = tokenCount(usage?.outputTokens) ?? 0;
+    if (inputTokens > 0 || outputTokens > 0) {
+        events.push({ type: 'usage', usage: { promptTokens: inputTokens, completionTokens: outputTokens, totalTokens: inputTokens + outputTokens } });
+    }
+    const notice = Object.prototype.hasOwnProperty.call(STOP_REASON_NOTICES, stopReason) ? STOP_REASON_NOTICES[stopReason] : undefined;
+    if (notice !== undefined) {
+        events.push({ type: 'notice', text: notice });
+    }
+    return events;
+}
+
+/** ACP `usage_update`: `used` is the tokens now in the context window. */
+function contextUsage(update: JsonRecord): ChatEvent | null {
+    const used = tokenCount(update.used);
+    return used === undefined ? null : { type: 'usage', usage: { promptTokens: used, completionTokens: 0, totalTokens: used } };
 }
 
 /** ACP tool-call statuses in the webview's vocabulary. */
@@ -112,8 +155,7 @@ const ACP_TOOL_STATUS: Record<string, string> = {
 };
 
 /** Maps acpx `--format json` lines onto chat events. acpx prints raw ACP
- *  JSON-RPC traffic (both directions); older builds printed flat event
- *  objects, which are still understood. Every field is untrusted. */
+ *  JSON-RPC traffic (both directions). Every field is untrusted. */
 class AcpxEventParser {
     /** Each ACP tool call merged with its updates, which carry only what changed. */
     private readonly toolCalls = new Map<string, JsonRecord>();
@@ -124,8 +166,6 @@ class AcpxEventParser {
     private promptError: string | undefined;
     private acpxError: string | undefined;
     private lastError: string | undefined;
-    /** Whether the stream itself reported a failure, so the exit need not repeat it. */
-    reportedError = false;
     /** Whether the prompt turn returned its stop reason: the answer is complete. */
     promptCompleted = false;
     /** Whether acpx refused a prompt block (an image) the agent cannot take. */
@@ -137,29 +177,18 @@ class AcpxEventParser {
         return this.promptError ?? this.acpxError ?? this.lastError;
     }
 
-    parseLine(line: string): ChatEvent | null {
+    /** The chat events one stdout line carries; anything but JSON-RPC is logged and dropped. */
+    parseLine(line: string): ChatEvent[] {
         const trimmed = line.trim();
         if (!trimmed) {
-            return null;
+            return [];
         }
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(trimmed);
-        } catch {
-            return { type: 'text', text: `${line}\n` };
+        const record = parseJsonRecord(trimmed);
+        if (record?.jsonrpc !== '2.0') {
+            log.warn(`ignoring a non-JSON-RPC acpx output line (${trimmed.length} chars)`);
+            return [];
         }
-        const record = asRecord(parsed);
-        if (!record) {
-            return { type: 'text', text: `${line}\n` };
-        }
-        if (record.jsonrpc === '2.0') {
-            return this.mapJsonRpc(record);
-        }
-        const event = this.mapLegacyEvent(record);
-        if (event?.type === 'error') {
-            this.reportedError = true;
-        }
-        return event;
+        return this.mapJsonRpc(record);
     }
 
     /** Records the request an oversized, dropped line opened, so its reply still matches. */
@@ -170,14 +199,15 @@ class AcpxEventParser {
         }
     }
 
-    private mapJsonRpc(message: JsonRecord): ChatEvent | null {
-        if (typeof message.method === 'string') {
-            this.trackRequest(message.id, message.method);
-            return message.method === 'session/update'
-                ? this.mapSessionUpdate(asRecord(asRecord(message.params)?.update))
-                : null;
+    private mapJsonRpc(message: JsonRecord): ChatEvent[] {
+        if (typeof message.method !== 'string') {
+            return this.mapResponse(message);
         }
-        return this.mapResponse(message);
+        this.trackRequest(message.id, message.method);
+        const event = message.method === 'session/update'
+            ? this.mapSessionUpdate(asRecord(asRecord(message.params)?.update))
+            : null;
+        return event === null ? [] : [event];
     }
 
     private trackRequest(id: unknown, method: string): void {
@@ -192,18 +222,18 @@ class AcpxEventParser {
         }
     }
 
-    private mapResponse(message: JsonRecord): ChatEvent | null {
+    private mapResponse(message: JsonRecord): ChatEvent[] {
         const key = requestKey(message.id);
         const result = asRecord(message.result);
         // Only the prompt turn's result carries a stop reason.
         if (result && typeof result.stopReason === 'string') {
             this.promptCompleted = true;
             this.forgetRequest(key);
-            return this.mapUsage(asRecord(result.usage));
+            return promptResultEvents(result.stopReason, asRecord(result.usage));
         }
         // acpx answering the agent: a failed file read is the agent's to recover from.
         if (key !== undefined && this.agentRequests.delete(key)) {
-            return null;
+            return [];
         }
         const method = this.forgetRequest(key);
         const error = asRecord(message.error);
@@ -211,7 +241,7 @@ class AcpxEventParser {
             // Surfaced only if acpx then exits non-zero.
             this.recordError(message.id, method, error);
         }
-        return null;
+        return [];
     }
 
     private forgetRequest(key: string | undefined): string | undefined {
@@ -233,6 +263,8 @@ class AcpxEventParser {
             case 'tool_call':
             case 'tool_call_update':
                 return this.mapAcpToolCall(update);
+            case 'usage_update':
+                return contextUsage(update);
             default:
                 return null;
         }
@@ -242,7 +274,7 @@ class AcpxEventParser {
         if (asRecord(error.data)?.detailCode === UNSUPPORTED_PROMPT_CONTENT) {
             this.rejectedPromptContent = true;
         }
-        const message = nonEmptyString(error.message);
+        const message = withErrorDetails(nonEmptyString(error.message), asRecord(error.data)?.details);
         if (message === undefined) {
             return;
         }
@@ -276,75 +308,6 @@ class AcpxEventParser {
         return call;
     }
 
-    private mapUsage(usage: JsonRecord | undefined): ChatEvent | null {
-        if (!usage) {
-            return null;
-        }
-        const promptTokens = tokenCount(usage.input_tokens, usage.prompt_tokens, usage.promptTokens, usage.inputTokens);
-        const completionTokens = tokenCount(usage.output_tokens, usage.completion_tokens, usage.completionTokens, usage.outputTokens);
-        if (promptTokens === 0 && completionTokens === 0) {
-            return null;
-        }
-        return { type: 'usage', usage: { promptTokens, completionTokens, totalTokens: promptTokens + completionTokens } };
-    }
-
-    private mapLegacyEvent(event: JsonRecord): ChatEvent | null {
-        const delta = asRecord(event.delta);
-        switch (event.type) {
-            case 'message':
-            case 'content':
-            case 'text':
-                return this.textEvent(event.content, event.text, event.data);
-            case 'content_block_delta':
-            case 'delta':
-                return this.textEvent(delta?.text, delta?.content, event.text);
-            case 'assistant':
-            case 'response':
-                return this.textEvent(event.content, event.text, event.message) ?? this.mapUsage(asRecord(event.usage));
-            case 'tool_call':
-            case 'tool_use':
-                return this.legacyToolEvent(event, nonEmptyString(event.status) ?? 'running',
-                    event.id, event.tool_call_id, event.toolCallId);
-            case 'tool_result': {
-                // The result carries its call's id, so the webview updates the
-                // running entry in place instead of appending a second one.
-                const failed = event.is_error === true || event.status === 'error';
-                return this.legacyToolEvent(event, failed ? 'error' : 'done',
-                    event.tool_use_id, event.tool_call_id, event.toolCallId, event.id);
-            }
-            case 'error':
-                return {
-                    type: 'error',
-                    message: firstNonEmptyString(event.message, event.error, asRecord(event.error)?.message) ?? 'Unknown error',
-                };
-            // The run completes when acpx exits; a streamed end marker would complete it twice.
-            case 'done':
-            case 'end':
-            case 'complete':
-                return null;
-            case 'usage':
-            case 'message_stop':
-                return this.mapUsage(asRecord(event.usage) ?? event);
-            default:
-                return this.mapUsage(asRecord(event.usage)) ?? this.textEvent(event.text);
-        }
-    }
-
-    private textEvent(...candidates: unknown[]): ChatEvent | null {
-        const text = firstNonEmptyString(...candidates);
-        return text === undefined ? null : { type: 'text', text };
-    }
-
-    private legacyToolEvent(event: JsonRecord, status: string, ...idCandidates: unknown[]): ChatEvent {
-        const id = firstNonEmptyString(...idCandidates);
-        return {
-            type: 'toolCall',
-            title: firstNonEmptyString(event.title, event.name, event.tool) ?? 'tool',
-            status,
-            details: stringifyToolEvent(event),
-            ...(id === undefined ? {} : { id }),
-        };
-    }
 }
 
 /** One acpx process: it reports `done` exactly once (on exit, spawn error or
@@ -441,10 +404,7 @@ class AcpxRun {
     }
 
     private emitLine(line: string): void {
-        const event = this.parser.parseLine(line.replace(/\r$/, ''));
-        if (event) {
-            this.onEvent(event);
-        }
+        this.parser.parseLine(line.replace(/\r$/, '')).forEach(event => this.onEvent(event));
     }
 
     private onClose(code: number | null, signal: NodeJS.Signals | null): void {
@@ -463,7 +423,7 @@ class AcpxRun {
             return;
         }
         if (!this.finished && this.deniedAfterAnswer(code)) {
-            this.onEvent({ type: 'text', text: PERMISSIONS_DENIED_NOTICE });
+            this.onEvent({ type: 'notice', text: PERMISSIONS_DENIED_NOTICE });
         }
         this.finish(this.exitFailure(code, signal));
         this.release();
@@ -483,7 +443,7 @@ class AcpxRun {
     }
 
     private exitFailure(code: number | null, signal: NodeJS.Signals | null): ChatEvent | null {
-        if (code === 0 || this.parser.reportedError || this.deniedAfterAnswer(code)) {
+        if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
         const message = this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal));
@@ -569,16 +529,22 @@ type RunRequest = {
 };
 
 const imageBlock = (image: PromptImage): PromptBlock => ({ type: 'image', mimeType: image.mimeType, data: image.data });
-const imageNote = (image: PromptImage): PromptBlock => ({ type: 'text', text: `[Image "${image.name}" not sent: this agent does not accept images]` });
+const imageNote = (image: PromptImage): PromptBlock => ({
+    type: 'text',
+    text: `<image-omitted name="${escapeXmlAttr(image.name)}" reason="this agent does not accept images" />`,
+});
 
 /** The prompt as ACP content blocks, each staged image marker replaced by `render(image)`. */
 function promptBlocks(fullPrompt: string, render: (image: PromptImage) => PromptBlock): PromptBlock[] {
     const blocks: PromptBlock[] = [];
     const pushText = (text: string) => {
+        if (text === '') {
+            return;
+        }
         const last = blocks[blocks.length - 1];
         if (last?.type === 'text') {
             last.text += text;
-        } else if (text !== '' || blocks.length === 0) {
+        } else {
             blocks.push({ type: 'text', text });
         }
     };
@@ -598,13 +564,33 @@ function promptBlocks(fullPrompt: string, render: (image: PromptImage) => Prompt
         textStart = match.index + match[0].length;
     }
     pushText(fullPrompt.slice(textStart));
-    return blocks;
+    // acpx rejects an empty prompt array.
+    return blocks.length > 0 ? blocks : [{ type: 'text', text: '' }];
 }
 
 /** acpx trims stdin text and parses one starting with `[` as content blocks,
  *  so the prompt always goes as blocks to arrive verbatim. */
 function encodePrompt(blocks: PromptBlock[]): Buffer {
     return Buffer.from(JSON.stringify(blocks), 'utf8');
+}
+
+/** An ACP error message with its `data.details`, flattened to one bounded line. */
+function withErrorDetails(message: string | undefined, details: unknown): string | undefined {
+    const raw = typeof details === 'string' ? details : details === undefined || details === null ? '' : stringifyToolEvent(details);
+    // Terminal colour codes first, then every other control run becomes one space.
+    // eslint-disable-next-line no-control-regex
+    const flat = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    if (flat === '' || flat === message) {
+        return message;
+    }
+    const bounded = flat.length > ERROR_DETAILS_MAX_CHARS ? `${flat.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : flat;
+    return message === undefined ? bounded : `${message}: ${bounded}`;
+}
+
+/** Completes a send aborted before it had a process. */
+function completeAborted(run: RunRequest): void {
+    run.onEvent({ type: 'done' });
+    run.onRunComplete?.();
 }
 
 /** Completes a run that never got a process. */
@@ -616,6 +602,8 @@ function completeWithoutProcess(onEvent: (event: ChatEvent) => void, onRunComple
 
 export class ChatService {
     private activeRun: AcpxRun | null = null;
+    /** A send waiting on the user's approval of the workspace's acpx config. */
+    private pendingApproval: { abort: () => void } | null = null;
 
     private static readonly MODEL_SOURCE_MAP: Record<string, string> = {
         codex: 'API',
@@ -642,10 +630,12 @@ export class ChatService {
         plan: 'You are a planning assistant. Create structured plans and break down tasks. Do not write code unless asked.\n\n',
     };
 
-    /** The prompt as acpx receives it: system prompt, chat-type prefix, prompt. */
-    private static composeFullPrompt(prompt: string, chatType: string): string {
+    /** The prompt as acpx receives it: system prompt, chat-type prefix, the
+     *  conversation so far (each exec starts a fresh agent), prompt. */
+    private static composeFullPrompt(prompt: string, chatType: string, history: readonly ConversationTurn[]): string {
         const systemPrompt = vscode.workspace.getConfiguration('openclaw').get<string>('chat.systemPrompt', '');
-        const prefixed = (ChatService.CHAT_TYPE_PREFIXES[chatType] ?? '') + prompt;
+        const conversation = history.length > 0 ? `${frameConversation(formatConversation(history))}\n\n` : '';
+        const prefixed = (ChatService.CHAT_TYPE_PREFIXES[chatType] ?? '') + conversation + prompt;
         return systemPrompt ? `${systemPrompt}\n\n${prefixed}` : prefixed;
     }
 
@@ -656,7 +646,9 @@ export class ChatService {
         chatType: string,
         onEvent: (event: ChatEvent) => void,
         _onSessionResolved?: (resolvedKey: string, requestedKey: string) => void,
-        onRunComplete?: () => void
+        onRunComplete?: () => void,
+        /** The thread's earlier turns, since the last /compact summary. */
+        history: readonly ConversationTurn[] = []
     ): void {
         this.abort();
 
@@ -667,7 +659,7 @@ export class ChatService {
         }
         const configuredPermissions = vscode.workspace.getConfiguration('openclaw').get<string>('chat.permissions', 'approve-reads');
         const permissions = ChatService.getPermissionsForChatType(chatType, configuredPermissions);
-        const fullPrompt = ChatService.composeFullPrompt(prompt, chatType);
+        const fullPrompt = ChatService.composeFullPrompt(prompt, chatType, history);
         const blocks = promptBlocks(fullPrompt, imageBlock);
         const payload = encodePrompt(blocks);
         if (payload.length > PROMPT_MAX_BYTES) {
@@ -684,7 +676,45 @@ export class ChatService {
         }
         const fallback = blocks.some(block => block.type === 'image') ? encodePrompt(promptBlocks(fullPrompt, imageNote)) : undefined;
         const run: RunRequest = { launch, args: [...launch.args, ...ChatService.buildArgs(agent, permissions)], cwd, onEvent, onRunComplete };
-        this.startRun(run, payload, fallback);
+        const projectConfig = checkProjectConfig(cwd);
+        switch (projectConfig.status) {
+            case 'trusted':
+                this.startRun(run, payload, fallback);
+                return;
+            case 'unreadable':
+                completeWithoutProcess(onEvent, onRunComplete, `Chat did not start: ${projectConfig.configPath} exists but cannot be read.`);
+                return;
+            case 'unapproved':
+                this.startAfterApproval(projectConfig, run, payload, fallback);
+                return;
+        }
+    }
+
+    /** Starts the run once the user approves the workspace's acpx config; an
+     *  abort while the modal is open completes the send at once. */
+    private startAfterApproval(
+        projectConfig: Extract<ProjectConfigCheck, { status: 'unapproved' }>,
+        run: RunRequest,
+        payload: Buffer,
+        fallback: Buffer | undefined
+    ): void {
+        const pending = { abort: () => completeAborted(run) };
+        this.pendingApproval = pending;
+        const settle = (approved: boolean) => {
+            if (this.pendingApproval !== pending) {
+                return;
+            }
+            this.pendingApproval = null;
+            if (approved) {
+                this.startRun(run, payload, fallback);
+            } else {
+                completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_REFUSED_MESSAGE);
+            }
+        };
+        requestProjectConfigApproval(projectConfig).then(settle, (err: unknown) => {
+            log.error('acpx project config approval failed', err);
+            settle(false);
+        });
     }
 
     /** Starts acpx on `payload`; with a `fallback`, an agent that refuses its
@@ -708,7 +738,7 @@ export class ChatService {
             return;
         }
         const retry = fallback === undefined ? undefined : () => {
-            run.onEvent({ type: 'text', text: IMAGES_NOT_SENT_NOTICE });
+            run.onEvent({ type: 'notice', text: IMAGES_NOT_SENT_NOTICE });
             this.startRun(run, fallback, undefined);
         };
         this.activeRun = new AcpxRun(child, run.onEvent, run.onRunComplete, (exited) => {
@@ -721,16 +751,20 @@ export class ChatService {
 
     abort(): void {
         const run = this.activeRun;
+        const pending = this.pendingApproval;
         this.activeRun = null;
+        this.pendingApproval = null;
         run?.abort();
+        pending?.abort();
     }
 
-    /** Plain chat mode is read-only regardless of the global permission setting. */
+    /** Plain chat mode is at most read-only, and stricter when so configured. */
     static getPermissionsForChatType(chatType: string, configuredPermissions: string): string {
-        if (chatType === 'chat') {
-            return 'approve-reads';
+        if (chatType !== 'chat') {
+            return configuredPermissions;
         }
-        return configuredPermissions;
+        const configured = PERMISSION_STRICTNESS.indexOf(configuredPermissions);
+        return PERMISSION_STRICTNESS[Math.max(configured, PERMISSION_STRICTNESS.indexOf('approve-reads'))];
     }
 
     private static isValidAgentName(agent: string): boolean {
