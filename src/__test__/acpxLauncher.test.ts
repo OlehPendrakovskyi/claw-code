@@ -1,10 +1,12 @@
 import { resolveAcpxLaunch, LauncherHost } from '../chat/acpxLauncher';
 
+/** Either result shape, so expectations can read any field. */
+type LaunchResult = { command?: string; args?: string[]; missing?: string };
+
 const NPM = 'C:\\Users\\dev\\AppData\\Roaming\\npm';
 const PNPM = 'C:\\Users\\dev\\AppData\\Local\\pnpm';
 const NODEJS = 'C:\\Program Files\\nodejs';
 const SYSTEM = 'C:\\Windows\\system32';
-const CODE = 'C:\\Users\\dev\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe';
 const NPM_SCRIPT = `${NPM}\\node_modules\\acpx\\dist\\cli.js`;
 const PNPM_SCRIPT = `${PNPM}\\global\\5\\node_modules\\acpx\\dist\\cli.js`;
 
@@ -28,13 +30,13 @@ const PNPM_CMD_SHIM = [
 const NPM_PS1_SHIM = '#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n'
     + '& "$basedir/node$exe"  "$basedir/node_modules/acpx/dist/cli.js" $args\n';
 
-/** A Windows filesystem with VS Code installed: case-insensitive paths mapped to file contents. */
+
+/** A Windows filesystem: case-insensitive paths mapped to file contents. */
 function fakeHost(files: Record<string, string>): LauncherHost & { reads: string[] } {
-    const byPath = new Map(Object.entries({ ...files, [CODE]: '' }).map(([file, text]) => [file.toLowerCase(), text]));
+    const byPath = new Map(Object.entries(files).map(([file, text]) => [file.toLowerCase(), text]));
     const reads: string[] = [];
     return {
         reads,
-        execPath: CODE,
         isFile: file => byPath.has(file.toLowerCase()),
         readText: (file) => {
             reads.push(file);
@@ -59,136 +61,172 @@ const PNPM_INSTALL = {
     [PNPM_SCRIPT]: '#!/usr/bin/env node\n',
 };
 
-const NODE_ON_PATH = { [`${NODEJS}\\node.exe`]: '' };
+const NODE_EXE = `${NODEJS}\\node.exe`;
+const NODE_ON_PATH = { [NODE_EXE]: '' };
+const NPM_LAUNCH = { command: NODE_EXE, args: [NPM_SCRIPT] };
 
-function resolveOnWindows(env: Record<string, string>, host: LauncherHost): ReturnType<typeof resolveAcpxLaunch> {
-    // A fresh module per call: the resolution cache must not leak between tests.
-    let isolatedResolve: typeof resolveAcpxLaunch = resolveAcpxLaunch;
+/** A fresh module, so the resolution cache never leaks between tests. */
+function isolatedResolver(): typeof resolveAcpxLaunch {
+    let isolated: typeof resolveAcpxLaunch = resolveAcpxLaunch;
     jest.isolateModules(() => {
-        isolatedResolve = jest.requireActual('../chat/acpxLauncher').resolveAcpxLaunch;
+        isolated = jest.requireActual('../chat/acpxLauncher').resolveAcpxLaunch;
     });
-    return isolatedResolve('win32', env, host);
+    return isolated;
+}
+
+function resolveOnWindows(env: Record<string, string>, files: Record<string, string>): LaunchResult {
+    return isolatedResolver()('win32', env, fakeHost(files));
 }
 
 describe('resolveAcpxLaunch', () => {
     describe('on POSIX', () => {
         it.each(['linux', 'darwin'] as const)('runs acpx itself on %s, relying on its shebang', (platform) => {
-            expect(resolveAcpxLaunch(platform, {}, fakeHost({}))).toEqual({ command: 'acpx', args: [], env: {} });
+            expect(resolveAcpxLaunch(platform, {}, fakeHost({}))).toEqual({ command: 'acpx', args: [] });
         });
     });
 
     describe('npm global install', () => {
         it('runs the package bin under the node found on PATH', () => {
-            const host = fakeHost({ ...npmInstall(), ...NODE_ON_PATH });
-            const launch = resolveOnWindows({ PATH: `${SYSTEM};${NODEJS};${NPM}` }, host);
-            expect(launch).toEqual({ command: `${NODEJS}\\node.exe`, args: [NPM_SCRIPT], env: {} });
+            const launch = resolveOnWindows({ PATH: `${SYSTEM};${NODEJS};${NPM}` }, { ...npmInstall(), ...NODE_ON_PATH });
+            expect(launch).toEqual(NPM_LAUNCH);
         });
 
         it('accepts a bin declared as a plain string', () => {
-            const host = fakeHost({ ...npmInstall({ bin: 'dist/cli.js' }), ...NODE_ON_PATH });
-            expect(resolveOnWindows({ PATH: `${NODEJS};${NPM}` }, host)?.args).toEqual([NPM_SCRIPT]);
+            const launch = resolveOnWindows({ PATH: `${NODEJS};${NPM}` }, { ...npmInstall({ bin: 'dist/cli.js' }), ...NODE_ON_PATH });
+            expect(launch).toEqual(NPM_LAUNCH);
         });
 
         it('prefers a node.exe beside the shim, as the shim itself does', () => {
-            const host = fakeHost({ ...npmInstall(), ...NODE_ON_PATH, [`${NPM}\\node.exe`]: '' });
-            expect(resolveOnWindows({ PATH: `${NODEJS};${NPM}` }, host)?.command).toBe(`${NPM}\\node.exe`);
+            const launch = resolveOnWindows({ PATH: `${NODEJS};${NPM}` }, { ...npmInstall(), ...NODE_ON_PATH, [`${NPM}\\node.exe`]: '' });
+            expect(launch.command).toBe(`${NPM}\\node.exe`);
         });
 
-        it('falls back to VS Code\'s Electron run as Node when no node is installed', () => {
-            const launch = resolveOnWindows({ PATH: NPM }, fakeHost(npmInstall()));
-            expect(launch).toEqual({ command: CODE, args: [NPM_SCRIPT], env: { ELECTRON_RUN_AS_NODE: '1' } });
+        it('reports a missing Node rather than running acpx under VS Code\'s Electron', () => {
+            expect(resolveOnWindows({ PATH: NPM }, npmInstall())).toEqual({ missing: 'node' });
         });
 
         it('reads the script from the .cmd shim when the manifest is unreadable', () => {
-            const files = npmInstall();
-            files[`${NPM}\\node_modules\\acpx\\package.json`] = '{ not json';
-            expect(resolveOnWindows({ PATH: NPM }, fakeHost(files))?.args).toEqual([NPM_SCRIPT]);
+            const files = { ...npmInstall(), ...NODE_ON_PATH, [`${NPM}\\node_modules\\acpx\\package.json`]: '{ not json' };
+            expect(resolveOnWindows({ PATH: `${NPM};${NODEJS}` }, files)).toEqual(NPM_LAUNCH);
         });
 
         it('reads the script from the PowerShell shim when that is all there is', () => {
-            const host = fakeHost({ [`${NPM}\\acpx.ps1`]: NPM_PS1_SHIM, [NPM_SCRIPT]: '' });
-            expect(resolveOnWindows({ PATH: NPM }, host)?.args).toEqual([NPM_SCRIPT]);
+            const files = { [`${NPM}\\acpx.ps1`]: NPM_PS1_SHIM, [NPM_SCRIPT]: '', ...NODE_ON_PATH };
+            expect(resolveOnWindows({ PATH: `${NPM};${NODEJS}` }, files)).toEqual(NPM_LAUNCH);
         });
     });
 
     describe('pnpm global install', () => {
         it('follows the %~dp0-relative script in the pnpm shim', () => {
-            const host = fakeHost({ ...PNPM_INSTALL, ...NODE_ON_PATH });
-            const launch = resolveOnWindows({ PATH: `${PNPM};${NODEJS}` }, host);
-            expect(launch).toEqual({ command: `${NODEJS}\\node.exe`, args: [PNPM_SCRIPT], env: {} });
+            const launch = resolveOnWindows({ PATH: `${PNPM};${NODEJS}` }, { ...PNPM_INSTALL, ...NODE_ON_PATH });
+            expect(launch).toEqual({ command: NODE_EXE, args: [PNPM_SCRIPT] });
         });
 
         it('follows an absolute script path in the shim', () => {
             const store = 'D:\\pnpm-store\\acpx\\dist\\cli.js';
-            const host = fakeHost({ [`${PNPM}\\acpx.cmd`]: `@SETLOCAL\r\n@"C:\\node\\node.exe"  "${store}" %*\r\n`, [store]: '' });
-            expect(resolveOnWindows({ PATH: PNPM }, host)?.args).toEqual([store]);
+            const files = { [`${PNPM}\\acpx.cmd`]: `@SETLOCAL\r\n@"C:\\node\\node.exe"  "${store}" %*\r\n`, [store]: '', ...NODE_ON_PATH };
+            expect(resolveOnWindows({ PATH: `${PNPM};${NODEJS}` }, files).args).toEqual([store]);
         });
     });
 
     describe('PATH search', () => {
         it('takes the first PATH entry that holds a usable acpx', () => {
-            const host = fakeHost({ ...npmInstall(), ...PNPM_INSTALL });
-            expect(resolveOnWindows({ PATH: `${PNPM};${NPM}` }, host)?.args).toEqual([PNPM_SCRIPT]);
-            expect(resolveOnWindows({ PATH: `${NPM};${PNPM}` }, host)?.args).toEqual([NPM_SCRIPT]);
+            const files = { ...npmInstall(), ...PNPM_INSTALL, ...NODE_ON_PATH };
+            expect(resolveOnWindows({ PATH: `${PNPM};${NPM};${NODEJS}` }, files).args).toEqual([PNPM_SCRIPT]);
+            expect(resolveOnWindows({ PATH: `${NPM};${PNPM};${NODEJS}` }, files).args).toEqual([NPM_SCRIPT]);
         });
 
         it('skips a shim whose script is gone and keeps searching', () => {
-            const files: Record<string, string> = { ...PNPM_INSTALL, ...npmInstall() };
+            const files: Record<string, string> = { ...PNPM_INSTALL, ...npmInstall(), ...NODE_ON_PATH };
             delete files[PNPM_SCRIPT];
-            expect(resolveOnWindows({ PATH: `${PNPM};${NPM}` }, fakeHost(files))?.args).toEqual([NPM_SCRIPT]);
+            expect(resolveOnWindows({ PATH: `${PNPM};${NPM};${NODEJS}` }, files)).toEqual(NPM_LAUNCH);
         });
 
         it('spawns a native acpx.exe directly', () => {
-            const host = fakeHost({ 'C:\\tools\\acpx.exe': '' });
-            expect(resolveOnWindows({ PATH: 'C:\\tools' }, host)).toEqual({ command: 'C:\\tools\\acpx.exe', args: [], env: {} });
+            expect(resolveOnWindows({ PATH: 'C:\\tools' }, { 'C:\\tools\\acpx.exe': '' })).toEqual({ command: 'C:\\tools\\acpx.exe', args: [] });
         });
 
         it('honours PATHEXT order between executable extensions', () => {
-            const host = fakeHost({ 'C:\\tools\\acpx.exe': '', 'C:\\tools\\acpx.com': '' });
-            expect(resolveOnWindows({ PATH: 'C:\\tools', PATHEXT: '.EXE;.COM' }, host)?.command).toBe('C:\\tools\\acpx.exe');
-            expect(resolveOnWindows({ PATH: 'C:\\tools', PATHEXT: '.COM;.EXE' }, host)?.command).toBe('C:\\tools\\acpx.com');
+            const files = { 'C:\\tools\\acpx.exe': '', 'C:\\tools\\acpx.com': '' };
+            expect(resolveOnWindows({ PATH: 'C:\\tools', PATHEXT: '.EXE;.COM' }, files).command).toBe('C:\\tools\\acpx.exe');
+            expect(resolveOnWindows({ PATH: 'C:\\tools', PATHEXT: '.COM;.EXE' }, files).command).toBe('C:\\tools\\acpx.com');
         });
 
         it('reads Path and PATHEXT whatever their case, and unquotes PATH entries', () => {
-            const host = fakeHost({ ...npmInstall(), ...NODE_ON_PATH });
-            const launch = resolveOnWindows({ Path: `"${NODEJS}";${NPM}`, PathExt: '.EXE;.CMD' }, host);
-            expect(launch).toEqual({ command: `${NODEJS}\\node.exe`, args: [NPM_SCRIPT], env: {} });
+            const launch = resolveOnWindows({ Path: `"${NODEJS}";${NPM}`, PathExt: '.EXE;.CMD' }, { ...npmInstall(), ...NODE_ON_PATH });
+            expect(launch).toEqual(NPM_LAUNCH);
         });
 
-        it('returns null when no acpx is installed', () => {
-            expect(resolveOnWindows({ PATH: `${SYSTEM};${NODEJS}` }, fakeHost(NODE_ON_PATH))).toBeNull();
-            expect(resolveOnWindows({}, fakeHost(NODE_ON_PATH))).toBeNull();
+        it('reports acpx missing when none is installed', () => {
+            expect(resolveOnWindows({ PATH: `${SYSTEM};${NODEJS}` }, NODE_ON_PATH)).toEqual({ missing: 'acpx' });
+            expect(resolveOnWindows({}, NODE_ON_PATH)).toEqual({ missing: 'acpx' });
+        });
+
+        it.each(['.', 'node_modules\\.bin', 'C:tools', '\\tools', 'tools'])(
+            'ignores the cwd-relative PATH entry %p, which the workspace could fill',
+            (relative) => {
+                const planted = {
+                    [`${relative}\\acpx.cmd`]: NPM_CMD_SHIM,
+                    [`${relative}\\node_modules\\acpx\\package.json`]: JSON.stringify({ bin: 'dist/cli.js' }),
+                    [`${relative}\\node_modules\\acpx\\dist\\cli.js`]: '',
+                    [`${relative}\\node.exe`]: '',
+                };
+                expect(resolveOnWindows({ PATH: relative }, planted)).toEqual({ missing: 'acpx' });
+                const launch = resolveOnWindows({ PATH: `${relative};${NPM};${NODEJS}` }, { ...planted, ...npmInstall(), ...NODE_ON_PATH });
+                expect(launch).toEqual(NPM_LAUNCH);
+            });
+
+        it('never takes node.exe from a cwd-relative PATH entry', () => {
+            expect(resolveOnWindows({ PATH: `.;${NPM}` }, { ...npmInstall(), '.\\node.exe': '' })).toEqual({ missing: 'node' });
+        });
+
+        it('accepts a UNC PATH entry', () => {
+            const share = '\\\\server\\tools';
+            expect(resolveOnWindows({ PATH: share }, { [`${share}\\acpx.exe`]: '' })).toEqual({ command: `${share}\\acpx.exe`, args: [] });
         });
     });
 
     describe('cache', () => {
-        let isolatedResolve: typeof resolveAcpxLaunch;
+        let resolve: typeof resolveAcpxLaunch;
+        const env = { PATH: `${NPM};${NODEJS}` };
 
         beforeEach(() => {
-            jest.isolateModules(() => {
-                isolatedResolve = jest.requireActual('../chat/acpxLauncher').resolveAcpxLaunch;
-            });
+            resolve = isolatedResolver();
         });
 
-        it('reuses the resolution for an unchanged PATH', () => {
-            const host = fakeHost(npmInstall());
-            const first = isolatedResolve('win32', { PATH: NPM }, host);
+        it('reuses the acpx found for an unchanged PATH', () => {
+            const host = fakeHost({ ...npmInstall(), ...NODE_ON_PATH });
+            const first = resolve('win32', env, host);
             const readsAfterFirst = host.reads.length;
-            expect(isolatedResolve('win32', { PATH: NPM }, host)).toBe(first);
+            expect(resolve('win32', env, host)).toEqual(first);
             expect(host.reads).toHaveLength(readsAfterFirst);
         });
 
         it('resolves again for a different PATH', () => {
-            const host = fakeHost({ ...npmInstall(), ...PNPM_INSTALL });
-            expect(isolatedResolve('win32', { PATH: NPM }, host)?.args).toEqual([NPM_SCRIPT]);
-            expect(isolatedResolve('win32', { PATH: PNPM }, host)?.args).toEqual([PNPM_SCRIPT]);
+            const host = fakeHost({ ...npmInstall(), ...PNPM_INSTALL, ...NODE_ON_PATH });
+            expect(resolve('win32', env, host)).toEqual(NPM_LAUNCH);
+            expect(resolve('win32', { PATH: `${PNPM};${NODEJS}` }, host)).toEqual({ command: NODE_EXE, args: [PNPM_SCRIPT] });
+        });
+
+        it('picks up a Node installed after the first lookup', () => {
+            const files: Record<string, string> = npmInstall();
+            expect(resolve('win32', env, fakeHost(files))).toEqual({ missing: 'node' });
+            Object.assign(files, NODE_ON_PATH);
+            expect(resolve('win32', env, fakeHost(files))).toEqual(NPM_LAUNCH);
+        });
+
+        it('finds an acpx installed after a failed lookup', () => {
+            const files: Record<string, string> = { ...NODE_ON_PATH };
+            expect(resolve('win32', env, fakeHost(files))).toEqual({ missing: 'acpx' });
+            Object.assign(files, npmInstall());
+            expect(resolve('win32', env, fakeHost(files))).toEqual(NPM_LAUNCH);
         });
 
         it('drops a cached launch whose script was uninstalled', () => {
-            const files: Record<string, string> = npmInstall();
-            expect(isolatedResolve('win32', { PATH: NPM }, fakeHost(files))).not.toBeNull();
+            const files: Record<string, string> = { ...npmInstall(), ...NODE_ON_PATH };
+            expect(resolve('win32', env, fakeHost(files))).toEqual(NPM_LAUNCH);
             delete files[NPM_SCRIPT];
-            expect(isolatedResolve('win32', { PATH: NPM }, fakeHost(files))).toBeNull();
+            expect(resolve('win32', env, fakeHost(files))).toEqual({ missing: 'acpx' });
         });
     });
 });

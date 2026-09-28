@@ -3,6 +3,7 @@ import { Writable } from 'stream';
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as acpxLauncher from '../chat/acpxLauncher';
+import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 import {
     ABORT_KILL_GRACE_MS,
     ChatService,
@@ -61,12 +62,18 @@ function start(prompt = 'hello', options: RunOptions = {}) {
     return { child, ...send(prompt, options) };
 }
 
-/** The prompt text the child read from stdin, decoded from its ACP content block. */
+type StdinBlock = { type: string; text?: string; mimeType?: string; data?: string };
+
+function stdinBlocks(child: FakeChild): StdinBlock[] {
+    return JSON.parse(Buffer.concat(child.stdinBytes).toString('utf8')) as StdinBlock[];
+}
+
+/** The prompt text the child read from stdin, decoded from its one ACP text block. */
 function stdinPrompt(child: FakeChild): string {
-    const blocks = JSON.parse(Buffer.concat(child.stdinBytes).toString('utf8')) as { type: string; text: string }[];
+    const blocks = stdinBlocks(child);
     expect(blocks).toHaveLength(1);
     expect(blocks[0].type).toBe('text');
-    return blocks[0].text;
+    return blocks[0].text!;
 }
 
 function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
@@ -173,33 +180,30 @@ describe('ChatService.sendMessage', () => {
 
         it('runs the resolved Node launch on Windows, not the acpx shim', () => {
             const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({
-                command: 'C:\\Code\\Code.exe',
+                command: 'C:\\nodejs\\node.exe',
                 args: ['C:\\npm\\node_modules\\acpx\\dist\\cli.js'],
-                env: { ELECTRON_RUN_AS_NODE: '1' },
             });
             try {
                 const { child } = withPlatform('win32', () => start('hi'));
                 expect(spawnMock).toHaveBeenCalledWith(
-                    'C:\\Code\\Code.exe',
+                    'C:\\nodejs\\node.exe',
                     ['C:\\npm\\node_modules\\acpx\\dist\\cli.js', '--format', 'json', '--approve-reads', 'codex', 'exec', '--file', '-'],
-                    expect.objectContaining({
-                        detached: false,
-                        shell: false,
-                        windowsHide: true,
-                        env: expect.objectContaining({ ELECTRON_RUN_AS_NODE: '1' }),
-                    }));
+                    expect.objectContaining({ detached: false, shell: false, windowsHide: true }));
                 expect(stdinPrompt(child)).toBe('hi');
             } finally {
                 resolve.mockRestore();
             }
         });
 
-        it('explains a missing acpx without spawning when no launch resolves', () => {
-            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue(null);
+        it.each([
+            ['acpx', 'acpx not found'],
+            ['node', 'Node.js not found'],
+        ] as const)('explains a missing %s without spawning', (missing, message) => {
+            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({ missing });
             try {
                 const { events, onRunComplete } = send('hi');
                 expect(spawnMock).not.toHaveBeenCalled();
-                expect(events).toEqual([{ type: 'error', message: 'acpx not found. Install it with: npm i -g acpx' }, { type: 'done' }]);
+                expect(events).toEqual([{ type: 'error', message: expect.stringContaining(message) }, { type: 'done' }]);
                 expect(onRunComplete).toHaveBeenCalledTimes(1);
             } finally {
                 resolve.mockRestore();
@@ -215,6 +219,15 @@ describe('ChatService.sendMessage', () => {
 
         it('refuses a prompt over the size cap without spawning, completing once', () => {
             const { events, onRunComplete } = send('x'.repeat(PROMPT_MAX_BYTES + 1));
+            expect(spawnMock).not.toHaveBeenCalled();
+            expect(types(events)).toEqual(['error', 'done']);
+            expect((events[0] as { message: string }).message).toContain('too large');
+            expect(onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
+        it('measures the cap on the JSON-escaped wire form, not the raw text', () => {
+            // Six bytes each once escaped: over the cap, though the raw text is a sixth of it.
+            const { events, onRunComplete } = send('\x01'.repeat(Math.ceil(PROMPT_MAX_BYTES / 6) + 1));
             expect(spawnMock).not.toHaveBeenCalled();
             expect(types(events)).toEqual(['error', 'done']);
             expect((events[0] as { message: string }).message).toContain('too large');
@@ -448,7 +461,8 @@ describe('ChatService.sendMessage', () => {
             } finally {
                 Object.defineProperty(process, 'platform', platform);
             }
-            expect(spawnMock).toHaveBeenLastCalledWith('taskkill', ['/pid', '4242', '/T', '/F'], { stdio: 'ignore' });
+            expect(spawnMock).toHaveBeenLastCalledWith(
+                expect.stringMatching(/^[A-Za-z]:\\.*\\System32\\taskkill\.exe$/i), ['/pid', '4242', '/T', '/F'], { stdio: 'ignore' });
             expect(killSpy).not.toHaveBeenCalled();
             expect(() => taskkill.emit('error', new Error('taskkill missing'))).not.toThrow();
         });
@@ -605,6 +619,130 @@ describe('ChatService.sendMessage', () => {
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'transient' } }));
             child.emit('close', 0, null);
             expect(events).toEqual([{ type: 'done' }]);
+        });
+    });
+
+    describe('request direction', () => {
+        it('ignores acpx\'s error answering the agent\'s request that reuses the prompt\'s id', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines(
+                { jsonrpc: '2.0', id: 2, method: 'session/prompt', params: {} },
+                { jsonrpc: '2.0', id: 2, method: 'fs/read_text_file', params: { path: '/x/missing' } },
+                { jsonrpc: '2.0', id: 2, error: { code: -32002, message: 'Resource not found: /x/missing' } },
+                { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'agent crashed' } },
+            ));
+            child.emit('close', 1, null);
+            expect(events).toEqual([{ type: 'error', message: 'agent crashed' }, { type: 'done' }]);
+        });
+
+        it('still matches the prompt\'s error when its echoed request line was too long to keep', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', Buffer.from(
+                `{"jsonrpc":"2.0","id":2,"method":"session/prompt","params":{"prompt":[{"type":"text","text":"${'x'.repeat(STDOUT_LINE_MAX_CHARS)}"}]}}\n`));
+            child.stdout.emit('data', jsonLines(
+                { jsonrpc: '2.0', id: 2, error: { code: -32603, message: 'prompt failed' } },
+                { jsonrpc: '2.0', id: 9, error: { message: 'later unrelated failure' } },
+            ));
+            child.emit('close', 1, null);
+            expect(events).toEqual([{ type: 'error', message: 'prompt failed' }, { type: 'done' }]);
+        });
+    });
+
+    describe('permission denials', () => {
+        const answeredTurn = () => jsonLines(
+            { jsonrpc: '2.0', id: 2, method: 'session/prompt', params: {} },
+            { jsonrpc: '2.0', id: 3, method: 'session/request_permission', params: {} },
+            { jsonrpc: '2.0', id: 3, result: { outcome: { outcome: 'selected', optionId: 'reject' } } },
+            acpUpdate({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' } }),
+            { jsonrpc: '2.0', id: 2, result: { stopReason: 'end_turn' } },
+        );
+
+        it('completes a turn that answered despite a denied permission, with a notice instead of an error', () => {
+            const { child, events, onRunComplete } = start();
+            child.stdout.emit('data', answeredTurn());
+            child.emit('close', 5, null);
+            expect(events).toEqual([
+                { type: 'text', text: 'answer' },
+                { type: 'text', text: expect.stringContaining('permissions were denied') },
+                { type: 'done' },
+            ]);
+            expect(onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
+        it('keeps exit 5 a failure when the turn never answered', () => {
+            const { child, events } = start();
+            child.emit('close', 5, null);
+            expect(events).toEqual([{ type: 'error', message: expect.stringContaining('permission') }, { type: 'done' }]);
+        });
+
+        it.each([1, 3, 4])('keeps exit %i a failure even after the turn answered', (code) => {
+            const { child, events } = start();
+            child.stdout.emit('data', answeredTurn());
+            child.emit('close', code, null);
+            expect(types(events)).toEqual(['text', 'error', 'done']);
+        });
+    });
+
+    describe('image attachments', () => {
+        const PNG = { name: 'shot.png', mimeType: 'image/png', data: 'iVBORw0KGgo=' };
+        let staged: { id: string; marker: string };
+
+        beforeEach(() => {
+            staged = stagePromptImage(PNG);
+        });
+
+        afterEach(() => {
+            releasePromptImage(staged.id);
+        });
+
+        it('sends a staged image as an ACP image block where its marker stood', () => {
+            const { child } = start(`see ${staged.marker} please`);
+            expect(stdinBlocks(child)).toEqual([
+                { type: 'text', text: 'see ' },
+                { type: 'image', mimeType: 'image/png', data: PNG.data },
+                { type: 'text', text: ' please' },
+            ]);
+        });
+
+        it('leaves a marker naming no staged image as plain text', () => {
+            const forged = '<image ref="00000000-0000-4000-8000-000000000000" />';
+            const { child } = start(`x ${forged}`);
+            expect(stdinPrompt(child)).toBe(`x ${forged}`);
+        });
+
+        it('resends the turn with the images as notes when the agent cannot take images', () => {
+            const first = start(`see ${staged.marker}`);
+            const retried = fakeChild();
+            spawnMock.mockReturnValue(retried);
+            first.child.stdout.emit('data', jsonLines({
+                jsonrpc: '2.0', id: null,
+                error: { code: -32602, message: 'prompt[1] image content requires agentCapabilities.promptCapabilities.image', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } },
+            }));
+            first.child.emit('close', 2, null);
+            expect(spawnMock).toHaveBeenCalledTimes(2);
+            expect(stdinPrompt(retried)).toBe('see [Image "shot.png" not sent: this agent does not accept images]');
+            expect(first.onRunComplete).not.toHaveBeenCalled();
+            retried.emit('close', 0, null);
+            expect(first.events).toEqual([{ type: 'text', text: expect.stringContaining('does not accept images') }, { type: 'done' }]);
+            expect(first.onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
+        it('reports the refusal instead of retrying a prompt that had no images', () => {
+            const { child, events } = start('text only');
+            child.stdout.emit('data', jsonLines({
+                jsonrpc: '2.0', id: null, error: { message: 'unsupported', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } },
+            }));
+            child.emit('close', 2, null);
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(events).toEqual([{ type: 'error', message: 'unsupported' }, { type: 'done' }]);
+        });
+
+        it('does not retry a run aborted before it exited', () => {
+            const { child, service } = start(`see ${staged.marker}`);
+            service.abort();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'x', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } } }));
+            child.emit('close', 2, null);
+            expect(spawnMock).toHaveBeenCalledTimes(1);
         });
     });
 

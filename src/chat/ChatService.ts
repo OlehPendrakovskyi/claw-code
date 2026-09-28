@@ -1,13 +1,19 @@
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
+import * as path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { resolveAcpxLaunch } from './acpxLauncher';
+import { resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
 
-/** Largest prompt acpx is sent on stdin; attachments are budgeted against
- *  the same size, which leaves the system prompt its framing reserve. */
-export const PROMPT_MAX_BYTES = 20 * 1024 * 1024;
+/** Largest encoded prompt (the ACP content-block JSON) acpx is sent on
+ *  stdin: acpx forwards it inside one JSON-RPC line, and the ACP SDK drops any
+ *  message over 32 MiB, so the rest is headroom for the envelope. */
+export const PROMPT_MAX_BYTES = 30 * 1024 * 1024;
+
+/** Longest start of a dropped oversized line kept to learn its request id and method. */
+const DROPPED_LINE_PREFIX_CHARS = 256;
 
 /** A stdout line still missing its newline past this size is dropped
  *  instead of growing the buffer without bound. */
@@ -29,6 +35,33 @@ const DEFAULT_AGENT = 'codex';
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const ACPX_NOT_FOUND_MESSAGE = 'acpx not found. Install it with: npm i -g acpx';
+const NODE_NOT_FOUND_MESSAGE = 'Node.js not found on PATH; acpx needs it to run. Install Node.js from https://nodejs.org.';
+
+/** acpx's exit code when it denied or cancelled every permission the agent asked for. */
+const ACPX_PERMISSION_DENIED_EXIT = 5;
+const PERMISSIONS_DENIED_NOTICE = '\n\n*Some tool permissions were denied.*';
+const IMAGES_NOT_SENT_NOTICE = '*This agent does not accept images, so they were sent as notes instead.*\n\n';
+
+/** acpx's detail code for a prompt block the agent's capabilities rule out. */
+const UNSUPPORTED_PROMPT_CONTENT = 'UNSUPPORTED_PROMPT_CONTENT';
+
+/** A request line's opening as acpx prints it, enough to recover a dropped line's id and method. */
+const REQUEST_PREFIX_PATTERN = /^\s*\{"jsonrpc":"2\.0","id":(-?\d+|"(?:[^"\\]|\\.)*"),"method":"([^"\\]+)"/;
+
+/** Whether `method` is one the agent calls on acpx; acpx prints both
+ *  directions without saying which, and ids restart from 0 in each. */
+function isAgentMethod(method: string): boolean {
+    return method.startsWith('fs/') || method.startsWith('terminal/')
+        || method === 'session/request_permission' || method === 'session/update';
+}
+
+/** A JSON-RPC id as a map key, or undefined for null and malformed ids. */
+function requestKey(id: unknown): string | undefined {
+    if (typeof id === 'string') {
+        return `s:${id}`;
+    }
+    return typeof id === 'number' && Number.isFinite(id) ? `n:${id}` : undefined;
+}
 
 export type UsageInfo = {
     promptTokens: number;
@@ -84,13 +117,19 @@ const ACP_TOOL_STATUS: Record<string, string> = {
 class AcpxEventParser {
     /** Each ACP tool call merged with its updates, which carry only what changed. */
     private readonly toolCalls = new Map<string, JsonRecord>();
-    /** Ids of the session/prompt requests, whose error is the turn's own failure. */
-    private readonly promptRequestIds = new Set<unknown>();
+    /** Methods of acpx's pending requests to the agent, by id. */
+    private readonly acpxRequests = new Map<string, string>();
+    /** Ids of the agent's pending requests to acpx. */
+    private readonly agentRequests = new Set<string>();
     private promptError: string | undefined;
     private acpxError: string | undefined;
     private lastError: string | undefined;
     /** Whether the stream itself reported a failure, so the exit need not repeat it. */
     reportedError = false;
+    /** Whether the prompt turn returned its stop reason: the answer is complete. */
+    promptCompleted = false;
+    /** Whether acpx refused a prompt block (an image) the agent cannot take. */
+    rejectedPromptContent = false;
 
     /** Why the run failed by the JSON-RPC traffic, for a non-zero exit to report:
      *  the prompt turn's error, else acpx's own (null id), else the last one. */
@@ -123,27 +162,65 @@ class AcpxEventParser {
         return event;
     }
 
+    /** Records the request an oversized, dropped line opened, so its reply still matches. */
+    noteDroppedLine(prefix: string): void {
+        const match = REQUEST_PREFIX_PATTERN.exec(prefix);
+        if (match) {
+            this.trackRequest(JSON.parse(match[1]) as unknown, match[2]);
+        }
+    }
+
     private mapJsonRpc(message: JsonRecord): ChatEvent | null {
-        const error = asRecord(message.error);
-        if (error) {
-            // Surfaced only if acpx then exits non-zero: an error answering
-            // one of the agent's own requests is a recoverable tool failure.
-            this.recordError(message.id, nonEmptyString(error.message));
-            return null;
+        if (typeof message.method === 'string') {
+            this.trackRequest(message.id, message.method);
+            return message.method === 'session/update'
+                ? this.mapSessionUpdate(asRecord(asRecord(message.params)?.update))
+                : null;
         }
-        if (message.method === 'session/prompt') {
-            this.promptRequestIds.add(message.id);
+        return this.mapResponse(message);
+    }
+
+    private trackRequest(id: unknown, method: string): void {
+        const key = requestKey(id);
+        if (key === undefined) {
+            return;
         }
-        if (message.method === 'session/update') {
-            return this.mapSessionUpdate(asRecord(asRecord(message.params)?.update));
+        if (isAgentMethod(method)) {
+            this.agentRequests.add(key);
+        } else {
+            this.acpxRequests.set(key, method);
         }
+    }
+
+    private mapResponse(message: JsonRecord): ChatEvent | null {
+        const key = requestKey(message.id);
         const result = asRecord(message.result);
-        // Only the prompt turn's result carries a stop reason; other results
-        // answer the agent's own requests (file reads, permissions).
+        // Only the prompt turn's result carries a stop reason.
         if (result && typeof result.stopReason === 'string') {
+            this.promptCompleted = true;
+            this.forgetRequest(key);
             return this.mapUsage(asRecord(result.usage));
         }
+        // acpx answering the agent: a failed file read is the agent's to recover from.
+        if (key !== undefined && this.agentRequests.delete(key)) {
+            return null;
+        }
+        const method = this.forgetRequest(key);
+        const error = asRecord(message.error);
+        if (error) {
+            // Surfaced only if acpx then exits non-zero.
+            this.recordError(message.id, method, error);
+        }
         return null;
+    }
+
+    private forgetRequest(key: string | undefined): string | undefined {
+        if (key === undefined) {
+            return undefined;
+        }
+        const method = this.acpxRequests.get(key);
+        this.acpxRequests.delete(key);
+        return method;
     }
 
     private mapSessionUpdate(update: JsonRecord | undefined): ChatEvent | null {
@@ -161,13 +238,17 @@ class AcpxEventParser {
         }
     }
 
-    private recordError(id: unknown, message: string | undefined): void {
+    private recordError(id: unknown, method: string | undefined, error: JsonRecord): void {
+        if (asRecord(error.data)?.detailCode === UNSUPPORTED_PROMPT_CONTENT) {
+            this.rejectedPromptContent = true;
+        }
+        const message = nonEmptyString(error.message);
         if (message === undefined) {
             return;
         }
         if (id === null) {
             this.acpxError = message;
-        } else if (this.promptRequestIds.has(id)) {
+        } else if (method === 'session/prompt') {
             this.promptError = message;
         }
         this.lastError = message;
@@ -268,7 +349,8 @@ class AcpxEventParser {
 
 /** One acpx process: it reports `done` exactly once (on exit, spawn error or
  *  abort) and calls `onRunComplete` exactly once, after the process is gone,
- *  so files it may still read outlive it. */
+ *  so staged images outlive it; a run handed to its image-less retry does
+ *  neither and leaves both to the retry. */
 class AcpxRun {
     private finished = false;
     private released = false;
@@ -286,7 +368,9 @@ class AcpxRun {
         private readonly child: ChildProcess,
         private readonly onEvent: (event: ChatEvent) => void,
         private readonly onRunComplete: (() => void) | undefined,
-        private readonly onExit: (run: AcpxRun) => void
+        private readonly onExit: (run: AcpxRun) => void,
+        /** Restarts the send without image blocks, handing it this run's listener. */
+        private readonly retryWithoutImages?: () => void
     ) {
         child.stdout?.on('data', (chunk: Buffer) => this.onStdout(this.stdoutDecoder.write(chunk)));
         child.stderr?.on('data', (chunk: Buffer) => this.onStderr(this.stderrDecoder.write(chunk)));
@@ -330,7 +414,7 @@ class AcpxRun {
         this.pendingLineLength += piece.length;
         if (this.pendingLineLength > STDOUT_LINE_MAX_CHARS) {
             log.warn(`dropping an acpx output line over ${STDOUT_LINE_MAX_CHARS} characters`);
-            this.takePendingLine();
+            this.parser.noteDroppedLine(this.takePendingLine().slice(0, DROPPED_LINE_PREFIX_CHARS));
             this.droppingOversizedLine = true;
         }
     }
@@ -374,16 +458,35 @@ class AcpxRun {
         if (!this.finished && !this.droppingOversizedLine) {
             this.emitLine(this.takePendingLine());
         }
+        if (!this.finished && this.retryWithoutImages && this.parser.rejectedPromptContent) {
+            this.handOverToRetry();
+            return;
+        }
+        if (!this.finished && this.deniedAfterAnswer(code)) {
+            this.onEvent({ type: 'text', text: PERMISSIONS_DENIED_NOTICE });
+        }
         this.finish(this.exitFailure(code, signal));
         this.release();
     }
 
+    private handOverToRetry(): void {
+        this.finished = true;
+        this.released = true;
+        clearTimeout(this.killTimer);
+        this.onExit(this);
+        this.retryWithoutImages?.();
+    }
+
+    /** acpx exits 5 when it denied permissions, even though the turn went on to answer. */
+    private deniedAfterAnswer(code: number | null): boolean {
+        return code === ACPX_PERMISSION_DENIED_EXIT && this.parser.promptCompleted;
+    }
+
     private exitFailure(code: number | null, signal: NodeJS.Signals | null): ChatEvent | null {
-        if (code === 0 || this.parser.reportedError) {
+        if (code === 0 || this.parser.reportedError || this.deniedAfterAnswer(code)) {
             return null;
         }
-        const reason = code === null ? `acpx was terminated by ${signal}` : `acpx exited with code ${code}`;
-        const message = this.parser.failureMessage ?? (this.stderrTail.trim() || reason);
+        const message = this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal));
         log.error(`acpx error: ${message}`);
         return { type: 'error', message };
     }
@@ -430,7 +533,7 @@ class AcpxRun {
         }
         try {
             if (process.platform === 'win32') {
-                spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => undefined);
+                spawn(taskkillPath(), ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' }).on('error', () => undefined);
             } else {
                 process.kill(-pid, signal);
             }
@@ -438,6 +541,70 @@ class AcpxRun {
             this.child.kill(signal);
         }
     }
+}
+
+/** By absolute path, so a taskkill planted in the workspace is never the one run. */
+function taskkillPath(): string {
+    return path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+}
+
+function exitReason(code: number | null, signal: NodeJS.Signals | null): string {
+    if (code === null) {
+        return `acpx was terminated by ${signal}`;
+    }
+    return code === ACPX_PERMISSION_DENIED_EXIT
+        ? 'acpx denied a tool permission the agent needed'
+        : `acpx exited with code ${code}`;
+}
+
+type PromptBlock = { type: 'text'; text: string } | { type: 'image'; mimeType: string; data: string };
+
+/** Everything one acpx launch needs besides its prompt. */
+type RunRequest = {
+    launch: AcpxLaunch;
+    args: string[];
+    cwd: string;
+    onEvent: (event: ChatEvent) => void;
+    onRunComplete: (() => void) | undefined;
+};
+
+const imageBlock = (image: PromptImage): PromptBlock => ({ type: 'image', mimeType: image.mimeType, data: image.data });
+const imageNote = (image: PromptImage): PromptBlock => ({ type: 'text', text: `[Image "${image.name}" not sent: this agent does not accept images]` });
+
+/** The prompt as ACP content blocks, each staged image marker replaced by `render(image)`. */
+function promptBlocks(fullPrompt: string, render: (image: PromptImage) => PromptBlock): PromptBlock[] {
+    const blocks: PromptBlock[] = [];
+    const pushText = (text: string) => {
+        const last = blocks[blocks.length - 1];
+        if (last?.type === 'text') {
+            last.text += text;
+        } else if (text !== '' || blocks.length === 0) {
+            blocks.push({ type: 'text', text });
+        }
+    };
+    let textStart = 0;
+    for (const match of fullPrompt.matchAll(PROMPT_IMAGE_MARKER)) {
+        const image = stagedPromptImage(match[1]);
+        if (image === undefined) {
+            continue;
+        }
+        pushText(fullPrompt.slice(textStart, match.index));
+        const block = render(image);
+        if (block.type === 'text') {
+            pushText(block.text);
+        } else {
+            blocks.push(block);
+        }
+        textStart = match.index + match[0].length;
+    }
+    pushText(fullPrompt.slice(textStart));
+    return blocks;
+}
+
+/** acpx trims stdin text and parses one starting with `[` as content blocks,
+ *  so the prompt always goes as blocks to arrive verbatim. */
+function encodePrompt(blocks: PromptBlock[]): Buffer {
+    return Buffer.from(JSON.stringify(blocks), 'utf8');
 }
 
 /** Completes a run that never got a process. */
@@ -501,27 +668,34 @@ export class ChatService {
         const configuredPermissions = vscode.workspace.getConfiguration('openclaw').get<string>('chat.permissions', 'approve-reads');
         const permissions = ChatService.getPermissionsForChatType(chatType, configuredPermissions);
         const fullPrompt = ChatService.composeFullPrompt(prompt, chatType);
-        const promptBytes = Buffer.byteLength(fullPrompt, 'utf8');
-        if (promptBytes > PROMPT_MAX_BYTES) {
-            const size = `${Math.ceil(promptBytes / 1024 / 1024)} MiB, limit ${PROMPT_MAX_BYTES / 1024 / 1024} MiB`;
+        const blocks = promptBlocks(fullPrompt, imageBlock);
+        const payload = encodePrompt(blocks);
+        if (payload.length > PROMPT_MAX_BYTES) {
+            const size = `${Math.ceil(payload.length / 1024 / 1024)} MiB, limit ${PROMPT_MAX_BYTES / 1024 / 1024} MiB`;
             log.error(`acpx prompt too large (${size})`);
             completeWithoutProcess(onEvent, onRunComplete,
                 `Prompt is too large for acpx (${size}). Remove attachments or shorten the message.`);
             return;
         }
         const launch = resolveAcpxLaunch();
-        if (launch === null) {
-            completeWithoutProcess(onEvent, onRunComplete, ACPX_NOT_FOUND_MESSAGE);
+        if ('missing' in launch) {
+            completeWithoutProcess(onEvent, onRunComplete, launch.missing === 'node' ? NODE_NOT_FOUND_MESSAGE : ACPX_NOT_FOUND_MESSAGE);
             return;
         }
+        const fallback = blocks.some(block => block.type === 'image') ? encodePrompt(promptBlocks(fullPrompt, imageNote)) : undefined;
+        const run: RunRequest = { launch, args: [...launch.args, ...ChatService.buildArgs(agent, permissions)], cwd, onEvent, onRunComplete };
+        this.startRun(run, payload, fallback);
+    }
 
-        const args = [...launch.args, ...ChatService.buildArgs(agent, permissions)];
-        log.info(`spawn ${launch.command} (args=${args.length}, cwd=${cwd})`);
+    /** Starts acpx on `payload`; with a `fallback`, an agent that refuses its
+     *  images gets the send again with the images as notes. */
+    private startRun(run: RunRequest, payload: Buffer, fallback: Buffer | undefined): void {
+        log.info(`spawn ${run.launch.command} (args=${run.args.length}, cwd=${run.cwd})`);
         let child: ChildProcess;
         try {
-            child = spawn(launch.command, args, {
-                cwd,
-                env: { ...process.env, ...launch.env },
+            child = spawn(run.launch.command, run.args, {
+                cwd: run.cwd,
+                env: { ...process.env },
                 stdio: ['pipe', 'pipe', 'pipe'],
                 shell: false,
                 windowsHide: true,
@@ -530,15 +704,19 @@ export class ChatService {
             });
         } catch (err) {
             log.error('acpx spawn threw', err);
-            completeWithoutProcess(onEvent, onRunComplete, err instanceof Error ? err.message : String(err));
+            completeWithoutProcess(run.onEvent, run.onRunComplete, err instanceof Error ? err.message : String(err));
             return;
         }
-        this.activeRun = new AcpxRun(child, onEvent, onRunComplete, (run) => {
-            if (this.activeRun === run) {
+        const retry = fallback === undefined ? undefined : () => {
+            run.onEvent({ type: 'text', text: IMAGES_NOT_SENT_NOTICE });
+            this.startRun(run, fallback, undefined);
+        };
+        this.activeRun = new AcpxRun(child, run.onEvent, run.onRunComplete, (exited) => {
+            if (this.activeRun === exited) {
                 this.activeRun = null;
             }
-        });
-        this.activeRun.writePrompt(ChatService.encodePrompt(fullPrompt));
+        }, retry);
+        this.activeRun.writePrompt(payload);
     }
 
     abort(): void {
@@ -563,12 +741,6 @@ export class ChatService {
         // The agent is always named: omitted, acpx would run the user's own
         // configured defaultAgent instead.
         return ['--format', 'json', ChatService.permissionFlag(permissions), agent, 'exec', '--file', '-'];
-    }
-
-    /** acpx trims stdin text and parses one starting with `[` as content
-     *  blocks, so the prompt goes as a text block to arrive verbatim. */
-    private static encodePrompt(fullPrompt: string): Buffer {
-        return Buffer.from(JSON.stringify([{ type: 'text', text: fullPrompt }]), 'utf8');
     }
 
     private static permissionFlag(permissions: string): string {

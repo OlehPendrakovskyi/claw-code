@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as os from 'os';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
 
@@ -12,8 +11,9 @@ import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, PROMPT_MAX_BYTES, UsageInfo } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
-import { EditorContext, ContextType, escapeXmlAttr, frameTaggedBlock } from './slashCommands';
-import { randomUUID } from 'crypto';
+import { EditorContext, ContextType, frameTaggedBlock } from './slashCommands';
+import { parseTransportLimits } from '../core/gatewayHandshake';
+import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 
 /** Shared output channel for chat panel logging. */
 export const log = vscode.window.createOutputChannel('OpenClaw Chat', { log: true });
@@ -263,45 +263,35 @@ function imageMimeByPath(p: string): string {
     }
 }
 
-/** Cap for image attachments: a large image would otherwise be
- *  base64-expanded in memory with no limit and overflow the Gateway's
- *  maximum payload. */
-const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+/** The size limits a transport puts on one send. */
+export type AttachmentLimits = {
+    /** Largest serialized prompt the transport carries, JSON escaping included. */
+    maxPayloadBytes: number;
+    /** Per-file cap on a text attachment. */
+    attachmentMaxBytes: number;
+    /** Per-file cap on an image attachment, before base64. */
+    attachmentMaxImageBytes: number;
+};
 
-/** Cap for text attachment reads: bounds the transfer itself so a file that
- *  grows after stat() cannot be loaded in full before any size check. */
-const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
+/** acpx: the whole prompt rides one JSON-RPC line (see PROMPT_MAX_BYTES). */
+const ACPX_ATTACHMENT_LIMITS: AttachmentLimits = {
+    maxPayloadBytes: PROMPT_MAX_BYTES,
+    attachmentMaxBytes: 10 * 1024 * 1024,
+    attachmentMaxImageBytes: 10 * 1024 * 1024,
+};
 
-/** Aggregate budget over all attachments in one send, counted in the encoded
- *  form that actually travels: base64 for images (4/3 of raw bytes), raw text
- *  for text files. Per-file limits alone do not bound the total, so several
- *  allowed 10 MiB images (~13.3 MiB base64 each) could exceed the Gateway's
- *  maximum payload while everything was already materialized in memory.
- *  Set below the Gateway's 25 MiB payload cap so prompt framing and history
- *  still fit alongside the attachments. The budget only bounds attachment
- *  bytes: the caller appends the base prompt (which a `/compact` send can
- *  fill with the full transcript) after this function returns, so callers
- *  pass `reservedPromptBytes` to subtract the final prompt's size plus a
- *  framing slack from the budget — otherwise a large enough prompt plus a
- *  fully-budgeted attachment set exceeds the transport's maximum payload
- *  and the send fails despite passing every check here. acpx caps its whole
- *  prompt at the same size. */
-const ATTACHMENT_TOTAL_MAX_BYTES = PROMPT_MAX_BYTES;
+/** Slack reserved beside the base prompt so RPC framing, the chat-type and
+ *  system prompts, and per-section decoration also fit the payload. */
+const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
 
-/** Aggregate cap on the raw validated image bytes materialized as temp-file
- *  snapshots for CLI transports (`imageMode: 'tempFile'`). Temp-file images
- *  charge only their path framing to the payload budget (their bytes travel
- *  on disk, not in the prompt), so without this cap a user could attach many
- *  10 MiB images and accumulate multi-gigabyte snapshot copies in the temp
- *  directory before the spawn. The cap keeps the materialized bytes in line with the inline
- *  transport's aggregate payload budget, so the two transports bound the same
- *  total. */
-const ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+/** An ACP image block's JSON around its base64, with the text block split it causes. */
+const IMAGE_BLOCK_FRAMING_BYTES = 256;
 
-/** Slack subtracted with the reserved prompt bytes so RPC framing, message
- *  history, and per-section decoration around the attachments also fit
- *  under the transport's payload cap. */
-export const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
+/** UTF-8 bytes of `text` once JSON-escaped, as every transport sends it;
+ *  control characters escape to six bytes each. */
+function jsonBytes(text: string): number {
+    return Buffer.byteLength(JSON.stringify(text), 'utf8') - 2;
+}
 
 /** Size of each read after the stat-sized first one: those reads only prove
  *  EOF or catch growth since stat(), so they stay small. */
@@ -342,23 +332,7 @@ const ATTACHMENTS_DROPPED_NOTE = '[Some attachments were skipped: attachment siz
 
 const SECTION_SEPARATOR = '\n\n';
 
-/** Longest snapshot file name: NAME_MAX is 255 bytes, minus the UUID prefix. */
-const SNAPSHOT_NAME_MAX_BYTES = 255 - 37;
-const SNAPSHOT_EXTENSION_MAX_BYTES = 16;
-
 class AttachmentTooLargeError extends Error {}
-
-/** Snapshot file name for an image: `<uuid>-<name>`, ASCII-only and within
- *  NAME_MAX, keeping a short extension so the reader can sniff the type. */
-function snapshotFileName(name: string): string {
-    const safeName = name.replace(/[^A-Za-z0-9._-]/g, '_');
-    const extension = path.extname(safeName);
-    const keptExtension = extension.length <= SNAPSHOT_EXTENSION_MAX_BYTES ? extension : '';
-    const stem = safeName
-        .slice(0, safeName.length - keptExtension.length)
-        .slice(0, SNAPSHOT_NAME_MAX_BYTES - keptExtension.length);
-    return `${randomUUID()}-${stem}${keptExtension}`;
-}
 
 /** Read an attachment through a verified handle (steps 1-5 of the hardening
  *  described on {@link readAttachments}), so the bytes returned are exactly
@@ -431,23 +405,29 @@ async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
 export async function readAttachments(
     attachments: Attachment[],
     options?: {
-        imageMode?: 'inline' | 'tempFile';
-        reservedPromptBytes?: number;
+        /** `inline`: data-URI images in the text (the gateway); `contentBlock`:
+         *  images staged as ACP image blocks (acpx, whose agents read only the workspace). */
+        imageMode?: 'inline' | 'contentBlock';
+        /** The prompt sent after the attachments, which shares their payload. */
+        basePrompt?: string;
+        /** Defaults to acpx's limits for `contentBlock`, the gateway's for `inline`. */
+        limits?: AttachmentLimits;
     }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
-    // Inline images charge their base64 to the budget; temp-file images only
-    // their path framing, since their bytes live on disk.
-    const transportBudget = Math.max(0, ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0));
+    const limits = options?.limits ?? (imageMode === 'inline' ? parseTransportLimits(undefined) : ACPX_ATTACHMENT_LIMITS);
+    const reserved = jsonBytes(options?.basePrompt ?? '') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES;
+    const transportBudget = Math.max(0, limits.maxPayloadBytes - reserved);
     let transportBytes = 0;
     const sections: string[] = [];
+    const stagedImageIds: string[] = [];
     let attachmentsDropped = false;
 
     const fitsTransport = (bytes: number) => transportBytes + bytes <= transportBudget;
 
-    /** Push a section charged with its separator, or report that it did not fit. */
-    const emitIfFits = (section: string): boolean => {
-        const cost = Buffer.byteLength(section, 'utf8') + SECTION_SEPARATOR.length;
+    /** Push a section charged with its separator and `extraBytes`, or report that it did not fit. */
+    const emitIfFits = (section: string, extraBytes = 0): boolean => {
+        const cost = jsonBytes(section) + jsonBytes(SECTION_SEPARATOR) + extraBytes;
         if (!fitsTransport(cost)) {
             return false;
         }
@@ -465,38 +445,10 @@ export async function readAttachments(
         }
     };
 
-    // Created lazily on the first temp-file image so text-only sends never
-    // touch the filesystem outside the workspace.
-    let snapshotDir: string | null = null;
-    // Raw bytes already snapshotted, bounded separately from the payload budget.
-    let snapshotBytes = 0;
-
-    const writeSnapshot = async (name: string, bytes: Buffer): Promise<string | null> => {
-        try {
-            if (snapshotDir === null) {
-                snapshotDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'chat-attach-'));
-            }
-            const snapshotPath = path.join(snapshotDir, snapshotFileName(name));
-            await fsp.writeFile(snapshotPath, bytes, { mode: 0o600 });
-            return snapshotPath;
-        } catch {
-            return null;
-        }
-    };
-
-    // The caller ties `dispose` to process completion (including cancellation
-    // and spawn failure) so repeated sends cannot accumulate snapshot bytes. A
-    // failed removal keeps the directory so a later dispose can retry.
+    // The caller ties `dispose` to run completion (including cancellation and
+    // spawn failure), so staged images never outlive their send.
     const dispose = async (): Promise<void> => {
-        if (snapshotDir === null) {
-            return;
-        }
-        try {
-            await fsp.rm(snapshotDir, { recursive: true, force: true });
-            snapshotDir = null;
-        } catch (err) {
-            log.warn(`Failed to remove attachment snapshots at ${snapshotDir}`, err);
-        }
+        stagedImageIds.splice(0).forEach(releasePromptImage);
     };
 
     const rejectionMarker = (err: unknown) => err instanceof AttachmentTooLargeError ? FILE_SIZE_LIMIT_MARKER : UNREADABLE_MARKER;
@@ -506,44 +458,37 @@ export async function readAttachments(
         // path downstream would reopen a TOCTOU window at the reader's open.
         let bytes: Buffer;
         try {
-            bytes = await readVerifiedBytes(att.path, MAX_IMAGE_BYTES);
+            bytes = await readVerifiedBytes(att.path, limits.attachmentMaxImageBytes);
         } catch (err) {
             emitRejection(att.path, rejectionMarker(err));
             return;
         }
+        // Padded base64 length, checked before the string is built.
+        const encodedBytes = Math.ceil(bytes.length / 3) * 4;
+        if (!fitsTransport(encodedBytes + IMAGE_BLOCK_FRAMING_BYTES)) {
+            emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
+            return;
+        }
+        const mimeType = imageMimeByPath(att.path);
+        const data = bytes.toString('base64');
         if (imageMode === 'inline') {
-            // Padded base64 length, checked before the string is built.
-            const encodedBytes = Math.ceil(bytes.length / 3) * 4;
-            const section = fitsTransport(encodedBytes)
-                ? `<image data="data:${imageMimeByPath(att.path)};base64,${bytes.toString('base64')}" />`
-                : null;
-            if (section === null || !emitIfFits(section)) {
+            if (!emitIfFits(`<image data="data:${mimeType};base64,${data}" />`)) {
                 emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             }
             return;
         }
-        // The CLI agent reads images from disk, so the verified bytes are snapshotted
-        // into a private temp file (0600, unique dir) and the CLI gets its path.
-        if (!fitsTransport(1) || snapshotBytes + bytes.length > ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES) {
+        const { id, marker } = stagePromptImage({ name: att.name, mimeType, data });
+        if (!emitIfFits(marker, encodedBytes + IMAGE_BLOCK_FRAMING_BYTES)) {
+            releasePromptImage(id);
             emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
             return;
         }
-        const snapshotPath = await writeSnapshot(att.name, bytes);
-        if (snapshotPath === null) {
-            emitRejection(att.path, UNREADABLE_MARKER);
-            return;
-        }
-        if (!emitIfFits(`<image path="${escapeXmlAttr(snapshotPath)}" />`)) {
-            await fsp.rm(snapshotPath, { force: true });
-            emitRejection(att.path, AGGREGATE_LIMIT_MARKER);
-            return;
-        }
-        snapshotBytes += bytes.length;
+        stagedImageIds.push(id);
     };
 
     const emitText = async (att: Attachment) => {
         try {
-            const bytes = await readVerifiedBytes(att.path, ATTACHMENT_TEXT_MAX_BYTES);
+            const bytes = await readVerifiedBytes(att.path, limits.attachmentMaxBytes);
             // NUL marks binary content.
             if (bytes.includes(0)) {
                 emitRejection(att.path, BINARY_FILE_MARKER);
@@ -551,7 +496,7 @@ export async function readAttachments(
             }
             const text = sliceLineRange(new TextDecoder().decode(bytes), att.lineStart, att.lineEnd);
             // Counted after decoding: invalid bytes expand to U+FFFD (3 bytes).
-            if (Buffer.byteLength(text, 'utf8') > ATTACHMENT_TEXT_MAX_BYTES) {
+            if (Buffer.byteLength(text, 'utf8') > limits.attachmentMaxBytes) {
                 throw new AttachmentTooLargeError();
             }
             if (!emitIfFits(frameFileBody(att.path, text))) {
@@ -650,7 +595,8 @@ function toFileSearchResult(uri: vscode.Uri, cwd: string): FileSearchResult {
     };
 }
 
-function openEditorFiles(cwd: string): FileSearchResult[] {
+/** Files open in editor tabs, the empty-query file-search offer. */
+export function openEditorFiles(cwd: string): FileSearchResult[] {
     const files: FileSearchResult[] = [];
     for (const group of vscode.window.tabGroups.all) {
         for (const tab of group.tabs) {

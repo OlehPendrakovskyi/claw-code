@@ -3,8 +3,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import type * as FspType from 'fs/promises';
-import { PROMPT_MAX_BYTES } from '../chat/ChatService';
-import { readAttachments, log } from '../webview/viewMessaging';
+import { stagedPromptImage } from '../chat/promptImages';
+import { readAttachments, AttachmentLimits } from '../webview/viewMessaging';
+
+/** The payload readAttachments reserves beside an empty base prompt. */
+const FRAMING_RESERVE_BYTES = 1024 * 1024;
+
+/** Limits leaving exactly `bytes` of payload budget for the attachments of an empty prompt. */
+function withBudget(bytes: number, caps: Partial<AttachmentLimits> = {}): AttachmentLimits {
+    return { maxPayloadBytes: FRAMING_RESERVE_BYTES + bytes, attachmentMaxBytes: 10 * 1024 * 1024, attachmentMaxImageBytes: 10 * 1024 * 1024, ...caps };
+}
 
 // The unmocked promises API: the default implementation must bypass the mock
 // below, whose realpath delegates through the swappable wrapper back to this
@@ -22,18 +30,8 @@ jest.mock('fs', () => {
         promises: {
             ...actual.promises,
             realpath: (p: fs.PathLike) => (globalThis as any).__realpathImpl(p),
-            rm: (...args: Parameters<typeof FspType.rm>) =>
-                ((globalThis as any).__rmImpl ?? actual.promises.rm)(...args),
             lstat: (...args: Parameters<typeof FspType.lstat>) =>
                 ((globalThis as any).__lstatImpl ?? actual.promises.lstat)(...args),
-            mkdtemp: async (prefix: string) => {
-                if ((globalThis as any).__mkdtempError) {
-                    throw (globalThis as any).__mkdtempError;
-                }
-                const dir = await actual.promises.mkdtemp(prefix);
-                (globalThis as any).__createdDirs?.push(dir);
-                return dir;
-            },
         },
     };
 });
@@ -43,7 +41,6 @@ beforeEach(() => {
 afterEach(() => {
     (globalThis as any).__realpathImpl = undefined;
     (globalThis as any).__lstatImpl = undefined;
-    (globalThis as any).__mkdtempError = undefined;
     realpathImpl = (p) => realFsp.realpath(p as string);
 });
 
@@ -90,7 +87,7 @@ describe('viewMessaging', () => {
             try {
                 const big = path.join(fs.realpathSync(dir), 'big.txt');
                 fs.writeFileSync(big, 'a'.repeat(200 * 1024));
-                for (const imageMode of ['inline', 'tempFile'] as const) {
+                for (const imageMode of ['inline', 'contentBlock'] as const) {
                     const { prompt } = await readAttachments([{ name: 'big.txt', path: big, type: 'file' }], { imageMode });
                     expect(prompt).toContain('a'.repeat(200 * 1024));
                 }
@@ -126,7 +123,7 @@ describe('viewMessaging', () => {
                         { name: 'real.txt', path: realFile, type: 'file' },
                         { name: 'other.txt', path: other, type: 'file' },
                     ],
-                    { reservedPromptBytes: 20 * 1024 * 1024 - 5 * 1024 }
+                    { limits: withBudget(5 * 1024) }
                 );
                 // The swap is caught by the post-read check (the second stored-
                 // path lookup), so real.txt is dropped without consuming budget
@@ -257,7 +254,7 @@ describe('viewMessaging', () => {
 
         posixOnly('skips a text attachment containing NUL bytes as binary in both modes', async () => {
             const file = writeFixture('notes.txt', Buffer.from('hello from notepad', 'utf16le'));
-            for (const imageMode of ['inline', 'tempFile'] as const) {
+            for (const imageMode of ['inline', 'contentBlock'] as const) {
                 const { prompt } = await readAttachments([{ name: 'notes.txt', path: file, type: 'file' }], { imageMode });
                 expect(prompt).toContain('[Binary file skipped]');
                 expect(prompt).not.toContain('\0');
@@ -269,7 +266,7 @@ describe('viewMessaging', () => {
             const file = writeFixture('big.ts', lines.join('\n'));
             const { prompt } = await readAttachments(
                 [{ name: 'big.ts', path: file, type: 'file', lineStart: 1, lineEnd: 3 }],
-                { imageMode: 'tempFile' }
+                { imageMode: 'contentBlock' }
             );
             expect(prompt).toContain(lines.slice(0, 3).join('\n'));
             expect(prompt).not.toContain('line 4 ');
@@ -279,7 +276,7 @@ describe('viewMessaging', () => {
             const file = writeFixture('big.ts', `wanted\n${'y'.repeat(100 * 1024)}`);
             const { prompt } = await readAttachments(
                 [{ name: 'big.ts', path: file, type: 'file', lineStart: 1 }],
-                { reservedPromptBytes: 20 * 1024 * 1024 - 2 * 1024 }
+                { limits: withBudget(2 * 1024) }
             );
             expect(prompt).toContain('wanted');
         });
@@ -288,7 +285,7 @@ describe('viewMessaging', () => {
             const file = writeFixture('one-line.ts', 'z'.repeat(10 * 1024 * 1024 + 1));
             const { prompt } = await readAttachments(
                 [{ name: 'one-line.ts', path: file, type: 'file', lineStart: 1 }],
-                { imageMode: 'tempFile' }
+                { imageMode: 'contentBlock' }
             );
             expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
@@ -298,7 +295,7 @@ describe('viewMessaging', () => {
             const file = writeFixture('exact.txt', content);
             const { prompt } = await readAttachments(
                 [{ name: 'exact.txt', path: file, type: 'file' }],
-                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES - content.length }
+                { imageMode: 'contentBlock', limits: withBudget(content.length) }
             );
             expect(prompt).not.toContain(content);
             expect(Buffer.byteLength(prompt, 'utf8')).toBeLessThanOrEqual(content.length);
@@ -308,9 +305,36 @@ describe('viewMessaging', () => {
             const file = writeFixture('a.txt', 'content');
             const { prompt } = await readAttachments(
                 [{ name: 'a.txt', path: file, type: 'file' }],
-                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES }
+                { imageMode: 'contentBlock', limits: withBudget(0) }
             );
             expect(prompt).toBe('[Some attachments were skipped: attachment size limit reached]');
+        });
+
+        posixOnly('charges text by its JSON-escaped size, as it travels', async () => {
+            const control = '\x01'.repeat(1000);
+            const file = writeFixture('control.txt', control);
+            const { prompt } = await readAttachments(
+                [{ name: 'control.txt', path: file, type: 'file' }],
+                { imageMode: 'contentBlock', limits: withBudget(3000) }
+            );
+            expect(prompt).not.toContain(control);
+        });
+
+        posixOnly('reserves the base prompt by its JSON-escaped size', async () => {
+            const file = writeFixture('a.txt', 'body');
+            const basePrompt = '"'.repeat(1000);
+            const read = (budget: number) => readAttachments([{ name: 'a.txt', path: file, type: 'file' }], { basePrompt, limits: withBudget(budget) });
+            // The raw prompt is 1000 bytes, escaped 2000: only the escaped size leaves the file no room.
+            expect((await read(1500)).prompt).not.toContain('body');
+            expect((await read(2400)).prompt).toContain('body');
+        });
+
+        posixOnly('caps a text attachment at the transport\'s per-file limit', async () => {
+            const file = writeFixture('mid.txt', 'm'.repeat(4096));
+            const { prompt } = await readAttachments([{ name: 'mid.txt', path: file, type: 'file' }], {
+                limits: withBudget(1024 * 1024, { attachmentMaxBytes: 4095 }),
+            });
+            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
 
         posixOnly('reads a small attachment without allocating the size cap', async () => {
@@ -329,73 +353,6 @@ describe('viewMessaging', () => {
         });
     });
 
-    describe('readAttachments image snapshots', () => {
-        const posixOnly = process.platform === 'win32' ? it.skip : it;
-        let dir: string;
-        let image: string;
-        let createdDirs: string[];
-
-        beforeEach(() => {
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-snap-')));
-            image = path.join(dir, 'pic.png');
-            fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
-            createdDirs = [];
-            (globalThis as any).__createdDirs = createdDirs;
-        });
-
-        afterEach(() => {
-            (globalThis as any).__rmImpl = undefined;
-            (globalThis as any).__createdDirs = undefined;
-            for (const created of [dir, ...createdDirs]) {
-                fs.rmSync(created, { recursive: true, force: true });
-            }
-        });
-
-        posixOnly('keeps a long image name within NAME_MAX and keeps its extension', async () => {
-            const { prompt, dispose } = await readAttachments(
-                [{ name: `${'n'.repeat(300)}.png`, path: image, type: 'image' }],
-                { imageMode: 'tempFile' }
-            );
-            const snapshotPath = /<image path="([^"]+)"/.exec(prompt)![1];
-            expect(Buffer.byteLength(path.basename(snapshotPath))).toBeLessThanOrEqual(255);
-            expect(snapshotPath.endsWith('.png')).toBe(true);
-            expect(fs.existsSync(snapshotPath)).toBe(true);
-            await dispose();
-        });
-
-        posixOnly('logs instead of rejecting when snapshot removal fails, and retries on the next dispose', async () => {
-            const { dispose } = await readAttachments(
-                [{ name: 'pic.png', path: image, type: 'image' }],
-                { imageMode: 'tempFile' }
-            );
-            (globalThis as any).__rmImpl = async () => {
-                throw new Error('EBUSY');
-            };
-            await expect(dispose()).resolves.toBeUndefined();
-            expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('Failed to remove attachment snapshots'), expect.any(Error));
-            expect(fs.existsSync(createdDirs[0])).toBe(true);
-            (globalThis as any).__rmImpl = undefined;
-            await dispose();
-            expect(fs.existsSync(createdDirs[0])).toBe(false);
-        });
-
-        posixOnly('removes its snapshot directory when reading attachments throws', async () => {
-            (globalThis as any).__rmImpl = async (target: string) => {
-                if (!createdDirs.includes(target)) {
-                    throw new Error('EIO');
-                }
-                return realFsp.rm(target, { recursive: true, force: true });
-            };
-            // The budget fits the cheap pre-check but not the image section, so
-            // the fresh snapshot is removed through the failing rm.
-            await expect(readAttachments(
-                [{ name: 'pic.png', path: image, type: 'image' }],
-                { imageMode: 'tempFile', reservedPromptBytes: PROMPT_MAX_BYTES - 20 }
-            )).rejects.toThrow('EIO');
-            expect(createdDirs).toHaveLength(1);
-            expect(fs.existsSync(createdDirs[0])).toBe(false);
-        });
-    });
     describe('readAttachments verification', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
         const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -406,7 +363,7 @@ describe('viewMessaging', () => {
             fs.writeFileSync(file, content);
             return file;
         };
-        const readOne = (file: string, type: 'file' | 'image' = 'file', imageMode: 'inline' | 'tempFile' = 'inline') =>
+        const readOne = (file: string, type: 'file' | 'image' = 'file', imageMode: 'inline' | 'contentBlock' = 'inline') =>
             readAttachments([{ name: path.basename(file), path: file, type }], { imageMode });
 
         beforeEach(() => {
@@ -453,7 +410,7 @@ describe('viewMessaging', () => {
                 return realFsp.realpath(p as string);
             };
             Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
-            const { prompt } = await readOne(file, 'file', 'tempFile');
+            const { prompt } = await readOne(file, 'file', 'contentBlock');
             expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
 
@@ -463,8 +420,8 @@ describe('viewMessaging', () => {
             expect((await readOne(file)).prompt).toContain('windows body');
         });
 
-        posixOnly('reports an oversized image as over the size limit', async () => {
-            const image = writeFixture('huge.png', Buffer.alloc(10 * 1024 * 1024 + 1));
+        posixOnly('reports an image over the gateway\'s default image cap as over the size limit', async () => {
+            const image = writeFixture('huge.png', Buffer.alloc(6 * 1024 * 1024 + 1));
             const { prompt } = await readOne(image, 'image');
             expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
             expect(prompt).not.toContain('<image');
@@ -479,7 +436,6 @@ describe('viewMessaging', () => {
     describe('readAttachments images', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
         let dir: string;
-        let createdDirs: string[];
 
         const writeImage = (name: string, size = 4) => {
             const file = path.join(dir, name);
@@ -489,16 +445,13 @@ describe('viewMessaging', () => {
 
         beforeEach(() => {
             dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-img-')));
-            createdDirs = [];
-            (globalThis as any).__createdDirs = createdDirs;
         });
 
         afterEach(() => {
-            (globalThis as any).__createdDirs = undefined;
-            for (const created of [dir, ...createdDirs]) {
-                fs.rmSync(created, { recursive: true, force: true });
-            }
+            fs.rmSync(dir, { recursive: true, force: true });
         });
+
+        const stagedIds = (prompt: string) => [...prompt.matchAll(/<image ref="([0-9a-f-]{36})" \/>/g)].map(match => match[1]);
 
         posixOnly.each([
             ['a.png', 'image/png'], ['a.JPG', 'image/jpeg'], ['a.jpeg', 'image/jpeg'], ['a.gif', 'image/gif'],
@@ -511,66 +464,47 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('rejects an inline image the payload budget cannot carry', async () => {
-            const { prompt } = await readAttachments([writeImage('a.png', 3000)], {
-                reservedPromptBytes: 20 * 1024 * 1024 - 1000,
-            });
+            const { prompt } = await readAttachments([writeImage('a.png', 3000)], { limits: withBudget(1000) });
             expect(prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
             expect(prompt).not.toContain('base64');
         });
 
         posixOnly('rejects an inline image whose section framing overflows the budget', async () => {
-            const { prompt } = await readAttachments([writeImage('a.png', 3)], {
-                reservedPromptBytes: 20 * 1024 * 1024 - 10,
-            });
+            const { prompt } = await readAttachments([writeImage('a.png', 3)], { limits: withBudget(10) });
             expect(prompt).not.toContain('base64');
         });
 
-        posixOnly('snapshots several images into one private directory and removes it on dispose', async () => {
-            const { prompt, dispose } = await readAttachments([writeImage('a.png'), writeImage('b.png')], { imageMode: 'tempFile' });
-            const paths = [...prompt.matchAll(/<image path="([^"]+)"/g)].map(match => match[1]);
-            expect(paths).toHaveLength(2);
-            expect(new Set(paths.map(p => path.dirname(p))).size).toBe(1);
-            expect(fs.statSync(paths[0]).mode & 0o777).toBe(0o600);
-            await dispose();
-            expect(paths.some(p => fs.existsSync(p))).toBe(false);
+        posixOnly('takes the per-image cap from the transport limits', async () => {
+            const limits = withBudget(1024 * 1024, { attachmentMaxImageBytes: 99 });
+            const { prompt } = await readAttachments([writeImage('a.png', 100)], { limits });
+            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
 
-        posixOnly('truncates an overlong extension with the name instead of keeping it', async () => {
-            const { prompt, dispose } = await readAttachments(
-                [{ ...writeImage('a.png'), name: `${'n'.repeat(240)}.${'x'.repeat(20)}` }],
-                { imageMode: 'tempFile' }
-            );
-            const snapshotPath = /<image path="([^"]+)"/.exec(prompt)![1];
-            expect(Buffer.byteLength(path.basename(snapshotPath))).toBe(255);
-            expect(path.extname(snapshotPath)).toBe('');
+        posixOnly('stages images as ACP blocks for acpx and releases them on dispose', async () => {
+            const { prompt, dispose } = await readAttachments([writeImage('a.png'), writeImage('b.gif')], { imageMode: 'contentBlock' });
+            const ids = stagedIds(prompt);
+            expect(ids).toHaveLength(2);
+            expect(stagedPromptImage(ids[0])).toEqual({ name: 'a.png', mimeType: 'image/png', data: 'AQEBAQ==' });
+            expect(stagedPromptImage(ids[1])).toEqual({ name: 'b.gif', mimeType: 'image/gif', data: 'AQEBAQ==' });
+            expect(prompt).not.toContain('base64');
             await dispose();
+            expect(ids.map(stagedPromptImage)).toEqual([undefined, undefined]);
         });
 
-        posixOnly('caps the bytes snapshotted in one send', async () => {
-            const sevenMiB = 7 * 1024 * 1024;
+        posixOnly('charges a staged image\'s base64 against the payload budget', async () => {
+            const threeKiB = 3 * 1024;
             const { prompt, dispose } = await readAttachments(
-                [writeImage('a.png', sevenMiB), writeImage('b.png', sevenMiB), writeImage('c.png', sevenMiB)],
-                { imageMode: 'tempFile' }
+                [writeImage('a.png', threeKiB), writeImage('b.png', threeKiB)],
+                { imageMode: 'contentBlock', limits: withBudget(6 * 1024) }
             );
-            expect([...prompt.matchAll(/<image path=/g)]).toHaveLength(2);
+            expect(stagedIds(prompt)).toHaveLength(1);
             expect(prompt).toContain('[Attachment skipped: aggregate attachment size limit reached]');
             await dispose();
         });
 
-        posixOnly('reports an image whose snapshot cannot be written as unreadable', async () => {
-            (globalThis as any).__mkdtempError = new Error('ENOSPC');
-            const { prompt, dispose } = await readAttachments([writeImage('a.png')], { imageMode: 'tempFile' });
-            expect(prompt).toContain('[Could not read file]');
-            expect(prompt).not.toContain('<image');
-            await expect(dispose()).resolves.toBeUndefined();
-        });
-
-        posixOnly('touches no temp directory for text-only sends', async () => {
-            const file = path.join(dir, 'a.txt');
-            fs.writeFileSync(file, 'text');
-            const { dispose } = await readAttachments([{ name: 'a.txt', path: file, type: 'file' }], { imageMode: 'tempFile' });
-            await dispose();
-            expect(createdDirs).toEqual([]);
+        posixOnly('stages nothing for a rejected image', async () => {
+            const { prompt } = await readAttachments([writeImage('a.png', 100)], { imageMode: 'contentBlock', limits: withBudget(50) });
+            expect(stagedIds(prompt)).toEqual([]);
         });
     });
 });
