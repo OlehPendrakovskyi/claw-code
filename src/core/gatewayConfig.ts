@@ -79,8 +79,18 @@ export class GatewayConfigService {
     }
   }
 
+  /** `hostname` as WHATWG URL normalizes it (lowercase, IPv6 bracketed and
+   *  compressed, IPv4-mapped IPv6 in hex). */
   private static isLoopbackHost(hostname: string): boolean {
-    return hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    const host = hostname.endsWith('.') ? hostname.slice(0, -1) : hostname;
+    if (host === 'localhost' || host.endsWith('.localhost') || host === '[::1]') {
+      return true;
+    }
+    const mappedV4 = /^\[::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}\]$/.exec(host);
+    if (mappedV4) {
+      return parseInt(mappedV4[1], 16) >> 8 === 127;
+    }
+    return /^127(?:\.\d{1,3}){3}$/.test(host);
   }
 
   /**
@@ -166,9 +176,21 @@ export class GatewayConfigService {
     const legacyToken = sites
       .map((site) => (typeof site.value === 'string' ? site.value.trim() : ''))
       .find((value) => value !== '');
-    const storedToken = await GatewayConfigService.getGatewayToken(context.secrets);
-    if (legacyToken && !storedToken) {
-      await GatewayConfigService.setGatewayToken(context.secrets, legacyToken);
+    let storedToken: string;
+    try {
+      storedToken = await GatewayConfigService.getGatewayToken(context.secrets);
+      if (legacyToken && !storedToken) {
+        await GatewayConfigService.setGatewayToken(context.secrets, legacyToken);
+      }
+    } catch (err) {
+      // The plaintext stays until SecretStorage holds the token: deleting it
+      // now would lose the credential.
+      log.warn(`legacy token migration could not use SecretStorage: ${err instanceof Error ? err.message : String(err)}`);
+      GatewayConfigService.warnMigrationIncomplete(
+        'Legacy plaintext gateway token could not be saved to SecretStorage and was left in settings. ' +
+        'Check the OS keyring, then reload the window.'
+      );
+      return 'incomplete';
     }
     // Most likely a rotation typed into settings.json, which never replaces
     // the saved token.
@@ -192,14 +214,19 @@ export class GatewayConfigService {
       }
       return 'completed';
     }
-    if (!GatewayConfigService.cleanupWarningShown) {
-      GatewayConfigService.cleanupWarningShown = true;
-      void vscode.window.showWarningMessage(
-        'Legacy plaintext gateway token could not be removed from settings. ' +
-        'Delete `openclaw.gateway.token` from settings.json manually.'
-      );
-    }
+    GatewayConfigService.warnMigrationIncomplete(
+      'Legacy plaintext gateway token could not be removed from settings. ' +
+      'Delete `openclaw.gateway.token` from settings.json manually.'
+    );
     return 'incomplete';
+  }
+
+  private static warnMigrationIncomplete(message: string): void {
+    if (GatewayConfigService.cleanupWarningShown) {
+      return;
+    }
+    GatewayConfigService.cleanupWarningShown = true;
+    void vscode.window.showWarningMessage(message);
   }
 
   /**

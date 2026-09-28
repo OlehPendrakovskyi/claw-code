@@ -8,6 +8,7 @@
  */
 
 import type { SessionRow } from './contract';
+import { isAssistantRole } from './gatewayEventMapping';
 
 /** Result of parsing an unknown `sessions.list` payload. */
 export type ParsedSessionList = {
@@ -186,9 +187,13 @@ export type HistoryMessage = {
 /** Cold-placeholder message text shown for non-materialized sessions. */
 export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will load once it starts.';
 
-/** Transcript role of a history row, or null for tool-only/unknown rows. */
+/** Transcript role of a history row, or null for tool-only/unknown rows. An omitted role is
+ *  assistant output, as in the live stream (isAssistantRole). */
 function historyRole(role: unknown): HistoryMessage['role'] | null {
-  return role === 'user' || role === 'assistant' ? role : null;
+  if (role === 'user') {
+    return 'user';
+  }
+  return isAssistantRole(role) ? 'assistant' : null;
 }
 
 /**

@@ -14,7 +14,15 @@
  */
 
 import type { ClientHello, HelloOk, RpcErrorPayload, RpcRequestFrame, RpcResponseFrame, SessionEvent } from './contract';
-import { GatewayAuthRejectionCodes, GatewayEvents, GatewayRpcMethods } from './contract';
+import {
+  ConnectErrorDetailCodes,
+  GATEWAY_PREAUTH_PAYLOAD_LIMIT_BYTES,
+  GATEWAY_PROTOCOL_VERSION,
+  GatewayEvents,
+  GatewayRpcMethods,
+} from './contract';
+import type { GatewayTransportLimits, HandshakeRejection } from './gatewayHandshake';
+import { classifyHandshakeRejection, GatewayConnectError, parseTransportLimits } from './gatewayHandshake';
 import { asNonEmptyString, asString } from './typeGuards';
 import { createHash, randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
@@ -92,9 +100,11 @@ type PendingSend = {
   issued: boolean;
   /** The send steers a run the gateway already started: aborting it must abort that run. */
   steersRemoteRun: boolean;
-  /** The send replaced an issued, unacknowledged send: that run's frames are this send's to claim. */
+  /** The send replaced an issued, unacknowledged send: that run's frames and end are this send's to claim. */
   continuesIssuedRun: boolean;
 };
+
+type RunningCatchUp = { allowUnscopedCatchUp: boolean; rerunUnscoped: boolean; done: Promise<void> };
 
 /** A frame that arrived before the acknowledgement of the issued sends it may belong to. */
 type BufferedFrame = { evt: SessionEvent; key: string; sends: Set<string> };
@@ -102,7 +112,6 @@ type BufferedFrame = { evt: SessionEvent; key: string; sends: Set<string> };
 const silentLogger: Logger = { info() {}, warn() {}, error() {} };
 
 const CLIENT_VERSION = '0.2.1';
-const PROTOCOL_VERSION = 4;
 const REQUEST_TIMEOUT_MS = 30_000;
 /** Max wait for connect.challenge before sending connect anyway (protocol/auth.md allows legacy fallback). */
 const CHALLENGE_FALLBACK_MS = 500;
@@ -115,12 +124,21 @@ const SEEDED_FINGERPRINT_LIMIT = 500;
 /** Cap on remembered complete-message ids per session (oldest evicted). */
 const SEEN_MESSAGE_LIMIT = 500;
 
+/** Longest gateway-supplied message kept in errors shown to the user. */
+const GATEWAY_MESSAGE_LIMIT = 300;
+
+/** A token large enough to push `connect` past the pre-auth limit would be dropped by the gateway. */
+const OVERSIZED_CONNECT_REJECTION: HandshakeRejection = {
+  kind: 'permanent',
+  code: 'CONNECT_FRAME_TOO_LARGE',
+  message: 'connect frame exceeds the 64 KiB pre-auth limit',
+  hint: 'The configured gateway token is too large — run "OpenClaw: Connect to Gateway" to update it.',
+};
+
 const URL_IN_TEXT = /\b(?:wss?|https?):\/\/[^\s"'<>]+/gi;
 
 const NOT_CONNECTED_MESSAGE =
   'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.';
-const CREDENTIALS_REJECTED_MESSAGE =
-  'The gateway rejected the configured credentials, so the run was interrupted. Update the gateway token and retry.';
 const PRE_SEND_HISTORY_FAILED_MESSAGE =
   'Pre-send history snapshot for this session failed; the send was aborted to avoid an unrecoverable response. Retry once the gateway accepts chat.history.';
 const PRE_SEND_NO_BOUNDARY_MESSAGE =
@@ -139,12 +157,6 @@ function errorMessage(err: unknown): string {
 /** Error code of an untrusted `res.error` payload. */
 function errorCode(error: unknown): string {
   return asString((error as Partial<RpcErrorPayload> | null | undefined)?.code, 'unknown');
-}
-
-/** Whether a handshake error rejects the credentials themselves (not retryable as-is). */
-function isAuthRejection(error: unknown): boolean {
-  const retryable = (error as Partial<RpcErrorPayload> | null | undefined)?.retryable;
-  return retryable !== true && GatewayAuthRejectionCodes.has(errorCode(error));
 }
 
 function isHelloOk(payload: unknown): payload is HelloOk {
@@ -192,15 +204,17 @@ function rowFingerprint(row: MessageFields): string {
   return `${role}|${shape}|${createHash('sha256').update(text).digest('base64')}`;
 }
 
-/** Longest suffix of the seeded boundary that equals a prefix of the replayed rows:
- *  a history tail is a sliding window ([A,B,C] then [B,C,D]), so a row-by-row
- *  prefix match would miss the boundary once a new row shifts it. */
+/** How many leading replayed rows the seeded boundary covers: the longest suffix of the boundary
+ *  that equals a prefix of the replayed rows. A history tail is a sliding window ([A,B,C] then
+ *  [B,C,D]), so a row-by-row prefix match would miss a shifted boundary. Delta-only rows never
+ *  enter the boundary, so they are matched around, and covered when they sit inside it. */
 function boundaryOverlap(seeded: string[], rows: HistoryRow[]): number {
-  const head = rows.slice(0, seeded.length).map(rowFingerprint);
+  const fingerprinted = rows.flatMap((row, index) => (isDeltaOnlyRow(row) ? [] : [index])).slice(0, seeded.length);
+  const head = fingerprinted.map((index) => rowFingerprint(rows[index]));
   for (let overlap = head.length; overlap > 0; overlap--) {
     const tail = seeded.slice(seeded.length - overlap);
     if (tail.every((fingerprint, i) => fingerprint === head[i])) {
-      return overlap;
+      return fingerprinted[overlap - 1] + 1;
     }
   }
   return 0;
@@ -246,6 +260,10 @@ export class GatewayChatService {
   private readonly subscribedSessions = new Set<string>();
   /** In-flight `sessions.messages.subscribe` RPCs, shared by concurrent callers. */
   private readonly pendingSubscribeBySession = new Map<string, Promise<boolean>>();
+  /** One catch-up per session at a time: overlapping replays of the same tail would render it twice. */
+  private readonly catchUpsBySession = new Map<string, RunningCatchUp>();
+  /** Sessions whose run was cancelled while disconnected: `chat.abort` goes out after the next handshake. */
+  private readonly pendingRemoteAborts = new Set<string>();
   /** Sessions with a `chat.abort` in flight: their late events must not repopulate the cancelled thread. */
   private readonly abortingSessions = new Set<string>();
 
@@ -267,6 +285,11 @@ export class GatewayChatService {
 
   /** Latest hello-ok payload from the active connection, if any. */
   hello: HelloOk | null = null;
+  private readonly connectionListeners = new Set<(connected: boolean) => void>();
+  /** Last state told to the listeners: a hello-ok followed by a same-tick close announces nothing. */
+  private announcedConnected = false;
+  /** Limits of the latest hello-ok; gateway defaults until the first handshake. */
+  private transportLimits: GatewayTransportLimits = parseTransportLimits(undefined);
 
   constructor(deps: GatewayChatServiceOptions) {
     this.url = deps.url;
@@ -280,6 +303,27 @@ export class GatewayChatService {
   /** Whether the socket is currently open and handshook. */
   get isRunning(): boolean {
     return this.liveWs !== null;
+  }
+
+  /** Observe handshake completions and socket losses; returns the unsubscribe. */
+  onConnectionStateChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
+  }
+
+  private announceConnection(connected: boolean): void {
+    if (this.announcedConnected === connected) {
+      return;
+    }
+    this.announcedConnected = connected;
+    for (const listener of [...this.connectionListeners]) {
+      listener(connected);
+    }
+  }
+
+  /** Payload and attachment limits the gateway advertised on the latest handshake. */
+  getTransportLimits(): GatewayTransportLimits {
+    return { ...this.transportLimits };
   }
 
   /** Identity of the configured endpoint, for caches that credential changes must invalidate.
@@ -314,6 +358,8 @@ export class GatewayChatService {
       this.retireTranscriptSinks(sessionKey);
     }
     this.clearPreAckState();
+    // A cancelled run on the old endpoint must not be aborted on a different one.
+    this.pendingRemoteAborts.clear();
     this.deltaCursorBySession.clear();
     this.seededCatchUpFingerprints.clear();
     this.seenMessageIdsBySession.clear();
@@ -393,14 +439,17 @@ export class GatewayChatService {
       throw new Error('gateway connection closed during the handshake');
     }
     this.hello = hello;
+    this.transportLimits = parseTransportLimits(hello.policy);
     this.reconnectAttempt = 0;
     ws.on('message', (data: unknown) => {
       if (this.liveWs === ws) {
         this.handleMessage(data);
       }
     });
+    this.flushPendingAborts();
     this.resubscribeSessions();
     this.logger.info(`gateway connected protocol=${String(hello.protocol)}`);
+    this.announceConnection(true);
   }
 
   /**
@@ -422,8 +471,8 @@ export class GatewayChatService {
     this.ws = ws;
     return new Promise<HelloOk>((resolve, reject) => {
       let settled = false;
-      // Rejected credentials cannot succeed on retry: stop reconnecting until settings change.
-      let credentialsRejected = false;
+      // Kept for the close that follows the error frame (1008/1002): it must not reclassify the rejection.
+      let rejection: HandshakeRejection | null = null;
       let connectRequestId: string | null = null;
       let challengeTimer: ReturnType<typeof setTimeout> | undefined;
       const settle = (): boolean => {
@@ -445,13 +494,30 @@ export class GatewayChatService {
           /* already closed */
         }
       };
+      const failRejected = (rejected: HandshakeRejection): void => {
+        rejection = { ...rejected, message: this.redactGatewayMessage(rejected.message) };
+        const detail = rejection.message ? `: ${rejection.message}` : '';
+        // Only the live handshake listener reaches here, so the handshake is still unsettled.
+        settle();
+        reject(new GatewayConnectError(`gateway handshake rejected code=${rejection.code}${detail}`, rejection));
+        try {
+          ws.close();
+        } catch {
+          /* already closed */
+        }
+      };
       const sendHello = (): void => {
         if (connectRequestId !== null) return;
         clearTimeout(challengeTimer);
         connectRequestId = this.allocId();
         const params: ClientHello = this.buildHello();
         const frame: RpcRequestFrame = { type: 'req', id: connectRequestId, method: GatewayRpcMethods.connect, params };
-        ws.send(JSON.stringify(frame));
+        const serialized = JSON.stringify(frame);
+        if (Buffer.byteLength(serialized) > GATEWAY_PREAUTH_PAYLOAD_LIMIT_BYTES) {
+          failRejected(OVERSIZED_CONNECT_REJECTION);
+          return;
+        }
+        ws.send(serialized);
       };
       const onMessage = (data: unknown): void => {
         const frame = parseFrame(data);
@@ -461,8 +527,7 @@ export class GatewayChatService {
         }
         if (!frame || frame.id !== connectRequestId) return;
         if (frame.ok !== true) {
-          credentialsRejected = isAuthRejection(frame.error);
-          fail(`gateway handshake rejected code=${errorCode(frame.error)}`);
+          failRejected(classifyHandshakeRejection(frame.error));
           return;
         }
         if (!isHelloOk(frame.payload)) {
@@ -489,7 +554,7 @@ export class GatewayChatService {
           return;
         }
         abandon('gateway closed before handshake completed');
-        this.handleSocketClosed(credentialsRejected);
+        this.handleSocketClosed(rejection);
       };
       const handshakeTimer = setTimeout(() => fail('gateway handshake timed out'), HANDSHAKE_TIMEOUT_MS);
       ws.on('open', () => {
@@ -502,24 +567,35 @@ export class GatewayChatService {
   }
 
   /** The current socket closed: subscriptions and RPCs die with it. Runs survive a
-   *  reconnect, except when the gateway refused the credentials and none will follow. */
-  private handleSocketClosed(credentialsRejected: boolean): void {
+   *  reconnect, except after a permanent or pause rejection, when none follows until the
+   *  user reconnects or changes the settings. */
+  private handleSocketClosed(rejection: HandshakeRejection | null): void {
     this.liveWs = null;
+    this.announceConnection(false);
     this.forgetSubscriptions();
     this.preAckBufferedFrames = [];
     this.rejectAllPending('gateway connection closed');
-    if (credentialsRejected) {
-      this.logger.warn('gateway rejected the handshake; not reconnecting until the connection settings change');
-      this.finishRunSinks(CREDENTIALS_REJECTED_MESSAGE);
+    if (rejection && rejection.kind !== 'backoff') {
+      this.logger.warn(`gateway rejected the handshake code=${rejection.code}; not reconnecting until the connection settings change`);
+      this.finishRunSinks(`The gateway rejected this connection, so the run was interrupted. ${rejection.hint}`);
       return;
     }
-    this.scheduleReconnect();
+    this.scheduleReconnect(rejection ? this.minimumRetryDelay(rejection) : 0);
   }
 
-  private scheduleReconnect(): void {
+  /** A rate limit or a pending approval without a delay still must not be hammered. */
+  private minimumRetryDelay(rejection: HandshakeRejection): number {
+    if (rejection.retryAfterMs !== undefined) {
+      return rejection.retryAfterMs;
+    }
+    const slow = rejection.code === ConnectErrorDetailCodes.AUTH_RATE_LIMITED || rejection.code === ConnectErrorDetailCodes.PAIRING_REQUIRED;
+    return slow ? this.maxDelayMs : 0;
+  }
+
+  private scheduleReconnect(minimumDelayMs = 0): void {
     if (this.reconnectTimer) return;
     const attempt = this.reconnectAttempt++;
-    const delay = Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs);
+    const delay = Math.max(Math.min(this.baseDelayMs * 2 ** attempt, this.maxDelayMs), minimumDelayMs);
     this.logger.info(`gateway reconnect scheduled attempt=${attempt + 1} delayMs=${delay}`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -548,6 +624,7 @@ export class GatewayChatService {
     const ws = this.ws;
     this.ws = null;
     this.liveWs = null;
+    this.announceConnection(false);
     this.forgetSubscriptions();
     this.rejectAllPending(reason);
     try {
@@ -570,11 +647,24 @@ export class GatewayChatService {
     return this.token ? redacted.split(this.token).join('***') : redacted;
   }
 
+  /** A gateway message is shown to the user: strip credentials and cap its length. */
+  private redactGatewayMessage(message: string): string {
+    const redacted = this.redactCredentials(message);
+    return redacted.length > GATEWAY_MESSAGE_LIMIT ? `${redacted.slice(0, GATEWAY_MESSAGE_LIMIT)}…` : redacted;
+  }
+
   private buildHello(): ClientHello {
     return {
-      minProtocol: PROTOCOL_VERSION,
-      maxProtocol: PROTOCOL_VERSION,
-      client: { id: 'claw-code', version: CLIENT_VERSION, platform: process.platform, mode: 'operator' },
+      minProtocol: GATEWAY_PROTOCOL_VERSION,
+      maxProtocol: GATEWAY_PROTOCOL_VERSION,
+      // The gateway's enums have no id for third-party clients; gateway-client/backend is the documented one.
+      client: {
+        id: 'gateway-client',
+        displayName: 'Claw Code',
+        version: CLIENT_VERSION,
+        platform: process.platform,
+        mode: 'backend',
+      },
       role: 'operator',
       scopes: ['operator.read', 'operator.write'],
       auth: { token: this.token },
@@ -830,10 +920,10 @@ export class GatewayChatService {
       onSessionResolved,
       issued: false,
       steersRemoteRun: this.hasRemoteRun(sessionKey),
-      continuesIssuedRun: replacedSend !== undefined && this.buffersFrames(replacedSend),
+      continuesIssuedRun: replacedSend !== undefined && this.ownsLiveRun(replacedSend),
     };
     if (replacedSend) {
-      this.retagBufferedFrames(replacedSend.id, send.continuesIssuedRun ? send.id : null);
+      this.retagBufferedFrames(replacedSend.id, this.buffersMessages(send) ? send.id : null);
     }
     this.runSinksBySession.set(sessionKey, onEvent);
     this.preAckSends.set(sessionKey, send);
@@ -1022,7 +1112,7 @@ export class GatewayChatService {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
-    const abortRemotely = this.liveWs !== null && this.hasRemoteRun(key);
+    const remoteRun = this.hasRemoteRun(key);
     const send = this.preAckSends.get(key);
     if (send) {
       this.retirePreAckSend(send);
@@ -1031,19 +1121,36 @@ export class GatewayChatService {
       this.detachRunSink(key, runSink);
     }
     this.clearSessionDeltaBookkeeping(key);
-    if (!abortRemotely) {
-      runSink?.({ type: 'done' });
+    if (remoteRun && this.liveWs) {
+      this.sendAbort(key, runSink);
       return;
     }
-    this.abortingSessions.add(key);
-    this.send(GatewayRpcMethods.chatAbort, { sessionKey: key })
+    if (remoteRun) {
+      // The run keeps going on the gateway during a reconnect gap: abort it once connected.
+      this.pendingRemoteAborts.add(key);
+    }
+    runSink?.({ type: 'done' });
+  }
+
+  /** `chat.abort` for one session; its late frames are dropped until the abort settles. */
+  private sendAbort(sessionKey: string, runSink?: ChatSink): void {
+    this.abortingSessions.add(sessionKey);
+    this.send(GatewayRpcMethods.chatAbort, { sessionKey })
       .catch((err: Error) => {
         this.logger.warn(`chat.abort failed ${err.message}`);
       })
       .finally(() => {
-        this.abortingSessions.delete(key);
+        this.abortingSessions.delete(sessionKey);
         runSink?.({ type: 'done' });
       });
+  }
+
+  private flushPendingAborts(): void {
+    const sessionKeys = [...this.pendingRemoteAborts];
+    this.pendingRemoteAborts.clear();
+    for (const sessionKey of sessionKeys) {
+      this.sendAbort(sessionKey);
+    }
   }
 
   /** Best-effort `chat.abort` for every remote run, sent before the socket closes; no reply arrives. */
@@ -1247,7 +1354,7 @@ export class GatewayChatService {
       return;
     }
     const send = this.preAckSends.get(routed.key);
-    if (send && this.buffersFrames(send)) {
+    if (send && this.buffersMessages(send)) {
       this.bufferPreAckFrame({ evt, key: routed.key, sends: new Set([send.id]) });
       return;
     }
@@ -1267,7 +1374,7 @@ export class GatewayChatService {
       return;
     }
     const send = this.preAckSends.get(key);
-    if (send && this.buffersFrames(send)) {
+    if (send && this.ownsLiveRun(send)) {
       this.bufferPreAckFrame({ evt, key, sends: new Set([send.id]) });
       return;
     }
@@ -1361,13 +1468,19 @@ export class GatewayChatService {
   /* Pre-ack buffering                                                 */
   /* ---------------------------------------------------------------- */
 
-  /** Frames may already stream for this send's run: its own `chat.send`, or the issued send it replaced. */
-  private buffersFrames(send: PendingSend): boolean {
+  /** The gateway may already run this send's own run: its `chat.send`, or the issued send it replaced. */
+  private ownsLiveRun(send: PendingSend): boolean {
     return send.issued || send.continuesIssuedRun;
   }
 
+  /** The session's live output belongs to this send once acknowledged, including the output of a
+   *  run it steers. A steered run's `session_end` still ends that run only, so ends are not held. */
+  private buffersMessages(send: PendingSend): boolean {
+    return this.ownsLiveRun(send) || send.steersRemoteRun;
+  }
+
   private issuedSendIds(): Set<string> {
-    return new Set([...this.preAckSends.values()].filter((send) => this.buffersFrames(send)).map((send) => send.id));
+    return new Set([...this.preAckSends.values()].filter((send) => this.ownsLiveRun(send)).map((send) => send.id));
   }
 
   /** Buffer a frame for a sinkless session that may be the resolved key of any issued send. */
@@ -1387,31 +1500,52 @@ export class GatewayChatService {
     }
   }
 
-  /** Forget a send that will never be acknowledged; frames no other send may own are dropped. */
+  /** Forget a send that will never be acknowledged; frames no other send may own go to observers. */
   private untagBufferedFrames(sendId: string): void {
     this.retagBufferedFrames(sendId, null);
   }
 
   /** Hand a replaced send's frames to its successor, or drop its claim when there is none. */
   private retagBufferedFrames(sendId: string, successorId: string | null): void {
+    const released: BufferedFrame[] = [];
     this.preAckBufferedFrames = this.preAckBufferedFrames.filter((frame) => {
       if (!frame.sends.delete(sendId)) return true;
       if (successorId) frame.sends.add(successorId);
-      return frame.sends.size > 0;
+      if (frame.sends.size > 0) return true;
+      released.push(frame);
+      return false;
     });
+    this.releaseToObservers(released);
   }
 
   /** Replay the frames an acknowledged send owns, in arrival order: those buffered for it under
    *  its resolved key. Its other frames belonged to other sessions and lose its tag. */
   private settleBufferedFrames(sendId: string, resolvedKey: string): void {
     const claimed: BufferedFrame[] = [];
+    const released: BufferedFrame[] = [];
     this.preAckBufferedFrames = this.preAckBufferedFrames.filter((frame) => {
       if (!frame.sends.delete(sendId)) return true;
       if (frame.key === resolvedKey) claimed.push(frame);
+      else if (frame.sends.size === 0) released.push(frame);
       return frame.key !== resolvedKey && frame.sends.size > 0;
     });
     for (const frame of claimed) {
       this.replayBufferedFrame(frame);
+    }
+    this.releaseToObservers(released);
+  }
+
+  /** Frames no send owns any more still reach the transcript observers of their session, never
+   *  a run sink: they belong to a run no local send started. */
+  private releaseToObservers(frames: BufferedFrame[]): void {
+    for (const frame of frames) {
+      const runSink = this.runSinksBySession.get(frame.key);
+      const observers = this.sessionSinks(frame.key).filter((sink) => sink !== runSink);
+      if (frame.evt.event === GatewayEvents.sessionEnd) {
+        for (const sink of observers) sink({ type: 'done' });
+      } else if (observers.length > 0) {
+        this.deliverSessionMessage(frame.evt, frame.key, observers);
+      }
     }
   }
 
@@ -1556,7 +1690,23 @@ export class GatewayChatService {
    * still pre-ack or registered during the RPC receives nothing, since its
    * own response is still in flight.
    */
-  private async catchUpHistory(sessionKey: string, allowUnscopedCatchUp: boolean): Promise<void> {
+  private catchUpHistory(sessionKey: string, allowUnscopedCatchUp: boolean): Promise<void> {
+    const running = this.catchUpsBySession.get(sessionKey);
+    if (running) {
+      // Its replay reaches every sink registered by then; only a wider scope needs another pass.
+      running.rerunUnscoped ||= allowUnscopedCatchUp && !running.allowUnscopedCatchUp;
+      return running.done;
+    }
+    const catchUp: RunningCatchUp = { allowUnscopedCatchUp, rerunUnscoped: false, done: Promise.resolve() };
+    catchUp.done = this.runCatchUp(sessionKey, allowUnscopedCatchUp).finally(() => {
+      this.catchUpsBySession.delete(sessionKey);
+      if (catchUp.rerunUnscoped) void this.catchUpHistory(sessionKey, true);
+    });
+    this.catchUpsBySession.set(sessionKey, catchUp);
+    return catchUp.done;
+  }
+
+  private async runCatchUp(sessionKey: string, allowUnscopedCatchUp: boolean): Promise<void> {
     if (!this.methodAdvertised(GatewayRpcMethods.chatHistory)) {
       return;
     }

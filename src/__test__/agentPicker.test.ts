@@ -255,6 +255,16 @@ describe('agentPicker', () => {
       ]);
     });
 
+    it('restores rows without a role as assistant output, as the live stream renders them', () => {
+      const messages = mapHistoryMessages({
+        messages: [{ text: 'omitted' }, { role: null, text: 'null role' }, { role: 0, text: 'junk role' }],
+      });
+      expect(messages).toEqual([
+        { role: 'assistant', content: 'omitted', messageId: null },
+        { role: 'assistant', content: 'null role', messageId: null },
+      ]);
+    });
+
     it('tolerates missing or malformed payloads', () => {
       expect(mapHistoryMessages(null)).toEqual([]);
       expect(mapHistoryMessages({})).toEqual([]);

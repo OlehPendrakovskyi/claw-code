@@ -270,6 +270,18 @@ describe('GatewayConfigService', () => {
             expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'remote-token');
         });
 
+        it('keeps the plaintext and reports incomplete when SecretStorage fails', async () => {
+            const model = new SettingsModel().set('global', 'legacy-token');
+            useSettings(model);
+            const store = secrets();
+            store.store.mockRejectedValue(new Error('keyring unavailable'));
+
+            await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('incomplete');
+
+            expect(model.has('global')).toBe(true);
+            expect(model.updates).toEqual([]);
+        });
+
         it('reports incomplete on a failed update and warns only once per session', async () => {
             const model = new SettingsModel().set('workspace', 'legacy-token');
             model.failUpdates = true;
@@ -435,6 +447,17 @@ describe('GatewayConfigService', () => {
             expect(sendsTokenInCleartext('ws://localhost:18789')).toBe(false);
             expect(sendsTokenInCleartext('ws://[::1]:18789')).toBe(false);
             expect(sendsTokenInCleartext('wss://gateway.example')).toBe(false);
+        });
+
+        it('recognizes loopback forms WHATWG URL normalizes', () => {
+            expect(sendsTokenInCleartext('ws://localhost.:1')).toBe(false);
+            expect(sendsTokenInCleartext('ws://gw.localhost:1')).toBe(false);
+            expect(sendsTokenInCleartext('ws://[::ffff:127.0.0.1]:1')).toBe(false);
+            expect(sendsTokenInCleartext('ws://[0:0:0:0:0:0:0:1]:1')).toBe(false);
+            expect(sendsTokenInCleartext('ws://127.1:1')).toBe(false);
+            expect(sendsTokenInCleartext('WS://LOCALHOST:1')).toBe(false);
+            expect(sendsTokenInCleartext('ws://[::ffff:10.0.0.1]:1')).toBe(true);
+            expect(sendsTokenInCleartext('ws://localhostx.example:1')).toBe(true);
         });
 
         it('does not treat a lookalike host as loopback', () => {

@@ -110,8 +110,25 @@ describe('gatewayEventMapping', () => {
         payload: { usage: { prompt_tokens: -4, completion_tokens: 'NaN', output_tokens: 9, total_tokens: 3 } },
       };
       expect(mapSessionEventToChatEvent(evt)).toEqual([
-        { type: 'usage', usage: { promptTokens: 0, completionTokens: 0, totalTokens: 3 } },
+        { type: 'usage', usage: { promptTokens: 0, completionTokens: 9, totalTokens: 3 } },
       ]);
+    });
+
+    it('falls back to prompt plus completion when the total is junk, and ignores booleans and strings', () => {
+      const junkTotal: SessionEvent = {
+        event: 'session.message',
+        payload: { usage: { promptTokens: 10, completionTokens: 5, totalTokens: 'n/a' } },
+      };
+      expect(mapSessionEventToChatEvent(junkTotal)).toEqual([
+        { type: 'usage', usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 } },
+      ]);
+      const nonNumbers: SessionEvent = { event: 'session.message', payload: { usage: { promptTokens: true, completionTokens: '7' } } };
+      expect(mapSessionEventToChatEvent(nonNumbers)).toEqual([]);
+      expect(mapSessionEventToChatEvent({ event: 'session.message', payload: { usage: [3] } })).toEqual([]);
+    });
+
+    it('ignores a tool call that is an array', () => {
+      expect(mapSessionEventToChatEvent({ event: 'session.message', payload: { toolCall: [] } })).toEqual([]);
     });
 
     it('keeps a total-only usage update and drops an all-zero one', () => {
@@ -136,6 +153,9 @@ describe('gatewayEventMapping', () => {
       expect(extractSessionKey({ sessionKey: 'agent:a:main' })).toBe('agent:a:main');
       expect(extractSessionKey({ session: { key: 'agent:b:main' } })).toBe('agent:b:main');
       expect(extractSessionKey({ sessionKey: 5 })).toBeNull();
+      expect(extractSessionKey({ sessionKey: '', session: { key: 'agent:c:main' } })).toBe('agent:c:main');
+      expect(extractSessionKey({ sessionKey: 5, session: { key: 'agent:d:main' } })).toBe('agent:d:main');
+      expect(extractSessionKey({ session: 'agent:e:main' })).toBeNull();
       expect(extractSessionKey({ sessionKey: '' })).toBeNull();
       expect(extractSessionKey(null)).toBeNull();
       expect(extractSessionKey('agent:a:main')).toBeNull();

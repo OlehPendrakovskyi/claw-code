@@ -65,12 +65,14 @@ export type RpcInboundFrame = RpcResponseFrame | RpcEventFrame;
 /* Handshake (handshake.md)                                            */
 /* ------------------------------------------------------------------ */
 
-/** Client identity block of the `connect` params. */
+/** Client identity block of the `connect` params: `id` and `mode` are closed enums on the
+ *  gateway (packages/gateway-protocol/src/client-info.ts); unknown values fail validation. */
 type ClientHelloClientInfo = {
-  id: string;
+  id: 'gateway-client';
+  displayName?: string;
   version: string;
   platform: string;
-  mode: 'operator' | 'node';
+  mode: 'backend';
 };
 
 /** Token auth block: `auth: { token }`. */
@@ -79,9 +81,8 @@ type ClientHelloAuth = {
 };
 
 /**
- * First frame the client sends: `connect` request params.
- * Only the operator-role subset is modelled here; node-specific fields
- * (`caps`, `commands`, `permissions`, `device`) are optional and additive.
+ * First frame the client sends: `connect` request params. The gateway validates
+ * them as a closed object, so no field outside this shape may be sent.
  */
 export type ClientHello = {
   /** Lowest protocol version the client supports (currently 4). */
@@ -95,7 +96,7 @@ export type ClientHello = {
   scopes: string[];
   caps?: string[];
   commands?: string[];
-  permissions?: Record<string, boolean | string>;
+  permissions?: Record<string, boolean>;
   auth: ClientHelloAuth;
   locale?: string;
   userAgent?: string;
@@ -107,8 +108,6 @@ export type ClientHello = {
     signedAt?: number;
     nonce?: string;
   };
-  /** Extra additive fields the Gateway may add later. */
-  [key: string]: unknown;
 };
 
 /** Server identity block from `hello-ok`. */
@@ -256,12 +255,73 @@ export type SessionEvent = {
 /* RPC method names (rpc-methods.md)                                   */
 /* ------------------------------------------------------------------ */
 
-/** Handshake error codes that reject the credentials themselves. */
-export const GatewayAuthRejectionCodes: ReadonlySet<string> = new Set([
-  'UNAUTHORIZED',
-  'FORBIDDEN',
-  'INVALID_TOKEN',
-]);
+/** Top-level `error.code` values (packages/gateway-protocol/src/gateway-error-details.ts). */
+export const GatewayErrorCodes = {
+  NOT_PAIRED: 'NOT_PAIRED',
+  INVALID_REQUEST: 'INVALID_REQUEST',
+  FORBIDDEN: 'FORBIDDEN',
+  UNAVAILABLE: 'UNAVAILABLE',
+} as const;
+
+/** Handshake failure codes carried in `error.details.code`
+ *  (packages/gateway-protocol/src/connect-error-details.ts). */
+export const ConnectErrorDetailCodes = {
+  AUTH_REQUIRED: 'AUTH_REQUIRED',
+  AUTH_UNAUTHORIZED: 'AUTH_UNAUTHORIZED',
+  AUTH_TOKEN_MISSING: 'AUTH_TOKEN_MISSING',
+  AUTH_TOKEN_MISMATCH: 'AUTH_TOKEN_MISMATCH',
+  AUTH_TOKEN_NOT_CONFIGURED: 'AUTH_TOKEN_NOT_CONFIGURED',
+  AUTH_PASSWORD_MISSING: 'AUTH_PASSWORD_MISSING',
+  AUTH_PASSWORD_MISMATCH: 'AUTH_PASSWORD_MISMATCH',
+  AUTH_PASSWORD_NOT_CONFIGURED: 'AUTH_PASSWORD_NOT_CONFIGURED',
+  AUTH_BOOTSTRAP_TOKEN_INVALID: 'AUTH_BOOTSTRAP_TOKEN_INVALID',
+  AUTH_DEVICE_TOKEN_MISMATCH: 'AUTH_DEVICE_TOKEN_MISMATCH',
+  AUTH_SCOPE_MISMATCH: 'AUTH_SCOPE_MISMATCH',
+  AUTH_RATE_LIMITED: 'AUTH_RATE_LIMITED',
+  AUTH_TAILSCALE_IDENTITY_MISSING: 'AUTH_TAILSCALE_IDENTITY_MISSING',
+  AUTH_TAILSCALE_PROXY_MISSING: 'AUTH_TAILSCALE_PROXY_MISSING',
+  AUTH_TAILSCALE_WHOIS_FAILED: 'AUTH_TAILSCALE_WHOIS_FAILED',
+  AUTH_TAILSCALE_IDENTITY_MISMATCH: 'AUTH_TAILSCALE_IDENTITY_MISMATCH',
+  AUTH_IDENTITY_HEADER_REQUIRED: 'AUTH_IDENTITY_HEADER_REQUIRED',
+  AUTH_VERIFIED_USER_REQUIRED: 'AUTH_VERIFIED_USER_REQUIRED',
+  AUTHENTICATED_PROFILE_UNAVAILABLE: 'AUTHENTICATED_PROFILE_UNAVAILABLE',
+  CONTROL_UI_ORIGIN_NOT_ALLOWED: 'CONTROL_UI_ORIGIN_NOT_ALLOWED',
+  CONTROL_UI_DEVICE_IDENTITY_REQUIRED: 'CONTROL_UI_DEVICE_IDENTITY_REQUIRED',
+  PROTOCOL_MISMATCH: 'PROTOCOL_MISMATCH',
+  CLIENT_VERSION_MISMATCH: 'CLIENT_VERSION_MISMATCH',
+  DEVICE_IDENTITY_REQUIRED: 'DEVICE_IDENTITY_REQUIRED',
+  DEVICE_AUTH_INVALID: 'DEVICE_AUTH_INVALID',
+  DEVICE_AUTH_DEVICE_ID_MISMATCH: 'DEVICE_AUTH_DEVICE_ID_MISMATCH',
+  DEVICE_AUTH_SIGNATURE_EXPIRED: 'DEVICE_AUTH_SIGNATURE_EXPIRED',
+  DEVICE_AUTH_NONCE_REQUIRED: 'DEVICE_AUTH_NONCE_REQUIRED',
+  DEVICE_AUTH_NONCE_MISMATCH: 'DEVICE_AUTH_NONCE_MISMATCH',
+  DEVICE_AUTH_SIGNATURE_INVALID: 'DEVICE_AUTH_SIGNATURE_INVALID',
+  DEVICE_AUTH_PUBLIC_KEY_INVALID: 'DEVICE_AUTH_PUBLIC_KEY_INVALID',
+  PAIRING_REQUIRED: 'PAIRING_REQUIRED',
+} as const;
+
+/** `error.details.recommendedNextStep` values a handshake failure may carry. */
+export const ConnectRecoverySteps = {
+  RETRY_WITH_DEVICE_TOKEN: 'retry_with_device_token',
+  UPDATE_AUTH_CONFIGURATION: 'update_auth_configuration',
+  UPDATE_AUTH_CREDENTIALS: 'update_auth_credentials',
+  WAIT_THEN_RETRY: 'wait_then_retry',
+  REVIEW_AUTH_CONFIGURATION: 'review_auth_configuration',
+} as const;
+
+/** Protocol version of the 2026.9.x gateways; the connect frame must satisfy min ≤ 4 ≤ max. */
+export const GATEWAY_PROTOCOL_VERSION = 4;
+
+/** The gateway rejects larger frames before the handshake completes (MAX_PREAUTH_PAYLOAD_BYTES). */
+export const GATEWAY_PREAUTH_PAYLOAD_LIMIT_BYTES = 64 * 1024;
+
+/** hello-ok.policy defaults of the gateway, used when a field is absent or malformed. */
+export const GatewayPolicyDefaults = {
+  maxPayloadBytes: 25 * 1024 * 1024,
+  maxBufferedBytes: 50 * 1024 * 1024,
+  attachmentMaxBytes: 20 * 1024 * 1024,
+  attachmentMaxImageBytes: 6 * 1024 * 1024,
+} as const;
 
 /** Operator RPC methods used by this extension (subset of the catalog). */
 export const GatewayRpcMethods = {

@@ -11,7 +11,7 @@
 import type { RpcInboundFrame, SessionEvent, SessionMessageFrame } from './contract';
 import { GatewayEvents } from './contract';
 import { asNonEmptyString, asString } from './typeGuards';
-import type { ChatEvent } from '../chat/ChatService';
+import type { ChatEvent, UsageInfo } from '../chat/ChatService';
 
 /** Session key used when the gateway does not echo one back. */
 export const DEFAULT_SESSION_KEY = 'main';
@@ -19,20 +19,18 @@ export const DEFAULT_SESSION_KEY = 'main';
 /** Cap for per-message streamed-delta tracking (least recently updated entry evicted). */
 export const DELTA_TRACK_LIMIT = 200;
 
-/** Coerce a wire-provided token count to a finite, non-negative number (0 otherwise). */
-const toFiniteTokenCount = (value: unknown): number => {
-  const n = Number(value ?? 0);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
-};
+/** A wire-provided token count: only a finite, non-negative number counts; strings and booleans do not. */
+function tokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
 
 /** Extract a `sessionKey` from an RPC payload, when present. */
 export function extractSessionKey(payload: unknown): string | null {
-  if (payload && typeof payload === 'object') {
-    const key = (payload as { sessionKey?: unknown; session?: { key?: unknown } }).sessionKey ??
-      (payload as { session?: { key?: unknown } }).session?.key;
-    return asNonEmptyString(key);
+  if (!payload || typeof payload !== 'object') {
+    return null;
   }
-  return null;
+  const { sessionKey, session } = payload as { sessionKey?: unknown; session?: unknown };
+  return asNonEmptyString(sessionKey) ?? asNonEmptyString((session as { key?: unknown } | null | undefined)?.key);
 }
 
 /** Whether a row or frame carries assistant content: an omitted or null role
@@ -95,7 +93,7 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
   if (!isAssistantRole(payload.role)) return [];
   const tc = payload.toolCall;
   const events: ChatEvent[] = [];
-  if (tc && typeof tc === 'object') {
+  if (tc && typeof tc === 'object' && !Array.isArray(tc)) {
     const id = asNonEmptyString(tc.id);
     events.push({
       type: 'toolCall',
@@ -119,24 +117,22 @@ export function mapSessionEventToChatEvent(evt: SessionEvent): ChatEvent[] {
       events.push({ type: 'text', text: fullText });
     }
   }
-  const u = payload.usage;
-  const promptTokens = toFiniteTokenCount(
-    u?.promptTokens ?? u?.prompt_tokens ?? u?.input_tokens
-  );
-  const completionTokens = toFiniteTokenCount(
-    u?.completionTokens ?? u?.completion_tokens ?? u?.output_tokens
-  );
-  // A frame may carry only `totalTokens` (a valid `Partial<UsageInfo>` usage
-  // update): dropping it because neither alias is present would hide a real
-  // usage update from the composer indicator, so preserve it as a fallback.
-  const totalRaw = toFiniteTokenCount(u?.totalTokens ?? u?.total_tokens);
-  const hasTotal = u?.totalTokens != null || u?.total_tokens != null;
-  const totalTokens = hasTotal ? totalRaw : promptTokens + completionTokens;
-  if (u && (promptTokens || completionTokens || totalTokens)) {
-    events.push({
-      type: 'usage',
-      usage: { promptTokens, completionTokens, totalTokens },
-    });
+  const usage = usageOf(payload.usage);
+  if (usage) {
+    events.push({ type: 'usage', usage });
   }
   return events;
+}
+
+/** Usage of a frame, each count read from the first alias holding a valid number. A total-only
+ *  frame is a real usage update; without a total it is prompt + completion. */
+function usageOf(u: SessionMessageFrame['usage']): UsageInfo | null {
+  if (!u || typeof u !== 'object' || Array.isArray(u)) {
+    return null;
+  }
+  const promptTokens = tokenCount(u.promptTokens) ?? tokenCount(u.prompt_tokens) ?? tokenCount(u.input_tokens) ?? 0;
+  const completionTokens =
+    tokenCount(u.completionTokens) ?? tokenCount(u.completion_tokens) ?? tokenCount(u.output_tokens) ?? 0;
+  const totalTokens = tokenCount(u.totalTokens) ?? tokenCount(u.total_tokens) ?? promptTokens + completionTokens;
+  return promptTokens || completionTokens || totalTokens ? { promptTokens, completionTokens, totalTokens } : null;
 }

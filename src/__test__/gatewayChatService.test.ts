@@ -3,6 +3,7 @@
  */
 
 import { DEFAULT_SESSION_KEY, GatewayChatService, WebSocketLike } from '../core/gatewayChatService';
+import { GatewayConnectError } from '../core/gatewayHandshake';
 import type { ChatEvent } from '../chat/ChatService';
 
 jest.mock('ws', () => jest.fn());
@@ -40,6 +41,18 @@ function createMockWs(): MockSocket {
   };
   return ws;
 }
+
+/** A shared-token mismatch exactly as the 2026.9 gateway sends it (connect-auth.ts rejectUnauthorized). */
+const TOKEN_MISMATCH_ERROR = {
+  code: 'INVALID_REQUEST',
+  message: 'unauthorized: gateway token mismatch (set gateway.remote.token to match gateway.auth.token)',
+  details: {
+    code: 'AUTH_TOKEN_MISMATCH',
+    authReason: 'token_mismatch',
+    canRetryWithDeviceToken: false,
+    recommendedNextStep: 'update_auth_credentials',
+  },
+};
 
 const HELLO_OK = {
   type: 'res',
@@ -106,7 +119,7 @@ describe('GatewayChatService', () => {
             sockets.push(createMockWs());
             return sockets[sockets.length - 1];
           });
-          const rejection = { type: 'res', ok: false, error: { code: 'UNAUTHORIZED' } };
+          const rejection = { type: 'res', ok: false, error: TOKEN_MISMATCH_ERROR };
           await expect(handshake(svc, () => sockets[0], rejection)).rejects.toThrow('handshake rejected');
           jest.advanceTimersByTime(120_000);
           expect(sockets).toHaveLength(1);
@@ -145,7 +158,17 @@ describe('GatewayChatService', () => {
             sockets.push(createMockWs());
             return sockets[sockets.length - 1];
           });
-          const limited = { type: 'res', ok: false, error: { code: 'UNAUTHORIZED', message: 'later', retryable: true } };
+          const limited = {
+            type: 'res',
+            ok: false,
+            error: {
+              code: 'INVALID_REQUEST',
+              message: 'unauthorized: too many failed authentication attempts (retry later)',
+              retryable: true,
+              retryAfterMs: 1000,
+              details: { code: 'AUTH_RATE_LIMITED', authReason: 'rate_limited' },
+            },
+          };
           await expect(handshake(svc, () => sockets[0], limited)).rejects.toThrow('handshake rejected');
           jest.advanceTimersByTime(1100);
           expect(sockets).toHaveLength(2);
@@ -234,7 +257,7 @@ describe('GatewayChatService', () => {
         ws.emit('open');
         ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { ts: Date.now() } }));
         await new Promise<void>((r) => setTimeout(r, 0));
-        ws.emit('message', JSON.stringify({ type: 'res', id: 'cc-1', ok: false, error: { code: 'UNAUTHORIZED', message: 'no' } }));
+        ws.emit('message', JSON.stringify({ type: 'res', id: 'cc-1', ok: false, error: TOKEN_MISMATCH_ERROR }));
         await expect(pending).rejects.toThrow('handshake rejected');
       });
 
@@ -1440,7 +1463,7 @@ describe('GatewayChatService', () => {
           emitEvent(ws, 'connect.challenge', {});
           emitEvent(ws, 'session.message', { text: 'early' });
           ws.emit('message', 'not json');
-          ws.emit('message', JSON.stringify({ type: 'res', id: 'other', ok: false, error: { code: 'UNAUTHORIZED' } }));
+          ws.emit('message', JSON.stringify({ type: 'res', id: 'other', ok: false, error: TOKEN_MISMATCH_ERROR }));
           expect(requests(ws, 'connect')).toHaveLength(1);
           reply(ws, last(ws, 'connect'), helloPayload());
           await connecting;
@@ -2201,6 +2224,24 @@ describe('GatewayChatService', () => {
       });
 
       describe('catch-up boundary', () => {
+        it('aligns the boundary around delta-only rows it never fingerprinted', async () => {
+          const { svc, ws } = await connected();
+          const observer = recorder();
+          const [a, d, b, c] = [
+            { role: 'assistant', text: 'A' },
+            { role: 'assistant', delta: 'par' },
+            { role: 'assistant', text: 'B' },
+            { role: 'assistant', text: 'C' },
+          ];
+          svc.seedHistory('main', { messages: [a, d, b] });
+          svc.resumeSession('main', observer.sink, { historyRendered: true });
+          reply(ws, last(ws, 'sessions.messages.subscribe'));
+          await flush();
+          reply(ws, last(ws, 'chat.history'), { messages: [a, d, b, c] });
+          await flush();
+          expect(observer.events).toEqual([{ type: 'text', text: 'C' }, { type: 'done' }]);
+        });
+
         it('aligns a sliding history window on the seeded boundary', async () => {
           const { svc, ws } = await connected();
           const observer = recorder();
@@ -2336,6 +2377,326 @@ describe('GatewayChatService', () => {
         });
       });
 
+      describe('handshake rejections', () => {
+        const pairingRequired = {
+          code: 'NOT_PAIRED',
+          message: 'pairing required: device is not approved yet',
+          details: { code: 'PAIRING_REQUIRED', reason: 'not-paired', requestId: 'req-1' },
+        };
+
+        function trackedService(): { svc: GatewayChatService; opened: MockSocket[] } {
+          const opened: MockSocket[] = [];
+          const svc = new GatewayChatService({
+            url: 'ws://gw.test',
+            token: 'secret-token-value',
+            wsFactory: () => {
+              const socket = createMockWs();
+              opened.push(socket);
+              return socket;
+            },
+          });
+          services.push(svc);
+          return { svc, opened };
+        }
+
+        async function rejectFirstHandshake(error: unknown): Promise<{ opened: MockSocket[]; failure: unknown }> {
+          const { svc, opened } = trackedService();
+          const connecting = svc.connect();
+          answerHandshake(opened[0], { ok: false, error });
+          const failure = await connecting.catch((err: unknown) => err);
+          return { opened, failure };
+        }
+
+        it('sends a connect frame the 2026.9 schema accepts', async () => {
+          const ws = createMockWs();
+          const svc = service([ws]);
+          void svc.connect().catch(() => undefined);
+          ws.emit('open');
+          emitEvent(ws, 'connect.challenge', { nonce: 'n', ts: 1 });
+          const params = last(ws, 'connect').params as {
+            minProtocol: number;
+            maxProtocol: number;
+            client: Record<string, unknown>;
+          };
+          expect(params.minProtocol).toBeLessThanOrEqual(4);
+          expect(params.maxProtocol).toBeGreaterThanOrEqual(4);
+          expect(params.client).toMatchObject({ id: 'gateway-client', mode: 'backend', displayName: 'Claw Code' });
+          expect(Object.keys(params).sort()).toEqual(['auth', 'client', 'maxProtocol', 'minProtocol', 'role', 'scopes', 'userAgent']);
+          expect(Buffer.byteLength(ws.sent[ws.sent.length - 1])).toBeLessThan(64 * 1024);
+        });
+
+        it('rejects connect() with the classification, a redacted message and a hint', async () => {
+          const { failure } = await rejectFirstHandshake({
+            ...TOKEN_MISMATCH_ERROR,
+            message: 'unauthorized: token secret-token-value does not match',
+          });
+          expect(failure).toBeInstanceOf(GatewayConnectError);
+          const { rejection, message } = failure as GatewayConnectError;
+          expect(rejection).toMatchObject({ kind: 'permanent', code: 'AUTH_TOKEN_MISMATCH', message: 'unauthorized: token *** does not match' });
+          expect(rejection.hint).toContain('OpenClaw: Connect to Gateway');
+          expect(message).toBe('gateway handshake rejected code=AUTH_TOKEN_MISMATCH: unauthorized: token *** does not match');
+        });
+
+        it('caps a long gateway message', async () => {
+          const { failure } = await rejectFirstHandshake({ code: 'FORBIDDEN', message: 'x'.repeat(1000) });
+          expect((failure as GatewayConnectError).rejection.message).toHaveLength(301);
+        });
+
+        it.each([
+          ['a permanent rejection', TOKEN_MISMATCH_ERROR],
+          ['a pairing request', pairingRequired],
+        ])('stops reconnecting after %s even though a 1008 close follows it', async (_label, error) => {
+          jest.useFakeTimers();
+          const { opened } = await rejectFirstHandshake(error);
+          opened[0].emit('close', 1008, Buffer.from('pairing required'));
+          jest.advanceTimersByTime(10 * 60_000);
+          expect(opened).toHaveLength(1);
+        });
+
+        it('waits the rate-limit delay before reconnecting', async () => {
+          jest.useFakeTimers();
+          const { opened } = await rejectFirstHandshake({
+            code: 'INVALID_REQUEST',
+            message: 'unauthorized: too many failed authentication attempts (retry later)',
+            retryable: true,
+            retryAfterMs: 60_000,
+            details: { code: 'AUTH_RATE_LIMITED', authReason: 'rate_limited' },
+          });
+          jest.advanceTimersByTime(59_999);
+          expect(opened).toHaveLength(1);
+          jest.advanceTimersByTime(1);
+          expect(opened).toHaveLength(2);
+        });
+
+        it.each([
+          ['a rate limit without a delay', { code: 'INVALID_REQUEST', retryable: true, details: { code: 'AUTH_RATE_LIMITED' } }],
+          [
+            'a pairing request that asks to wait',
+            { ...pairingRequired, details: { ...pairingRequired.details, recommendedNextStep: 'wait_then_retry', pauseReconnect: false } },
+          ],
+        ])('retries %s at the slowest backoff', async (_label, error) => {
+          jest.useFakeTimers();
+          const { opened } = await rejectFirstHandshake(error);
+          jest.advanceTimersByTime(29_999);
+          expect(opened).toHaveLength(1);
+          jest.advanceTimersByTime(1);
+          expect(opened).toHaveLength(2);
+        });
+
+        it('honours retryAfterMs of a startup rejection', async () => {
+          jest.useFakeTimers();
+          const { opened } = await rejectFirstHandshake({
+            code: 'UNAVAILABLE',
+            message: 'gateway starting; retry shortly',
+            retryable: true,
+            retryAfterMs: 5000,
+            details: { reason: 'startup-sidecars' },
+          });
+          jest.advanceTimersByTime(4999);
+          expect(opened).toHaveLength(1);
+          jest.advanceTimersByTime(1);
+          expect(opened).toHaveLength(2);
+        });
+
+        it('refuses to send a connect frame over the pre-auth limit', async () => {
+          jest.useFakeTimers();
+          const ws = createMockWs();
+          const svc = new GatewayChatService({ url: 'ws://gw.test', token: 't'.repeat(70 * 1024), wsFactory: () => ws });
+          services.push(svc);
+          const connecting = svc.connect();
+          ws.emit('open');
+          emitEvent(ws, 'connect.challenge', {});
+          const failure = await connecting.catch((err: unknown) => err);
+          expect((failure as GatewayConnectError).rejection).toMatchObject({ kind: 'permanent', code: 'CONNECT_FRAME_TOO_LARGE' });
+          expect(ws.sent).toHaveLength(0);
+        });
+
+        it('ends in-flight runs with the pairing hint when a reconnect needs approval', async () => {
+          const [first, second] = [createMockWs(), createMockWs()];
+          const { svc, ws } = await connected([first, second]);
+          const run = recorder();
+          await acceptedRun(svc, ws, run.sink);
+          ws.emit('close');
+          const reconnecting = svc.connect();
+          answerHandshake(second, { ok: false, error: pairingRequired });
+          await expect(reconnecting).rejects.toThrow('code=PAIRING_REQUIRED');
+          expect(run.types()).toEqual(['error', 'done']);
+          expect(run.events[0]).toMatchObject({ message: expect.stringContaining('Approve this device') });
+        });
+      });
+
+      describe('observers of a pre-ack send', () => {
+        async function observedIssuedSend(): Promise<{ svc: GatewayChatService; ws: MockSocket; observer: ReturnType<typeof recorder>; run: ReturnType<typeof recorder> }> {
+          const { svc, ws } = await connected();
+          const observer = recorder();
+          svc.resumeSession('agent:s:main', observer.sink, { historyRendered: true });
+          reply(ws, last(ws, 'sessions.messages.subscribe'));
+          await flush();
+          const run = recorder();
+          svc.setActiveSession('agent:s:main');
+          await issueSend(svc, ws, run.sink, { deltaCursor: 'c1', messages: [] });
+          return { svc, ws, observer, run };
+        }
+
+        it('still get the frames held for a send whose acknowledgement resolves another session', async () => {
+          const { ws, observer, run } = await observedIssuedSend();
+          emitEvent(ws, 'session.message', { sessionKey: 'agent:s:main', messageId: 'm', delta: 'other run' });
+          expect(observer.events).toEqual([]);
+          reply(ws, last(ws, 'chat.send'), { sessionKey: 'agent:t:main' });
+          await flush();
+          expect(observer.events).toEqual([{ type: 'text', text: 'other run' }]);
+          expect(run.events).toEqual([]);
+        });
+
+        it('still get the frames and end held for a send that fails', async () => {
+          const { ws, observer, run } = await observedIssuedSend();
+          emitEvent(ws, 'session.message', { sessionKey: 'agent:s:main', messageId: 'm', text: 'observer visible' });
+          emitEvent(ws, 'session_end', { sessionKey: 'agent:s:main' });
+          rejectRpc(ws, last(ws, 'chat.send'));
+          await flush();
+          expect(observer.events).toEqual([{ type: 'text', text: 'observer visible' }, { type: 'done' }]);
+          expect(run.types()).toEqual(['error', 'done']);
+        });
+      });
+
+      describe('steering a running session', () => {
+        it('hands the steered run\'s output during the pre-send window to the steering send', async () => {
+          const { svc, ws } = await connected();
+          const first = recorder();
+          await acceptedRun(svc, ws, first.sink);
+          reply(ws, last(ws, 'chat.history'), { messages: [] });
+          await flush();
+          emitEvent(ws, 'session.message', { sessionKey: 'main', messageId: 'm', delta: 'one ' });
+          const steering = recorder();
+          svc.sendMessage('steer', '/tmp', 'm', 'chat', steering.sink);
+          await flush();
+          emitEvent(ws, 'session.message', { sessionKey: 'main', messageId: 'm', delta: 'two ' });
+          reply(ws, last(ws, 'chat.history'), { messages: [{ role: 'user', text: 'p' }] });
+          await flush();
+          reply(ws, last(ws, 'chat.send'), { sessionKey: 'main' });
+          await flush();
+          emitEvent(ws, 'session.message', { sessionKey: 'main', messageId: 'm', delta: 'three' });
+          expect(first.events).toEqual([{ type: 'text', text: 'one ' }, { type: 'done' }]);
+          expect(steering.events).toEqual([{ type: 'text', text: 'two ' }, { type: 'text', text: 'three' }]);
+        });
+      });
+
+      describe('overlapping catch-ups', () => {
+        it('replays a tail once for two resumes of the same session', async () => {
+          const { svc, ws } = await connected();
+          svc.seedHistory('main', { deltaCursor: 'c1', messages: [] });
+          const a = recorder();
+          const b = recorder();
+          svc.resumeSession('main', a.sink, { historyRendered: true });
+          svc.resumeSession('main', b.sink, { historyRendered: true });
+          reply(ws, last(ws, 'sessions.messages.subscribe'));
+          await flush();
+          expect(requests(ws, 'chat.history')).toHaveLength(1);
+          reply(ws, last(ws, 'chat.history'), { deltaCursor: 'c2', messages: [{ role: 'assistant', text: 'new' }] });
+          await flush();
+          expect(a.events).toEqual([{ type: 'text', text: 'new' }, { type: 'done' }]);
+          expect(b.events).toEqual([{ type: 'text', text: 'new' }, { type: 'done' }]);
+        });
+
+        it('runs one more pass when a later caller needs an unscoped catch-up', async () => {
+          const { svc, ws } = await connected();
+          svc.seedHistory('main', { messages: [{ role: 'assistant', text: 'old' }] });
+          svc.resumeSession('main', () => {}, { historyRendered: true });
+          reply(ws, last(ws, 'sessions.messages.subscribe'));
+          await flush();
+          svc.resumeSession('main', () => {});
+          svc.resumeSession('main', () => {});
+          reply(ws, last(ws, 'chat.history'), { messages: [{ role: 'assistant', text: 'old' }] });
+          await flush();
+          expect(requests(ws, 'chat.history')).toHaveLength(2);
+        });
+      });
+
+      describe('abort during a reconnect gap', () => {
+        it('sends chat.abort once the gateway is reachable again', async () => {
+          const [first, second] = [createMockWs(), createMockWs()];
+          const { svc, ws } = await connected([first, second]);
+          const run = recorder();
+          await acceptedRun(svc, ws, run.sink);
+          ws.emit('close');
+          svc.abort('main');
+          expect(run.events).toEqual([{ type: 'done' }]);
+          const connecting = svc.connect();
+          answerHandshake(second);
+          await connecting;
+          expect(last(second, 'chat.abort').params).toEqual({ sessionKey: 'main' });
+          emitEvent(second, 'session.message', { sessionKey: 'main', delta: 'late' });
+          expect(run.events).toEqual([{ type: 'done' }]);
+        });
+
+        it('forgets the pending abort when the credentials change', async () => {
+          const [first, second] = [createMockWs(), createMockWs()];
+          const { svc, ws } = await connected([first, second]);
+          await acceptedRun(svc, ws, () => {});
+          ws.emit('close');
+          svc.abort('main');
+          svc.updateConnection('ws://other.test', 'rotated');
+          const connecting = svc.connect();
+          answerHandshake(second);
+          await connecting;
+          expect(requests(second, 'chat.abort')).toHaveLength(0);
+        });
+      });
+
+      describe('connection state listeners', () => {
+        it('announces completed handshakes and socket losses once each', async () => {
+          const [first, second, third] = [createMockWs(), createMockWs(), createMockWs()];
+          const svc = service([first, second, third]);
+          const states: boolean[] = [];
+          const unsubscribe = svc.onConnectionStateChange((isConnected) => states.push(isConnected));
+          const connecting = svc.connect();
+          answerHandshake(first);
+          await connecting;
+          await reconnect(svc, first, second);
+          svc.suspend();
+          svc.suspend();
+          unsubscribe();
+          const again = svc.connect();
+          answerHandshake(third);
+          await again;
+          expect(states).toEqual([true, false, true, false]);
+        });
+
+        it('announces nothing for a hello-ok followed by a close in the same tick', async () => {
+          const ws = createMockWs();
+          const svc = service([ws]);
+          const states: boolean[] = [];
+          svc.onConnectionStateChange((isConnected) => states.push(isConnected));
+          const connecting = svc.connect();
+          answerHandshake(ws);
+          ws.emit('close');
+          await connecting.catch(() => undefined);
+          expect(states).toEqual([]);
+        });
+      });
+
+      describe('transport limits', () => {
+        it('reports the gateway defaults before the first handshake and refreshes them on every reconnect', async () => {
+          const [first, second] = [createMockWs(), createMockWs()];
+          const svc = service([first, second]);
+          expect(svc.getTransportLimits()).toEqual({
+            maxPayloadBytes: 26214400,
+            maxBufferedBytes: 52428800,
+            attachmentMaxBytes: 20971520,
+            attachmentMaxImageBytes: 6291456,
+          });
+          const connecting = svc.connect();
+          answerHandshake(first, {
+            ok: true,
+            payload: { ...helloPayload(), policy: { maxPayload: 1000, maxBufferedBytes: 2000, tickIntervalMs: 30000, attachments: { maxBytes: 500, maxImageBytes: 400 } } },
+          });
+          await connecting;
+          expect(svc.getTransportLimits()).toEqual({ maxPayloadBytes: 1000, maxBufferedBytes: 2000, attachmentMaxBytes: 500, attachmentMaxImageBytes: 400 });
+          await reconnect(svc, first, second);
+          expect(svc.getTransportLimits().maxPayloadBytes).toBe(26214400);
+        });
+      });
+
       describe('credential rejection on reconnect', () => {
         it('ends an in-flight run with error and done instead of leaving it streaming', async () => {
           const [first, second] = [createMockWs(), createMockWs()];
@@ -2344,7 +2705,7 @@ describe('GatewayChatService', () => {
           await acceptedRun(svc, ws, run.sink);
           ws.emit('close');
           const reconnecting = svc.connect();
-          answerHandshake(second, { ok: false, error: { code: 'UNAUTHORIZED' } });
+          answerHandshake(second, { ok: false, error: TOKEN_MISMATCH_ERROR });
           await expect(reconnecting).rejects.toThrow('handshake rejected');
           expect(run.types()).toEqual(['error', 'done']);
           expect(svc.hasOwnedRun('main')).toBe(false);
