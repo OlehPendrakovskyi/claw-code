@@ -2694,7 +2694,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const resumeEventEpoch = thread.eventEpoch;
             const resumeBindingEpoch = thread.bindingEpoch;
             const resumeOpenGen = thread.openGeneration;
-            thread.transportBackend = gateway;
+            this.bindGatewayTransportIfIdle(thread, gateway);
             let history: unknown = null;
             try {
                 history = await gateway.getHistory(sessionKey);

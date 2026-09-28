@@ -266,6 +266,10 @@ function imageMimeByPath(p: string): string {
  *  MAX_IMAGE_BYTES are rejected instead (stat before read keeps the expansion
  *  from even starting; the post-read length check closes the swap window). */
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/** Cap for text attachment reads: bounds the transfer itself so a file that
+ *  grows after stat() cannot be loaded in full before any size check. */
+const ATTACHMENT_TEXT_MAX_BYTES = 10 * 1024 * 1024;
 async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
@@ -292,14 +296,19 @@ async function readVerifiedImageDataUri(p: string): Promise<string | null> {
         if (fdPath !== null && fdPath !== p) {
             return null;
         }
-        const bytes = await handle.readFile();
-        if (bytes.length > MAX_IMAGE_BYTES) {
+        // Bounded read: a file that grows after stat() would make readFile()
+        // load the whole new contents before any length check, so cap the
+        // transfer at MAX_IMAGE_BYTES + 1 and reject anything that overflows.
+        const bytes = Buffer.alloc(MAX_IMAGE_BYTES + 1);
+        const { bytesRead: byteCount } = await handle.read(bytes, 0, bytes.length, 0);
+        if (byteCount > MAX_IMAGE_BYTES) {
             return null;
         }
+        const payload = bytes.subarray(0, byteCount);
         if ((await fsp.realpath(p)) !== p) {
             return null;
         }
-        return `data:${imageMimeByPath(p)};base64,${bytes.toString('base64')}`;
+        return `data:${imageMimeByPath(p)};base64,${payload.toString('base64')}`;
     } catch {
         return null;
     } finally {
@@ -385,8 +394,15 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
                 if (fdPath !== null && fdPath !== real) {
                     throw new Error('attachment opened outside its canonical path');
                 }
-                const bytes = await handle.readFile();
-                const content = new TextDecoder().decode(bytes);
+                // Same bounded-read gate as image verification: cap the
+                // transfer so a file that grows after stat() cannot blow up
+                // memory before the size check.
+                const bytes = Buffer.alloc(ATTACHMENT_TEXT_MAX_BYTES + 1);
+                const { bytesRead: byteCount } = await handle.read(bytes, 0, bytes.length, 0);
+                if (byteCount > ATTACHMENT_TEXT_MAX_BYTES) {
+                    throw new Error('attachment file exceeds the size limit');
+                }
+                const content = new TextDecoder().decode(bytes.subarray(0, byteCount));
                 const realAfter = await fsp.realpath(real);
                 if (realAfter !== real) {
                     throw new Error('attachment path changed during read');
