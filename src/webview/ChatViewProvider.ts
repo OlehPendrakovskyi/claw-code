@@ -23,11 +23,12 @@ import {
     ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
     renderMarkdown,
     type Attachment,
+    type ChatMessage,
     type ChatThreadState,
 } from './viewMessaging';
 import { buildRecommendations } from './recommendations';
 import { parseFileMentions, buildMention, type FileMention } from './fileMentions';
-import { ChatServiceFactory } from './chatServiceFactory';
+import { ChatServiceFactory, type GatewayInvalidationReason } from './chatServiceFactory';
 import { GatewayChatService, DEFAULT_SESSION_KEY } from '../core/gatewayChatService';
 import {
     AgentPicker,
@@ -37,10 +38,84 @@ import {
     isMainAgentSessionKey,
     mapHistoryMessages,
     parseSessionRows,
+    type AgentSessionItem,
 } from '../core/agentPicker';
 import type { SessionRow } from '../core/contract';
 
 export type { Recommendation } from './recommendations';
+
+type InboundMessage = { type?: unknown; [field: string]: unknown };
+
+const SESSIONS_GATEWAY_UNAVAILABLE = 'Gateway not connected';
+const SESSIONS_LIST_FAILED = 'Could not load sessions';
+
+const INTERRUPTED_RUN_MESSAGES: Record<GatewayInvalidationReason, string> = {
+    identity: 'Gateway connection (URL or token) changed. The active run was interrupted; send the message again.',
+    transport: 'The chat transport changed. The active run was interrupted; send the message again.',
+};
+
+const TERMINAL_TOOL_STATUSES = new Set(['done', 'error', 'failed', 'cancelled']);
+
+const THINKING_LEVELS = new Set(['none', 'low', 'medium', 'high']);
+
+/** The `openclaw.chat.dimension` enum from package.json. */
+const GRID_DIMENSIONS = new Set(['1x1', '2x2', '2x3', '3x3', '4x4']);
+
+const SETTING_VALIDATORS: Record<string, (value: unknown) => boolean> = {
+    'chat.thinkingLevel': value => typeof value === 'string' && THINKING_LEVELS.has(value),
+    'chat.temperature': value => typeof value === 'number' && value >= 0 && value <= 2,
+    'chat.maxTokens': value => Number.isInteger(value) && (value as number) >= 0,
+};
+
+function isNonEmptyString(value: unknown): value is string {
+    return typeof value === 'string' && value.length > 0;
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+    return value === undefined || typeof value === 'string';
+}
+
+function isIndexInRange(value: unknown, length: number): value is number {
+    return Number.isInteger(value) && (value as number) >= 0 && (value as number) < length;
+}
+
+function isGridDimension(value: unknown): value is string {
+    return typeof value === 'string' && GRID_DIMENSIONS.has(value);
+}
+
+function isWritableSetting(key: unknown, value: unknown): key is string {
+    return typeof key === 'string' && Object.prototype.hasOwnProperty.call(SETTING_VALIDATORS, key) && SETTING_VALIDATORS[key](value);
+}
+
+/** Restored history as transcript rows, assistant markdown rendered like live replies. */
+async function toTranscriptMessages(history: unknown): Promise<ChatMessage[]> {
+    return Promise.all(mapHistoryMessages(history).map(async ({ role, content }): Promise<ChatMessage> =>
+        role === 'assistant' ? { role, content, html: await renderMarkdown(content) } : { role, content }
+    ));
+}
+
+/** Mark the current run's still-open tool entries terminal: the run ended without reporting them. */
+function settleRunToolEntries(thread: ChatThreadState, status: 'done' | 'cancelled'): void {
+    for (let i = thread.messages.length - 1; i >= 0; i--) {
+        const message = thread.messages[i];
+        if (message.role === 'user') {
+            return;
+        }
+        if (message.role !== 'tool') {
+            continue;
+        }
+        for (const entry of message.entries) {
+            if (!TERMINAL_TOOL_STATUSES.has(entry.status)) {
+                entry.status = status;
+            }
+        }
+    }
+}
+
+function resetUsage(thread: ChatThreadState): void {
+    thread.contextTokens = 0;
+    thread.lastUsage = null;
+}
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'openclaw.chat';
@@ -54,49 +129,39 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private globalState: vscode.Memento;
     private readonly context: vscode.ExtensionContext;
     private lastSessionKey: string | null = null;
-    /** Monotonic selection generation: bumped by every handleSelectAgent so
-     *  an older selection's continuation (still inside its persist await)
-     *  detects that a newer selection superseded it and aborts instead of
-     *  rebinding the stale key or re-persisting an obsolete session key. */
+    /** Bumped by every handleSelectAgent so a superseded selection aborts after its awaits. */
     private selectGeneration = 0;
-    /** Monotonic persist generation and write chain for the durable last-
-     *  session-key commit: two selections can overlap inside their persist
-     *  awaits, and whichever workspaceState.update resolves last would
-     *  otherwise win — persisting a stale key that resumes after a restart
-     *  even though the in-memory generation checks rejected that request.
-     *  Writes are serialized and each commit re-verifies it is still the
-     *  newest request before touching workspace state. */
+    /** Persist generation plus a serialized write chain: overlapping selections
+     *  must not let a stale workspaceState write land last. */
     private persistGeneration = 0;
     private persistLastSessionKeyWrite: Promise<void> = Promise.resolve();
-    /** Main-agent session keys reported by the most recent sessions.list:
-     *  webview-supplied keys are only shape-checked at the message boundary,
-     *  so selectAgent/openSession verify against this allowlist before
-     *  rebinding or loading history (a crafted key for an unlisted agent
-     *  must not activate that session or pull its transcript). */
+    /** Main-agent keys from the last sessions.list. Webview keys are only
+     *  shape-checked at the boundary; this allowlist gates rebinding. */
     private knownMainSessionKeys = new Set<string>();
-    /** Gateway identity the current allowlist was built from. A URL or
-     *  token change invalidates the list: keys reported by the previous
-     *  gateway must not pass the allowlist (or be auto-refreshed against)
-     *  after switching to another gateway. */
+    /** Gateway identity the allowlist was built from; a URL/token change invalidates it. */
     private allowlistGatewayId: string | null = null;
-    /** Guards session-resume bootstrap so each webview does not re-subscribe. */
     private resumeStarted = false;
-    /** Thread whose backend is currently being resolved by sendPrompt.
-     *  invalidateGatewayRuns must not finalize that thread as an interrupted
-     *  send: the send's own transport switch triggered the invalidation, and
-     *  sendPrompt rebases its epoch and aborts/rebinds the old backend
-     *  itself after resolve returns. */
-    private resolvingThreadId: string | null = null;
-    /** Set by invalidateGatewayRuns when the thread being resolved by
-     *  sendPrompt was invalidated during its backend resolution; lets the
-     *  post-resolve guard rebase the send epoch instead of retiring the
-     *  user's message. */
-    private invalidatedDuringResolve = false;
+    /** One ticket per in-flight sendPrompt backend resolution. A resolve (this
+     *  thread's or another grid thread's) can invalidate the gateway mid-flight:
+     *  invalidateGatewayRuns then advances a still-current ticket's expected
+     *  epoch past its own bump instead of finalizing the send. */
+    private readonly resolveTickets = new Set<{ threadId: string; expectedEpoch: number }>();
     private threadCounter = 0;
     private readonly threads = new Map<string, ChatThreadState>();
-    /** Live transcript callback per resumed session, so reopening a session
-     *  replaces the previous sink instead of duplicating event delivery. */
+    /** Persistent transcript callback per thread; reopening replaces it instead of duplicating delivery. */
     private transcriptCallbacks = new Map<string, { sessionKey: string; cb: (event: ChatEvent) => void }>();
+    /** Transcript callbacks suspended while a run on the same session delivers through its run sink. */
+    private suspendedTranscriptSinks = new Map<string, { gateway: GatewayChatService; sessionKey: string }>();
+    /** Resumes deferred until the send that was in flight at resume time finalizes. */
+    private deferredResumes = new Map<string, { sessionKey: string; historyRendered?: boolean }>();
+    private chatEventQueueByThread = new Map<string, Promise<void>>();
+    /** Keyed by gateway identity so a URL/token change never joins the old gateway's refresh. */
+    private allowlistRefreshInFlight: Map<string, Promise<unknown | null>> = new Map();
+    /** Transient per-thread notice (e.g. cold session) shown in an empty pane, never part of the transcript. */
+    private readonly threadNotices = new Map<string, string>();
+    private lastTransportStatus: Record<string, unknown> | null = null;
+    /** Mentions for a webview whose page is (re)loading, flushed when it requests state. */
+    private readonly pendingMentions = new Map<vscode.Webview, string[]>();
     private visibleThreadIds: string[] = [];
     private activeThreadId = '';
 
@@ -105,15 +170,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     constructor(private readonly extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this.context = context;
         this.globalState = context.globalState;
-        this.chatServiceFactory = new ChatServiceFactory(context, (transport, connected) => {
-            const label = connected ? `${transport} · connected` : `${transport} · offline`;
-            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-                type: 'transportStatus',
-                transport,
-                connected,
-                label,
-            });
-        }, () => this.invalidateGatewayRuns());
+        this.chatServiceFactory = new ChatServiceFactory(
+            context,
+            (transport, connected) => this.publishTransportStatus(transport, connected),
+            (reason) => this.invalidateGatewayRuns(reason)
+        );
         const initialThread = this.createThreadState();
         this.threads.set(initialThread.id, initialThread);
         this.visibleThreadIds = [initialThread.id];
@@ -153,9 +214,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
 
         this.setupWebviewListeners(webviewView.webview);
-        this.bootstrapWebview();
+        this.bootstrapWebview(webviewView.webview);
 
         webviewView.onDidDispose(() => {
+            this.pendingMentions.delete(webviewView.webview);
             this.sidebarView = undefined;
         });
     }
@@ -183,7 +245,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.popOutPanel = panel;
         panel.webview.html = getWebviewContent(panel.webview, this.extensionUri, false);
         this.setupWebviewListeners(panel.webview);
-        this.bootstrapWebview();
+        this.bootstrapWebview(panel.webview);
 
         panel.onDidDispose(() => {
             this.popOutPanel = undefined;
@@ -193,7 +255,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     attachDebugPanel(panel: vscode.WebviewPanel): void {
         this.debugPanel = panel;
         this.setupWebviewListeners(panel.webview);
-        this.bootstrapWebview();
+        this.bootstrapWebview(panel.webview);
         panel.onDidDispose(() => {
             this.debugPanel = undefined;
         });
@@ -220,77 +282,44 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.chatServiceFactory.dispose();
     }
 
-    /**
-     *  Same shared-run guard as resetThread: aborting a
-     *  shared session key would cancel another thread's
-     *  live run on the shared gateway client.
-     */
-    /**
-     *  Bump the epoch BEFORE abort: a disconnected
-     *  gateway completes the old sink synchronously, so
-     *  the incremented epoch must already be in place or
-     *  the stale completion is treated as current.
-     */
-    /**
-     *  Same ownership guard as resetThread/closeThread:
-     *  cancelling an idle resumed thread must not send
-     *  chat.abort for a run owned by the gateway or
-     *  another client. A thread is marked running before
-     *  sendPrompt resolves the backend and registers the
-     *  run sink, so hasOwnedRun also gates the lifecycle
-     *  abort during that await window.
-     */
-    /**
-     *  Epoch bump before abort: the acpx close fires
-     *  asynchronously and must not deliver late events
-     *  into a thread that already cancelled.
-     */
-    /**
-     *  The run sink's `done` is epoch-dropped above, so the
-     *  suspended transcript callback would stay stranded
-     *  and the thread would stop receiving transcript
-     *  events until a later run restores it.
-     */
-    /**
-     *  Webview-supplied keys are untrusted: enforce the same
-     *  strict main-session filter as the picker for both actions.
-     */
+    private allWebviews(): Array<vscode.Webview | undefined> {
+        return [this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview];
+    }
+
+    private publishTransportStatus(transport: 'gateway' | 'acpx', connected: boolean): void {
+        this.lastTransportStatus = {
+            type: 'transportStatus',
+            transport,
+            connected,
+            label: connected ? `${transport} · connected` : `${transport} · offline`,
+        };
+        postToAll(this.allWebviews(), this.lastTransportStatus);
+    }
+
+    // Every field of an inbound message is untrusted webview input.
     private setupWebviewListeners(webview: vscode.Webview): void {
-        webview.onDidReceiveMessage(async (msg: {
-            type: string;
-            threadId?: string;
-            text?: string;
-            index?: number;
-            command?: string;
-            query?: string;
-            filePath?: string;
-            filePaths?: string[];
-            line?: string;
-            sessionKey?: string;
-            chatType?: string;
-            model?: string;
-            dimension?: string;
-            key?: string;
-            value?: string | number;
-        }) => {
-            log.info(`webview msg: type=${msg.type}, threadId=${msg.threadId || '(none)'}`);
-            const thread = this.getThread(msg.threadId);
+        webview.onDidReceiveMessage(async (msg: InboundMessage) => {
+            if (!msg || typeof msg !== 'object') {
+                return;
+            }
+            log.info(`webview msg: type=${String(msg.type)}, threadId=${typeof msg.threadId === 'string' ? msg.threadId : '(none)'}`);
+            const thread = this.threadForMessage(msg.threadId);
 
             switch (msg.type) {
                 case 'send':
-                    if (thread && msg.text) {
+                    if (thread && isNonEmptyString(msg.text)) {
                         await this.handleSend(thread, msg.text);
                     }
                     break;
                 case 'setChatType':
-                    if (thread && msg.chatType) {
+                    if (thread && isNonEmptyString(msg.chatType)) {
                         thread.currentChatType = msg.chatType;
                         thread.permissionState = this.getPermissionState(msg.chatType);
                         this.emitState();
                     }
                     break;
                 case 'setModel':
-                    if (thread && msg.model) {
+                    if (thread && isNonEmptyString(msg.model)) {
                         thread.currentModel = msg.model;
                         thread.source = ChatService.getSourceForModel(msg.model);
                         thread.contextMax = this.getContextMaxForModel(msg.model);
@@ -303,7 +332,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'slashCommand':
-                    if (thread && msg.command) {
+                    if (thread && isNonEmptyString(msg.command) && isOptionalString(msg.text)) {
                         await this.handleSlashCommand(thread, msg.command, msg.text ?? '');
                     }
                     break;
@@ -312,24 +341,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'requestState':
                     this.emitState();
+                    this.flushPendingMentions(webview);
                     break;
                 case 'cancel':
                     if (thread) {
-                        const backend = this.backendFor(thread);
-                        if (backend instanceof GatewayChatService) {
-                            const shared = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
-                            thread.eventEpoch += 1;
-                            if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
-                                backend.abort(thread.sessionKey);
-                            }
-                        } else {
-                            thread.eventEpoch += 1;
-                            backend.abort();
-                        }
-                        thread.isStreaming = false;
-                        thread.status = 'cancelled';
-                        this.restoreSuspendedTranscriptSink(thread);
-                        this.emitState();
+                        this.cancelThread(thread);
                     }
                     break;
                 case 'newSession':
@@ -360,23 +376,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     break;
                 case 'requestAgents':
                 case 'requestSessions':
-                    await this.handleListSessions(msg.type === 'requestAgents');
+                    await this.handleListSessions(webview, msg.type === 'requestAgents', thread?.id);
                     break;
                 case 'selectAgent':
-                    if (msg.sessionKey && isMainAgentSessionKey(msg.sessionKey)) {
+                    if (isMainAgentSessionKey(msg.sessionKey)) {
                         await this.handleSelectAgent(msg.sessionKey);
                     }
                     break;
-                case 'openSession':
-                    if (msg.sessionKey && isMainAgentSessionKey(msg.sessionKey)) {
-                        await this.handleOpenSession(msg.sessionKey);
+                case 'openSession': {
+                    // The requesting pane, not the thread active when the reply lands.
+                    const target = typeof msg.threadId === 'string' ? this.threads.get(msg.threadId) : undefined;
+                    if (!target) {
+                        log.warn('openSession: rejected message without a known threadId');
+                    } else if (isMainAgentSessionKey(msg.sessionKey)) {
+                        await this.handleOpenSession(msg.sessionKey, target);
                     }
                     break;
+                }
                 case 'popOut':
                     this.popOut();
                     break;
                 case 'setDimension':
-                    if (msg.dimension) {
+                    if (isGridDimension(msg.dimension)) {
                         void vscode.workspace.getConfiguration('openclaw').update(
                             'chat.dimension',
                             msg.dimension,
@@ -384,13 +405,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         );
                     }
                     break;
-                case 'setSetting': {
-                    const WRITABLE_SETTING_KEYS = new Set([
-                        'chat.thinkingLevel',
-                        'chat.temperature',
-                        'chat.maxTokens',
-                    ]);
-                    if (msg.key && WRITABLE_SETTING_KEYS.has(msg.key) && msg.value !== undefined) {
+                case 'setSetting':
+                    if (isWritableSetting(msg.key, msg.value)) {
                         void vscode.workspace.getConfiguration('openclaw').update(
                             msg.key,
                             msg.value,
@@ -398,14 +414,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         );
                     }
                     break;
-                }
                 case 'attach':
                     if (thread) {
                         await this.handleAttach(thread);
                     }
                     break;
                 case 'removeAttachment':
-                    if (thread && typeof msg.index === 'number') {
+                    if (thread && isIndexInRange(msg.index, thread.pendingAttachments.length)) {
                         thread.pendingAttachments.splice(msg.index, 1);
                         this.emitState();
                     }
@@ -424,20 +439,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'attachFile':
-                    if (thread && msg.filePath) {
+                    if (thread && isNonEmptyString(msg.filePath)) {
                         await this.addAttachments(thread, [msg.filePath]);
                     }
                     break;
-                case 'attachFiles':
-                    if (thread && Array.isArray(msg.filePaths) && msg.filePaths.length > 0) {
-                        await this.addAttachments(thread, msg.filePaths);
+                case 'attachFiles': {
+                    const filePaths = Array.isArray(msg.filePaths) ? msg.filePaths.filter(isNonEmptyString) : [];
+                    if (thread && filePaths.length > 0) {
+                        await this.addAttachments(thread, filePaths);
                     }
                     break;
+                }
                 case 'insertMention':
-                    await this.insertSelectionMention();
+                    await this.insertSelectionMention(webview);
                     break;
                 case 'openFile':
-                    if (msg.filePath) {
+                    if (isNonEmptyString(msg.filePath) && isOptionalString(msg.line)) {
                         await this.openFileInEditor(msg.filePath, msg.line);
                     }
                     break;
@@ -525,54 +542,52 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return 128_000;
     }
 
-    private getThread(threadId?: string): ChatThreadState | undefined {
-        if (threadId && this.threads.has(threadId)) {
-            return this.threads.get(threadId);
+    /** A message without a threadId targets the active thread; an unknown or malformed id targets none. */
+    private threadForMessage(threadId: unknown): ChatThreadState | undefined {
+        if (threadId === undefined) {
+            return this.getActiveThread();
         }
-        return this.getActiveThread();
+        return typeof threadId === 'string' ? this.threads.get(threadId) : undefined;
     }
 
     private getActiveThread(): ChatThreadState | undefined {
         return this.threads.get(this.activeThreadId);
     }
 
-    /**
-     *  Only abort the session when no other thread is still bound to
-     *  it: that thread may own the active run, and resetting an idle
-     *  thread must not cancel the other thread's run.
-     *  Both generations bump before abort: a disconnected gateway
-     *  completes the old sink synchronously, and its captured
-     *  epochs must already be stale when the `done` fires.
-     */
-    /**
-     *  An openSession rebinding already in flight passes its
-     *  unchanged openGeneration after reset unless the counter is
-     *  bumped here: the continuation would then assign the session
-     *  and history, undoing this clear (and holding the thread
-     *  hostage via openInFlightGen until then).
-     */
-    /**
-     *  Only abort when this thread actually owns a run: an idle
-     *  resumed thread holds no gateway run, and a chat.abort here
-     *  would cancel a run owned by the gateway or another client.
-     *  The hasOwnedRun gate also covers the pre-ack window before
-     *  sendPrompt resolves the backend and registers the sink.
-     */
-    /**
-     *  Abort's `done` is epoch-dropped above, so the suspended transcript
-     *  callback would stay stranded: restore it explicitly so the thread
-     *  keeps receiving transcript events after the reset. An idle resumed
-     *  thread has no suspended sink, but its persistent callback was
-     *  captured with the pre-bump bindingEpoch: rebind it too, or every
-     *  future transcript event is epoch-dropped after Clear/Reset.
-     */
+    private cancelThread(thread: ChatThreadState): void {
+        const backend = this.backendFor(thread);
+        // Bump before abort: a disconnected gateway completes the old sink
+        // synchronously and the acpx close fires late; both must be stale.
+        thread.eventEpoch += 1;
+        if (backend instanceof GatewayChatService) {
+            // Abort only a run this thread owns: an idle resumed thread or a
+            // shared key must not cancel a run owned by another thread or client.
+            const shared = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
+            if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
+                backend.abort(thread.sessionKey);
+            }
+        } else {
+            backend.abort();
+        }
+        thread.isStreaming = false;
+        thread.status = 'cancelled';
+        settleRunToolEntries(thread, 'cancelled');
+        // The epoch-dropped `done` will not restore the suspended transcript sink.
+        this.restoreSuspendedTranscriptSink(thread);
+        this.emitState();
+    }
+
     private resetThread(thread: ChatThreadState): void {
         const backend = this.backendFor(thread);
+        // Both generations bump before abort so a synchronous `done` from a
+        // disconnected gateway is stale; the openGeneration bump stops an
+        // in-flight openSession from reassigning the session after the clear.
+        thread.eventEpoch += 1;
+        thread.bindingEpoch += 1;
+        thread.openGeneration += 1;
+        thread.openInFlightGen = null;
         if (backend instanceof GatewayChatService) {
-            thread.eventEpoch += 1;
-            thread.bindingEpoch += 1;
-            thread.openGeneration += 1;
-            thread.openInFlightGen = null;
+            // Abort only a run this thread owns; the session may be shared with a thread that runs on it.
             if (thread.sessionKey) {
                 const shared = this.otherRunningGatewayThread(thread.id, thread.sessionKey);
                 if (!shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
@@ -580,10 +595,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
             }
         } else {
-            thread.eventEpoch += 1;
-            thread.bindingEpoch += 1;
-            thread.openGeneration += 1;
-            thread.openInFlightGen = null;
             backend.abort();
         }
         thread.messages = [];
@@ -591,8 +602,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.pendingAttachments = [];
         thread.isStreaming = false;
         thread.status = 'idle';
+        this.threadNotices.delete(thread.id);
         const gatewayBackend = backend instanceof GatewayChatService ? backend : null;
         if (!this.suspendedTranscriptSinks.get(thread.id) && gatewayBackend) {
+            // The persistent callback captured the pre-bump bindingEpoch: rebind
+            // it, or every later transcript event is epoch-dropped.
             const persistent = this.transcriptCallbacks.get(thread.id);
             if (persistent) {
                 this.transcriptCallbacks.delete(thread.id);
@@ -606,43 +620,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.restoreSuspendedTranscriptSink(thread);
         }
         thread.title = `Thread ${thread.index}`;
-        thread.contextTokens = 0;
-        thread.lastUsage = null;
+        resetUsage(thread);
     }
 
-    /**
-     *  Invalidate pending send/attach continuations before teardown: unlike
-     *  resetThread, this path had no epoch bump, so a pending continuation
-     *  could pass its captured-epoch guard and mutate (or emit state for)
-     *  a thread that is about to be deleted.
-     */
-    /**
-     *  Retire this thread's persistent transcript callback before closing:
-     *  the deleted thread's sink must not linger in the gateway's fan-out
-     *  set (its events would be dropped by the epoch guard anyway, but the
-     *  callback would still be retained by the shared service).
-     */
-    /**
-     *  Same ownership guard as resetThread: abort only a run this
-     *  thread actually owned; an idle resumed thread must not cancel
-     *  a run owned by the gateway or another client. The hasOwnedRun
-     *  gate also covers the pre-ack window before the run sink exists.
-     *  A shared key needs the same live-run exclusion as resetThread:
-     *  hasOwnedRun proves only that the gateway holds a local run
-     *  sink for the key, not that this thread owns it — two threads
-     *  can share a session key, and closing this one must not abort
-     *  the other's run.
-     */
-    /**
-     *  Drop the thread's transcript sink if no surviving thread still
-     *  listens to this session, so the closed thread's callback is not
-     *  retained by the shared gateway service.
-     */
-    /**
-     *  An acpx run stores a dedicated backend on the thread; dispose it
-     *  too unless it is the thread's legacy service or the shared gateway
-     *  client (which other threads may still use).
-     */
     private closeThread(threadId: string): void {
         if (this.threads.size === 1) {
             const thread = this.threads.get(threadId);
@@ -659,6 +639,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!thread) {
             return;
         }
+        // Invalidate pending send/attach continuations before teardown.
         thread.eventEpoch += 1;
         thread.bindingEpoch += 1;
 
@@ -672,7 +653,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
         this.suspendedTranscriptSinks.delete(threadId);
         this.deferredResumes.delete(threadId);
+        this.threadNotices.delete(threadId);
         if (backend instanceof GatewayChatService) {
+            // hasOwnedRun proves only that the service holds a run sink for the
+            // key, not that this thread owns it: exclude other running threads.
             const shared = this.otherRunningGatewayThread(threadId, thread.sessionKey);
             if (thread.sessionKey && !shared && thread.status === 'running' && backend.hasOwnedRun(thread.sessionKey)) {
                 backend.abort(thread.sessionKey);
@@ -686,6 +670,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             backend.abort();
         }
         thread.service.dispose();
+        // The shared gateway client stays alive for other threads.
         if (thread.transportBackend && thread.transportBackend !== thread.service &&
             !(thread.transportBackend instanceof GatewayChatService)) {
             thread.transportBackend.dispose();
@@ -710,36 +695,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif',
     ]);
 
-    /**
-     *  The awaited stat must not commit into a thread whose epoch
-     *  moved on (cancel/clear/close) while resolution was pending:
-     *  the caller's guard re-checked here prevents repopulating a
-     *  reset thread with stale attachments.
-     */
-    /**
-     *  Canonicalize the stored path so the read-time realpath
-     *  re-verification compares against the true spelling: a
-     *  case-insensitive volume cannot smuggle a swap whose target
-     *  is only case-different at read time.
-     */
-    /**
-     *  The realpath await is another suspension point: a
-     *  cancel/clear that lands during it bumps the epoch and
-     *  clears the thread, so the caller's guard must be re-checked
-     *  before mutating the thread again.
-     */
-    /**
-     *  A mention path was validated against the workspace boundary
-     *  before this realpath ran; a symlink swap in between could
-     *  make the canonicalization jump outside the workspace, so
-     *  the boundary check is re-applied to the canonical target
-     *  before the attachment is accepted.
-     */
-    /**
-     *  The workspace-scope await is a further suspension point: a
-     *  cancel/clear landing during it must stop this continuation
-     *  before the attachment is appended.
-     */
+    /** Each await re-checks the caller guard: a cancel/clear in between must not repopulate the reset thread. */
     private async addAttachments(thread: ChatThreadState, items: Array<string | FileMention>, options?: { guard?: () => boolean }): Promise<void> {
         let changed = false;
 
@@ -760,10 +716,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (options?.guard?.() === false) {
                     return;
                 }
+                // The canonical spelling is what the read-time realpath check compares against.
                 const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
                 if (options?.guard?.() === false) {
                     return;
                 }
+                // Re-applied to the canonical target: a symlink swap since mention parsing could escape the workspace.
                 if (isMention && !(await this.isWorkspaceScoped(canonical))) {
                     continue;
                 }
@@ -789,36 +747,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /**
-     *  The same busy/rebind guard handleSend applies: a stale webview
-     *  slash-command message must not start a second run while another
-     *  send or a session rebind is in flight, because the command would
-     *  target the previous gateway key and its continuation could
-     *  overwrite the newly opened conversation.
-     */
-    /**
-     *  Same run-state marking as handleSend: a rebind (selectAgent/
-     *  openSession) during the async resolution below retires only a
-     *  `running` thread, and the send-epoch guard needs the bumped epoch
-     *  a rebind performs, so an idle-marked command could otherwise slip
-     *  a stale prompt into the newly selected session.
-     */
-    /**
-     *  Slash commands resolve @mentions too: without this, `/review @src/a.ts#L5`
-     *  silently omits the requested file attachment.
-     */
-    /**
-     *  /compact summarizes prior turns: include the thread transcript so the
-     *  fresh per-send exec (both transports) has the conversation to compress.
-     */
-    /**
-     *  Cancel/clear ran while editor context and mentions resolved: the
-     *  command must not be committed after cancellation was honoured.
-     */
-    /**
-     *  Early in-flight marking must not strand the thread in a
-     *  streaming state when resolution or prompt assembly throws.
-     */
     private async handleSlashCommand(
         thread: ChatThreadState,
         commandName: string,
@@ -832,12 +760,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (thread.isStreaming) {
             return;
         }
+        // Same rebind guard as handleSend: the command would target the previous session key.
         if (thread.openInFlightGen !== null) {
             log.info('handleSlashCommand: openSession in flight, command rejected');
             thread.status = 'error';
             this.emitState();
             return;
         }
+        // Marked running before the awaits so a rebind retires it and a second command sees it busy.
         const sendEpoch = thread.eventEpoch;
         thread.isStreaming = true;
         thread.status = 'running';
@@ -848,6 +778,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (mentions.length > 0) {
             await this.addAttachments(thread, mentions, { guard: () => thread.eventEpoch === sendEpoch });
         }
+        // /compact summarizes prior turns, so the fresh per-send exec needs the transcript.
         const transcript = commandName === 'compact' && thread.messages.length > 0
             ? thread.messages
                 .filter(m => m.role !== 'tool')
@@ -876,10 +807,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         await this.sendPrompt(thread, augmented, attachments, sendEpoch);
         } catch (err) {
-            thread.isStreaming = false;
-            thread.status = 'error';
-            this.emitState();
-            throw err;
+            this.failSend(thread, 'handleSlashCommand', err);
         }
     }
 
@@ -910,17 +838,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     private pushRecommendations(): void {
-        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+        postToAll(this.allWebviews(), {
             type: 'recommendations',
             items: buildRecommendations()
         });
     }
 
-    /**
-     *  Clear/Cancel may run while the dialog or the stat/realpath awaits
-     *  inside addAttachments are pending: without the epoch guard the
-     *  continuation would repopulate the reset thread's attachments.
-     */
     private async handleAttach(thread: ChatThreadState): Promise<void> {
         const sendEpoch = thread.eventEpoch;
         const uris = await vscode.window.showOpenDialog({
@@ -931,6 +854,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!uris || uris.length === 0) {
             return;
         }
+        // Clear/Cancel may land while the dialog is open.
         await this.addAttachments(thread, uris.map(uri => uri.fsPath), { guard: () => thread.eventEpoch === sendEpoch });
     }
 
@@ -993,54 +917,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         void vscode.window.showInformationMessage(`Thread exported to ${path.basename(uri.fsPath)}`);
     }
 
-    /**
-     *  Mark in-flight before async attachment resolution: while file
-     *  resolution is in flight a second send must see the thread busy,
-     *  and cancel/clear during the awaits must not be undone by the
-     *  continuation below (guarded by the send epoch check).
-     */
-    /**
-     *  An openSession is rebinding this thread: the shared gateway
-     *  session is already switched while the binding awaits
-     *  persistence, so a send here would target the previous key and
-     *  its callback would later deliver into the newly opened
-     *  conversation. Fail the send instead of racing the rebind.
-     */
-    /**
-     *  addAttachments stores the canonical realpath; compare
-     *  against the canonical editor spelling so a symlinked
-     *  or case-differing auto-attachment is not dropped.
-     */
-    /**
-     *  Canonicalize mention paths before dedupe and attachment:
-     *  addAttachments stores canonical realpaths, and the dedupe
-     *  and mention-key comparisons below must use the same
-     *  spelling or a symlinked/case-differing mention is lost.
-     */
-    /**
-     *  Mention dedupe keys on (path + range); attach only pending
-     *  entries whose range matches an accepted mention, not every
-     *  attachment of the same file.
-     */
-    /**
-     *  Cancel/clear ran during attachment resolution: the message
-     *  must not be committed after cancellation was honoured.
-     */
-    /**
-     *  The early in-flight marking must never strand the thread in a
-     *  streaming state if attachment resolution throws.
-     */
     private async handleSend(thread: ChatThreadState, text: string): Promise<void> {
         log.info(`handleSend: thread=${thread.id}, text="${text.slice(0, 80)}"`);
         if (thread.isStreaming) {
             return;
         }
+        // An openSession is rebinding this thread: the send would target the
+        // previous key and deliver into the newly opened conversation.
         if (thread.openInFlightGen !== null) {
             log.info('handleSend: openSession in flight, send rejected');
             thread.status = 'error';
             this.emitState();
             return;
         }
+        // Busy before attachment resolution; the epoch guard honours a cancel/clear during it.
         const sendEpoch = thread.eventEpoch;
         thread.isStreaming = true;
         thread.status = 'running';
@@ -1063,6 +953,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 const autoAttach = vscode.workspace.getConfiguration('openclaw').get<boolean>('chat.attachOpenFile', false);
                 if (autoAttach) {
                     await this.addAttachments(thread, [autoAttachPath], { guard: () => thread.eventEpoch === sendEpoch });
+                    // addAttachments stores the canonical realpath.
                     const canonicalAutoAttach = await fs.promises.realpath(autoAttachPath).catch(() => autoAttachPath);
                     pushNew(thread.pendingAttachments.filter(a => a.path === canonicalAutoAttach));
                 }
@@ -1070,6 +961,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             const mentions = await this.resolveMentions(text);
             if (mentions.length > 0) {
+                // Canonical spelling and (path + range) keys, matching what addAttachments stored.
                 const canonicalMentions = await Promise.all(
                     mentions.map(m =>
                         fs.promises.realpath(m.path).then(p => ({ ...m, path: p })).catch(() => m)
@@ -1095,11 +987,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
             await this.sendPrompt(thread, text, attachments, sendEpoch);
         } catch (err) {
-            thread.isStreaming = false;
-            thread.status = 'error';
-            this.emitState();
-            log.error(`handleSend failed: ${err instanceof Error ? err.message : String(err)}`);
+            this.failSend(thread, 'handleSend', err);
         }
+    }
+
+    /** Finalize a send that threw. Status, not the epoch, tells whether the send
+     *  still owns the thread: sendPrompt bumps the epoch itself for each run. */
+    private failSend(thread: ChatThreadState, origin: string, err: unknown): void {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`${origin} failed: ${message}`);
+        if (!this.threads.has(thread.id) || thread.status !== 'running') {
+            return;
+        }
+        thread.messages.push({ role: 'error', content: `Send failed: ${message}` });
+        thread.isStreaming = false;
+        thread.status = 'error';
+        this.emitState();
     }
 
     /** Lifecycle backend for a thread: the transport of the last send, else the legacy service. */
@@ -1107,152 +1010,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return thread.transportBackend ?? thread.service;
     }
 
-    /**
-     *  Connect the chat gateway transport right away (e.g. after saving a
-     *  token) instead of waiting for the next send: resolving through the
-     *  factory establishes the WebSocket and drives the transport status
-     *  badge. Falls back to acpx silently when the gateway is unreachable.
-     */
+    /** Connect now (e.g. after saving a token) rather than on the next send; resolving drives the status badge. */
     async connectGatewayTransport(): Promise<void> {
-        await this.resolveGateway();
+        await this.chatServiceFactory.resolve();
     }
 
-    /**
-     *  A cancel/clear during attachment resolution or a superseding send
-     *  bumps the epoch: this continuation must not resurrect the thread
-     *  or route the stale prompt into a newer run.
-     */
-    /**
-     *  The await above may take seconds (token lookup, connect probe).
-     *  Cancel/Clear/Close may have run meanwhile: a deleted thread or one
-     *  no longer running must not be resurrected by the continuation.
-     */
-    /**
-     *  The rebind marker set during the resolve await means a
-     *  selectAgent/openSession rebind has already switched the
-     *  gateway active session and owns the binding: routing this
-     *  send now would target the previous key and its callback
-     *  would deliver into the newly opened conversation. Bail out;
-     *  the rebind continuation finalizes the streaming state.
-     */
-    /**
-     *  Rebinding the transport retires the previous backend: an old acpx
-     *  process (whose callback has no epoch) or a stale gateway sink must
-     *  not keep appending events into the new run, and cancel/close must
-     *  reach whichever backend is actually live for the thread.
-     */
-    /**
-     *  The gateway client is cached and shared across threads:
-     *  never dispose it; abort only this thread's session so its
-     *  in-flight run ends cleanly, and bump the epoch so callbacks
-     *  captured by earlier runs drop their late events.
-     */
-    /**
-     *  Epoch bump precedes abort: a disconnected gateway
-     *  completes the old sink synchronously, and the sink's
-     *  captured epoch must already be stale when it fires.
-     */
-    /**
-     *  Same shared-run guard as cancel/reset: this thread may
-     *  be only an idle subscriber on the shared session while
-     *  another thread owns the live run — the Gateway→acpx
-     *  fallback must not cancel that run. Its own in-flight
-     *  gateway run cannot coexist with another running thread
-     *  on the key (pre-send busy check), so skipping the abort
-     *  here never leaves this thread's own run dangling.
-     */
-    /**
-     *  An idle resumed thread with an externally owned live
-     *  run (gateway or another client) has no local run sink:
-     *  hasOwnedRun skips the abort in that case, while an
-     *  in-flight run this thread started keeps its sink and
-     *  is still cancelled cleanly.
-     */
-    /**
-     *  Gateway→acpx fallback retires this thread's own gateway
-     *  bindings: the persistent callback was captured with the
-     *  pre-bump bindingEpoch (its events are epoch-dropped
-     *  anyway) and a suspended entry would linger with no owner
-     *  to restore it, stranding the thread without a persistent
-     *  sink when it later returns to Gateway. Only this
-     *  thread's bindings are retired — other threads' sinks on
-     *  the shared key stay registered.
-     */
-    /**
-     *  Bind a session key to the thread before every gateway send: an
-     *  unbound thread must never read the shared gateway's mutable
-     *  active session (another thread may have selected it) — it gets
-     *  its own default session, so cross-thread leakage is impossible.
-     *  Deliberate selections always go through handleSelectAgent/
-     *  handleOpenSession, which set thread.sessionKey explicitly.
-     */
-    /**
-     *  Explicitly prevent concurrent runs on one gateway session: two
-     *  unbound threads would otherwise both land on the shared default
-     *  session, and the second send would replace the first thread's
-     *  run sink, rendering its response in the wrong thread.
-     */
-    /**
-     *  A new run invalidates every sink captured by an earlier run on
-     *  this thread: a late `done` from an aborted/rebound run must
-     *  never commit stale pending text into the current run.
-     */
-    /**
-     *  Non-gateway (acpx) sends capture the bumped run epoch below:
-     *  handleChatEvent then validates acpx events per run, so events
-     *  from a superseded acpx run cannot outlive its replacement.
-     */
-    /**
-     *  A resumed thread's persistent transcript callback is still in
-     *  the gateway's fan-out set; the per-run sink would deliver every
-     *  live event twice to the same thread. Suspend it for the run and
-     *  restore it when the run ends.
-     */
-    /**
-     *  Acpx runs get the same per-run generation guard: bumping the
-     *  epoch before capture invalidates the previous run's callback,
-     *  so its asynchronous close cannot deliver a late done/text
-     *  event into the new run after a transport switch.
-     */
-    /**
-     *  The gateway resolved the send to a different session than
-     *  requested: rebind the thread (and any suspended transcript
-     *  callback) to the resolved key so later cancel/reset/close
-     *  target the session the run actually lives under. Only
-     *  rebind while the thread is still bound to the requested
-     *  key — a mid-run agent switch owns the binding by then.
-     */
-    /**
-     *  Binding mismatch: the thread was switched to another
-     *  session mid-run, so the resolved run no longer belongs
-     *  to it. Retire the run instead of letting its events
-     *  flow through this thread's callback — output from the
-     *  old session would otherwise appear in the newly
-     *  selected conversation, and Cancel would target the
-     *  wrong key.
-     */
-    /**
-     *  The resolved key may host a run owned by another
-     *  client or another thread (its pre-ack window counts
-     *  as owned) even though this service has no local
-     *  sink for it: gate the abort on local run ownership
-     *  plus no other live thread on the key, and keep the
-     *  sink cleanup separate.
-     */
-    /**
-     *  The retired run's `done` is epoch-dropped above, so
-     *  nothing else finalizes this send: without an explicit
-     *  cleanup the thread stays `isStreaming`/`running`
-     *  forever and the UI cannot send normally. Drop the
-     *  stale pending text, clear the streaming state, and
-     *  discard the suspended transcript sink captured for
-     *  the requested key (the run never lived there).
-     */
-    /** Send a queued user prompt through the resolved backend. Retiring the
-     *  thread's previous backend bumps eventEpoch to drop stale events, but
-     *  that is internal invalidation, not a superseding send: refresh the
-     *  captured send epoch here so the send is not stranded between the
-     *  queued message and the backend handoff. */
+    /** Send a queued user prompt through the resolved backend. */
     private async sendPrompt(
         thread: ChatThreadState,
         basePrompt: string,
@@ -1272,20 +1035,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
 
-        this.invalidatedDuringResolve = false;
-        this.resolvingThreadId = thread.id;
+        const resolveTicket = { threadId: thread.id, expectedEpoch: sendEpoch };
+        this.resolveTickets.add(resolveTicket);
         let choice;
         try {
             choice = await this.resolveServiceForSend(this.backendFor(thread));
         } finally {
-            this.resolvingThreadId = null;
+            this.resolveTickets.delete(resolveTicket);
         }
-        const invalidatedDuringResolve = this.invalidatedDuringResolve;
-        this.invalidatedDuringResolve = false;
+        // The resolve can take seconds: a cancel/clear/close, a superseding
+        // send or a rebind (openInFlightGen) during it owns the thread now.
         if (!this.threads.has(thread.id) ||
             thread.openInFlightGen !== null ||
             thread.status !== 'running' ||
-            (thread.eventEpoch !== sendEpoch && !invalidatedDuringResolve)) {
+            thread.eventEpoch !== resolveTicket.expectedEpoch) {
             if (thread.openInFlightGen !== null) {
                 log.info('sendPrompt: openSession in flight after backend resolve, send retired');
                 thread.isStreaming = false;
@@ -1299,9 +1062,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
+        // Retire the previous backend so its late events cannot reach the new run.
         const previousBackend = thread.transportBackend;
         if (previousBackend && previousBackend !== choice.service && previousBackend !== thread.service) {
             if (previousBackend instanceof GatewayChatService) {
+                // The shared gateway client is never disposed; abort only a run
+                // this thread owns, and never another thread's run on the key.
                 if (thread.sessionKey) {
                     thread.eventEpoch += 1;
                     thread.bindingEpoch += 1;
@@ -1309,14 +1075,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (!sharedRun && previousBackend.hasOwnedRun(thread.sessionKey)) {
                         previousBackend.abort(thread.sessionKey);
                     }
-                    // The thread keeps its sessionKey and the gateway stays
-                    // alive, so the persistent transcript callback must survive
-                    // the fallback: removing it here would leave the thread
-                    // permanently deaf to external/resumed gateway events even
-                    // after the gateway transport returns. Rebind it fresh
-                    // (epoch was bumped, so the old callback would be
-                    // epoch-dropped anyway); a suspended entry moves back to
-                    // active since its gateway run is retired with the switch.
+                    // Keep the thread's transcript callback across the fallback,
+                    // rebound under the bumped epoch, so it still hears the session.
                     const suspendedOwn = this.suspendedTranscriptSinks.get(thread.id);
                     if (suspendedOwn && suspendedOwn.sessionKey === thread.sessionKey) {
                         this.restoreSuspendedTranscriptSink(thread);
@@ -1336,19 +1096,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 thread.bindingEpoch += 1;
             }
         }
+        // Retiring the backend is internal invalidation, not a superseding send.
         sendEpoch = thread.eventEpoch;
         thread.transportBackend = choice.service;
         let runEpoch: number | undefined;
         if (choice.service instanceof GatewayChatService) {
+            // Never the shared gateway's mutable active session, which another thread may have selected.
             if (!thread.sessionKey) {
                 thread.sessionKey = DEFAULT_SESSION_KEY;
             }
-            // The allowlist was built for the previous gateway identity and a
-            // URL/token change invalidates it: revalidate the thread's key
-            // before sending, so a binding learned from the previous gateway
-            // is never activated (nor its transcript sink rebound) against
-            // the new one. isKnownMainSessionKey refreshes the allowlist and
-            // fails closed when the refresh cannot verify the key.
+            // A binding learned from a previous gateway identity must not be used on this one.
             const keyAllowed = await this.isKnownMainSessionKey(choice.service, thread.sessionKey);
             if (thread.status !== 'running' || thread.eventEpoch !== sendEpoch) {
                 return;
@@ -1380,6 +1137,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this.emitState();
                 return;
             }
+            // A second run on the session would replace the first thread's run sink.
             const busyThread = [...this.threads.values()].some(
                 t => t.id !== thread.id && t.sessionKey === thread.sessionKey && t.status === 'running'
             );
@@ -1396,16 +1154,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             choice.service.setActiveSession(thread.sessionKey);
             thread.eventEpoch += 1;
             runEpoch = thread.eventEpoch;
+            // The run sink delivers live events; the persistent callback would duplicate them.
             this.suspendThreadTranscriptSink(choice.service, thread);
         } else {
             thread.eventEpoch += 1;
             runEpoch = thread.eventEpoch;
         }
-        // Attachment representation is transport-specific, so it is built only
-        // after the backend for THIS send is resolved: gateway transports take
-        // images inline as data URIs (the gateway has no filesystem access to
-        // this machine), while CLI transports need a path-based snapshot to
-        // keep the prompt inside spawn() argv limits.
+        // Transport-specific: the gateway takes images inline (it cannot read
+        // this machine's disk), CLI transports take temp-file paths to fit argv.
         let promptToSend = basePrompt;
         let disposeAttachments: (() => Promise<void>) | undefined;
         if (attachments.length > 0) {
@@ -1413,17 +1169,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 attachments,
                 {
                     imageMode: choice.service instanceof GatewayChatService ? 'inline' : 'tempFile',
-                    // The final payload is the attachment prompt plus the base
-                    // prompt (a `/compact` send can fill it with the full
-                    // transcript), so the aggregate attachment budget must
-                    // leave room for both plus RPC framing — otherwise a fully
-                    // budgeted attachment set makes the send exceed the
-                    // Gateway's maximum payload. On CLI transports the same
-                    // prompt travels as one argv element, so the base prompt
-                    // is additionally subtracted from the argv budget (see
-                    // ATTACHMENT_ARGV_TOTAL_MAX_BYTES) — otherwise a large
-                    // base prompt plus allowed attachments fails the spawn
-                    // with E2BIG.
+                    // The base prompt shares the gateway payload and the CLI argv budget.
                     reservedPromptBytes:
                         Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
                     reservedArgvBytes:
@@ -1431,11 +1177,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
             );
             disposeAttachments = attachmentResult.dispose;
-            // Superseded while attachment files were being read from disk: the
-            // send must not start (same gate as the checks above the backend
-            // resolution, repeated because the await opened a new window). The
-            // temp-file snapshots were never handed to a child, so they are
-            // removed here to avoid leaking validated image bytes.
+            // Superseded during the read: the snapshots never reached a child, so remove them here.
             if (!this.threads.has(thread.id) ||
                 thread.status !== 'running' ||
                 thread.eventEpoch !== sendEpoch) {
@@ -1453,9 +1195,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 void this.handleChatEvent(thread.id, event, runEpoch);
             },
             (resolvedKey, requestedKey) => {
+                // The thread was switched to another session mid-run: retire
+                // the run instead of letting old-session output into it.
                 if (thread.sessionKey !== requestedKey) {
                     thread.eventEpoch += 1;
                     if (choice.service instanceof GatewayChatService) {
+                        // The resolved key may host another thread's or client's run.
                         const resolvedLiveOther =
                             [...this.threads.values()].some(
                                 t => t.id !== thread.id && t.sessionKey === resolvedKey &&
@@ -1474,11 +1219,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                             choice.service.clearSessionSink(resolvedKey);
                         }
                     }
+                    // The retired run's `done` is epoch-dropped, so finalize the send here.
                     thread.pendingAssistantText = '';
                     thread.isStreaming = false;
                     if (thread.status === 'running') {
                         thread.status = 'idle';
                     }
+                    settleRunToolEntries(thread, 'cancelled');
                     const retiredSuspend = this.suspendedTranscriptSinks.get(thread.id);
                     if (retiredSuspend && retiredSuspend.sessionKey === requestedKey) {
                         this.suspendedTranscriptSinks.delete(thread.id);
@@ -1486,34 +1233,18 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     this.emitState();
                     return;
                 }
+                // Rebind to the resolved key so cancel/reset/close target where the run lives.
                 thread.sessionKey = resolvedKey;
                 const suspended = this.suspendedTranscriptSinks.get(thread.id);
                 if (suspended && suspended.sessionKey === requestedKey) {
                     suspended.sessionKey = resolvedKey;
                 }
             },
-            // Temp-file (acpx) snapshot paths are consumed by the child only
-            // once it reads its argv, so disposal is tied to the process
-            // completion/error path to avoid accumulating temp-disk bytes on
-            // repeated image attachments. Gateway transports go inline and
-            // dispose is a no-op.
+            // Temp-file snapshots live until the child process exits.
             () => void disposeAttachments?.()
         );
     }
 
-    /** Resolve the configured chat backend for one send, reusing the thread's
-     *  legacy service so per-run lifecycle (abort/cancel) stays intact. */
-    /** Persistent transcript callbacks per thread, suspended for the duration
-     *  of a run on the same session (the run sink covers live delivery). */
-    private suspendedTranscriptSinks = new Map<string, { gateway: GatewayChatService; sessionKey: string }>();
-
-    /** Resume bindings deferred because a send started before the automatic
-     *  resume finished: the persistent transcript sink is registered only
-     *  after that run finalizes, so live delivery is never double-wired. */
-    private deferredResumes = new Map<string, { sessionKey: string; historyRendered?: boolean }>();
-
-    /** Suspend a thread's persistent transcript callback for an in-flight run
-     *  on the same session; prevents duplicate fan-out to the run sink. */
     private suspendThreadTranscriptSink(gateway: GatewayChatService, thread: ChatThreadState): void {
         const own = this.transcriptCallbacks.get(thread.id);
         if (!own || own.sessionKey !== thread.sessionKey) {
@@ -1523,8 +1254,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         this.suspendedTranscriptSinks.set(thread.id, { gateway, sessionKey: own.sessionKey });
     }
 
-    /** Restore a suspended transcript callback after a run ends: a fresh
-     *  callback is created because bindingEpoch may have changed mid-run. */
+    /** A fresh callback: bindingEpoch may have changed mid-run. */
     private restoreSuspendedTranscriptSink(thread: ChatThreadState): void {
         const suspended = this.suspendedTranscriptSinks.get(thread.id);
         if (!suspended) {
@@ -1537,25 +1267,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         suspended.gateway.rebindTranscriptSink(suspended.sessionKey, cb);
     }
 
-    /** Register a resume binding deferred because a send was already in
-     *  flight when the automatic resume reached its subscription step. */
-    /**
-     *  Transport temporarily unavailable: retain the deferred entry
-     *  so a later flush (the next run's done) can still bind the
-     *  resume sink; deleting it here would strand the thread without
-     *  transcript events for the resumed session.
-     */
-    /**
-     *  Re-check after the await: a send started while the gateway resolved
-     *  owns the thread now, and registering the persistent transcript sink
-     *  alongside that run sink would deliver every event twice (duplicated
-     *  assistant text/tool rows). Retain the deferred entry so the run's
-     *  `done` re-flushes the resume binding afterwards. (The status is
-     *  re-read widened: the pre-await check narrowed the union for TS.)
-     */
-    /** Serialized chat-event processing per thread (see handleChatEvent). */
-    private chatEventQueueByThread = new Map<string, Promise<void>>();
-
     private async flushDeferredResume(thread: ChatThreadState): Promise<void> {
         const deferred = this.deferredResumes.get(thread.id);
         if (!deferred || thread.isStreaming || thread.status === 'running') {
@@ -1566,12 +1277,15 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             return;
         }
         const gateway = await this.resolveGateway();
+        // Unavailable for now: keep the entry so the next run's `done` retries.
         if (!gateway) {
             if (this.threads.has(thread.id) && thread.sessionKey === deferred.sessionKey) {
                 this.deferredResumes.set(thread.id, deferred);
             }
             return;
         }
+        // A send started during the await: binding now would double-deliver
+        // alongside its run sink. Widened: the pre-await check narrowed the union.
         const resumedStatus: string = thread.status;
         if (!this.threads.has(thread.id) || thread.isStreaming || resumedStatus === 'running') {
             this.deferredResumes.set(thread.id, deferred);
@@ -1588,28 +1302,21 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.chatServiceFactory.resolve(existing);
     }
 
-    /** Credential/transport changes on the shared gateway client retire every
-     *  transcript/run sink synchronously with a synthetic `done`. Invalidate
-     *  the affected threads' runs BEFORE that teardown: bump both epochs so
-     *  the synthetic `done` is epoch-dropped, finalize the send as an error,
-     *  and drop the run-scoped sink bookkeeping so a stale callback cannot be
-     *  rebound against the new gateway before the allowlist re-check. */
-    private invalidateGatewayRuns(): void {
+    /** Runs before the shared gateway client retires every sink with a
+     *  synthetic `done`: the epoch bumps make that `done` stale, and the sink
+     *  bookkeeping goes so nothing is rebound before the allowlist re-check. */
+    private invalidateGatewayRuns(reason: GatewayInvalidationReason): void {
         for (const thread of this.threads.values()) {
             const backend = this.backendFor(thread);
             if (!(backend instanceof GatewayChatService)) {
                 continue;
             }
-            if (thread.id === this.resolvingThreadId) {
-                // The send currently resolving its backend triggered this
-                // invalidation (transport fallback, tokenless auto fallback,
-                // or URL/token change). Retire its sink bookkeeping and bump
-                // epochs so updateConnection's synthetic `done` is
-                // epoch-dropped, but keep the send alive: sendPrompt rebases
-                // sendEpoch and its switch logic aborts/rebinds the old
-                // backend. Finalizing it as an interrupted send would leave
-                // the user message unsent with a misleading "send again"
-                // error.
+            // A ticket from a cancelled/superseded send is stale and never revived.
+            const resolving = [...this.resolveTickets].filter(ticket =>
+                ticket.threadId === thread.id && ticket.expectedEpoch === thread.eventEpoch);
+            if (resolving.length > 0) {
+                // The send is still resolving its backend: keep it alive,
+                // sendPrompt rebases its epoch and switches backends.
                 thread.eventEpoch += 1;
                 thread.bindingEpoch += 1;
                 const ownCallback = this.transcriptCallbacks.get(thread.id);
@@ -1618,18 +1325,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 }
                 this.transcriptCallbacks.delete(thread.id);
                 this.suspendedTranscriptSinks.delete(thread.id);
-                this.invalidatedDuringResolve = true;
+                resolving.forEach(ticket => { ticket.expectedEpoch = thread.eventEpoch; });
                 continue;
             }
             if (!thread.isStreaming && thread.status !== 'running') {
-                // Idle threads are not interrupted, but `updateConnection`
-                // retires every transcript sink on the shared gateway —
-                // including the persistent resume sinks of idle resumed
-                // threads. Drop the provider-side bookkeeping for those too,
-                // so no stale callback record survives a sink that no longer
-                // exists on the gateway: the next openSession or resume
-                // revalidates the key against the new identity's allowlist
-                // and re-subscribes with a fresh catch-up seed.
+                // Idle threads lose their gateway sinks too; drop the records of them.
                 this.transcriptCallbacks.delete(thread.id);
                 this.suspendedTranscriptSinks.delete(thread.id);
                 continue;
@@ -1645,41 +1345,20 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.pendingAssistantText = '';
             thread.isStreaming = false;
             thread.status = 'error';
-            thread.messages.push({
-                role: 'error',
-                content: 'Gateway connection (URL or token) changed. The active run was interrupted; send the message again.'
-            });
+            settleRunToolEntries(thread, 'cancelled');
+            thread.messages.push({ role: 'error', content: INTERRUPTED_RUN_MESSAGES[reason] });
         }
         this.emitState();
     }
 
-    /**
-     *  A sink captured by an earlier run (aborted then rebound) is stale:
-     *  its late events belong to the previous session, not this thread.
-     *  Persistent resume sinks validate against `bindingEpoch` (bumped only
-     *  on rebind/reset/close), while per-run run-sinks use `eventEpoch`
-     *  (bumped before every gateway send).
-     */
-    /**
-     *  Re-check after the await: a new run started during
-     *  markdown rendering bumps the epoch and owns the thread's
-     *  pending text; this stale continuation must not commit.
-     */
-    /**
-     *  A `done` emitted by abort() or a teardown path must not
-     *  upgrade a cancelled/idle thread to complete.
-     */
     private async handleChatEvent(threadId: string, event: ChatEvent, eventEpoch?: number, epochScope: 'run' | 'binding' = 'run'): Promise<void> {
         const thread = this.threads.get(threadId);
         if (!thread) {
             log.warn(`handleChatEvent: thread ${threadId} not found`);
             return;
         }
-        // Serialize per thread: a `done` awaits markdown rendering, so a
-        // synchronously following `text` (e.g. replayed history rows) would
-        // otherwise be appended to the not-yet-committed pending text and
-        // coalesce two assistant rows into one message — and a second `done`
-        // could restore/retire a live sink before the first render commits.
+        // Serialized per thread: a `done` awaits markdown rendering, and a
+        // following `text` must not join its not-yet-committed pending text.
         const prev = this.chatEventQueueByThread.get(threadId);
         const queued = (prev ?? Promise.resolve()).catch(() => undefined).then(() =>
             this.processChatEvent(threadId, event, eventEpoch, epochScope)
@@ -1698,19 +1377,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!thread) {
             return;
         }
+        // Persistent transcript sinks validate against bindingEpoch (bumped on
+        // rebind/reset/close); run sinks against eventEpoch (bumped per send).
         const currentEpoch = epochScope === 'binding' ? thread.bindingEpoch : thread.eventEpoch;
         if (eventEpoch !== undefined && currentEpoch !== eventEpoch) {
             log.info(`handleChatEvent: dropping stale ${epochScope}-epoch-${eventEpoch} event (current ${currentEpoch}), thread=${threadId}`);
             return;
         }
         log.info(`handleChatEvent: type=${event.type}, thread=${threadId}`);
+        this.threadNotices.delete(threadId);
 
         switch (event.type) {
             case 'text':
                 thread.pendingAssistantText += event.text;
                 thread.isStreaming = true;
                 thread.status = 'running';
-                postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+                postToAll(this.allWebviews(), {
                     type: 'textUpdate',
                     threadId: thread.id,
                     text: thread.pendingAssistantText,
@@ -1731,6 +1413,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     const commitEpoch = thread.eventEpoch;
                     thread.pendingAssistantText = '';
                     const html = await renderMarkdown(raw);
+                    // A run started during rendering owns the pending text now.
                     if (thread.eventEpoch !== commitEpoch) {
                         log.info(`handleChatEvent: dropping stale done after render (epoch ${commitEpoch} -> ${thread.eventEpoch}), thread=${threadId}`);
                         return;
@@ -1738,8 +1421,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.messages.push({ role: 'assistant', content: raw, html });
                 }
                 thread.isStreaming = false;
+                // A `done` from abort() or teardown must not upgrade a stopped thread.
                 if (thread.status !== 'error' && thread.status !== 'cancelled' && thread.status !== 'idle') {
                     thread.status = 'complete';
+                }
+                // Transcript replay emits `done` per final row while an external run may still use its tools.
+                if (epochScope === 'run') {
+                    settleRunToolEntries(thread, 'done');
                 }
                 this.restoreSuspendedTranscriptSink(thread);
                 this.updateThreadSubjectFromContext(thread);
@@ -1752,6 +1440,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 this.emitState();
                 break;
             case 'error':
+                if (epochScope === 'run') {
+                    settleRunToolEntries(thread, 'cancelled');
+                }
                 thread.messages.push({ role: 'error', content: event.message });
                 thread.isStreaming = false;
                 thread.status = 'error';
@@ -1855,7 +1546,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 collapseCompleted,
                 hideToolActivity
             };
-            const threads = buildThreadSnapshots(this.threads, this.visibleThreadIds);
+            const threads = buildThreadSnapshots(this.threads, this.visibleThreadIds)
+                .map(snapshot => ({ ...snapshot, notice: this.threadNotices.get(snapshot.id) }));
             const totalMessages = threads.reduce((sum, t) => sum + t.messages.length, 0);
             log.info(`emitState: ${threads.length} threads, ${totalMessages} msgs, active=${this.activeThreadId}, sidebar=${!!this.sidebarView}, popout=${!!this.popOutPanel}, debug=${!!this.debugPanel}`);
 
@@ -1866,13 +1558,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
         } catch (err) {
             log.error('emitState failed', err);
-            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], { type: 'state', threads: [], activeThreadId: '', visibleThreadIds: [], models: [], dimension: '1x1', collapseCompleted: true });
+            postToAll(this.allWebviews(), { type: 'state', threads: [], activeThreadId: '', visibleThreadIds: [], models: [], dimension: '1x1', collapseCompleted: true });
         }
     }
 
-    private bootstrapWebview(): void {
+    private bootstrapWebview(webview: vscode.Webview): void {
         setTimeout(() => {
-            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
+            void webview.postMessage({
                 type: 'slashCommands',
                 commands: SLASH_COMMANDS.map(c => ({
                     name: c.name,
@@ -1881,11 +1573,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     placeholder: c.placeholder,
                 })),
             });
+            if (this.lastTransportStatus) {
+                void webview.postMessage(this.lastTransportStatus);
+            }
             this.pushRecommendations();
             this.emitState();
 
             if (this.globalState.get<boolean>('openclaw.onboardingComplete')) {
-                postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], { type: 'onboardingDone' });
+                void webview.postMessage({ type: 'onboardingDone' });
             }
         }, 100);
         if (!this.resumeStarted) {
@@ -1896,14 +1591,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /**
-     *  Command-palette agent picker bound to the active chat.
-     *  Route through the open flow, not just key binding: unlike the
-     *  webview session flow, the palette selection must fetch history
-     *  and register the transcript resume sink, or the thread keeps
-     *  showing the previous conversation and receives no events.
-     */
+    /** Command-palette agent picker, opened into the thread active when invoked. */
     async showAgentPicker(): Promise<void> {
+        const thread = this.getActiveThread();
         const gateway = await this.resolveGateway();
         const picker = new AgentPicker(gateway, {
             show: async (items) => {
@@ -1920,58 +1610,56 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             },
         });
         const chosen = await picker.pick();
-        if (chosen) {
-            await this.handleOpenSession(chosen.sessionKey);
+        // Routed through the open flow: the palette selection must load history and resume.
+        if (chosen && thread) {
+            await this.handleOpenSession(chosen.sessionKey, thread);
         }
     }
 
-    /** Resolve the gateway transport for session-list/ history flows. */
+    /** The gateway transport for session-list/history flows, or null when it cannot be resolved. */
     private async resolveGateway(): Promise<GatewayChatService | null> {
+        try {
+            return await this.resolveGatewayOrThrow();
+        } catch (err) {
+            log.warn('gateway resolution failed', err);
+            return null;
+        }
+    }
+
+    /** Throws when a configured gateway cannot be used (invalid URL, SecretStorage failure). */
+    private async resolveGatewayOrThrow(): Promise<GatewayChatService | null> {
         const choice = await this.chatServiceFactory.resolve();
         return choice.transport === 'gateway' && choice.service instanceof GatewayChatService
             ? choice.service
             : null;
     }
 
-    /** List sessions for the webview picker (agents) or history list. */
-    private async handleListSessions(forPicker: boolean): Promise<void> {
-        const gateway = await this.resolveGateway();
-        if (!gateway) {
+    /** Answer a sessions request to the webview that asked, empty with an error when unavailable. */
+    private async handleListSessions(webview: vscode.Webview, forPicker: boolean, threadId: string | undefined): Promise<void> {
+        const reply = (sessions: AgentSessionItem[], error?: string): void => {
+            void webview.postMessage({ type: forPicker ? 'agentsList' : 'sessionsList', sessions, error, threadId });
+        };
+        let gateway: GatewayChatService | null;
+        try {
+            gateway = await this.resolveGatewayOrThrow();
+        } catch (err) {
+            log.warn('sessions: gateway resolution failed', err);
+            reply([], `Gateway error: ${err instanceof Error ? err.message : String(err)}`);
             return;
         }
-        try {
-            const payload = await this.refreshSessionAllowlist(gateway);
-            if (!payload) {
-                return;
-            }
-            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-                type: forPicker ? 'agentsList' : 'sessionsList',
-                sessions: buildAgentSessionItems(payload),
-            });
-        } catch (err) {
-            log.warn('sessions.list failed', err);
+        if (!gateway) {
+            reply([], SESSIONS_GATEWAY_UNAVAILABLE);
+            return;
         }
+        const payload = await this.refreshSessionAllowlist(gateway);
+        if (!payload) {
+            reply([], SESSIONS_LIST_FAILED);
+            return;
+        }
+        reply(buildAgentSessionItems(payload));
     }
 
-    /** Fetch sessions.list and populate the allowlist, rejecting a stale
-     *  response: the gateway identity is re-read after the RPC resolves, so
-     *  a URL/token change while it was in flight discards the result and
-     *  retries once; a persistent mismatch fails closed (allowlist left
-     *  cleared) rather than authorizing old-gateway keys on a new gateway.
-     *  Returns the fresh payload, or null when no trustworthy refresh
-     *  happened. */
-    /** Returns the fresh payload, or null when no trustworthy refresh
-     *  happened. Concurrent callers share one in-flight refresh: two
-     *  serialized requests would let the older response resolve last and
-     *  overwrite the allowlist with a stale snapshot, so refreshes are
-     *  serialized (later callers join the live attempt, and the newest
-     *  commit always reflects the most recent sessions.list). The shared
-     *  promise is keyed by gateway identity: a URL/token change while an
-     *  old refresh is in flight starts a new refresh for the new gateway
-     *  instead of joining the old one, and a caller whose identity differs
-     *  from the committed refresh retries against its own gateway. */
-    private allowlistRefreshInFlight: Map<string, Promise<unknown | null>> = new Map();
-
+    /** Concurrent callers share one in-flight refresh, so an older response cannot overwrite a newer allowlist. */
     private async refreshSessionAllowlist(gateway: GatewayChatService): Promise<unknown | null> {
         const identity = gateway.getGatewayIdentity();
         const existing = this.allowlistRefreshInFlight.get(identity);
@@ -1987,6 +1675,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return run;
     }
 
+    /** The fresh sessions.list payload, or null when none could be trusted: a
+     *  response that raced a gateway identity change is discarded and retried once. */
     private async runAllowlistRefresh(gateway: GatewayChatService): Promise<unknown | null> {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const identityBefore = gateway.getGatewayIdentity();
@@ -2008,16 +1698,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return null;
     }
 
-    /** Whether the webview-supplied main-session key is in the last
-     *  sessions.list allowlist. A stale/empty allowlist refreshes once from
-     *  the gateway first: the restart-resume path binds a key the webview
-     *  has not listed yet, and a failed initial list must not permanently
-     *  reject every later legitimate selection. Fail-closed on refresh
-     *  errors: an unverifiable key is treated as unknown. A gateway
-     *  identity (URL/token) change clears the list first: keys learned
-     *  from the previous gateway are not valid for the new one, and the
-     *  identity check runs before the size check so a stale non-empty
-     *  list still triggers a fresh sessions.list. */
+    /** Whether the key is in the current gateway's allowlist. An empty list
+     *  refreshes once (restart-resume binds keys never listed); an
+     *  unverifiable key is unknown. */
     private async isKnownMainSessionKey(gateway: GatewayChatService, sessionKey: string): Promise<boolean> {
         const gatewayId = gateway.getGatewayIdentity();
         if (this.allowlistGatewayId !== gatewayId) {
@@ -2033,13 +1716,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return this.knownMainSessionKeys.has(sessionKey);
     }
 
-    /**
-     *  Bind the chosen agent session key to the active chat and persist it.
-     *  Release the send-rejection marker only now that the full rebind
-     *  (persist, retire/abort, key assignment, history, resume) has
-     *  settled; any early return above leaves it owned, blocking sends
-     *  that would otherwise race the rebind window.
-     */
+    /** Bind the chosen agent session key to the active chat and persist it.
+     *  The open-in-flight marker blocks sends until the whole rebind settles. */
     private async handleSelectAgent(sessionKey: string): Promise<void> {
         const selectGen = ++this.selectGeneration;
         const pendingOpenThread = this.getActiveThread();
@@ -2048,17 +1726,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             pendingOpenThread.openInFlightGen = pendingOpenThread.openGeneration;
         }
         const selectionGen = pendingOpenThread ? pendingOpenThread.openGeneration : null;
-        let gateway: GatewayChatService | null = null;
-        try {
-            gateway = await this.resolveGateway();
-        } catch (err) {
-            log.warn('selectAgent: gateway resolution failed', err);
-            if (pendingOpenThread &&
-                pendingOpenThread.openInFlightGen === selectionGen) {
-                pendingOpenThread.openInFlightGen = null;
-            }
-            return;
-        }
+        const gateway = await this.resolveGateway();
         if (!gateway) {
             if (pendingOpenThread &&
                 pendingOpenThread.openInFlightGen === selectionGen) {
@@ -2106,19 +1774,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (selectionGen !== null && activeThread.openGeneration !== selectionGen) {
             return;
         }
-        // Switch the shared gateway session only after the ownership/generation
-        // checks above: mutating `activeSessionKey` before them lets a stale
-        // continuation overwrite the key a newer selection already installed
-        // while this request was awaiting gateway resolution, so fallback
-        // sends in that window would target a stale session. The in-flight
-        // marker blocks sends during the rebind window, so this late switch
-        // cannot strand a send on the previous key; the finally block below
-        // releases the marker when this request still owns it.
-        // Revalidate the gateway identity and the allowlist immediately
-        // before the shared-key switch: the persistence await above may
-        // outlive a URL/token change, and a key learned from the previous
-        // gateway must not be activated on the new one (same stale-binding
-        // class as the open path).
+        // The shared session switches only after the generation checks, so a
+        // stale continuation cannot overwrite a newer selection's key; the
+        // persist await may have outlived a gateway identity change.
         if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
             log.warn('selectAgent: rejected session key after identity change', sessionKey);
             return;
@@ -2163,25 +1821,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 activeThread.pendingAssistantText = '';
                 activeThread.status = 'idle';
             }
+            if (activeThread.sessionKey !== sessionKey) {
+                this.clearSessionBoundState(activeThread);
+            }
             activeThread.sessionKey = sessionKey;
             activeThread.transportBackend = gateway;
         }
-        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-            type: 'agentSelected',
-            sessionKey,
-        });
+        this.postAgentSelected(sessionKey);
         if (activeThread) {
             if (!(activeThread.isStreaming || activeThread.status === 'running')) {
                 const historyEpoch = activeThread.eventEpoch;
                 const history = await gateway.getHistory(sessionKey);
+                const restored = history === null ? null : await toTranscriptMessages(history);
                 if (this.selectGeneration === selectGen &&
                     this.getActiveThread()?.id === activeThread.id && activeThread.sessionKey === sessionKey &&
                     activeThread.eventEpoch === historyEpoch && !activeThread.isStreaming &&
                     (selectionGen === null || activeThread.openGeneration === selectionGen)) {
-                    if (history !== null) {
+                    if (restored !== null) {
                         gateway.seedHistory(sessionKey, history);
-                        activeThread.messages = mapHistoryMessages(history)
-                            .map(msg => ({ role: msg.role, content: msg.content }));
+                        activeThread.messages = restored;
                         activeThread.status = 'idle';
                     } else {
                         activeThread.messages = [];
@@ -2198,18 +1856,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     !this.transcriptCallbacks.has(activeThread.id) &&
                     !this.suspendedTranscriptSinks.has(activeThread.id) &&
                     activeThread.sessionKey) {
-                    // Stale continuation on the same active thread and generation
-                    // (epoch/streaming drift, not a newer selection): without the
-                    // history check passing no callback is installed below, so the
-                    // rebound thread would sit idle and never receive gateway
-                    // events. Install a fresh callback for the key it is bound
-                    // to — but only after revalidating that key against the
-                    // current gateway: a binding learned from a previous
-                    // gateway identity must not get a fresh sink on the new
-                    // one (same stale-binding class as the send path). A
-                    // stale key here just leaves the thread idle without a
-                    // callback, matching the no-callback state this branch
-                    // was fixing up.
+                    // Same selection, but epoch/streaming drifted: install the
+                    // callback the skipped restore would have, if the key is still known.
                     if (await this.isKnownMainSessionKey(gateway, activeThread.sessionKey)) {
                         this.resumeSessionForThread(gateway, activeThread, activeThread.sessionKey, false);
                     }
@@ -2226,12 +1874,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Whether any other thread (or its suspended sink) is still bound to
-     *  the given session key: such threads keep valid transcript sinks that
-     *  a clearSessionSink call must not wipe. */
-    /** Whether another Gateway-backed running thread holds this session key.
-     *  Only Gateway-backed threads own a Gateway run, so acpx threads on the
-     *  same key must not block aborting or cleaning up that run. */
+    /** Whether another gateway-backed thread runs on the key; acpx threads own no gateway run. */
     private otherRunningGatewayThread(excludeThreadId: string, sessionKey: string | undefined): boolean {
         if (!sessionKey) {
             return false;
@@ -2245,6 +1888,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return false;
     }
 
+    /** Whether another thread (or its suspended sink) is bound to the key, so its sink must survive. */
     private otherThreadsOnKey(excludeThreadId: string, sessionKey: string): boolean {
         for (const t of this.threads.values()) {
             if (t.id !== excludeThreadId && t.sessionKey === sessionKey &&
@@ -2260,236 +1904,57 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return false;
     }
 
-    /** Open a session: restore its transcript into the active thread.
-     *  Session opening is async: after every await, the thread is re-checked
-     *  (still the active thread, still bound to the requested key) so a
-     *  newer open of another session cannot be overwritten by this call's
-     *  late history/resume. */
-    /**
-     *  Open-generation marker for this request: a newer openSession on the
-     *  same thread bumps the counter, so this continuation can detect it
-     *  after every await (the session key alone cannot — it still holds
-     *  the previous key until this request assigns the new one).
-     *  Captured BEFORE the gateway resolve await: two open requests can
-     *  resolve out of order, and a bump after the await lets the older
-     *  request claim the newer generation and overwrite the newer
-     *  session/history.
-     */
-    /**
-     *  Send-rejection marker: the shared gateway session is switched below
-     *  before the thread is rebound, and the rebinding awaits persistence,
-     *  so a send accepted in that window would target the previous key and
-     *  its callback would later deliver into the newly opened session.
-     *  Cleared only while this open still owns the marker (a newer open
-     *  supersedes it and owns the marker from then on).
-     */
-    /**
-     *  Same rejection guard as handleSelectAgent: a failed gateway
-     *  resolution here must release this open's marker via the
-     *  ownership check, or later sends stay refused forever.
-     */
-    /**
-     *  Same webview-origin allowlist as handleSelectAgent: a crafted key
-     *  for an unlisted agent must not reach history loading or the rebind.
-     */
-    /**
-     *  Re-check after the resolve await: a thread switch while the gateway
-     *  resolved must not apply this open to the previously active thread.
-     */
-    private async handleOpenSession(sessionKey: string): Promise<void> {
-        const thread = this.getActiveThread();
-        if (!thread) {
+    /** Open a session into the given thread. After every await the thread is
+     *  re-checked (still open, same open generation) so a newer open wins. */
+    private async handleOpenSession(sessionKey: string, thread: ChatThreadState): Promise<void> {
+        if (!this.threads.has(thread.id)) {
             return;
         }
+        // Captured before the resolve await: out-of-order opens must not claim a newer generation.
         const openGen = ++thread.openGeneration;
+        // Blocks sends until the rebind lands; released only while this open still owns it.
         thread.openInFlightGen = openGen;
-        let gateway: GatewayChatService | null = null;
-        try {
-            gateway = await this.resolveGateway();
-        } catch (err) {
-            log.warn('openSession: gateway resolution failed', err);
+        const releaseMarker = (): void => {
             if (thread.openInFlightGen === openGen) {
                 thread.openInFlightGen = null;
             }
-            return;
-        }
+        };
+        const gateway = await this.resolveGateway();
         if (!gateway) {
-            if (thread.openInFlightGen === openGen) {
-                thread.openInFlightGen = null;
-            }
+            releaseMarker();
             return;
         }
         if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
             log.warn('openSession: rejected unknown session key', sessionKey);
-            if (thread.openInFlightGen === openGen) {
-                thread.openInFlightGen = null;
-            }
+            releaseMarker();
             return;
         }
-        if (this.getActiveThread()?.id !== thread.id || thread.openGeneration !== openGen) {
-            if (thread.openInFlightGen === openGen) {
-                thread.openInFlightGen = null;
-            }
+        if (!this.isCurrentOpen(thread, openGen)) {
+            releaseMarker();
             return;
         }
         try {
             await this.openSessionRebinding(thread, sessionKey, gateway, openGen);
         } finally {
-            if (thread.openInFlightGen === openGen) {
-                thread.openInFlightGen = null;
-            }
+            releaseMarker();
         }
     }
 
-    /** Continuation of handleOpenSession with the in-flight marker set: every
-     *  await below re-checks the active thread and the open generation so a
-     *  newer open (or thread switch) cannot be overwritten by this late
-     *  continuation. */
-    /**
-     *  reboundFrom keeps the previous gateway key when one existed; the
-     *  history-failure branch below must treat ANY binding change as a
-     *  rebind — including undefined → new key (an acpx thread opening a
-     *  gateway session): a failed history fetch must not keep the old
-     *  (acpx) transcript displayed under the newly bound session.
-     */
-    /**
-     *  Same acpx guard as handleSelectAgent: a streaming run without a
-     *  gateway session key (or on an acpx fallback backend) must be
-     *  retired before rebinding, or its late output lands in the newly
-     *  opened transcript.
-     */
-    /**
-     *  Aborting an acpx-backed run leaves no `done` completion that
-     *  clears streaming state, and the later history restore only
-     *  sets `status` to idle: without clearing here, `isStreaming`
-     *  stays true and every subsequent send is rejected at the busy
-     *  check, permanently bricking the thread.
-     */
-    /**
-     *  A null history response (e.g. gateway unavailable) leaves the
-     *  `history !== null` branch unreached: the status must already
-     *  be idle here, or a sessionless rebind strands the thread in
-     *  `running` and future sends are rejected as busy.
-     */
-    /**
-     *  Retire any run still active on the previous session before
-     *  rebinding: late events from the old run would otherwise be
-     *  appended to the newly opened transcript. The old transcript
-     *  sink is dropped too, so events for the previous key cannot
-     *  reach the rebound thread.
-     *  Hoisted so the abandoned-rebind restore closure below can reach the
-     *  previous binding even though the teardown block declares them inside
-     *  its own scope.
-     */
-    /**
-     *  Same shared-session guard as handleSelectAgent: only tear down
-     *  the previous session when no other thread still *runs* on it;
-     *  an idle resumed subscriber must not keep this thread's run
-     *  alive, and a live run on the same key is not ours to cancel.
-     *  The suspended entry (if the retired run had one) must go too:
-     *  a later restore would otherwise rebind the old session's
-     *  callback to this thread and deliver cross-session events.
-     */
-    /**
-     *  Epoch bump precedes abort in both cases: the aborted run's
-     *  async completion must not reach the rebound thread.
-     */
-    /**
-     *  Same backend-type guard as handleSelectAgent: only a
-     *  gateway-backed run may abort the previous gateway session; an
-     *  acpx fallback run (retired above) must not cancel whatever
-     *  other owner still runs on the stale binding key.
-     */
-    /**
-     *  Abort only when this thread owns the live run on the
-     *  previous key: an idle subscriber merely switching away
-     *  must not cancel a run owned by another client. Late events
-     *  from an unowned run cannot reach the rebound thread — the
-     *  epoch bumped above and the sink is cleared below. The
-     *  hasOwnedRun gate also covers the pre-ack window before
-     *  the run sink exists.
-     */
-    /**
-     *  Same guard as handleSelectAgent: idle resumed
-     *  subscribers on the previous session keep their sink.
-     */
-    /**
-     *  Restores the previous binding when this rebind is abandoned after
-     *  the teardown above but before the commit: switching panes or a
-     *  superseding open must not leave the thread bound to previousKey
-     *  with its transcript sink cleared and its callback epoch stale.
-     */
-    /**
-     *  A rejected persistence write (e.g. unavailable workspace state)
-     *  must not skip the abandonment checks below: the teardown above
-     *  already cleared the previous session's sinks, so leaving the thread
-     *  keyed to the old session with a lost sink while the gateway points
-     *  at the new one strands the conversation. Restore the previous
-     *  binding, surface the failure, and keep the thread usable instead of
-     *  propagating the rejection past the generation guards.
-     */
-    /**
-     *  A newer openSession request superseded this one while the
-     *  persist/await above was in flight: never clobber the newer
-     *  selection. Do not persist anything here either — `thread.sessionKey`
-     *  is still the previous binding (the newer request assigns its key
-     *  only after its own generation check), so persisting it would
-     *  overwrite the newer request's resume key. The current-generation
-     *  request owns persistence.
-     */
-    /**
-     *  Reopening the session this thread is already bound to while a run
-     *  is in flight must not replace the transcript or reset status: the
-     *  unconditional restore would drop the live response. This guard
-     *  must run BEFORE the listSessions/cold-session branch below — that
-     *  branch clears the transcript and marks the thread idle without
-     *  aborting or retiring the run, and resumeSessionForThread would
-     *  register a persistent sink alongside the live run sink, causing
-     *  duplicate delivery and inconsistent lifecycle state. The thread
-     *  keeps its registered transcript callback, so nothing to rebind.
-     */
-    /**
-     *  A cold session has no transcript: drop any previous
-     *  thread content and stale run state before showing
-     *  its placeholder.
-     */
-    /**
-     *  The cold branch returns before the final agentSelected
-     *  post below; the webview only dismisses the sessions
-     *  panel on that message, so it must fire here too.
-     */
-    /**
-     *  A successful fetch replaces the transcript unconditionally (empty
-     *  history clears the prior session's messages); a failed fetch keeps
-     *  the current transcript rather than wiping it on transport errors.
-     */
-    /**
-     *  Seed the gateway's delta cursor and messageId dedupe set from
-     *  the restored transcript so resumeSession's catch-up does not
-     *  replay the history we just rendered (or leave the thread
-     *  streaming).
-     */
-    /**
-     *  A failed fetch after a session switch must not keep the
-     *  previous session's transcript under the new key: the resume
-     *  sink below would show the old transcript as the new session
-     *  and append new-session events to it. Clear it and surface an
-     *  explicit load error instead (a same-key reopen keeps its
-     *  transcript on transport errors by design).
-     */
-    /**
-     *  Dismiss the sessions panel in every webview surface: opening a
-     *  row is a selection, so the panel must close the same way it does
-     *  for selectAgent.
-     */
+    private isCurrentOpen(thread: ChatThreadState, openGen: number): boolean {
+        return this.threads.has(thread.id) && thread.openGeneration === openGen;
+    }
+
     private async openSessionRebinding(
         thread: ChatThreadState,
         sessionKey: string,
         gateway: GatewayChatService,
         openGen: number
     ): Promise<void> {
+        // Any binding change counts, including an unbound (acpx) thread opening a gateway session.
         const rebounded = thread.sessionKey !== sessionKey;
         const previousBackend = this.backendFor(thread);
+        // A running acpx run leaves no `done` after abort: clear streaming
+        // state here or every later send is rejected as busy.
         if (thread.status === 'running' && !(previousBackend instanceof GatewayChatService)) {
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
@@ -2498,12 +1963,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.pendingAssistantText = '';
             thread.status = 'idle';
         }
+        // Hoisted so an abandoned rebind can restore the previous binding.
         let abandonedPreviousKey: string | null = null;
         let abandonedSuspendedSink: { gateway: GatewayChatService; sessionKey: string } | null = null;
-        // Catch-up state of the previous key, captured before the teardown
-        // below clears it: when this rebind is abandoned the restore must
-        // rebuild the same replay boundary, or events missed while the
-        // sink was cleared are permanently lost.
+        // Catch-up state captured before the sink is cleared, so a restore
+        // rebuilds the same replay boundary instead of losing events.
         let abandonedStateSnapshot: ReturnType<GatewayChatService['captureSessionState']> = null;
         if (thread.sessionKey && thread.sessionKey !== sessionKey) {
             const previousKey = thread.sessionKey;
@@ -2516,6 +1980,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             const sharesLiveRun = this.otherRunningGatewayThread(thread.id, previousKey);
             thread.eventEpoch += 1;
             thread.bindingEpoch += 1;
+            // Only a gateway-backed thread may tear down the previous gateway
+            // session, and only a run it owns; other subscribers keep their sink.
             if (previousBackend instanceof GatewayChatService) {
                 if (thread.status === 'running' && !sharesLiveRun && gateway.hasOwnedRun(previousKey)) {
                     gateway.abort(previousKey);
@@ -2530,17 +1996,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.status = 'idle';
         }
         const restoreAbandonedRebind = (): void => {
-            // closeThread is authoritative: after it removed the thread and its
-            // sinks, a stale rebinding must not re-insert a callback (or a
-            // suspended sink) for a thread that no longer exists.
+            // closeThread is authoritative: never re-insert sinks for a removed thread.
             if (!abandonedPreviousKey || !this.threads.has(thread.id)) {
                 return;
             }
-            // A superseding open must not inherit this rebind's stale state:
-            // require that this continuation still owns the open generation
-            // and that the thread remains bound to the abandoned key. Only
-            // then is it safe to reinstate the captured sink; otherwise a
-            // newer open's binding would receive cross-session events.
+            // A superseding open owns the binding now.
             if (thread.openGeneration !== openGen || thread.sessionKey !== abandonedPreviousKey) {
                 return;
             }
@@ -2565,12 +2025,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             gatewayBackend.rebindTranscriptSink(persistent.sessionKey, cb);
         };
         try {
-            await this.persistLastSessionKey(sessionKey, () =>
-                this.getActiveThread()?.id === thread.id && thread.openGeneration === openGen);
+            await this.persistLastSessionKey(sessionKey, () => this.isCurrentOpen(thread, openGen));
         } catch (err) {
+            // The teardown already cleared the previous sinks: restore them and keep the thread usable.
             log.warn('openSessionRebinding: failed to persist last session key', err);
             restoreAbandonedRebind();
-            if (this.getActiveThread()?.id === thread.id && thread.openGeneration === openGen) {
+            if (this.isCurrentOpen(thread, openGen)) {
                 thread.messages.push({
                     role: 'error',
                     content: 'Failed to persist the last session. Reopen the session to retry.'
@@ -2579,47 +2039,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             }
             return;
         }
-        if (this.getActiveThread()?.id !== thread.id) {
+        // A superseded open persists nothing: the current generation owns persistence.
+        if (!this.isCurrentOpen(thread, openGen)) {
             restoreAbandonedRebind();
             return;
         }
-        if (thread.openGeneration !== openGen) {
-            restoreAbandonedRebind();
-            return;
-        }
-        // Switch the shared gateway session only after the active-thread and
-        // open-generation checks above: mutating `activeSessionKey` before
-        // them lets a stale rebinding overwrite the key a newer open already
-        // installed while this request was awaiting persistence, so fallback
-        // sends between bindings would target the wrong conversation. The
-        // in-flight marker blocks sends during the rebind window, so this
-        // late switch cannot strand a send on the previous key; the stale
-        // paths above never touched the shared key, so no restore is needed.
-        // Revalidate the gateway identity and the allowlist immediately
-        // before the shared-key switch: the persistence await above may
-        // outlive a URL/token change, and a key learned from the previous
-        // gateway must not be rebound and queried on the new one.
+        // The shared session switches only after the generation checks, so a
+        // stale rebinding cannot overwrite a newer open's key; the persist
+        // await may have outlived a gateway identity change.
         if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
             log.warn('openSession: rejected session key after identity change', sessionKey);
             restoreAbandonedRebind();
             return;
         }
         gateway.setActiveSession(sessionKey);
+        if (rebounded) {
+            this.clearSessionBoundState(thread);
+        }
         thread.sessionKey = sessionKey;
 
-        if (thread.sessionKey === sessionKey && (thread.isStreaming || thread.status === 'running')) {
-            postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-                type: 'agentSelected',
-                sessionKey,
-            });
+        // Reopening the bound session mid-run keeps the live transcript and
+        // callback; this must precede the cold branch, which clears the thread.
+        if (thread.isStreaming || thread.status === 'running') {
+            this.postAgentSelected(sessionKey);
             return;
         }
 
         let label = sessionKey;
         try {
             const payload = await gateway.listSessions({});
-            if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
-                thread.openGeneration !== openGen) {
+            if (!this.isCurrentOpen(thread, openGen) || thread.sessionKey !== sessionKey) {
                 restoreAbandonedRebind();
                 return;
             }
@@ -2628,17 +2077,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (row) {
                 label = row.label || row.agentId || sessionKey;
                 if (isColdSession(row)) {
-                    thread.messages = [];
-                    thread.status = 'idle';
-                    thread.messages.push({ role: 'assistant', content: COLD_SESSION_PLACEHOLDER });
-                    thread.title = label;
-                    this.emitState();
-                    postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-                        type: 'agentSelected',
-                        sessionKey,
-                    });
-                    this.bindGatewayTransportIfIdle(thread, gateway);
-                    this.resumeSessionForThread(gateway, thread, sessionKey, false);
+                    this.showColdSession(thread, gateway, sessionKey, label);
                     return;
                 }
             }
@@ -2648,22 +2087,22 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         const historyEpoch = thread.eventEpoch;
         const history = await gateway.getHistory(sessionKey);
-        if (this.getActiveThread()?.id !== thread.id || thread.sessionKey !== sessionKey ||
-            thread.eventEpoch !== historyEpoch || thread.openGeneration !== openGen) {
+        const restored = history === null ? null : await toTranscriptMessages(history);
+        if (!this.isCurrentOpen(thread, openGen) || thread.sessionKey !== sessionKey ||
+            thread.eventEpoch !== historyEpoch) {
             restoreAbandonedRebind();
             return;
         }
         this.bindGatewayTransportIfIdle(thread, gateway);
-        if (history !== null) {
-            const restored = mapHistoryMessages(history);
+        if (restored !== null) {
+            // Seeding makes the resume catch-up skip what was just restored.
             gateway.seedHistory(sessionKey, history);
             thread.title = label;
-            thread.messages = [];
-            for (const msg of restored) {
-                thread.messages.push({ role: msg.role, content: msg.content });
-            }
+            thread.messages = restored;
             thread.status = 'idle';
         } else if (rebounded) {
+            // Never show the previous session's transcript under the new key;
+            // a same-key reopen keeps its transcript on transport errors.
             thread.messages = [];
             thread.messages.push({
                 role: 'assistant',
@@ -2672,36 +2111,45 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             thread.title = label;
             thread.status = 'error';
         }
-        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-            type: 'agentSelected',
-            sessionKey,
-        });
+        this.postAgentSelected(sessionKey);
         this.resumeSessionForThread(gateway, thread, sessionKey, history !== null);
         this.emitState();
     }
 
-    /** Bind the gateway transport for a thread only when no send owns it:
-     *  a send that started during the open's list/history awaits resolves
-     *  and binds its own backend (the acpx fallback included), and
-     *  overwriting it here would leave Cancel/Clear aborting the gateway
-     *  reference while that acpx process keeps running. */
+    /** A cold session has no transcript yet: show a transient notice and wait for it to start. */
+    private showColdSession(thread: ChatThreadState, gateway: GatewayChatService, sessionKey: string, label: string): void {
+        thread.messages = [];
+        thread.status = 'idle';
+        thread.title = label;
+        this.threadNotices.set(thread.id, COLD_SESSION_PLACEHOLDER);
+        this.emitState();
+        this.postAgentSelected(sessionKey);
+        this.bindGatewayTransportIfIdle(thread, gateway);
+        this.resumeSessionForThread(gateway, thread, sessionKey, false);
+    }
+
+    /** Tells every webview to dismiss its sessions panel. */
+    private postAgentSelected(sessionKey: string): void {
+        postToAll(this.allWebviews(), { type: 'agentSelected', sessionKey });
+    }
+
+    /** State that describes the previous session and must not survive a rebind. */
+    private clearSessionBoundState(thread: ChatThreadState): void {
+        resetUsage(thread);
+        this.threadNotices.delete(thread.id);
+    }
+
+    /** A send started during the open binds its own backend (possibly acpx);
+     *  overwriting it would leave Cancel aborting the wrong one. */
     private bindGatewayTransportIfIdle(thread: ChatThreadState, gateway: GatewayChatService): void {
         if (!thread.isStreaming && thread.status !== 'running') {
             thread.transportBackend = gateway;
         }
     }
 
-    /** Resume a session for a thread, replacing any previous transcript
-     *  callback for that session so reopen cannot deliver events twice.
-     *  historyRendered marks a resume whose `chat.history` payload was
-     *  rendered into the thread and seeded into the gateway: the unscoped
-     *  tail catch-up must stay off there, or keyless assistant rows get
-     *  appended a second time (null-history resumes keep it). */
-    /**
-     *  Track callbacks per thread: opening/resuming the same session in a
-     *  second thread must not evict this thread's callback from the
-     *  gateway's fan-out sink set.
-     */
+    /** Resume a session for a thread, replacing only this thread's previous
+     *  callback. historyRendered turns off the unscoped tail catch-up, which
+     *  would append keyless rows of the rendered history a second time. */
     private resumeSessionForThread(
         gateway: GatewayChatService,
         thread: ChatThreadState,
@@ -2719,18 +2167,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     }
 
     /** Persist the last selected session key for window-restart resume.
-     *
-     *  handleSelectAgent and handleOpenSession can overlap, so the durable
-     *  write is serialized through a single chain and each write commits
-     *  only if no newer persist was requested while it waited: an older
-     *  selection's late write must not overwrite a newer selection's key,
-     *  which the in-memory generation checks would then reject while the
-     *  stale key still resumes after a restart.
-     *  The caller additionally passes an isCurrent predicate capturing its
-     *  own request generation: it is re-checked inside the serialized write
-     *  right before workspaceState is updated, because a stale request can
-     *  call this method AFTER a newer one — bumping the persist generation
-     *  — yet still be rejected by the caller's own checks afterward. */
+     *  Writes are serialized and commit only while no newer persist was
+     *  requested and the caller's isCurrent still holds: a stale request can
+     *  call in after a newer one yet be rejected by its own checks later. */
     private async persistLastSessionKey(sessionKey: string, isCurrent?: () => boolean): Promise<void> {
         const gen = ++this.persistGeneration;
         const stale = (): boolean => gen !== this.persistGeneration || (isCurrent !== undefined && !isCurrent());
@@ -2748,11 +2187,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await write;
     }
 
-    /**
-     *  Resume the persisted session after a window restart (catch-up).
-     *  Seed cursor/message dedupe from the restored transcript so
-     *  the resume catch-up below does not replay this history.
-     */
+    /** Resume the persisted session after a window restart. */
     private async resumeLastSession(): Promise<void> {
         const sessionKey = this.context.workspaceState.get<string>(ChatViewProvider.LAST_SESSION_KEY);
         if (!sessionKey) {
@@ -2769,7 +2204,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         if (!gateway) {
             return;
         }
-        if (!(await this.isKnownMainSessionKey(gateway, sessionKey))) {
+        // Only a fresh successful sessions.list proves the key is gone; an
+        // unreachable gateway must not erase the resume target for good.
+        const payload = await this.refreshSessionAllowlist(gateway);
+        if (payload === null) {
+            log.warn('resumeLastSession: session list unavailable, keeping persisted key for the next activation');
+            return;
+        }
+        if (!buildAgentSessionItems(payload).some(item => item.sessionKey === sessionKey)) {
             log.warn(`resumeLastSession: rejected unknown persisted session key: ${sessionKey}`);
             this.lastSessionKey = null;
             await this.context.workspaceState.update(ChatViewProvider.LAST_SESSION_KEY, undefined);
@@ -2778,15 +2220,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         gateway.setActiveSession(sessionKey);
         const thread = this.getActiveThread();
         if (thread) {
-            // A send that started while this bootstrap was awaiting gateway
-            // resolution captured the thread's key: reassigning the persisted
-            // key here would change that key and let sendPrompt's resolved-key
-            // check retire the live request, silently discarding the message.
-            // Defer the rebind instead — the run's done handler re-flushes the
-            // deferred resume once the thread is idle again.
+            // Rebinding under a live send would make its resolved-key check
+            // retire the run; the run's `done` flushes the deferred resume.
             if (thread.isStreaming || (thread.status as string) === 'running') {
                 this.deferredResumes.set(thread.id, { sessionKey, historyRendered: false });
                 return;
+            }
+            if (thread.sessionKey !== sessionKey) {
+                this.clearSessionBoundState(thread);
             }
             thread.sessionKey = sessionKey;
             const resumeEventEpoch = thread.eventEpoch;
@@ -2796,21 +2237,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             let history: unknown = null;
             try {
                 history = await gateway.getHistory(sessionKey);
+                const restored = history === null ? null : await toTranscriptMessages(history);
                 if (this.getActiveThread()?.id !== thread.id || this.lastSessionKey !== sessionKey ||
                     thread.eventEpoch !== resumeEventEpoch || thread.bindingEpoch !== resumeBindingEpoch ||
                     thread.openGeneration !== resumeOpenGen || thread.sessionKey !== sessionKey ||
                     thread.isStreaming || thread.status === 'running') {
                     if (thread.isStreaming || thread.status === 'running') {
-                        // A send that started while this resume snapshot was in
-                        // flight seeds its own pre-send/post-ack `chat.history`
-                        // boundary; overwriting it with the older resume
-                        // snapshot would let whichever RPC resolves last own
-                        // the catch-up cursor/fingerprint boundary and make
-                        // reconnect catch-up duplicate or miss rows. With an
-                        // owned run on the session, defer the resume without
-                        // reseeding — the send path supplies the boundary; the
-                        // deferred resume subscribes with an unscoped-tail
-                        // catch-up that skips the seeded boundary.
+                        // A send in flight seeds its own catch-up boundary; this
+                        // older snapshot must not overwrite it.
                         if (!gateway.hasOwnedRun(sessionKey)) {
                             gateway.seedHistory(sessionKey, history);
                         }
@@ -2818,10 +2252,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     return;
                 }
-                if (history !== null) {
-                    thread.messages = mapHistoryMessages(history).map((msg) => ({ role: msg.role, content: msg.content }));
+                if (restored !== null) {
+                    thread.messages = restored;
                 }
                 thread.status = 'idle';
+                // Seeding makes the resume catch-up skip the restored history.
                 gateway.seedHistory(sessionKey, history);
             } catch (err) {
                 log.warn('history restore during resume failed', err);
@@ -2842,15 +2277,6 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Resolve @file mentions to workspace-scoped real paths; symlink escapes
      *  and unreadable targets are rejected before an attachment is accepted. */
-    /**
-     *  Resolve all mention targets concurrently; each is independent fs I/O
-     *  and a slow disk should not multiply per-mention send latency.
-     */
-    /**
-     *  Store the canonical path: a symlink could be swapped between
-     *  this check and the later read, so reading the original path
-     *  would bypass the workspace guard (TOCTOU).
-     */
     private async resolveMentions(text: string): Promise<FileMention[]> {
         const cwd = this.getWorkspaceCwd();
         if (!cwd) {
@@ -2870,6 +2296,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 continue;
             }
             const rel = path.relative(realCwd, real);
+            // The canonical path, so a symlink swapped before the read cannot escape (TOCTOU).
             if (rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)) {
                 accepted.push({ ...candidates[i], path: real });
             }
@@ -2895,8 +2322,9 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         return (await this.resolveMentions(text)).map(m => m.path);
     }
 
-    /** Gather the current selection and insert an @file mention into the webview composer. */
-    async insertSelectionMention(): Promise<void> {
+    /** Insert an @file mention for the editor selection into the requesting
+     *  webview, else the chat view the user is looking at. */
+    async insertSelectionMention(requester?: vscode.Webview): Promise<void> {
         const context = await gatherEditorContext('selection', (args) => this.runGit(args));
         if (!context.filePath) {
             return;
@@ -2910,10 +2338,46 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } else {
             mention = buildMention(context.filePath);
         }
-        postToAll([this.sidebarView?.webview, this.popOutPanel?.webview, this.debugPanel?.webview], {
-            type: 'insertMention',
-            mention
-        });
+        const target = requester ? { webview: requester, live: true } : this.revealMentionTarget();
+        if (!target) {
+            void vscode.window.showInformationMessage('Open the OpenClaw chat to insert the selection.');
+            return;
+        }
+        if (target.live) {
+            void target.webview.postMessage({ type: 'insertMention', mention });
+            return;
+        }
+        this.pendingMentions.set(target.webview, [...(this.pendingMentions.get(target.webview) ?? []), mention]);
+    }
+
+    /** The focused or visible chat view, revealing a hidden one; the debug panel never takes mentions.
+     *  A revealed sidebar reloads its page (no retainContextWhenHidden), so it is not live yet. */
+    private revealMentionTarget(): { webview: vscode.Webview; live: boolean } | undefined {
+        if (this.popOutPanel?.active) {
+            return { webview: this.popOutPanel.webview, live: true };
+        }
+        if (this.sidebarView?.visible) {
+            return { webview: this.sidebarView.webview, live: true };
+        }
+        if (this.popOutPanel?.visible) {
+            return { webview: this.popOutPanel.webview, live: true };
+        }
+        if (this.sidebarView) {
+            this.sidebarView.show(true);
+            return { webview: this.sidebarView.webview, live: false };
+        }
+        if (this.popOutPanel) {
+            this.popOutPanel.reveal(undefined, true);
+            return { webview: this.popOutPanel.webview, live: true };
+        }
+        return undefined;
+    }
+
+    /** Deliver mentions queued while the webview's page was loading. */
+    private flushPendingMentions(webview: vscode.Webview): void {
+        const mentions = this.pendingMentions.get(webview);
+        this.pendingMentions.delete(webview);
+        mentions?.forEach(mention => void webview.postMessage({ type: 'insertMention', mention }));
     }
 
     private async openFileInEditor(filePath: string, lineStr?: string): Promise<void> {

@@ -1,6 +1,174 @@
 import { SLASH_COMMANDS } from './slashCommands';
-// Mechanical extraction of the <script> block from the original getWebviewContent template.
-// Content is verbatim; no refactoring.
+
+// Webview script sources. The exported fragments are spliced into CONTENT_JS;
+// SESSIONS_PANEL_JS also uses the `vscode` API handle CONTENT_JS declares; specs inject it.
+
+/** Tool-call status helpers: a group is running while any entry is non-terminal. */
+export const TOOL_STATUS_JS = `
+            var TERMINAL_STATUSES = ['done', 'error', 'failed', 'cancelled'];
+
+            function isFailedStatus(status) {
+                return status === 'error' || status === 'failed';
+            }
+
+            function getToolGroupStatus(entries) {
+                if (entries.some(function(entry) { return TERMINAL_STATUSES.indexOf(entry.status) === -1; })) {
+                    return 'running';
+                }
+                if (entries.some(function(entry) { return isFailedStatus(entry.status); })) {
+                    return 'error';
+                }
+                if (entries.some(function(entry) { return entry.status === 'cancelled'; })) {
+                    return 'cancelled';
+                }
+                return 'done';
+            }
+
+            function shouldOpenToolGroup(groupStatus) {
+                return groupStatus === 'running' || groupStatus === 'error';
+            }
+
+            function getToolStatusSymbol(status) {
+                if (status === 'done') { return '\u2713'; }
+                if (isFailedStatus(status)) { return '\u2717'; }
+                if (status === 'cancelled') { return '\u2298'; }
+                return '\u27F3';
+            }
+
+            function getToolStatusClass(status) {
+                if (status === 'done') { return ' tool-ok'; }
+                if (isFailedStatus(status)) { return ' tool-fail'; }
+                if (status === 'cancelled') { return ' tool-cancel'; }
+                return ' tool-run';
+            }
+`;
+
+/** Sessions menu: opened per pane, keyboard-navigable, replies carry the pane's threadId. */
+export const SESSIONS_PANEL_JS = `
+            var sessionsPanelDismiss = null;
+            var sessionsPanelPendingTimer = null;
+            var sessionsPanelThreadId = '';
+            var sessionsPanelRows = [];
+
+            var SESSIONS_ROW_STYLE = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
+
+            function requestSessionsPanel(threadId) {
+                sessionsPanelThreadId = threadId || '';
+                vscode.postMessage({ type: 'requestSessions', threadId: sessionsPanelThreadId });
+            }
+
+            function describeSessionRow(session) {
+                var label = session.label || session.sessionKey || '';
+                if (session.hasActiveRun) { label = '\\u25CF ' + label; }
+                if (session.cold) { label = '\\u2744 ' + label; }
+                return label;
+            }
+
+            function getSessionsPanelNotice(listing) {
+                if (listing.error) { return String(listing.error); }
+                return (listing.sessions || []).length === 0 ? 'No sessions' : '';
+            }
+
+            function createSessionsRow(text) {
+                var row = document.createElement('button');
+                row.setAttribute('role', 'menuitem');
+                row.setAttribute('tabindex', '-1');
+                row.style.cssText = SESSIONS_ROW_STYLE;
+                row.textContent = text;
+                return row;
+            }
+
+            function createSessionRow(session, threadId) {
+                var row = createSessionsRow(describeSessionRow(session));
+                row.title = session.sessionKey || '';
+                // The panel lives on document.body, outside the pane click delegation.
+                row.addEventListener('click', function(ev) {
+                    ev.stopPropagation();
+                    vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '', threadId: threadId });
+                });
+                return row;
+            }
+
+            function createNoticeRow(text) {
+                var row = createSessionsRow(text);
+                row.setAttribute('aria-disabled', 'true');
+                row.style.cssText = SESSIONS_ROW_STYLE + ';cursor:default;opacity:0.7';
+                return row;
+            }
+
+            function moveSessionsFocus(step) {
+                var current = sessionsPanelRows.indexOf(document.activeElement);
+                var next = (current + step + sessionsPanelRows.length) % sessionsPanelRows.length;
+                sessionsPanelRows[next].focus();
+            }
+
+            function handleSessionsPanelKeydown(ev) {
+                if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    dismissSessionsPanel({ restoreFocus: true });
+                } else if (ev.key === 'ArrowDown') {
+                    ev.preventDefault();
+                    moveSessionsFocus(1);
+                } else if (ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    moveSessionsFocus(-1);
+                }
+            }
+
+            function renderSessionsPanel(listing) {
+                dismissSessionsPanel();
+                var threadId = listing.threadId || sessionsPanelThreadId;
+                sessionsPanelThreadId = threadId;
+                var panel = document.createElement('div');
+                panel.id = 'claw-sessions-panel';
+                panel.setAttribute('role', 'menu');
+                panel.setAttribute('aria-label', 'Sessions');
+                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:var(--vscode-editorWidget-background, #252526);border:1px solid var(--vscode-editorWidget-border, #454545);color:var(--vscode-editor-foreground, inherit);padding:6px;z-index:60;min-width:220px;font-size:12px';
+                var title = document.createElement('div');
+                title.setAttribute('aria-hidden', 'true');
+                title.textContent = 'Sessions';
+                title.style.cssText = 'opacity:0.7;margin-bottom:4px';
+                panel.appendChild(title);
+                var notice = getSessionsPanelNotice(listing);
+                sessionsPanelRows = notice
+                    ? [createNoticeRow(notice)]
+                    : listing.sessions.map(function(session) { return createSessionRow(session, threadId); });
+                sessionsPanelRows.forEach(function(row) { panel.appendChild(row); });
+                panel.addEventListener('keydown', handleSessionsPanelKeydown);
+                document.body.appendChild(panel);
+                sessionsPanelRows[0].focus();
+                // Deferred so the click that opened the panel does not dismiss it.
+                sessionsPanelPendingTimer = setTimeout(function() {
+                    sessionsPanelPendingTimer = null;
+                    sessionsPanelDismiss = function(ev) {
+                        if (!(ev.target instanceof Node) || !panel.contains(ev.target)) {
+                            dismissSessionsPanel();
+                        }
+                    };
+                    document.addEventListener('click', sessionsPanelDismiss);
+                }, 0);
+            }
+
+            function dismissSessionsPanel(options) {
+                if (sessionsPanelPendingTimer !== null) {
+                    clearTimeout(sessionsPanelPendingTimer);
+                    sessionsPanelPendingTimer = null;
+                }
+                if (sessionsPanelDismiss) {
+                    document.removeEventListener('click', sessionsPanelDismiss);
+                    sessionsPanelDismiss = null;
+                }
+                sessionsPanelRows = [];
+                var panel = document.getElementById('claw-sessions-panel');
+                if (!panel) { return; }
+                panel.remove();
+                if (options && options.restoreFocus) {
+                    var button = document.querySelector('.pane-btn[data-action="sessions"][data-thread-id="' + sessionsPanelThreadId + '"]');
+                    if (button) { button.focus(); }
+                }
+            }
+`;
+
 export const CONTENT_JS = `
         (function() {
             var _crashLog = [];
@@ -323,40 +491,13 @@ export const CONTENT_JS = `
                 }
             }
 
-            var TERMINAL_STATUSES = ['done', 'error', 'failed'];
-
-            /** Group status: running while any entry is still non-terminal; error/failed
-             *  win over done so failed groups are visible and never hidden as "done". */
-            function getToolGroupStatus(entries) {
-                if (entries.some(function(entry) {
-                    return entry.status === 'error' || entry.status === 'failed';
-                })) { return 'error'; }
-                return entries.some(function(entry) {
-                    return TERMINAL_STATUSES.indexOf(entry.status) === -1;
-                }) ? 'running' : 'done';
-            }
-
-            /** One of ✓ / ✗ / ⟳ for a tool entry status. */
-            function getToolStatusSymbol(status) {
-                if (status === 'done') { return '\u2713'; }
-                if (status === 'error' || status === 'failed') { return '\u2717'; }
-                return '\u27F3';
-            }
-
-            function getToolStatusClass(status) {
-                if (status === 'done') { return ' tool-ok'; }
-                if (status === 'error' || status === 'failed') { return ' tool-fail'; }
-                return ' tool-run';
-            }
-
+${TOOL_STATUS_JS}
             function renderToolMessage(message) {
                 var node = document.createElement('details');
                 var entries = Array.isArray(message.entries) ? message.entries : [];
                 var status = getToolGroupStatus(entries);
                 node.className = 'message-tool';
-                if (status === 'running') {
-                    node.open = true;
-                }
+                node.open = shouldOpenToolGroup(status);
 
                 var summary = document.createElement('summary');
                 var summaryLine = document.createElement('span');
@@ -817,7 +958,7 @@ export const CONTENT_JS = `
                     empty.className = 'pane-empty';
                     empty.innerHTML =
                         '<div class="empty-detail">' +
-                            '<div>Empty thread. Start from the composer in this panel.</div>' +
+                            '<div>' + escapeHtml(thread.notice || 'Empty thread. Start from the composer in this panel.') + '</div>' +
                         '</div>';
                     body.appendChild(empty);
                 } else {
@@ -1322,11 +1463,7 @@ export const CONTENT_JS = `
                     return;
                 }
                 if (action === 'sessions') {
-                    vscode.postMessage({ type: 'requestSessions' });
-                    return;
-                }
-                if (action === 'open-session') {
-                    vscode.postMessage({ type: 'openSession', sessionKey: actionEl.getAttribute('data-session-key') });
+                    requestSessionsPanel(threadId);
                     return;
                 }
                 if (action === 'clear') {
@@ -1725,12 +1862,15 @@ export const CONTENT_JS = `
                     return;
                 }
                 if (message.type === 'agentsList' || message.type === 'sessionsList') {
-                    renderSessionsPanel(message.sessions || []);
+                    renderSessionsPanel({
+                        sessions: Array.isArray(message.sessions) ? message.sessions : [],
+                        error: message.error,
+                        threadId: message.threadId
+                    });
                     return;
                 }
                 if (message.type === 'agentSelected') {
-                    var panel = document.getElementById('claw-sessions-panel');
-                    if (panel) { panel.remove(); }
+                    dismissSessionsPanel();
                     return;
                 }
                 if (message.type === 'transportStatus') {
@@ -1833,80 +1973,7 @@ export const CONTENT_JS = `
                 }
             }
 
-            function renderSessionsPanel(sessions) {
-                dismissSessionsPanel();
-                if (!sessions || sessions.length === 0) {
-                    return;
-                }
-                var panel = document.createElement('div');
-                panel.id = 'claw-sessions-panel';
-                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:var(--vscode-editorWidget-background, #252526);border:1px solid var(--vscode-editorWidget-border, #454545);color:var(--vscode-editor-foreground, inherit);padding:6px;z-index:60;min-width:220px;font-size:12px';
-                var title = document.createElement('div');
-                title.textContent = 'Sessions';
-                title.style.cssText = 'opacity:0.7;margin-bottom:4px';
-                panel.appendChild(title);
-                sessions.forEach(function(session) {
-                    var row = document.createElement('button');
-                    row.setAttribute('data-action', 'open-session');
-                    row.setAttribute('data-session-key', session.sessionKey || '');
-                    row.style.cssText = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
-                    var label = session.label || session.sessionKey || '';
-                    if (session.hasActiveRun) { label = '\u25CF ' + label; }
-                    if (session.cold) { label = '\u2744 ' + label; }
-                    row.textContent = label;
-                    row.title = session.sessionKey || '';
-                    // The panel lives on document.body, outside paneGrid, so
-                    // the pane-level click delegation never sees these rows:
-                    // each row carries its own handler posting openSession.
-                    row.addEventListener('click', function(ev) {
-                        ev.stopPropagation();
-                        vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '' });
-                    });
-                    panel.appendChild(row);
-                });
-                document.body.appendChild(panel);
-                // Rapidly opening the panel twice before either deferred
-                // registration runs would leave the first callback
-                // untracked (both register document listeners, only the
-                // last is stored in sessionsPanelDismiss): the pending
-                // registration is cancelled before a new one is scheduled.
-                if (sessionsPanelPendingTimer !== null) {
-                    clearTimeout(sessionsPanelPendingTimer);
-                }
-                sessionsPanelPendingTimer = setTimeout(function() {
-                    sessionsPanelPendingTimer = null;
-                    // Panel may have been removed (e.g. agentSelected) before
-                    // this deferred registration runs: do not then leave a
-                    // dangling document listener.
-                    if (!document.getElementById('claw-sessions-panel')) { return; }
-                    sessionsPanelDismiss = function dismiss(ev) {
-                        var p = document.getElementById('claw-sessions-panel');
-                        if (p && ev.target instanceof Node && !p.contains(ev.target)) {
-                            dismissSessionsPanel();
-                        } else if (!p) {
-                            // Panel already gone via another path: stop listening.
-                            dismissSessionsPanel();
-                        }
-                    };
-                    document.addEventListener('click', sessionsPanelDismiss);
-                }, 0);
-            }
-
-            var sessionsPanelDismiss = null;
-            var sessionsPanelPendingTimer = null;
-            function dismissSessionsPanel() {
-                if (sessionsPanelPendingTimer !== null) {
-                    clearTimeout(sessionsPanelPendingTimer);
-                    sessionsPanelPendingTimer = null;
-                }
-                var p = document.getElementById('claw-sessions-panel');
-                if (p) { p.remove(); }
-                if (sessionsPanelDismiss) {
-                    document.removeEventListener('click', sessionsPanelDismiss);
-                    sessionsPanelDismiss = null;
-                }
-            }
-
+${SESSIONS_PANEL_JS}
             function hasFileDrag(dataTransfer) {
                 if (!dataTransfer || !dataTransfer.types) {
                     return false;

@@ -176,7 +176,7 @@ export function buildAgentSessionItems(payload: unknown): AgentSessionItem[] {
 
 /** Shape-only main-session check for webview-supplied keys: the same filter
  *  as isMainAgentSession, usable before any sessions.list rows are fetched. */
-export function isMainAgentSessionKey(key: unknown): boolean {
+export function isMainAgentSessionKey(key: unknown): key is string {
   return typeof key === 'string' && isMainAgentSession({ key } as SessionRow);
 }
 
@@ -190,68 +190,50 @@ export type HistoryMessage = {
 /** Cold-placeholder message text shown for non-materialized sessions. */
 export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will load once it starts.';
 
+/** Transcript role of a history row, or null for tool-only/unknown rows. */
+function historyRole(role: unknown): HistoryMessage['role'] | null {
+  return role === 'user' || role === 'assistant' ? role : null;
+}
+
 /**
- * Map `chat.history` rows into transcript messages. Non-assistant/user rows
- * (tool-only or unknown roles) are skipped; empty text yields nothing.
- *
- * A history row can appear twice for one messageId: first as a streaming
- * delta (partial `text`, non-empty `delta`), then as the completed row.
- * Delta-only rows are skipped so the completed row survives deduplication —
- * keeping the first (partial) row would truncate the restored transcript.
- * Rows carrying BOTH a delta and completed text are kept: the gateway emits
- * mixed frames with the full text (the delta is an un-rendered partial the
- * mapper never renders), so dropping the row would lose its content on
- * restore, and its text being final means recording the id cannot shadow a
- * longer completed row.
+ * Map `chat.history` rows into transcript messages. Tool-only/unknown rows and
+ * rows without text are skipped. A messageId can repeat (a streaming partial
+ * next to its completed row, or snapshot/tail overlap): the longest text wins,
+ * ties going to the later row, at the position of the first occurrence.
  */
 export function mapHistoryMessages(payload: unknown): HistoryMessage[] {
   if (!payload || typeof payload !== 'object') {
     return [];
   }
-  const messages = (payload as { messages?: unknown }).messages;
-  if (!Array.isArray(messages)) {
+  const rows = (payload as { messages?: unknown }).messages;
+  if (!Array.isArray(rows)) {
     return [];
   }
   const out: HistoryMessage[] = [];
-  const seenIds = new Set<string>();
-  for (const row of messages) {
+  const indexById = new Map<string, number>();
+  for (const row of rows) {
     if (!row || typeof row !== 'object') {
       continue;
     }
-    const rec = row as {
-      role?: unknown;
-      text?: unknown;
-      delta?: unknown;
-      messageId?: unknown;
-    };
-    const messageId =
-      typeof rec.messageId === 'string' && rec.messageId ? rec.messageId : null;
-    const role = rec.role === 'user' ? 'user' : rec.role === 'assistant' ? 'assistant' : null;
+    const rec = row as { role?: unknown; text?: unknown; messageId?: unknown };
+    const role = historyRole(rec.role);
     if (!role || typeof rec.text !== 'string' || !rec.text) {
       continue;
     }
-    // Delta-only rows (no non-empty text) are already dropped by the
-    // text check above; mixed delta+text rows keep the completed text.
-    // Complete rows may repeat in chat.history (e.g. snapshot + tail overlap
-    // on restore); dedupe by messageId while retaining rows without an id.
-    // An empty string id is missing, not a dedup key: keying it would drop
-    // every idless history row after the first.
-    // Only delta-ONLY rows would need skipping here, and those never reach
-    // this point (their empty text fails the check above): a non-empty
-    // `delta` alongside usable `text` marks a mixed frame whose text is
-    // already the completed content, so the row is kept and its id recorded
-    // — skipping mixed rows would silently drop restored transcript rows.
-    if (messageId) {
-      if (seenIds.has(messageId)) {
-        continue;
+    // An empty id is missing, not a dedupe key.
+    const messageId = typeof rec.messageId === 'string' && rec.messageId ? rec.messageId : null;
+    const message: HistoryMessage = { role, content: rec.text, messageId };
+    const seenAt = messageId === null ? undefined : indexById.get(messageId);
+    if (seenAt === undefined) {
+      if (messageId !== null) {
+        indexById.set(messageId, out.length);
       }
-      seenIds.add(messageId);
+      out.push(message);
+      continue;
     }
-    out.push({
-      role,
-      content: rec.text,
-      messageId,
-    });
+    if (message.content.length >= out[seenAt].content.length) {
+      out[seenAt] = message;
+    }
   }
   return out;
 }

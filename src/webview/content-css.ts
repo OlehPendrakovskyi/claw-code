@@ -515,6 +515,12 @@ export const CONTENT_CSS = `
             opacity: 0.9;
         }
 
+        .message-tool-status.tool-cancel,
+        .message-tool-entry-status.tool-cancel {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            opacity: 0.9;
+        }
+
         .message-tool-body {
             display: flex;
             flex-direction: column;
