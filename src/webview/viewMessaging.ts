@@ -427,8 +427,11 @@ export async function readAttachments(
             // content). Counting raw bytes for inline images would let two
             // allowed 10 MiB images pass a 20 MiB check while contributing
             // ~26.7 MiB of base64, exceeding the transport payload cap.
+            // Counting the encoded payload size actually sent: base64 with
+            // padding is ceil(n/3)*4 — for lengths not divisible by 3 this
+            // exceeds the ~4/3 estimate, so the padded length is counted.
             const encodedBytes =
-                imageMode === 'inline' ? Math.ceil((bytes.length * 4) / 3) : bytes.length;
+                imageMode === 'inline' ? Math.ceil(bytes.length / 3) * 4 : bytes.length;
             if (totalEncodedBytes + encodedBytes > totalBudget) {
                 sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                 continue;
@@ -509,9 +512,14 @@ export async function readAttachments(
                     throw new Error('attachment file exceeds the size limit');
                 }
                 const content = new TextDecoder().decode(bytes);
-                totalEncodedBytes += bytes.length;
+                // Budget counts the UTF-8 bytes the prompt will carry, not
+                // the raw file length: TextDecoder maps invalid bytes to
+                // U+FFFD (three UTF-8 bytes), so a non-UTF-8 attachment can
+                // expand past the cap after this check otherwise.
+                const encodedBytes = Buffer.byteLength(content, 'utf8');
+                totalEncodedBytes += encodedBytes;
                 if (totalEncodedBytes > totalBudget) {
-                    totalEncodedBytes -= bytes.length;
+                    totalEncodedBytes -= encodedBytes;
                     sections.push(frameFileBody(att.path, '[Attachment skipped: aggregate attachment size limit reached]'));
                     continue;
                 }

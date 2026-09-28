@@ -92,6 +92,18 @@ export class GatewayConfigService {
     const config = vscode.workspace.getConfiguration('openclaw');
     const inspection = config.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING);
     const languageOverrides = await GatewayConfigService.discoverLanguageOverrides();
+    // Unscoped folder values exist per folder, but the unscoped inspection
+    // below covers only the first folder of a multi-root workspace: probe
+    // every folder's own inspection so a plaintext token set at folder
+    // scope in any other folder is selected as a fallback and cleared too.
+    const folderInspections = (vscode.workspace.workspaceFolders ?? []).map((folder) => {
+      const folderConfig = vscode.workspace.getConfiguration('openclaw', folder.uri);
+      return {
+        folderUri: folder.uri,
+        config: folderConfig,
+        inspection: folderConfig.inspect<string>(LEGACY_GATEWAY_TOKEN_SETTING),
+      };
+    });
     // Selection must follow a deterministic precedence policy. The stored
     // token is a single value used without an editor context, so when any
     // language-scoped legacy value exists it wins over every unscoped
@@ -129,9 +141,7 @@ export class GatewayConfigService {
       inspection?.workspaceFolderValue,
       inspection?.workspaceValue,
       inspection?.globalValue,
-      ...languageOverrides.flatMap((entry) =>
-        entry.folderUri !== undefined ? [entry.inspection?.workspaceFolderValue] : []
-      ),
+      ...folderInspections.flatMap((entry) => [entry.inspection?.workspaceFolderValue]),
     ] as (string | undefined)[];
     const nonEmpty = nonEmptyScopes.find((v) => typeof v === 'string' && v) ?? '';
     const legacyDefined = nonEmptyScopes.some((v) => v !== undefined);
@@ -189,6 +199,26 @@ export class GatewayConfigService {
       }
     }
     const cleanedFolderNormals = new Set<string>();
+    for (const entry of folderInspections) {
+      if (entry.inspection?.workspaceFolderValue === undefined) {
+        continue;
+      }
+      cleanedFolderNormals.add(entry.folderUri.toString());
+      try {
+        await entry.config.update(
+          LEGACY_GATEWAY_TOKEN_SETTING,
+          undefined,
+          vscode.ConfigurationTarget.WorkspaceFolder
+        );
+      } catch (err) {
+        cleanupFailed = true;
+        log.warn(
+          `legacy token cleanup failed for folder target: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      }
+    }
     for (const entry of languageOverrides) {
       if (
         entry.folderUri !== undefined &&
