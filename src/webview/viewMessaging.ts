@@ -306,6 +306,16 @@ const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
  *  jointly stay inside the limit. */
 const ATTACHMENT_ARGV_TOTAL_MAX_BYTES = 96 * 1024;
 
+/** Aggregate cap on the raw validated image bytes materialized as temp-file
+ *  snapshots for CLI transports (`imageMode: 'tempFile'`). Temp-file images are
+ *  deliberately excluded from the argv budget (their bytes travel on disk, not
+ *  in the prompt), so without this cap a user could attach many 10 MiB images
+ *  and accumulate multi-gigabyte snapshot copies in the temp directory before
+ *  the spawn. The cap keeps the materialized bytes in line with the inline
+ *  transport's aggregate payload budget, so the two transports bound the same
+ *  total. */
+const ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
+
 /** Slack subtracted with the reserved prompt bytes so RPC framing, message
  *  history, and per-section decoration around the attachments also fit
  *  under the transport's payload cap. */
@@ -451,16 +461,25 @@ export async function readAttachments(
     const emitRejection = (filePath: string, message: string) => {
         const framed = frameFileBody(filePath, message);
         const budgetMax = imageMode === 'tempFile' ? argvBudget : payloadBudget;
+        const used = () => (imageMode === 'tempFile' ? argvBytes : payloadBytes);
         const markerBytes = Buffer.byteLength(framed, 'utf8');
-        if ((imageMode === 'tempFile' ? argvBytes : payloadBytes) + markerBytes > budgetMax) {
-            const bare = message;
-            const bareBytes = Buffer.byteLength(bare, 'utf8');
+        if (used() + markerBytes > budgetMax) {
+            // The framed marker does not fit. Fall back to the bare message
+            // text, but only while it still fits: many rejected attachments
+            // can otherwise let the bare markers themselves grow past the
+            // transport budget and fail the send with E2BIG/oversized RPC
+            // despite the aggregate cap. When even the bare marker no longer
+            // fits, drop this rejection entirely rather than emit it.
+            const bareBytes = Buffer.byteLength(message, 'utf8');
+            if (used() + bareBytes > budgetMax) {
+                return;
+            }
             if (imageMode === 'tempFile') {
                 argvBytes += bareBytes;
             } else {
                 payloadBytes += bareBytes;
             }
-            sections.push(bare);
+            sections.push(message);
             return;
         }
         if (imageMode === 'tempFile') {
@@ -494,6 +513,10 @@ export async function readAttachments(
     // Created lazily on the first image so text-only sends never touch the
     // filesystem outside the workspace.
     let snapshotDir: string | null = null;
+    // Raw validated bytes already materialized as snapshots. Temp-file images
+    // charge only their path framing against the argv budget, so this counter
+    // enforces the separate aggregate snapshot-byte cap.
+    let snapshotBytes = 0;
 
     for (const att of attachments) {
         // Image paths are handed to a downstream reader, so the same
@@ -524,6 +547,11 @@ export async function readAttachments(
                     continue;
                 }
             } else if (argvBytes + 1 > argvBudget) {
+                emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
+                continue;
+            } else if (snapshotBytes + bytes.length > ATTACHMENT_SNAPSHOT_TOTAL_MAX_BYTES) {
+                // Rejected before any snapshot is created, so the aggregate
+                // snapshot bytes stay bounded without leaving temp files behind.
                 emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                 continue;
             }
@@ -573,6 +601,7 @@ export async function readAttachments(
                     emitRejection(att.path, '[Attachment skipped: aggregate attachment size limit reached]');
                     continue;
                 }
+                snapshotBytes += bytes.length;
                 argvBytes += sectionBytes;
                 sections.push(imageSection);
             }
