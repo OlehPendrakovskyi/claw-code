@@ -8,6 +8,7 @@
  */
 
 import type { HistorySnapshot, SessionSummary } from './gatewayProtocol/model';
+import { isNil } from 'lodash-es';
 
 /** Flattened picker/list item derived from a SessionSummary. */
 export type AgentSessionItem = {
@@ -46,7 +47,7 @@ function toItem(session: SessionSummary): AgentSessionItem {
     label: session.label ?? session.agentId ?? session.key,
     agentId: session.agentId,
     hasActiveRun: session.hasActiveRun,
-    updatedAt: session.lastActivityMs === null ? null : new Date(session.lastActivityMs).toISOString(),
+    updatedAt: isNil(session.lastActivityMs) || isFinite(session.lastActivityMs) ? null : new Date(session.lastActivityMs).toISOString(),
     cold: session.cold,
   };
 }
