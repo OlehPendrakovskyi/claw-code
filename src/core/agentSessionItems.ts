@@ -107,7 +107,7 @@ export function isColdSession(row: SessionRow): boolean {
  *  Rows may carry a stale `lastActivityAt` next to a newer `lastInteractionAt`,
  *  so the candidates are compared and the newest one wins instead of the first
  *  truthy field deciding the picker's sort order. Unparseable values are
- *  ignored (they sort as null via the caller's `(updatedAt ?? '')`). */
+ *  ignored (they sort as oldest via the caller's numeric comparator). */
 function rowUpdatedAt(row: SessionRow): string | null {
   let freshest: string | null = null;
   for (const value of [row.lastActivityAt, row.lastInteractionAt, row.updatedAt]) {
@@ -123,6 +123,15 @@ function rowUpdatedAt(row: SessionRow): string | null {
     }
   }
   return freshest;
+}
+
+/** Numeric millisecond value of a picker timestamp for ordering. */
+function updatedAtMs(value: string | null): number {
+  if (value === null) {
+    return 0;
+  }
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? 0 : ts;
 }
 
 /** Derive a human-readable label for a session row. */
@@ -152,7 +161,10 @@ export function toAgentSessionItems(rows: SessionRow[]): AgentSessionItem[] {
     if (a.hasActiveRun !== b.hasActiveRun) {
       return a.hasActiveRun ? -1 : 1;
     }
-    return (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '');
+    // Sort by the parsed instant, not the string: ISO timestamps can carry
+    // UTC offsets, and lexicographic order on such strings disagrees with
+    // real time (`...+02:00` can be older than an earlier-sorting `Z` row).
+    return updatedAtMs(b.updatedAt) - updatedAtMs(a.updatedAt);
   });
   return items;
 }

@@ -294,10 +294,26 @@ const ATTACHMENT_TEXT_ARG_MAX_BYTES = 64 * 1024;
  *  and the send fails despite passing every check here. */
 const ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 
+/** Aggregate argv budget for CLI transports (`imageMode: 'tempFile'`): the
+ *  whole prompt travels as ONE execve argument (`args.push('exec', prompt)`),
+ *  so Linux's per-argument limit (MAX_ARG_STRLEN, ~128 KiB) bounds the
+ *  attachments plus the base prompt together — not each file alone. Two
+ *  allowed 64 KiB text attachments, or one attachment plus a large base
+ *  prompt, would still fail the spawn with E2BIG under per-file caps alone.
+ *  The 32 KiB headroom below the kernel limit covers the CLI prefix,
+ *  configured system prompt, and argument framing; callers subtract the
+ *  base prompt's bytes via `reservedArgvBytes` so attachments and prompt
+ *  jointly stay inside the limit. */
+const ATTACHMENT_ARGV_TOTAL_MAX_BYTES = 96 * 1024;
+
 /** Slack subtracted with the reserved prompt bytes so RPC framing, message
  *  history, and per-section decoration around the attachments also fit
  *  under the transport's payload cap. */
 export const ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES = 1024 * 1024;
+
+/** Small framing slack for the CLI argv budget (attachment framing plus the
+ *  acpx argument prefix around the prompt). */
+export const ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES = 4 * 1024;
 
 /** Read from an opened handle until EOF or the byte budget is exhausted.
  *
@@ -397,13 +413,30 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
  */
 export async function readAttachments(
     attachments: Attachment[],
-    options?: { imageMode?: 'inline' | 'tempFile'; reservedPromptBytes?: number }
+    options?: {
+        imageMode?: 'inline' | 'tempFile';
+        reservedPromptBytes?: number;
+        /** Bytes of the final prompt (base prompt, not attachments) already
+         *  known to the caller — subtracted from the CLI argv budget so
+         *  attachments plus prompt jointly stay inside MAX_ARG_STRLEN. */
+        reservedArgvBytes?: number;
+    }
 ): Promise<{ prompt: string; dispose: () => Promise<void> }> {
     const imageMode = options?.imageMode ?? 'inline';
-    const totalBudget = Math.max(
+    let totalBudget = Math.max(
         0,
         ATTACHMENT_TOTAL_MAX_BYTES - (options?.reservedPromptBytes ?? 0)
     );
+    // CLI transports carry the entire prompt in a single argv element, so
+    // the aggregate budget shrinks by the base prompt's argv share (see the
+    // ATTACHMENT_ARGV_TOTAL_MAX_BYTES comment). A budget of 0 skips every
+    // attachment rather than bricking the spawn with E2BIG.
+    if (imageMode === 'tempFile') {
+        totalBudget = Math.min(
+            totalBudget,
+            Math.max(0, ATTACHMENT_ARGV_TOTAL_MAX_BYTES - (options?.reservedArgvBytes ?? 0))
+        );
+    }
     const sections: string[] = [];
     let totalEncodedBytes = 0;
 

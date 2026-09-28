@@ -19,6 +19,7 @@ import {
     handleFileSearch,
     postToAll,
     readAttachments,
+    ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES,
     ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
     renderMarkdown,
     type Attachment,
@@ -1417,9 +1418,16 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     // transcript), so the aggregate attachment budget must
                     // leave room for both plus RPC framing — otherwise a fully
                     // budgeted attachment set makes the send exceed the
-                    // Gateway's maximum payload.
+                    // Gateway's maximum payload. On CLI transports the same
+                    // prompt travels as one argv element, so the base prompt
+                    // is additionally subtracted from the argv budget (see
+                    // ATTACHMENT_ARGV_TOTAL_MAX_BYTES) — otherwise a large
+                    // base prompt plus allowed attachments fails the spawn
+                    // with E2BIG.
                     reservedPromptBytes:
                         Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_PROMPT_FRAMING_RESERVE_BYTES,
+                    reservedArgvBytes:
+                        Buffer.byteLength(basePrompt, 'utf8') + ATTACHMENT_ARGV_FRAMING_RESERVE_BYTES,
                 }
             );
             disposeAttachments = attachmentResult.dispose;
