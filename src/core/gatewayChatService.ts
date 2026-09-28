@@ -268,6 +268,13 @@ export class GatewayChatService {
    *  resume catch-up replaying a missed completed row must not finalize that
    *  sink, or the ack's ownership check would drop the actual response. */
   private preAckSendKeys = new Set<string>();
+
+  /** Sessions whose pre-ack send has actually issued `chat.send`: a send
+   *  still awaiting its pre-send history/subscribe RPCs has started no
+   *  remote run, so aborting it must only tear down local state — a remote
+   *  `chat.abort` here could cancel an unrelated run owned by the gateway
+   *  or another client. */
+  private preAckSendIssuedKeys = new Set<string>();
   /** Current send ownership id per pre-ack session key. The key alone cannot
    *  distinguish overlapping sends on the same session: after `abort()`
    *  removes the key, a late acknowledgement from the abandoned send must not
@@ -1422,8 +1429,8 @@ export class GatewayChatService {
           return;
         }
       }
-      void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode })
-      .then((payload) => {
+      this.preAckSendIssuedKeys.add(sessionKey);
+      void this.send(GatewayRpcMethods.chatSend, { sessionKey, text: prompt, queueMode }).then((payload) => {
         // Ownership gate: only the send that currently owns this pre-ack key
         // may settle it. After an abort removed the key and a newer send took
         // it over, a late acknowledgement from the abandoned send must not
@@ -1435,6 +1442,7 @@ export class GatewayChatService {
         }
         this.preAckSendKeys.delete(sessionKey);
         this.preAckSendOwners.delete(sessionKey);
+        this.preAckSendIssuedKeys.delete(sessionKey);
         const key = extractSessionKey(payload) ?? sessionKey;
         this.preAckSettledSends.push({ requested: sessionKey, resolved: key });
         this.activeSessionKey = key;
@@ -1569,6 +1577,7 @@ export class GatewayChatService {
     }
     this.preAckSendKeys.delete(sessionKey);
     this.preAckSendOwners.delete(sessionKey);
+    this.preAckSendIssuedKeys.delete(sessionKey);
     this.preAckSettledSends = this.preAckSettledSends.filter(
       (settled) => settled.requested !== sessionKey
     );
@@ -2167,8 +2176,16 @@ export class GatewayChatService {
       return;
     }
     const runSink = this.runSinksBySession.get(key);
+    // A send still awaiting its pre-send history/subscribe RPCs has not
+    // issued `chat.send`, so the gateway has no run to abort for this
+    // client: a remote `chat.abort` here could cancel an unrelated run
+    // owned by the gateway or another client. Cancel such a send locally
+    // only — the never-acknowledged registration and its buffered frames
+    // are still retired below.
+    const remoteRunIssued = runSink !== undefined || this.preAckSendIssuedKeys.has(key);
     this.runSinksBySession.delete(key);
     this.preAckSendKeys.delete(key);
+    this.preAckSendIssuedKeys.delete(key);
     this.preAckSendOwners.delete(key);
     // Aborting tears the run down (its terminal events come from this flow,
     // not session.end): clear the run's delta trackers too so the next run
@@ -2185,6 +2202,9 @@ export class GatewayChatService {
     }
     if (!this.connected) {
       runSink?.({ type: 'done' });
+      return;
+    }
+    if (!remoteRunIssued) {
       return;
     }
     this.abortingSessions.add(key);

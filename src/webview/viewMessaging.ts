@@ -234,13 +234,29 @@ async function openedHandlePath(handle: fsp.FileHandle): Promise<string | null> 
     return null;
 }
 
-/** Prove an image attachment path still refers to the validated regular file.
- *  Mirrors the text-attachment hardening: realpath must match the stored
- *  spelling, the leaf must open with O_NOFOLLOW|O_NONBLOCK, and the opened
- *  identity
- *  (dev/ino) must equal a fresh lstat of the path. Returns the verified
- *  canonical spelling, or null when any check fails. */
-async function verifyStableImagePath(p: string): Promise<string | null> {
+/** Mime type for an image attachment path, by extension. */
+function imageMimeByPath(p: string): string {
+    const ext = path.extname(p).toLowerCase();
+    switch (ext) {
+        case '.png': return 'image/png';
+        case '.jpg':
+        case '.jpeg': return 'image/jpeg';
+        case '.gif': return 'image/gif';
+        case '.webp': return 'image/webp';
+        case '.bmp': return 'image/bmp';
+        case '.svg': return 'image/svg+xml';
+        default: return 'application/octet-stream';
+    }
+}
+
+/** Read an image attachment through the verified handle and return a data URI.
+ *
+ *  Extends verifyStableImagePath's checks (canonical path, O_NOFOLLOW open,
+ *  dev/ino match, fd-link location) with the trusted-side read: the bytes are
+ *  read from the verified handle and re-canonicalization is re-checked after
+ *  the read, so the emitted content is exactly what was validated. Returns
+ *  null when any check fails. */
+async function readVerifiedImageDataUri(p: string): Promise<string | null> {
     if (await safeCanonicalPath(p) === null) {
         return null;
     }
@@ -263,12 +279,16 @@ async function verifyStableImagePath(p: string): Promise<string | null> {
         if (fdPath !== null && fdPath !== p) {
             return null;
         }
+        const bytes = await handle.readFile();
+        if ((await fsp.realpath(p)) !== p) {
+            return null;
+        }
+        return `data:${imageMimeByPath(p)};base64,${bytes.toString('base64')}`;
     } catch {
         return null;
     } finally {
         await handle.close();
     }
-    return p;
 }
 
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
@@ -306,19 +326,16 @@ export async function readAttachments(attachments: Attachment[]): Promise<string
         // re-canonicalization as text attachments applies before emitting: a
         // path swapped for a symlink after mention validation is dropped.
         if (att.type === 'image') {
-            // The emitted path is opened by a downstream reader, so this read
-            // must prove the leaf is still the validated file: open the final
-            // component with O_NOFOLLOW and compare the opened identity
-            // against the path (the same gate as text attachments), then
-            // re-canonicalize before emitting. A swap that lands between this
-            // verification and the downstream open is not closable from this
-            // side without a content/handle protocol change in the reader.
-            const real = await verifyStableImagePath(att.path);
-            if (real === null) {
+            // The image content is read here, through the verified handle, and
+            // emitted as bytes: handing a path to the downstream reader would
+            // reopen a TOCTOU window between this validation and that open, so
+            // the final open/read happens on the trusted side instead.
+            const dataUri = await readVerifiedImageDataUri(att.path);
+            if (dataUri === null) {
                 sections.push('[Could not read file]');
                 continue;
             }
-            sections.push(`<image path="${escapeXmlAttr(real)}" />`);
+            sections.push(`<image data="${dataUri}" />`);
             continue;
         }
         try {
