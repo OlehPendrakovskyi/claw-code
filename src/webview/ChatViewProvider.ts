@@ -2703,7 +2703,19 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     thread.openGeneration !== resumeOpenGen || thread.sessionKey !== sessionKey ||
                     thread.isStreaming || thread.status === 'running') {
                     if (thread.isStreaming || thread.status === 'running') {
-                        gateway.seedHistory(sessionKey, history);
+                        // A send that started while this resume snapshot was in
+                        // flight seeds its own pre-send/post-ack `chat.history`
+                        // boundary; overwriting it with the older resume
+                        // snapshot would let whichever RPC resolves last own
+                        // the catch-up cursor/fingerprint boundary and make
+                        // reconnect catch-up duplicate or miss rows. With an
+                        // owned run on the session, defer the resume without
+                        // reseeding — the send path supplies the boundary; the
+                        // deferred resume subscribes with an unscoped-tail
+                        // catch-up that skips the seeded boundary.
+                        if (!gateway.hasOwnedRun(sessionKey)) {
+                            gateway.seedHistory(sessionKey, history);
+                        }
                         this.deferredResumes.set(thread.id, { sessionKey, historyRendered: false });
                     }
                     return;
