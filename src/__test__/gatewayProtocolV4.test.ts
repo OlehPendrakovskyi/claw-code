@@ -70,7 +70,7 @@ describe('gateway protocol v4', () => {
                 minProtocol: 4,
                 maxProtocol: 4,
                 client: { id: 'gateway-client', displayName: 'Claw Code', version: '0.2.1', platform: 'linux', mode: 'backend' },
-                caps: ['tool-events'],
+                caps: ['tool-events', 'session-scoped-events'],
                 role: 'operator',
                 scopes: ['operator.read', 'operator.write'],
                 auth: { token: 'secret' },
@@ -113,15 +113,21 @@ describe('gateway protocol v4', () => {
                 v4Adapter.unsubscribeRequest({ sessionKey: CANONICAL_MAIN }),
                 v4Adapter.historyRequest({ sessionKey: CANONICAL_MAIN, cursor: 'c1' }),
                 v4Adapter.historyRequest({ sessionKey: 'main' }),
+                v4Adapter.historyRequest({ sessionKey: 'main', olderPageOffset: 200 }),
                 v4Adapter.abortRequest({ sessionKey: CANONICAL_MAIN, runId: 'run-1' }),
-                v4Adapter.listRequest(),
+                v4Adapter.listRequest({}),
+                v4Adapter.listRequest({ offset: 100 }),
+                v4Adapter.sessionEventsRequest(),
             ].map((wire, index) => assertValidRequest(v4Adapter.encodeRequest(`cc-${index}`, wire)));
             expect(requests.map((request) => request.params)).toEqual([
                 { key: 'main' },
                 { key: CANONICAL_MAIN },
-                { sessionKey: CANONICAL_MAIN, cursor: 'c1' },
-                { sessionKey: 'main' },
+                { sessionKey: CANONICAL_MAIN, cursor: 'c1', maxChars: 500_000 },
+                { sessionKey: 'main', maxChars: 500_000 },
+                { sessionKey: 'main', offset: 200, maxChars: 500_000 },
                 { sessionKey: CANONICAL_MAIN, runId: 'run-1' },
+                { limit: 100 },
+                { limit: 100, offset: 100 },
                 {},
             ]);
         });
@@ -153,8 +159,8 @@ describe('gateway protocol v4', () => {
         });
 
         it('keeps a default for each malformed limit and caps the image limit at the attachment limit', () => {
-            const accepted = v4Adapter.parseHello(payloads.helloOk({ policy: { maxPayload: 1000, maxBufferedBytes: 2000, tickIntervalMs: 5, attachments: { maxBytes: 100, maxImageBytes: 500 } } }));
-            expect(accepted?.limits).toEqual({ maxPayloadBytes: 1000, maxBufferedBytes: 2000, attachmentMaxBytes: 100, attachmentMaxImageBytes: 100, tickIntervalMs: 5 });
+            const accepted = v4Adapter.parseHello(payloads.helloOk({ policy: { maxPayload: 1000, maxBufferedBytes: 2000, tickIntervalMs: 5000, attachments: { maxBytes: 100, maxImageBytes: 500 } } }));
+            expect(accepted?.limits).toEqual({ maxPayloadBytes: 1000, maxBufferedBytes: 2000, attachmentMaxBytes: 100, attachmentMaxImageBytes: 100, tickIntervalMs: 5000 });
             expect(v4Adapter.parseHello({ type: 'hello-ok', protocol: 4, policy: { maxPayload: -1 } })?.limits.maxPayloadBytes).toBe(25 * 1024 * 1024);
         });
 
@@ -208,9 +214,21 @@ describe('gateway protocol v4', () => {
                     seq: 10,
                     runId: 'probe-run-2',
                     usage: { promptTokens: 11, completionTokens: 5, totalTokens: 16 },
+                    truncated: false,
                 },
             });
             expect(decodedEvent(JSON.stringify(captured.sessionMessageUser))).toMatchObject({ message: { role: 'user', runId: 'probe-run-2', seq: 9 } });
+        });
+
+        it('takes the run of an assistant row from its bare idempotency key', () => {
+            const payload = payloads.sessionMessage({ role: 'assistant', text: 'x', seq: 1 });
+            const message = { ...(payload.message as object), __openclaw: { seq: 1, idempotencyKey: 'run-7' } };
+            expect(decodedEvent(eventFrame('session.message', { ...payload, message }))).toMatchObject({ message: { runId: 'run-7' } });
+        });
+
+        it('strips the truncation marker and flags the row', () => {
+            const frame = eventFrame('session.message', payloads.sessionMessage({ role: 'assistant', text: 'start\n...(truncated)...', seq: 1 }));
+            expect(decodedEvent(frame)).toMatchObject({ message: { text: 'start', truncated: true } });
         });
 
         it('reads the tool stream of agent events and ignores the other streams', () => {
@@ -228,6 +246,16 @@ describe('gateway protocol v4', () => {
             });
             expect(decodedEvent(eventFrame('agent', result))).toMatchObject({ status: 'error', details: 'denied' });
             expect(decodedEvent(eventFrame('agent', { ...start, stream: 'lifecycle' }))).toBeNull();
+        });
+
+        it('keeps the tick interval a valid timer delay for a two-tick watchdog', () => {
+            const tick = (tickIntervalMs: number) => v4Adapter.parseHello(payloads.helloOk({ tickIntervalMs }))?.limits.tickIntervalMs;
+            expect(tick(1)).toBe(1000);
+            expect(tick(2 ** 40)).toBe(Math.floor((2 ** 31 - 1) / 2));
+        });
+
+        it('caps the restart wait a shutdown announces', () => {
+            expect(decodedEvent(eventFrame('shutdown', { reason: 'restart', restartExpectedMs: 2 ** 40 }))).toEqual({ kind: 'shutdown', reason: 'restart', restartExpectedMs: 300_000 });
         });
 
         it('reads keepalive, shutdown and challenge, and ignores events it does not consume', () => {
@@ -274,10 +302,10 @@ describe('gateway protocol v4', () => {
         });
 
         it('reads a real session row, activity in epoch milliseconds', () => {
-            expect(v4Adapter.parseSessionList(capturedPayload('sessionsListResult'))).toEqual([
+            expect(v4Adapter.parseSessionList(capturedPayload('sessionsListResult'))?.sessions).toEqual([
                 { key: CANONICAL_MAIN, label: 'Hello from probe', agentId: 'dev', hasActiveRun: false, lastActivityMs: expect.any(Number), cold: false },
             ]);
-            expect(v4Adapter.parseSessionList({ sessions: [{ key: 'agent:a:main', placement: { state: 'reclaimed' }, updatedAt: 5, lastActivityAt: 9 }, { label: 'no key' }] })).toEqual([
+            expect(v4Adapter.parseSessionList({ sessions: [{ key: 'agent:a:main', placement: { state: 'reclaimed' }, updatedAt: 5, lastActivityAt: 9 }, { label: 'no key' }] })?.sessions).toEqual([
                 { key: 'agent:a:main', label: null, agentId: null, hasActiveRun: false, lastActivityMs: 9, cold: true },
             ]);
             expect(v4Adapter.parseSessionList({ rows: [] })).toBeNull();
@@ -355,8 +383,9 @@ describe('gateway protocol v4', () => {
             expect(classifyHandshakeRejection({ code: 'NOT_PAIRED', message: 'pair' })).toMatchObject({ kind: 'pause' });
             expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', details: { code: 'X', recommendedNextStep: 'review_auth_configuration' } })).toMatchObject({ kind: 'permanent' });
             expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', details: { code: 'X' } })).toMatchObject({ kind: 'backoff' });
-            expect(v4Adapter.errorCode({ code: 'FORBIDDEN' })).toBe('FORBIDDEN');
-            expect(v4Adapter.errorCode('junk')).toBe('unknown');
+            expect(v4Adapter.parseRpcFailure({ code: 'UNAVAILABLE', message: 'busy', retryable: true, retryAfterMs: 250 })).toEqual({ code: 'UNAVAILABLE', message: 'busy', retryable: true, retryAfterMs: 250 });
+            expect(v4Adapter.parseRpcFailure({ code: 'INVALID_REQUEST', message: 'x'.repeat(400) }).message).toBe(`${'x'.repeat(300)}…`);
+            expect(v4Adapter.parseRpcFailure('junk')).toEqual({ code: 'unknown', message: '', retryable: false });
         });
 
         it('reads what it can from sparse frames', () => {
@@ -367,8 +396,8 @@ describe('gateway protocol v4', () => {
             expect(event('session.message', { sessionKey: 'k', message: { role: 'assistant', content: [{ type: 'text', text: 5 }, { type: 'image' }] } })).toMatchObject({ message: { text: '', seq: null, runId: null } });
             expect(v4Adapter.parseSendAccepted({ status: 'started' })).toBeNull();
             expect(v4Adapter.abortRequest({ sessionKey: 'k' }).params).toEqual({ sessionKey: 'k' });
-            expect(v4Adapter.parseSessionList({ sessions: [{ key: 'agent:a:main' }] })).toEqual([{ key: 'agent:a:main', label: null, agentId: null, hasActiveRun: false, lastActivityMs: null, cold: false }]);
-            expect(v4Adapter.parseHistory({ kind: 'delta', messages: [7, { sessionKey: 'k' }], deltaCursor: 'c', sessionInfo: {}, inFlightRun: { runId: 'r' } })).toEqual({ messages: [], cursor: 'c', inFlightRunId: 'r', activeRunIds: null });
+            expect(v4Adapter.parseSessionList({ sessions: [{ key: 'agent:a:main' }] })).toEqual({ sessions: [{ key: 'agent:a:main', label: null, agentId: null, hasActiveRun: false, lastActivityMs: null, cold: false }], nextOffset: null });
+            expect(v4Adapter.parseHistory({ kind: 'delta', messages: [7, { sessionKey: 'k' }], deltaCursor: 'c', sessionInfo: {}, inFlightRun: { runId: 'r' } })).toEqual({ messages: [], cursor: 'c', inFlightRunId: 'r', activeRunIds: null, olderPageOffset: null });
             expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', details: { code: 'AUTHENTICATED_PROFILE_UNAVAILABLE' } })).toMatchObject({ kind: 'backoff' });
         });
 

@@ -75,6 +75,9 @@ export type HistoryMessage = {
   entryId: string | null;
 };
 
+/** Marks a restored row the gateway shows only in part. */
+const TRUNCATED_ROW_SUFFIX = '\n\n…(shortened by the gateway)';
+
 /** Cold-placeholder message text shown for non-materialized sessions. */
 export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will load once it starts.';
 
@@ -84,7 +87,9 @@ export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will lo
  * One transcript entry can project into several rows; they stay in order.
  */
 export function mapHistoryMessages(snapshot: HistorySnapshot | null): HistoryMessage[] {
-  return (snapshot?.messages ?? []).flatMap((message) =>
-    message.role !== 'other' && message.text ? [{ role: message.role, content: message.text, entryId: message.entryId }] : []
-  );
+  return (snapshot?.messages ?? []).flatMap((message) => {
+    if (message.role === 'other' || !message.text) return [];
+    const content = message.truncated ? `${message.text}${TRUNCATED_ROW_SUFFIX}` : message.text;
+    return [{ role: message.role, content, entryId: message.entryId }];
+  });
 }

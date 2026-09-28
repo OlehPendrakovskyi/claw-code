@@ -47,6 +47,7 @@ const PARAMS_SCHEMAS: Record<string, string> = {
     'sessions.messages.subscribe': 'sessions.messages.subscribe.params.json',
     'sessions.messages.unsubscribe': 'sessions.messages.unsubscribe.params.json',
     'sessions.list': 'sessions.list.params.json',
+    'sessions.subscribe': 'sessions.subscribe.params.json',
 };
 
 const RESULT_SCHEMAS: Record<string, string> = {
@@ -56,12 +57,16 @@ const RESULT_SCHEMAS: Record<string, string> = {
     'sessions.messages.subscribe': 'handler-derived/sessions.messages.subscribe.result.json',
     'sessions.messages.unsubscribe': 'handler-derived/sessions.messages.subscribe.result.json',
     'sessions.list': 'handler-derived/sessions.list.result.json',
+    'sessions.subscribe': 'handler-derived/sessions.subscribe.result.json',
 };
 
 const EVENT_SCHEMAS: Record<string, string> = {
     'connect.challenge': 'handler-derived/event.connect.challenge.json',
     chat: 'event.chat.json',
     agent: 'event.agent.json',
+    'session.tool': 'event.session.tool.json',
+    'chat.side_result': 'handler-derived/event.chat.side_result.json',
+    'sessions.changed': 'handler-derived/event.sessions.changed.json',
     'session.message': 'handler-derived/event.session.message.json',
     tick: 'event.tick.json',
     shutdown: 'event.shutdown.json',

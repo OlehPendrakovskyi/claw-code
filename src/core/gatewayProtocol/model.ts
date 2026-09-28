@@ -72,14 +72,19 @@ export class GatewayConnectError extends Error {
 }
 
 /** The operations the chat service needs from a gateway. */
-export type GatewayOperation = 'send' | 'abort' | 'history' | 'subscribe' | 'unsubscribe' | 'list';
+export type GatewayOperation = 'send' | 'abort' | 'history' | 'subscribe' | 'unsubscribe' | 'list' | 'sessionEvents';
 
 /** A file sent with a message; the gateway decides per model how images and other files reach it. */
 export type SendAttachment = { name: string; mimeType: string; data: Buffer };
 
 export type SendRequest = { sessionKey: string; text: string; runId: string; attachments?: readonly SendAttachment[] };
 export type AbortRequest = { sessionKey: string; runId?: string };
-export type HistoryRequest = { sessionKey: string; cursor?: string };
+/** `cursor` reads what follows it; `olderPageOffset` reads the page before a tail. */
+export type HistoryRequest = { sessionKey: string; cursor?: string; olderPageOffset?: number };
+export type ListRequest = { offset?: number };
+
+/** A failed RPC as the gateway described it. */
+export type RpcFailure = { code: string; message: string; retryable: boolean; retryAfterMs?: number };
 export type SubscriptionRequest = { sessionKey: string };
 
 /** The gateway accepted a send; `runId` names the run its output streams under. */
@@ -95,7 +100,7 @@ export type TranscriptRole = 'user' | 'assistant' | 'other';
 /** One persisted transcript message. */
 export type TranscriptMessage = {
   role: TranscriptRole;
-  /** Visible text; tool calls, thinking and media are left out. */
+  /** Visible text; tool calls, thinking and media are left out. When `truncated`, only its start. */
   text: string;
   /** Transcript entry identity; siblings of one entry share it. */
   entryId: string | null;
@@ -104,6 +109,8 @@ export type TranscriptMessage = {
   /** The run that produced it, when the gateway names one. */
   runId: string | null;
   usage: TokenUsage | null;
+  /** The gateway cut the text for display; it must not stand in for the full reply. */
+  truncated: boolean;
 };
 
 /** A transcript read: a tail page, or the rows after a cursor. */
@@ -115,6 +122,8 @@ export type HistorySnapshot = {
   inFlightRunId: string | null;
   /** Run ids the gateway reports active; null when it did not say. */
   activeRunIds: readonly string[] | null;
+  /** Offset of the page before this one, when the transcript has older rows. */
+  olderPageOffset: number | null;
 };
 
 /** A cursor read the gateway could not serve incrementally: drop the cursor and read a tail. */
@@ -133,6 +142,9 @@ export type SessionSummary = {
   /** The session is not materialized (drained, reclaimed, ...). */
   cold: boolean;
 };
+
+/** One page of `sessions.list`. */
+export type SessionListPage = { sessions: SessionSummary[]; nextOffset: number | null };
 
 export type ToolStatus = 'running' | 'done' | 'error';
 
@@ -164,7 +176,11 @@ export type InboundEvent =
       status: ToolStatus;
       details: string;
     }
+  /** An answer given beside the run (a /btw side question). */
+  | { kind: 'runSideResult'; runId: string; sessionKey: string; seq: number; text: string; isError: boolean }
   | { kind: 'transcriptMessage'; sessionKey: string; message: TranscriptMessage }
+  /** The session index changed: lists of sessions may be stale. */
+  | { kind: 'sessionsChanged'; sessionKey: string | null }
   | { kind: 'keepalive' }
   | { kind: 'shutdown'; reason: string; restartExpectedMs: number | null }
   | { kind: 'challenge' };

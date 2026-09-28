@@ -5,13 +5,16 @@
 
 import type { InboundEvent, ToolStatus } from '../model';
 import { displayText, readSessionMessage, readUsage } from './messages';
-import { describeJson, readNonNegativeInteger, readRecord, readString, readText } from './readers';
+import { describeJson, readDelayMs, readNonNegativeInteger, readRecord, readString, readText } from './readers';
 import { Events } from './schema';
 
 /** Longest serialized tool input or output kept for display. */
 const TOOL_DETAILS_MAX_CHARS = 4000;
 
 const AGENT_TOOL_STREAM = 'tool';
+
+/** Longest a restart announcement may hold back reconnecting. */
+const MAX_RESTART_WAIT_MS = 5 * 60_000;
 
 type RunFields = { runId: string; sessionKey: string; seq: number };
 
@@ -60,6 +63,13 @@ function toolDetails(data: Readonly<Record<string, unknown>>): string {
   return payload === undefined ? '' : describeJson(payload, TOOL_DETAILS_MAX_CHARS);
 }
 
+function sideResultEvent(payload: Readonly<Record<string, unknown>>): InboundEvent | null {
+  const run = readRunFields(payload);
+  const text = readText(payload.text);
+  return run && text !== null ? { kind: 'runSideResult', ...run, text, isError: payload.isError === true } : null;
+}
+
+/** `agent` events of the tool stream, and `session.tool`, which carries the same payload. */
 function agentEvent(payload: Readonly<Record<string, unknown>>): InboundEvent | null {
   if (payload.stream !== AGENT_TOOL_STREAM) {
     return null;
@@ -88,7 +98,7 @@ function shutdownEvent(payload: Readonly<Record<string, unknown>>): InboundEvent
   return {
     kind: 'shutdown',
     reason: readString(payload.reason) ?? 'shutdown',
-    restartExpectedMs: readNonNegativeInteger(payload.restartExpectedMs),
+    restartExpectedMs: readDelayMs(payload.restartExpectedMs, MAX_RESTART_WAIT_MS) ?? null,
   };
 }
 
@@ -99,7 +109,12 @@ export function readEvent(event: string, payload: unknown): InboundEvent | null 
     case Events.chat:
       return chatEvent(fields);
     case Events.agent:
+    case Events.sessionTool:
       return agentEvent(fields);
+    case Events.chatSideResult:
+      return sideResultEvent(fields);
+    case Events.sessionsChanged:
+      return { kind: 'sessionsChanged', sessionKey: readString(fields.sessionKey) };
     case Events.sessionMessage: {
       const transcript = readSessionMessage(payload);
       return transcript ? { kind: 'transcriptMessage', ...transcript } : null;

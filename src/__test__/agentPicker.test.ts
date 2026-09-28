@@ -21,7 +21,7 @@ function sessionsFromWire(rows: Record<string, unknown>[]): SessionSummary[] {
     assertValidResult('sessions.list', payload);
     const sessions = v4Adapter.parseSessionList(payload);
     if (!sessions) throw new Error('sessions.list payload did not parse');
-    return sessions;
+    return sessions.sessions;
 }
 
 function historyFromWire(payload: Record<string, unknown>): HistorySnapshot {
@@ -49,7 +49,7 @@ describe('agentPicker', () => {
 
     describe('buildAgentSessionItems', () => {
         it('turns the real captured session row into a picker item', () => {
-            const sessions = v4Adapter.parseSessionList(capturedPayload('sessionsListResult')) ?? [];
+            const sessions = v4Adapter.parseSessionList(capturedPayload('sessionsListResult'))?.sessions ?? [];
             expect(buildAgentSessionItems(sessions)).toEqual([
                 {
                     sessionKey: 'agent:dev:main',
@@ -153,6 +153,11 @@ describe('agentPicker', () => {
             expect(messages[0]).toEqual({ role: 'user', content: 'hello from probe', entryId: 'e5f1f654-4655-43f2-9051-1a26d778efcc' });
             expect(messages.some((message) => message.content.startsWith('This turn ended before a reply'))).toBe(false);
             expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+        });
+
+        it('marks a row the gateway shortened', () => {
+            const snapshot = historyFromWire(payloads.historyTail([{ role: 'assistant', text: 'beginning\n...(truncated)...', seq: 1, id: 'e1' }]));
+            expect(mapHistoryMessages(snapshot)).toEqual([{ role: 'assistant', content: 'beginning\n\n…(shortened by the gateway)', entryId: 'e1' }]);
         });
 
         it('skips rows without text and keeps the transcript order', () => {

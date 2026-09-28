@@ -7,8 +7,8 @@ type UnknownRecord = Readonly<Record<string, unknown>>;
 
 const EMPTY_RECORD: UnknownRecord = Object.freeze({});
 
-/** Node timers overflow beyond this delay. */
-const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+/** Node timers overflow beyond this delay (and then fire after 1 ms). */
+export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 export function isRecord(value: unknown): value is UnknownRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -44,9 +44,9 @@ export function readFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-export function readDelayMs(value: unknown): number | undefined {
+export function readDelayMs(value: unknown, maxMs = MAX_TIMER_DELAY_MS): number | undefined {
   const delay = readFiniteNumber(value);
-  return delay !== null && delay >= 0 ? Math.min(delay, MAX_TIMER_DELAY_MS) : undefined;
+  return delay !== null && delay >= 0 ? Math.min(delay, maxMs) : undefined;
 }
 
 export function readArray(value: unknown): readonly unknown[] {

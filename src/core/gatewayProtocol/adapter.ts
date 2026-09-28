@@ -16,9 +16,11 @@ import type {
   HistoryRead,
   HistoryRequest,
   InboundFrame,
+  ListRequest,
+  RpcFailure,
   SendAccepted,
   SendRequest,
-  SessionSummary,
+  SessionListPage,
   SubscriptionAccepted,
   SubscriptionRequest,
 } from './model';
@@ -48,8 +50,9 @@ export interface GatewayProtocolAdapter {
   /** The accepted handshake, or null when the payload is not a hello. */
   parseHello(payload: unknown): ConnectionAccepted | null;
   classifyRejection(error: unknown): HandshakeRejection;
-  /** The code of a failed RPC, for logs and errors. */
-  errorCode(error: unknown): string;
+  /** A handshake the gateway accepted without the grants this client needs, or null. */
+  grantRejection(accepted: ConnectionAccepted): HandshakeRejection | null;
+  parseRpcFailure(error: unknown): RpcFailure;
   defaultLimits(): ConnectionLimits;
   /** The operations a connection cannot serve; the chat service refuses to stream without them. */
   missingOperations(features: ConnectionFeatures): GatewayOperation[];
@@ -66,6 +69,8 @@ export interface GatewayProtocolAdapter {
   subscribeRequest(request: SubscriptionRequest): WireRequest;
   parseSubscription(payload: unknown): SubscriptionAccepted | null;
   unsubscribeRequest(request: SubscriptionRequest): WireRequest;
-  listRequest(): WireRequest;
-  parseSessionList(payload: unknown): SessionSummary[] | null;
+  listRequest(request: ListRequest): WireRequest;
+  parseSessionList(payload: unknown): SessionListPage | null;
+  /** Subscribe the connection to session index and tool events of the sessions it may read. */
+  sessionEventsRequest(): WireRequest;
 }

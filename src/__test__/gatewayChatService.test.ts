@@ -16,6 +16,7 @@ import {
     createMockSocket,
     errorFrame,
     eventFrame,
+    resultFrame,
     payloads,
     protocolViolations,
     type MockSocket,
@@ -368,20 +369,22 @@ describe('GatewayChatService', () => {
             expect(methods(h.socket())).not.toContain('chat.send');
         });
 
-        it('reports a rejected send and a send the dropped connection left unconfirmed', async () => {
+        it('reports a rejected send, and holds a send whose answer the dropped connection lost', async () => {
             const h = await connected();
             const rejected = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             h.socket().replyError('chat.send', { code: 'INVALID_REQUEST', message: 'invalid chat.send params' });
             await settle();
-            expect(rejected.events).toEqual([{ type: 'error', message: 'The gateway rejected the send: gateway rpc error code=INVALID_REQUEST' }, { type: 'done' }]);
+            expect(rejected.events).toEqual([{ type: 'error', message: 'The gateway rejected the send: gateway rpc error code=INVALID_REQUEST: invalid chat.send params' }, { type: 'done' }]);
             const lost = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await settle();
-            expect(lost.events).toEqual([{ type: 'error', message: expect.stringContaining('dropped before the gateway confirmed') }, { type: 'done' }]);
+            // The answer was lost, not refused: the send waits to be re-sent after the reconnect.
+            expect(lost.events).toEqual([]);
+            expect(h.svc.hasOwnedRun('main')).toBe(true);
         });
 
         it('issues chat.send once, even across a reconnect', async () => {
@@ -483,7 +486,7 @@ describe('GatewayChatService', () => {
             const fileEvents: ChatEvent[] = [];
             h.svc.sendMessage({ sessionKey: CANONICAL_MAIN, prompt: 'read', attachments: [{ ...notes, data: Buffer.alloc(21) }], onEvent: (event) => fileEvents.push(event) });
             expect(fileEvents[0]).toEqual({ type: 'error', message: expect.stringContaining('at most 20 bytes per file') });
-            expect(h.socket().requests().map((request) => request.method)).toEqual(['connect']);
+            expect(h.socket().requests().map((request) => request.method)).toEqual(['connect', 'sessions.subscribe']);
         });
 
         it('never put a frame over the payload limit on the wire', async () => {
@@ -523,18 +526,42 @@ describe('GatewayChatService', () => {
             expect(methods(h.socket())).not.toContain('chat.abort');
         });
 
-        it('aborts after the next handshake when cancelled while disconnected', async () => {
+        it('says a run started before a reconnect cannot be stopped, and keeps it visible to observers', async () => {
             jest.useFakeTimers();
             const h = await connected();
-            const run = send(h);
+            const seen: ChatEvent[] = [];
+            h.svc.resumeSession(CANONICAL_MAIN, (event) => seen.push(event), { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            const run = send(h, CANONICAL_MAIN);
             const runId = await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
             h.svc.abort(CANONICAL_MAIN);
-            expect(run.events).toEqual([{ type: 'done' }]);
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
             jest.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
-            expect(h.socket().lastRequest('chat.abort').params).toEqual({ sessionKey: CANONICAL_MAIN, runId });
+            expect(h.socket().requests().map((request) => request.method)).not.toContain('chat.abort');
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'chat', payloads.final({ runId, seq: 4 }, 'finished anyway'));
+            expect(texts(seen)).toBe('finished anyway');
+        });
+
+        it('keeps following a run the gateway refused to stop', async () => {
+            const h = await connected();
+            const seen: ChatEvent[] = [];
+            h.svc.resumeSession(CANONICAL_MAIN, (event) => seen.push(event), { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            h.svc.abort(CANONICAL_MAIN);
+            h.socket().replyError('chat.abort', { code: 'INVALID_REQUEST', message: 'unauthorized' });
+            await settle();
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
+            receive(h, 'chat', payloads.final({ runId, seq: 2 }, 'still here'));
+            expect(texts(seen)).toBe('still here');
         });
 
         it('never aborts a run another client started', async () => {
@@ -575,7 +602,7 @@ describe('GatewayChatService', () => {
             h.svc.resumeSession('main', (event) => seen.push(event), { historyRendered: true });
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
-            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, cursor: 'cursor-2' });
+            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, cursor: 'cursor-2', maxChars: 500_000 });
             h.socket().reply('chat.history', payloads.historyDelta([{ role: 'assistant', text: 'a', seq: 2, runId: 'r0' }, { role: 'user', text: 'q2', seq: 3 }, { role: 'assistant', text: 'a2', seq: 4, runId: 'r1' }], 'cursor-4'));
             await settle();
             expect(seen).toEqual([{ type: 'text', text: 'a2' }, { type: 'done' }]);
@@ -588,7 +615,7 @@ describe('GatewayChatService', () => {
             h.svc.resumeSession('main', (event) => seen.push(event));
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
-            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN });
+            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, maxChars: 500_000 });
             h.socket().reply('chat.history', payloads.historyTail([{ role: 'user', text: 'q', seq: 1 }, { role: 'assistant', text: 'a', seq: 2, runId: 'r0' }]));
             await settle();
             expect(seen).toEqual([{ type: 'text', text: 'a' }, { type: 'done' }]);
@@ -630,7 +657,7 @@ describe('GatewayChatService', () => {
 
         it('finishes a run that ended while the socket was away with the text it left', async () => {
             const { h, run } = await runAcrossDrop((harnessed, runId) => {
-                expect(harnessed.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN });
+                expect(harnessed.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, maxChars: 500_000 });
                 harnessed.socket().reply('chat.history', payloads.historyTail([
                     { role: 'user', text: 'hello', seq: 5, runId },
                     { role: 'assistant', text: 'Partial answer.', seq: 6, runId },
@@ -662,7 +689,7 @@ describe('GatewayChatService', () => {
             await settle();
             h.socket().reply('chat.history', payloads.historyReset());
             await settle();
-            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN });
+            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, maxChars: 500_000 });
             h.socket().reply('chat.history', payloads.historyTail([{ role: 'assistant', text: 'old', seq: 2, runId: 'r0' }, { role: 'assistant', text: 'new', seq: 3, runId: 'r1' }], { cursor: 'c3' }));
             await settle();
             expect(seen).toEqual([{ type: 'text', text: 'new' }, { type: 'done' }]);
@@ -949,7 +976,8 @@ describe('GatewayChatService', () => {
             await settle();
             receive(h, 'chat', payloads.final({ runId: 'server-run', seq: 2 }, 'early done'));
             expect(texts(run.events)).toBe('early done');
-            expect(count(run.events, 'done')).toBe(0);
+            expect(count(run.events, 'done')).toBe(1);
+            expect(h.svc.hasOwnedRun('main')).toBe(false);
             expect(h.logs).toContain('gateway acknowledged the send under another run id; following it');
         });
 
@@ -1011,7 +1039,7 @@ describe('GatewayChatService', () => {
             await settle();
             h.socket().reply('chat.history', payloads.historyDelta([], 'c2'));
             await settle();
-            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, cursor: 'c2' });
+            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: CANONICAL_MAIN, cursor: 'c2', maxChars: 500_000 });
         });
 
         it('gives up when the tail read after a reset fails too', async () => {
@@ -1190,7 +1218,7 @@ describe('GatewayChatService', () => {
             h.socket().receive(eventFrame('tick', { ts: 1 }, 1));
             h.socket().receive(eventFrame('tick', { ts: 2 }, 5));
             await settle();
-            expect(h.socket().requests().map((r) => r.method)).toEqual(['connect']);
+            expect(h.socket().requests().map((r) => r.method)).toEqual(['connect', 'sessions.subscribe']);
         });
     });
 
@@ -1198,7 +1226,7 @@ describe('GatewayChatService', () => {
         it('seeds from a snapshot without cursor or active runs, and with an in-flight run', async () => {
             const h = await connected();
             const seen: ChatEvent[] = [];
-            h.svc.seedHistory('main', { messages: [{ role: 'user', text: 'q', entryId: null, seq: null, runId: null, usage: null }], cursor: null, inFlightRunId: 'live', activeRunIds: null });
+            h.svc.seedHistory('main', { messages: [{ role: 'user', text: 'q', entryId: null, seq: null, runId: null, usage: null, truncated: false }], cursor: null, inFlightRunId: 'live', activeRunIds: null, olderPageOffset: null });
             expect(h.svc.captureSessionState('main')).toBeNull();
             h.svc.resumeSession('main', (event) => seen.push(event), { historyRendered: true });
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1211,7 +1239,7 @@ describe('GatewayChatService', () => {
         it('merges runs tracked under the alias into the canonical session on connect', async () => {
             const h = harness();
             const seen: ChatEvent[] = [];
-            const snapshot = (activeRunIds: string[] | null) => ({ messages: [], cursor: null, inFlightRunId: null, activeRunIds });
+            const snapshot = (activeRunIds: string[] | null) => ({ messages: [], cursor: null, inFlightRunId: null, activeRunIds, olderPageOffset: null });
             h.svc.seedHistory(CANONICAL_MAIN, snapshot(['r1']));
             h.svc.seedHistory('main', snapshot(['r1', 'r2']));
             h.svc.seedHistory('main', snapshot(null));
@@ -1266,6 +1294,395 @@ describe('GatewayChatService', () => {
             h.socket().reply('chat.history', payloads.historyTail([{ role: 'user', text: 'hello', seq: 1, runId }], { activeRunIds: [] }));
             await settle();
             expect(run.events).toEqual([{ type: 'done' }]);
+        });
+    });
+
+    describe('review regressions', () => {
+        it('re-sends a send the RPC timeout cut off under the same run id, then reports it unconfirmed', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            for (let attempt = 0; attempt < 3; attempt++) {
+                jest.advanceTimersByTime(30_000);
+                await settle();
+            }
+            const sends = h.socket().requests().filter((request) => request.method === 'chat.send');
+            expect(sends).toHaveLength(3);
+            expect(new Set(sends.map((request) => request.params.idempotencyKey)).size).toBe(1);
+            expect(run.events).toEqual([{ type: 'error', message: expect.stringContaining('did not confirm the send') }, { type: 'done' }]);
+        });
+
+        it('re-sends after a reconnect when the answer to chat.send was lost, and follows the run', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            const runId = String(h.socket().lastRequest('chat.send').params.idempotencyKey);
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await settle();
+            expect(run.events).toEqual([]);
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            expect(h.socket().lastRequest('chat.send').params.idempotencyKey).toBe(runId);
+            h.socket().reply('chat.send', { runId, status: 'in_flight' });
+            await settle();
+            receive(h, 'chat', payloads.final({ runId, seq: 3 }, 'answer'));
+            expect(run.events).toEqual([{ type: 'text', text: 'answer' }, { type: 'done' }]);
+        });
+
+        it('retries a retryable refusal after the delay the gateway asked for', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().replyError('chat.send', { code: 'UNAVAILABLE', message: 'queue full', retryable: true, retryAfterMs: 2000 });
+            await settle();
+            jest.advanceTimersByTime(1999);
+            expect(h.socket().requests().filter((request) => request.method === 'chat.send')).toHaveLength(1);
+            jest.advanceTimersByTime(1);
+            expect(h.socket().requests().filter((request) => request.method === 'chat.send')).toHaveLength(2);
+            h.socket().replyError('chat.send', { code: 'INVALID_REQUEST', message: 'bad' });
+            await settle();
+            expect(run.events).toEqual([{ type: 'error', message: 'The gateway rejected the send: gateway rpc error code=INVALID_REQUEST: bad' }, { type: 'done' }]);
+        });
+
+        it('does not let a run seen before a drop hold the next send open', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            h.svc.resumeSession(CANONICAL_MAIN, () => undefined, { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'chat', payloads.status({ runId: 'foreign', seq: 0 }));
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.final({ runId, seq: 1 }, 'Done'));
+            expect(run.events).toEqual([{ type: 'text', text: 'Done' }, { type: 'done' }]);
+        });
+
+        it('forgets the runs of a session nobody observes any more', async () => {
+            const h = await connected();
+            const sink = (): void => undefined;
+            h.svc.resumeSession(CANONICAL_MAIN, sink, { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'chat', payloads.delta({ runId: 'foreign', seq: 1 }, 'x', 'x'));
+            h.svc.removeTranscriptSink(CANONICAL_MAIN, sink);
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.final({ runId, seq: 1 }, 'Mine'));
+            expect(count(run.events, 'done')).toBe(1);
+        });
+
+        it('does not finish a run that started while a catch-up read was in flight', async () => {
+            const h = await connected();
+            h.svc.seedHistory('main', { messages: [], cursor: 'c1', inFlightRunId: null, activeRunIds: [], olderPageOffset: null });
+            h.svc.resumeSession('main', () => undefined, { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            const historyRequest = h.socket().lastRequest('chat.history');
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Hel', 'Hel'));
+            h.socket().receive(resultFrame(historyRequest.id, 'chat.history', payloads.historyDelta([{ role: 'user', text: 'hi', seq: 2, runId }], 'c2')));
+            await settle();
+            receive(h, 'chat', payloads.final({ runId, seq: 2 }, 'Hello world'));
+            expect(texts(run.events)).toBe('Hello world');
+            expect(count(run.events, 'done')).toBe(1);
+        });
+
+        it('does not finish a tracked run that moved on during the read', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'A', 'A'));
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'chat', payloads.delta({ runId, seq: 2 }, 'AB', 'B'));
+            h.socket().reply('chat.history', payloads.historyTail([{ role: 'user', text: 'hello', seq: 1, runId }], { activeRunIds: [] }));
+            await settle();
+            expect(count(run.events, 'done')).toBe(0);
+            receive(h, 'chat', payloads.final({ runId, seq: 3 }, 'ABC'));
+            expect(texts(run.events)).toBe('ABC');
+        });
+
+        it('replays rows missed during an outage even when a live row overtakes the read', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const seen: ChatEvent[] = [];
+            h.svc.seedHistory('main', { messages: [{ role: 'assistant', text: 'old', entryId: null, seq: 9, runId: 'r0', usage: null, truncated: false }], cursor: 'c9', inFlightRunId: null, activeRunIds: [], olderPageOffset: null });
+            h.svc.resumeSession('main', (event) => seen.push(event), { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().reply('chat.history', payloads.historyDelta([], 'c9'));
+            await settle();
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'session.message', payloads.sessionMessage({ role: 'user', text: 'next q', seq: 12 }));
+            h.socket().reply('chat.history', payloads.historyDelta([
+                { role: 'user', text: 'q', seq: 10 },
+                { role: 'assistant', text: 'MISSED-REPLY', seq: 11, runId: 'foreign' },
+                { role: 'user', text: 'next q', seq: 12 },
+            ], 'c12'));
+            await settle();
+            expect(seen).toEqual([{ type: 'text', text: 'MISSED-REPLY' }, { type: 'done' }]);
+        });
+
+        it('waits for an announced restart once, then backs off normally', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            receive(h, 'shutdown', { reason: 'restart', restartExpectedMs: 5000 });
+            h.socket().emit('close', 1012, Buffer.alloc(0));
+            jest.advanceTimersByTime(5000);
+            expect(h.sockets).toHaveLength(2);
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await settle();
+            jest.advanceTimersByTime(199);
+            expect(h.sockets).toHaveLength(2);
+            jest.advanceTimersByTime(1);
+            expect(h.sockets).toHaveLength(3);
+        });
+    });
+
+    describe('conformance', () => {
+        const truncated = (text: string) => `${text}\n...(truncated)...`;
+
+        it('never lets a truncated transcript row stand in for the streamed reply', async () => {
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Long reply, part one', 'Long reply, part one'));
+            receive(h, 'session.message', payloads.sessionMessage({ role: 'assistant', text: truncated('Long reply'), seq: 5, runId }));
+            receive(h, 'chat', payloads.final({ runId, seq: 2 }, 'Long reply, part one and two'));
+            expect(texts(run.events)).toBe('Long reply, part one and two');
+        });
+
+        it('finishes a run from a truncated row only with what extends the streamed text', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Streamed ', 'Streamed '));
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().reply('chat.history', payloads.historyTail([{ role: 'assistant', text: truncated('Streamed text that was cut'), seq: 2, runId }], { activeRunIds: [] }));
+            await settle();
+            expect(texts(run.events)).toBe('Streamed text that was cut');
+            expect(count(run.events, 'done')).toBe(1);
+        });
+
+        it('marks a replayed row the gateway cut', async () => {
+            const h = await connected();
+            const seen: ChatEvent[] = [];
+            h.svc.resumeSession('main', (event) => seen.push(event));
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().reply('chat.history', payloads.historyTail([{ role: 'assistant', text: truncated('cut'), seq: 1, runId: 'r' }]));
+            await settle();
+            expect(seen[0]).toEqual({ type: 'text', text: 'cut…' });
+        });
+
+        it('shows a /btw side answer and a side error as run output', async () => {
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat.side_result', { kind: 'btw', runId, sessionKey: CANONICAL_MAIN, agentId: 'dev', question: 'q', text: 'side answer', isError: false, ts: 1, seq: 1 });
+            receive(h, 'chat.side_result', { kind: 'btw', runId, sessionKey: CANONICAL_MAIN, text: 'side failed', isError: true, seq: 2 });
+            receive(h, 'chat', payloads.final({ runId, seq: 3 }));
+            expect(run.events).toEqual([{ type: 'text', text: 'side answer' }, { type: 'error', message: 'side failed' }, { type: 'done' }]);
+        });
+
+        it('shows session.tool updates to observers once, even when the agent stream repeats them', async () => {
+            const h = await connected();
+            const seen: ChatEvent[] = [];
+            h.svc.resumeSession(CANONICAL_MAIN, (event) => seen.push(event), { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            const tool = payloads.tool({ runId: 'foreign', seq: 3 }, { phase: 'start', name: 'exec', toolCallId: 't1', args: 'ls' });
+            receive(h, 'session.tool', tool);
+            receive(h, 'agent', tool);
+            expect(seen).toEqual([{ type: 'toolCall', id: 't1', title: 'exec', status: 'running', details: 'ls' }]);
+            expect(h.sockets[0].lastRequest('sessions.subscribe').params).toEqual({});
+        });
+
+        it('tells listeners when the session index changes', async () => {
+            const h = await connected();
+            const changed: Array<string | null> = [];
+            const stop = h.svc.onSessionsChanged((key) => changed.push(key));
+            receive(h, 'sessions.changed', { sessionKey: CANONICAL_MAIN, reason: 'patch', ts: 1 });
+            receive(h, 'sessions.changed', { reason: 'refresh' });
+            stop();
+            receive(h, 'sessions.changed', { reason: 'refresh' });
+            expect(changed).toEqual([CANONICAL_MAIN, null]);
+        });
+
+        it('refuses a connection that was granted none of the operator scopes', async () => {
+            jest.useFakeTimers();
+            const h = harness();
+            const connecting = h.svc.connect();
+            const hello = payloads.helloOk();
+            completeHandshake(h.socket(), { ...hello, auth: { role: 'operator', scopes: [] } });
+            const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
+            expect(error.rejection).toMatchObject({ kind: 'permanent', code: 'MISSING_SCOPE', hint: expect.stringContaining('SSH tunnel') });
+            jest.advanceTimersByTime(60_000);
+            expect(h.sockets).toHaveLength(1);
+        });
+
+        it('ignores traffic of sessions nobody observes, so a later send does not wait for its runs', async () => {
+            const h = await connected();
+            send(h, CANONICAL_MAIN);
+            const first = await accepted(h);
+            receive(h, 'chat', payloads.final({ runId: first, seq: 1 }, 'one'));
+            receive(h, 'chat', payloads.delta({ runId: 'elsewhere', seq: 1 }, 'x', 'x'));
+            receive(h, 'session.message', payloads.sessionMessage({ role: 'assistant', text: 'row', seq: 9, runId: 'elsewhere' }));
+            expect(h.svc.captureSessionState(CANONICAL_MAIN)).toBeNull();
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.final({ runId, seq: 1 }, 'two'));
+            expect(run.events).toEqual([{ type: 'text', text: 'two' }, { type: 'done' }]);
+        });
+
+        it('does not make a send wait for a run it only saw as a transcript row', async () => {
+            const h = await connected();
+            h.svc.resumeSession(CANONICAL_MAIN, () => undefined, { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            receive(h, 'session.message', payloads.sessionMessage({ role: 'assistant', text: 'finished elsewhere', seq: 3, runId: 'quiet' }));
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.final({ runId, seq: 1 }, 'mine'));
+            expect(count(run.events, 'done')).toBe(1);
+        });
+
+        it('retries a retryable refusal without a delay after a second, and only while connected', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const run = send(h);
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().replyError('chat.send', { code: 'UNAVAILABLE', message: 'busy', retryable: true });
+            await settle();
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(999);
+            expect(h.sockets[0].requests().filter((request) => request.method === 'chat.send')).toHaveLength(1);
+            jest.advanceTimersByTime(1);
+            completeHandshake(h.socket());
+            await settle();
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            expect(h.socket().requests().filter((request) => request.method === 'chat.send')).toHaveLength(1);
+            expect(run.events).toEqual([]);
+        });
+
+        it('reports a send the socket could not write, and a refusal without a message', async () => {
+            const h = await connected();
+            const unwritten = send(h);
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            expect(unwritten.events).toEqual([]);
+            h.socket().receive(JSON.stringify({ type: 'res', id: h.socket().lastRequest('chat.send').id, ok: false, error: { code: 'FORBIDDEN' } }));
+            await settle();
+            expect(unwritten.events[0]).toEqual({ type: 'error', message: 'The gateway rejected the send: gateway rpc error code=FORBIDDEN' });
+            const broken = send(h);
+            h.socket().send = () => {
+                throw new Error('EPIPE');
+            };
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            expect(broken.events[0]).toEqual({ type: 'error', message: expect.stringContaining('The message was not sent: gateway rpc send failed method=chat.send EPIPE') });
+        });
+
+        it('keeps a bounded memory of the runs it started', async () => {
+            const h = await connected();
+            for (let i = 0; i < 201; i++) {
+                send(h, CANONICAL_MAIN);
+                const runId = await accepted(h);
+                receive(h, 'chat', payloads.final({ runId, seq: 1 }));
+            }
+            expect(h.svc.hasOwnedRun(CANONICAL_MAIN)).toBe(false);
+        });
+
+        it('ignores a side result without text', async () => {
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat.side_result', { runId, sessionKey: CANONICAL_MAIN, seq: 1 });
+            expect(run.events).toEqual([]);
+        });
+
+        it('stops paging history at a reset page and at an offset that does not move back', async () => {
+            const h = await connected();
+            const reset = h.svc.getHistory('main');
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'q', seq: 5 }]), hasMore: true, nextOffset: 3 });
+            await settle();
+            h.socket().reply('chat.history', payloads.historyReset());
+            expect((await reset)?.messages.map((message) => message.text)).toEqual(['q']);
+            const stuck = h.svc.getHistory('main');
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'unsequenced' }]), hasMore: true, nextOffset: 3 });
+            await settle();
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'older' }]), hasMore: true, nextOffset: 6 });
+            await settle();
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'oldest' }]), hasMore: true, nextOffset: 6 });
+            expect((await stuck)?.messages.map((message) => message.text)).toEqual(['oldest', 'older', 'unsequenced']);
+        });
+
+        it('re-subscribes only sessions that still have sinks after a reconnect', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            h.svc.restoreSessionState('agent:idle:main', { cursor: 'c', lastSeq: 1 });
+            h.svc.resumeSession(CANONICAL_MAIN, () => undefined, { historyRendered: true });
+            h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
+            await settle();
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            completeHandshake(h.socket());
+            await settle();
+            expect(h.socket().requests().filter((request) => request.method === 'sessions.messages.subscribe').map((request) => request.params)).toEqual([{ key: CANONICAL_MAIN }]);
+        });
+
+        it('pages through the session list', async () => {
+            const h = await connected();
+            const listing = h.svc.listSessions();
+            h.socket().reply('sessions.list', { ...payloads.sessionsList([{ key: 'agent:a:main' }, { key: 'agent:b:main' }]), hasMore: true, nextOffset: 2 });
+            await settle();
+            expect(h.socket().lastRequest('sessions.list').params).toEqual({ limit: 100, offset: 2 });
+            h.socket().reply('sessions.list', { ...payloads.sessionsList([{ key: 'agent:b:main' }, { key: 'agent:c:main' }]), hasMore: false, nextOffset: null });
+            expect((await listing).map((session) => session.key)).toEqual(['agent:a:main', 'agent:b:main', 'agent:c:main']);
+        });
+
+        it('restores older history pages before the latest one', async () => {
+            const h = await connected();
+            const reading = h.svc.getHistory('main');
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'q3', seq: 3 }, { role: 'assistant', text: 'a3', seq: 4 }], { cursor: 'c4' }), hasMore: true, nextOffset: 2 });
+            await settle();
+            expect(h.socket().lastRequest('chat.history').params).toEqual({ sessionKey: 'main', offset: 2, maxChars: 500_000 });
+            h.socket().reply('chat.history', { ...payloads.historyTail([{ role: 'user', text: 'q1', seq: 1 }, { role: 'assistant', text: 'a1', seq: 2 }, { role: 'user', text: 'q3', seq: 3 }]), hasMore: false });
+            const snapshot = await reading;
+            expect(snapshot?.messages.map((message) => message.text)).toEqual(['q1', 'a1', 'q3', 'a3']);
+            expect(snapshot?.cursor).toBe('c4');
         });
     });
 

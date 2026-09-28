@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "chat.side_result event",
+  "x-source": "src/gateway/server-methods/chat-broadcast.ts broadcastSideResult (openclaw 2026.9.6)",
+  "type": "object",
+  "required": ["runId", "sessionKey", "seq"],
+  "properties": {
+    "kind": { "type": "string" },
+    "runId": { "type": "string", "minLength": 1 },
+    "sessionKey": { "type": "string", "minLength": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "question": { "type": "string" },
+    "text": { "type": "string" },
+    "isError": { "type": "boolean" },
+    "ts": { "type": "number" },
+    "seq": { "type": "integer", "minimum": 0 }
+  }
+}

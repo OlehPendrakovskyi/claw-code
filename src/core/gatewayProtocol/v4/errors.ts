@@ -7,7 +7,7 @@
  * device identity and authenticates with the shared token only.
  */
 
-import type { HandshakeRejection, HandshakeRejectionKind } from '../model';
+import type { HandshakeRejection, HandshakeRejectionKind, RpcFailure } from '../model';
 import { PROTOCOL_MISMATCH_HINT } from '../model';
 import { readDelayMs, readRecord, readTrimmedString, readString } from './readers';
 
@@ -189,7 +189,29 @@ export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
   };
 }
 
-/** The code of an untrusted RPC `res.error`. */
-export function rpcErrorCode(error: unknown): string {
-  return readString(readRecord(error).code) ?? 'unknown';
+/** Longest gateway error message carried into errors shown to the user. */
+const RPC_MESSAGE_LIMIT = 300;
+
+/** An untrusted RPC `res.error` (ErrorShapeSchema). */
+export function readRpcFailure(error: unknown): RpcFailure {
+  const fields = readRecord(error);
+  const message = readString(fields.message) ?? '';
+  const retryAfterMs = readDelayMs(fields.retryAfterMs);
+  return {
+    code: readString(fields.code) ?? 'unknown',
+    message: message.length > RPC_MESSAGE_LIMIT ? `${message.slice(0, RPC_MESSAGE_LIMIT)}…` : message,
+    retryable: fields.retryable === true,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+  };
+}
+
+/** The gateway accepted the shared token but granted none of the operator scopes it carries on
+ *  loopback: remote connections need a paired device for them. */
+export function missingScopesRejection(missing: readonly string[]): HandshakeRejection {
+  return {
+    kind: 'permanent',
+    code: 'MISSING_SCOPE',
+    message: `the gateway granted no ${missing.join(', ')}`,
+    hint: RejectionHints.pairing,
+  };
 }

@@ -25,6 +25,7 @@ import type {
   HistorySnapshot,
   InboundEvent,
   InboundFrame,
+  RpcFailure,
   SendAttachment,
   SessionSummary,
   TokenUsage,
@@ -102,7 +103,13 @@ type OwnedRun = {
   sink: ChatSink;
   runId: string;
   requestedKey: string;
-  stage: 'preparing' | 'issued' | 'accepted';
+  /** The key the gateway resolved the send's session to. */
+  canonicalKey: string;
+  /** `unconfirmed`: the send went out but its answer was lost; it is re-sent under the same run id. */
+  stage: 'preparing' | 'issued' | 'unconfirmed' | 'accepted';
+  send: GatewaySend;
+  /** `chat.send` attempts so far; the idempotency key makes a repeat safe. */
+  attempts: number;
   /** Its own run plus the live runs of the session it may have steered into; done once all ended. */
   followed: Set<string>;
 };
@@ -120,7 +127,7 @@ type SessionState = {
   /** Highest transcript sequence already shown or seeded. */
   lastSeq: number;
   /** Runs seen streaming and not finished yet. */
-  liveRuns: Map<string, RunText>;
+  liveRuns: Map<string, LiveRun>;
   finishedRuns: BoundedSet<string>;
   /** Runs rendered from `chat` events, whose transcript rows must not render again. */
   streamedRuns: BoundedSet<string>;
@@ -129,11 +136,17 @@ type SessionState = {
   catchUp: Promise<void> | null;
   catchUpAgain: boolean;
   aborting: boolean;
-  /** Runs cancelled while disconnected: their `chat.abort` goes out after the next handshake. */
-  pendingAborts: Set<string>;
+  /** Tool updates already shown, as `agent` and `session.tool` may both carry one. */
+  toolUpdates: BoundedSet<string>;
 };
 
 type Connection = { adapter: GatewayProtocolAdapter; accepted: ConnectionAccepted };
+
+/** A run seen streaming, and the connection it was last heard on. */
+type LiveRun = RunText & { heardOn: number | null };
+
+/** What a catch-up read started from. */
+type CatchUpBaseline = { lastSeq: number; runs: ReadonlyMap<string, number> };
 
 const silentLogger: Logger = { info() {}, warn() {}, error() {} };
 
@@ -156,11 +169,32 @@ const URL_IN_TEXT = /\b(?:wss?|https?):\/\/[^\s"'<>]+/gi;
 const NOT_CONNECTED_MESSAGE =
   'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.';
 const RUN_FAILED_MESSAGE = 'The gateway reported that the run failed.';
+const RUN_CONTINUES_NOTICE =
+  'Could not stop the run: the gateway lets only the connection that started it stop it, and the connection was re-established since. It continues on the gateway.';
+/** `chat.send` attempts before an unanswered send is given up. */
+const MAX_SEND_ATTEMPTS = 3;
+/** Bounds on paging: `sessions.list` pages of 100, and history pages before the latest. */
+const MAX_SESSION_PAGES = 10;
+const MAX_OLDER_HISTORY_PAGES = 4;
+const SEND_RETRY_DELAY_MS = 1000;
 const SEND_UNCONFIRMED_MESSAGE =
-  'The connection dropped before the gateway confirmed the send; the message may still run — reopen the session to check.';
+  'The gateway did not confirm the send before the connection dropped or timed out; the message may still run — reopen the session to check.';
 
 /** A request the client refused to send because its frame exceeds the gateway's payload limit. */
 class FrameTooLargeError extends Error {}
+
+/** A request that never reached the gateway. */
+class RequestNotSentError extends Error {}
+
+/** The gateway answered a request with an error. */
+class RpcRejectedError extends Error {
+  constructor(
+    message: string,
+    readonly failure: RpcFailure
+  ) {
+    super(message);
+  }
+}
 
 /** A token large enough to push `connect` past the pre-auth limit would be dropped by the gateway. */
 function oversizedConnectRejection(limitBytes: number): HandshakeRejection {
@@ -211,7 +245,7 @@ function newSessionState(key: string): SessionState {
     catchUp: null,
     catchUpAgain: false,
     aborting: false,
-    pendingAborts: new Set(),
+    toolUpdates: new BoundedSet(RUN_HISTORY_LIMIT),
   };
 }
 
@@ -219,13 +253,23 @@ function highestSeq(messages: readonly TranscriptMessage[], floor: number): numb
   return messages.reduce((max, message) => Math.max(max, message.seq ?? 0), floor);
 }
 
-/** The last assistant text each run left in a transcript read. */
-function finalTextByRun(messages: readonly TranscriptMessage[]): Map<string, string> {
-  const texts = new Map<string, string>();
+/** The last assistant row each run left in a transcript read. */
+function finalRowByRun(messages: readonly TranscriptMessage[]): Map<string, TranscriptMessage> {
+  const rows = new Map<string, TranscriptMessage>();
   for (const message of messages) {
-    if (message.role === 'assistant' && message.runId && message.text) texts.set(message.runId, message.text);
+    if (message.role === 'assistant' && message.runId && message.text) rows.set(message.runId, message);
   }
-  return texts;
+  return rows;
+}
+
+/** Appended where the gateway cut a row it showed only in part. */
+const TRUNCATED_SUFFIX = '…';
+
+/** The chunk a transcript row adds to a run's text. A cut row is only the start of the reply,
+ *  so it may extend what streamed but never replaces it. */
+function applyRow(run: RunText, row: TranscriptMessage | undefined): string {
+  if (!row) return applyFinal(run, null);
+  return row.truncated ? applyAborted(run, row.text) : applyFinal(run, row.text);
 }
 
 /**
@@ -249,6 +293,8 @@ export class GatewayChatService {
   /** The socket once its handshake completed; null while disconnected. */
   private liveWs: WebSocketLike | null = null;
   private connection: Connection | null = null;
+  /** Handshakes completed so far; tells runs heard on the current socket from older ones. */
+  private connectionCount = 0;
   /** Kept after a disconnect so the status line can still name it. */
   private negotiatedVersion: number | null = null;
   private nextRequestId = 1;
@@ -270,7 +316,10 @@ export class GatewayChatService {
   /** Requested key → canonical key, as the gateway resolved it. */
   private readonly aliases = new Map<string, string>();
   /** Run ids this client started: only these are ever aborted. */
-  private readonly localRunIds = new BoundedSet<string>(RUN_HISTORY_LIMIT);
+  /** Runs this client started → the connection that started them: only that connection may stop them. */
+  private readonly localRuns = new Map<string, number>();
+  private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly sessionsChangedListeners = new Set<(sessionKey: string | null) => void>();
 
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   /** Last state told to the listeners: a hello followed by a same-tick close announces nothing. */
@@ -343,6 +392,7 @@ export class GatewayChatService {
     this.connectGeneration += 1;
     this.connectPromise = null;
     this.abortRemoteRuns();
+    this.clearRetryTimers();
     this.retireAllSinks();
     this.sessions.clear();
     this.aliases.clear();
@@ -420,6 +470,7 @@ export class GatewayChatService {
       throw new Error('gateway connection closed during the handshake');
     }
     this.connection = connection;
+    this.connectionCount += 1;
     this.negotiatedVersion = connection.adapter.version;
     this.reconnectAttempt = 0;
     this.restartDelayMs = 0;
@@ -434,7 +485,7 @@ export class GatewayChatService {
     this.logger.info(`gateway connected protocol=v${accepted.protocolVersion} server=${accepted.serverVersion} role=${accepted.role}`);
     this.warnAboutMissingOperations(connection);
     this.adoptSessionAliases(accepted.sessionAliases);
-    this.flushPendingAborts();
+    this.subscribeSessionEvents();
     this.resubscribeSessions();
     this.announceConnection(true);
   }
@@ -446,6 +497,22 @@ export class GatewayChatService {
       const aliasState = this.sessions.get(alias);
       if (aliasState) this.mergeInto(aliasState, canonicalKey);
     }
+  }
+
+  /** Session index changes and tool events of observed sessions reach only subscribed connections. */
+  private subscribeSessionEvents(): void {
+    if (!this.supports('sessionEvents')) {
+      return;
+    }
+    this.request((adapter) => adapter.sessionEventsRequest()).catch((err: Error) => {
+      this.logger.warn(`sessions.subscribe failed ${err.message}`);
+    });
+  }
+
+  /** Observe changes of the gateway's session index (a session was created, renamed or removed). */
+  onSessionsChanged(listener: (sessionKey: string | null) => void): () => void {
+    this.sessionsChangedListeners.add(listener);
+    return () => this.sessionsChangedListeners.delete(listener);
   }
 
   private warnAboutMissingOperations({ adapter, accepted }: Connection): void {
@@ -535,6 +602,11 @@ export class GatewayChatService {
           failRejected(negotiated);
           return;
         }
+        const ungranted = negotiated.grantRejection(accepted);
+        if (ungranted) {
+          failRejected(ungranted);
+          return;
+        }
         if (this.ws !== ws) {
           fail('gateway handshake superseded: retired socket delivered its hello');
           return;
@@ -592,7 +664,10 @@ export class GatewayChatService {
       this.finishOwnedRuns(`The gateway rejected this connection, so the run was interrupted. ${rejection.hint}`);
       return;
     }
-    this.scheduleReconnect(Math.max(rejection ? this.minimumRetryDelay(rejection) : 0, this.restartDelayMs));
+    // A restart announcement delays only the reconnect right after it; failed attempts back off as usual.
+    const restartDelayMs = this.restartDelayMs;
+    this.restartDelayMs = 0;
+    this.scheduleReconnect(Math.max(rejection ? this.minimumRetryDelay(rejection) : 0, restartDelayMs));
   }
 
   /** A rate limit or a pending approval without a delay still must not be hammered. */
@@ -622,6 +697,7 @@ export class GatewayChatService {
 
   /** Invalidate any in-flight handshake and cancel scheduled reconnects. */
   private stopConnecting(): void {
+    this.clearRetryTimers();
     this.connectGeneration += 1;
     this.connectPromise = null;
     this.clearReconnectTimer();
@@ -710,7 +786,7 @@ export class GatewayChatService {
     const ws = this.liveWs;
     const connection = this.connection;
     if (!ws || !connection) {
-      return Promise.reject(new Error(NOT_CONNECTED_MESSAGE));
+      return Promise.reject(new RequestNotSentError(NOT_CONNECTED_MESSAGE));
     }
     const id = this.allocId();
     const wire = build(connection.adapter);
@@ -741,7 +817,7 @@ export class GatewayChatService {
         ws.send(frame);
       } catch (err) {
         this.pending.delete(id);
-        pendingRequest.reject(new Error(`gateway rpc send failed method=${wire.method} ${this.redactCredentials(errorMessage(err))}`));
+        pendingRequest.reject(new RequestNotSentError(`gateway rpc send failed method=${wire.method} ${this.redactCredentials(errorMessage(err))}`));
       }
     });
   }
@@ -760,14 +836,21 @@ export class GatewayChatService {
     return connection !== null && connection.adapter.supports(connection.accepted.features, operation);
   }
 
-  /** The main sessions of the gateway, as the pickers show them. */
+  /** The gateway's sessions, as the pickers show them, paged through up to a bound. */
   async listSessions(): Promise<SessionSummary[]> {
-    const { adapter, payload } = await this.request((wire) => wire.listRequest());
-    const sessions = adapter.parseSessionList(payload);
-    if (!sessions) {
-      throw new Error('gateway returned a malformed session list');
+    const byKey = new Map<string, SessionSummary>();
+    let offset: number | null = 0;
+    for (let page = 0; page < MAX_SESSION_PAGES && offset !== null; page++) {
+      const at: number = offset;
+      const { adapter, payload } = await this.request((wire) => wire.listRequest({ offset: at }));
+      const listed = adapter.parseSessionList(payload);
+      if (!listed) {
+        throw new Error('gateway returned a malformed session list');
+      }
+      for (const session of listed.sessions) if (!byKey.has(session.key)) byKey.set(session.key, session);
+      offset = listed.nextOffset !== null && listed.nextOffset > at ? listed.nextOffset : null;
     }
-    return sessions;
+    return [...byKey.values()];
   }
 
   /* ---------------------------------------------------------------- */
@@ -863,7 +946,12 @@ export class GatewayChatService {
 
   /** Release a session's socket subscription once its last sink is gone; fire-and-forget. */
   private releaseIfIdle(state: SessionState): void {
-    if (this.hasSinks(state) || !state.subscribed) {
+    if (this.hasSinks(state)) {
+      return;
+    }
+    // Nobody hears the session any more, so its runs would end unseen: forget them.
+    state.liveRuns.clear();
+    if (!state.subscribed) {
       return;
     }
     state.subscribed = false;
@@ -894,6 +982,7 @@ export class GatewayChatService {
       if (this.liveWs) this.failUnobservableRun(state);
       return;
     }
+    if (current.owned?.stage === 'unconfirmed') this.transmit(current.owned);
     await this.catchUp(current, allowTail);
   }
 
@@ -978,16 +1067,31 @@ export class GatewayChatService {
       return null;
     }
     try {
-      const read = await this.readHistory(sessionKey);
-      return read && !('reset' in read) ? read : null;
+      const latest = await this.readHistory(sessionKey);
+      return latest && !('reset' in latest) ? await this.withOlderPages(sessionKey, latest) : null;
     } catch (err) {
       this.logger.warn(`chat.history fetch failed ${errorMessage(err)}`);
       return null;
     }
   }
 
-  private async readHistory(sessionKey: string, cursor?: string): Promise<HistoryRead | null> {
-    const { adapter, payload } = await this.request((wire) => wire.historyRequest({ sessionKey, cursor }));
+  /** Prepend up to a bound of older pages, so a restored thread shows more than the last page. */
+  private async withOlderPages(sessionKey: string, latest: HistorySnapshot): Promise<HistorySnapshot> {
+    let messages = latest.messages;
+    let olderPageOffset = latest.olderPageOffset;
+    for (let page = 0; page < MAX_OLDER_HISTORY_PAGES && olderPageOffset !== null; page++) {
+      const offset: number = olderPageOffset;
+      const older = await this.readHistory(sessionKey, { olderPageOffset: offset });
+      if (!older || 'reset' in older) break;
+      const oldestShown = messages.find((message) => message.seq !== null)?.seq ?? Infinity;
+      messages = [...older.messages.filter((message) => message.seq === null || message.seq < oldestShown), ...messages];
+      olderPageOffset = older.olderPageOffset !== null && older.olderPageOffset > offset ? older.olderPageOffset : null;
+    }
+    return { ...latest, messages, olderPageOffset };
+  }
+
+  private async readHistory(sessionKey: string, page: { cursor?: string; olderPageOffset?: number } = {}): Promise<HistoryRead | null> {
+    const { adapter, payload } = await this.request((wire) => wire.historyRequest({ sessionKey, ...page }));
     return adapter.parseHistory(payload);
   }
 
@@ -1056,7 +1160,9 @@ export class GatewayChatService {
   private takeOverRun(state: SessionState, send: GatewaySend): OwnedRun {
     const runId = randomUUID();
     const previous = state.owned;
-    const followed = new Set<string>([runId, ...state.liveRuns.keys()]);
+    // Only runs heard on this socket are known to be live; older ones are settled by catch-up.
+    const heardNow = [...state.liveRuns].filter(([, run]) => run.heardOn === this.connectionCount).map(([id]) => id);
+    const followed = new Set<string>([runId, ...heardNow]);
     for (const inherited of previous?.followed ?? []) {
       if (!state.finishedRuns.has(inherited) && inherited !== previous?.runId) followed.add(inherited);
     }
@@ -1065,7 +1171,10 @@ export class GatewayChatService {
       sink: send.onEvent,
       runId,
       requestedKey: send.sessionKey,
+      canonicalKey: send.sessionKey,
       stage: 'preparing',
+      send,
+      attempts: 0,
       followed,
     };
     state.owned = owned;
@@ -1088,22 +1197,75 @@ export class GatewayChatService {
       send.onSessionResolved?.(canonicalKey, send.sessionKey);
       if (state.owned !== owned) return;
     }
-    owned.stage = 'issued';
-    this.localRunIds.add(owned.runId);
-    const request = { sessionKey: canonicalKey, text: send.prompt, runId: owned.runId, attachments: send.attachments };
-    this.request((adapter) => adapter.sendRequest(request))
-      .then((result) => this.acceptSend(owned, result))
-      .catch((err: Error) => {
-        const current = this.stateOwning(owned);
-        if (!current) return;
-        this.failOwned(current, owned, this.sendFailureMessage(err));
-      });
+    owned.canonicalKey = canonicalKey;
+    this.transmit(owned);
   }
 
+  /** Put `chat.send` on the wire, or once more under the same run id when its answer was lost. */
+  private transmit(owned: OwnedRun): void {
+    owned.stage = 'issued';
+    owned.attempts += 1;
+    this.rememberLocalRun(owned.runId);
+    const { send } = owned;
+    const request = { sessionKey: owned.canonicalKey, text: send.prompt, runId: owned.runId, attachments: send.attachments };
+    this.request((adapter) => adapter.sendRequest(request))
+      .then((result) => this.acceptSend(owned, result))
+      .catch((err: Error) => this.handleSendFailure(owned, err));
+  }
+
+  /** A lost answer or a retryable refusal is tried again (the idempotency key makes that safe);
+   *  anything else, or the last attempt, ends the send with the reason. */
+  private handleSendFailure(owned: OwnedRun, err: Error): void {
+    const state = this.stateOwning(owned);
+    if (!state || owned.stage !== 'issued') {
+      return;
+    }
+    const attemptsLeft = owned.attempts < MAX_SEND_ATTEMPTS;
+    if (err instanceof RpcRejectedError && err.failure.retryable && attemptsLeft) {
+      this.retryLater(owned, err.failure.retryAfterMs ?? SEND_RETRY_DELAY_MS);
+      return;
+    }
+    const unconfirmed = !(err instanceof RpcRejectedError || err instanceof FrameTooLargeError || err instanceof RequestNotSentError);
+    if (unconfirmed && attemptsLeft) {
+      owned.stage = 'unconfirmed';
+      // Still connected (an RPC timeout): ask again now; otherwise the next handshake does.
+      if (this.liveWs) this.transmit(owned);
+      return;
+    }
+    this.failOwned(state, owned, this.sendFailureMessage(err));
+  }
+
+  private retryLater(owned: OwnedRun, delayMs: number): void {
+    owned.stage = 'unconfirmed';
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(timer);
+      if (this.stateOwning(owned) && owned.stage === 'unconfirmed' && this.liveWs) this.transmit(owned);
+    }, delayMs);
+    timer.unref?.();
+    this.retryTimers.add(timer);
+  }
+
+  private clearRetryTimers(): void {
+    for (const timer of this.retryTimers) clearTimeout(timer);
+    this.retryTimers.clear();
+  }
+
+  private rememberLocalRun(runId: string): void {
+    this.localRuns.delete(runId);
+    this.localRuns.set(runId, this.connectionCount);
+    if (this.localRuns.size > RUN_HISTORY_LIMIT) {
+      const [oldest] = this.localRuns.keys();
+      this.localRuns.delete(oldest);
+    }
+  }
+
+  /** Only a typed answer proves the gateway refused the send; any other failure after the frame
+   *  went out (a drop, a tick or RPC timeout) leaves it possibly running. */
   private sendFailureMessage(err: Error): string {
     if (err instanceof FrameTooLargeError) return `The message was not sent: ${err.message}. Remove attachments or shorten it.`;
-    if (err.message === 'gateway connection closed') return SEND_UNCONFIRMED_MESSAGE;
-    return `The gateway rejected the send: ${err.message}`;
+    if (err instanceof RequestNotSentError) return `The message was not sent: ${err.message}`;
+    if (err instanceof RpcRejectedError) return `The gateway rejected the send: ${err.message}`;
+    return SEND_UNCONFIRMED_MESSAGE;
   }
 
   private stateOwning(owned: OwnedRun): SessionState | undefined {
@@ -1120,8 +1282,10 @@ export class GatewayChatService {
     const accepted = adapter.parseSendAccepted(payload);
     if (accepted && accepted.runId !== owned.runId) {
       this.logger.warn('gateway acknowledged the send under another run id; following it');
+      owned.followed.delete(owned.runId);
+      owned.runId = accepted.runId;
       owned.followed.add(accepted.runId);
-      this.localRunIds.add(accepted.runId);
+      this.rememberLocalRun(accepted.runId);
     }
     const unclaimed = state.unclaimed;
     state.unclaimed = [];
@@ -1143,15 +1307,22 @@ export class GatewayChatService {
   /* Aborting                                                          */
   /* ---------------------------------------------------------------- */
 
-  /** The runs a cancel may stop: those this client started, still going. */
-  private abortableRuns(state: SessionState, owned: OwnedRun): string[] {
-    return [...owned.followed].filter((runId) => this.localRunIds.has(runId) && !state.finishedRuns.has(runId));
+  /** The local runs a cancel concerns: those this client started, still going. */
+  private localRunsOf(state: SessionState, owned: OwnedRun): string[] {
+    return [...owned.followed].filter((runId) => this.localRuns.has(runId) && !state.finishedRuns.has(runId));
+  }
+
+  /** The gateway lets only the connection that started a run stop it (without device identity). */
+  private stoppableHere(runId: string): boolean {
+    return this.liveWs !== null && this.localRuns.get(runId) === this.connectionCount;
   }
 
   /**
    * Cancel the local run of a session and complete its sink with one `done`.
-   * `chat.abort` goes out only for runs this client started; a send still
-   * preparing has none. Transcript sinks of other threads on the session stay.
+   * `chat.abort` goes out only for runs this connection started; a send still
+   * preparing has none. A run the gateway will not let this connection stop
+   * keeps running and streaming to the session's observers, and the sink
+   * says so. Transcript sinks of other threads on the session stay.
    */
   abort(sessionKey: string): void {
     const state = this.stateFor(sessionKey);
@@ -1161,49 +1332,50 @@ export class GatewayChatService {
     }
     state.owned = null;
     state.unclaimed = [];
-    const runIds = owned.stage === 'preparing' ? [] : this.abortableRuns(state, owned);
-    for (const runId of runIds) this.finishRun(state, runId);
-    if (runIds.length > 0 && this.liveWs) {
-      this.sendAborts(state, runIds, owned.sink);
+    const runIds = owned.stage === 'preparing' ? [] : this.localRunsOf(state, owned);
+    const stoppable = runIds.filter((runId) => this.stoppableHere(runId));
+    const unstoppable = runIds.length > stoppable.length;
+    if (stoppable.length > 0) {
+      this.sendAborts(state, stoppable, owned.sink, unstoppable);
       return;
     }
-    for (const runId of runIds) state.pendingAborts.add(runId);
-    owned.sink({ type: 'done' });
+    this.completeAbortedSink(owned.sink, unstoppable);
     this.releaseIfIdle(state);
   }
 
-  /** `chat.abort` per run; the sink completes once the gateway answered. */
-  private sendAborts(state: SessionState, runIds: string[], sink?: ChatSink): void {
+  private completeAbortedSink(sink: ChatSink, runContinues: boolean): void {
+    if (runContinues) sink({ type: 'notice', text: RUN_CONTINUES_NOTICE });
+    sink({ type: 'done' });
+  }
+
+  /** `chat.abort` per run; a stopped run ends, one the gateway refused to stop is still followed
+   *  by the session's observers. The sink completes once the gateway answered. */
+  private sendAborts(state: SessionState, runIds: string[], sink: ChatSink, runContinues: boolean): void {
     state.aborting = true;
     const aborts = runIds.map((runId) =>
-      this.request((adapter) => adapter.abortRequest({ sessionKey: state.key, runId })).catch((err: Error) => {
-        this.logger.warn(`chat.abort failed ${err.message}`);
-      })
+      this.request((adapter) => adapter.abortRequest({ sessionKey: state.key, runId }))
+        .then(() => {
+          this.finishRun(state, runId);
+          return true;
+        })
+        .catch((err: Error) => {
+          this.logger.warn(`chat.abort failed ${err.message}`);
+          return false;
+        })
     );
-    void Promise.all(aborts).then(() => {
+    void Promise.all(aborts).then((stopped) => {
       state.aborting = false;
-      sink?.({ type: 'done' });
+      this.completeAbortedSink(sink, runContinues || stopped.includes(false));
       this.releaseIfIdle(state);
     });
   }
 
-  private flushPendingAborts(): void {
-    for (const state of this.sessions.values()) {
-      const runIds = [...state.pendingAborts];
-      state.pendingAborts.clear();
-      if (runIds.length > 0) this.sendAborts(state, runIds);
-    }
-  }
-
-  /** Best-effort `chat.abort` for every local run, sent before the socket closes; no reply is awaited. */
+  /** Best-effort `chat.abort` for every run this connection started, sent before the socket closes. */
   private abortRemoteRuns(): void {
-    if (!this.liveWs) {
-      return;
-    }
     for (const state of this.sessions.values()) {
       const owned = state.owned;
       if (!owned || owned.stage === 'preparing') continue;
-      for (const runId of this.abortableRuns(state, owned)) {
+      for (const runId of this.localRunsOf(state, owned).filter((id) => this.stoppableHere(id))) {
         this.request((adapter) => adapter.abortRequest({ sessionKey: state.key, runId })).catch(() => undefined);
       }
     }
@@ -1258,7 +1430,9 @@ export class GatewayChatService {
     if (frame.ok) {
       pendingRequest.resolve(frame.payload);
     } else {
-      pendingRequest.reject(new Error(`gateway rpc error code=${pendingRequest.adapter.errorCode(frame.error)}`));
+      const failure = pendingRequest.adapter.parseRpcFailure(frame.error);
+      const detail = failure.message ? `: ${this.redactGatewayMessage(failure.message)}` : '';
+      pendingRequest.reject(new RpcRejectedError(`gateway rpc error code=${failure.code}${detail}`, failure));
     }
   }
 
@@ -1287,6 +1461,9 @@ export class GatewayChatService {
         this.logger.info(`gateway shutting down reason=${event.reason}`);
         this.restartDelayMs = event.restartExpectedMs ?? 0;
         return;
+      case 'sessionsChanged':
+        for (const listener of [...this.sessionsChangedListeners]) listener(event.sessionKey);
+        return;
       case 'keepalive':
       case 'challenge':
         return;
@@ -1305,7 +1482,8 @@ export class GatewayChatService {
   /** Route one run event to its session's sinks; unknown sessions have no sinks and are dropped. */
   private routeRunEvent(event: RunEvent): void {
     const state = this.sessionOfRun(event);
-    if (!state || state.finishedRuns.has(event.runId)) {
+    // A session nobody observes would only collect runs whose end it may never hear.
+    if (!state || !this.hasSinks(state) || state.finishedRuns.has(event.runId)) {
       return;
     }
     const owned = state.owned;
@@ -1317,10 +1495,11 @@ export class GatewayChatService {
     this.applyRunEvent(state, event);
   }
 
-  private liveRun(state: SessionState, runId: string): RunText {
+  /** The run's text state; `heardOn` null when no event proved the run live on this socket yet. */
+  private liveRun(state: SessionState, runId: string, heardOn: number | null = this.connectionCount): LiveRun {
     let run = state.liveRuns.get(runId);
     if (!run) {
-      run = newRunText();
+      run = { ...newRunText(), heardOn };
       state.liveRuns.set(runId, run);
       if (state.liveRuns.size > LIVE_RUN_LIMIT) {
         const [stalest] = state.liveRuns.keys();
@@ -1345,6 +1524,7 @@ export class GatewayChatService {
 
   private applyRunEvent(state: SessionState, event: RunEvent): void {
     const run = this.liveRun(state, event.runId);
+    run.heardOn = this.connectionCount;
     const sinks = this.runSinks(state, event.runId);
     switch (event.kind) {
       case 'runStatus':
@@ -1355,8 +1535,15 @@ export class GatewayChatService {
         this.deliver(sinks, textEvent(chunk ?? ''));
         return;
       }
-      case 'toolUpdate':
+      case 'toolUpdate': {
+        const update = `${event.runId}|${event.toolCallId}|${event.seq}`;
+        if (state.toolUpdates.has(update)) return;
+        state.toolUpdates.add(update);
         this.deliver(sinks, [{ type: 'toolCall', id: event.toolCallId, title: event.name, status: event.status, details: event.details }]);
+        return;
+      }
+      case 'runSideResult':
+        this.deliver(sinks, [event.isError ? { type: 'error', message: event.text } : { type: 'text', text: event.text }]);
         return;
       case 'runFinal':
         this.deliver(sinks, [...textEvent(applyFinal(run, event.text)), ...usageEvent(event.usage)]);
@@ -1394,7 +1581,8 @@ export class GatewayChatService {
    *  text, so its later `chat` events only add what follows. */
   private routeTranscriptMessage(sessionKey: string, message: TranscriptMessage): void {
     const state = this.stateFor(sessionKey);
-    if (!state) {
+    // `sessions.subscribe` delivers every session's rows; an unobserved one keeps its position for a later replay.
+    if (!state || !this.hasSinks(state)) {
       return;
     }
     state.lastSeq = Math.max(state.lastSeq, message.seq ?? 0);
@@ -1405,7 +1593,8 @@ export class GatewayChatService {
     const events = usageEvent(message.usage);
     if (message.text && !state.streamedRuns.has(runId)) {
       state.streamedRuns.add(runId);
-      events.unshift(...textEvent(applyFinal(this.liveRun(state, runId), message.text)));
+      // A row alone does not prove the run still streams, so a later send does not wait for it.
+      events.unshift(...textEvent(applyRow(this.liveRun(state, runId, null), message)));
     }
     this.deliver(this.runSinks(state, runId), events);
   }
@@ -1450,21 +1639,28 @@ export class GatewayChatService {
     if (!this.supports('history') || (!hasBoundary && !allowTail && this.trackedRuns(state).length === 0)) {
       return;
     }
-    const read = await this.readCatchUp(state);
+    // Taken before the read: events arriving during it must not narrow what it replays or settles.
+    const before: CatchUpBaseline = { lastSeq: state.lastSeq, runs: this.runProgress(state) };
+    const read = await this.readCatchUp(state, before);
     if (!read || this.sessions.get(state.key) !== state) {
       return;
     }
-    const fresh = read.messages.filter((message) => message.seq === null ? !hasBoundary && allowTail : message.seq > state.lastSeq);
+    const fresh = read.messages.filter((message) => message.seq === null ? !hasBoundary && allowTail : message.seq > before.lastSeq);
     state.cursor = read.cursor ?? state.cursor;
     state.lastSeq = highestSeq(read.messages, state.lastSeq);
     if (hasBoundary || allowTail) this.replayRows(state, fresh);
-    this.settleInactiveRuns(state, read);
+    this.settleInactiveRuns(state, read, before.runs);
+  }
+
+  /** Each tracked run with the sequence of the last event applied to it. */
+  private runProgress(state: SessionState): Map<string, number> {
+    return new Map(this.trackedRuns(state).map((runId) => [runId, state.liveRuns.get(runId)?.lastSeq ?? -1]));
   }
 
   /** The rows after the cursor; a reset cursor falls back to a tail read. */
-  private async readCatchUp(state: SessionState): Promise<HistorySnapshot | null> {
+  private async readCatchUp(state: SessionState, before: CatchUpBaseline): Promise<HistorySnapshot | null> {
     const cursor = state.cursor;
-    const read = await this.readHistory(state.key, cursor ?? undefined);
+    const read = await this.readHistory(state.key, cursor === null ? {} : { cursor });
     if (read && !('reset' in read)) {
       return read;
     }
@@ -1474,7 +1670,10 @@ export class GatewayChatService {
       return null;
     }
     // A reset transcript restarts its sequence: the old position no longer bounds it.
-    if (highestSeq(tail.messages, 0) < state.lastSeq) state.lastSeq = 0;
+    if (highestSeq(tail.messages, 0) < before.lastSeq) {
+      before.lastSeq = 0;
+      state.lastSeq = 0;
+    }
     return tail;
   }
 
@@ -1483,24 +1682,27 @@ export class GatewayChatService {
     for (const row of rows) {
       const ownedByTrackedRun = row.runId !== null && (tracked.has(row.runId) || state.streamedRuns.has(row.runId));
       if (row.role !== 'assistant' || !row.text || ownedByTrackedRun) continue;
-      this.deliver([...state.observers], [...textEvent(row.text), ...usageEvent(row.usage), { type: 'done' }]);
+      const text = row.truncated ? row.text + TRUNCATED_SUFFIX : row.text;
+      this.deliver([...state.observers], [...textEvent(text), ...usageEvent(row.usage), { type: 'done' }]);
     }
   }
 
   /** A tracked run the gateway no longer reports active ended while the socket was away. A run
-   *  never seen and absent from the transcript may still wait in a queue, so it stays tracked. */
-  private settleInactiveRuns(state: SessionState, read: HistorySnapshot): void {
+   *  never seen and absent from the transcript may still wait in a queue, so it stays tracked, and
+   *  a run that started or moved on while the read was in flight is newer than the read. */
+  private settleInactiveRuns(state: SessionState, read: HistorySnapshot, before: ReadonlyMap<string, number>): void {
     const active = read.activeRunIds ?? (read.inFlightRunId ? [read.inFlightRunId] : null);
     if (active === null) {
       return;
     }
-    const finalTexts = finalTextByRun(read.messages);
+    const finalRows = finalRowByRun(read.messages);
     const mentioned = new Set(read.messages.flatMap((message) => message.runId ?? []));
     for (const runId of this.trackedRuns(state)) {
       const known = state.liveRuns.has(runId) || mentioned.has(runId);
-      if (active.includes(runId) || !known) continue;
+      const unchangedSinceRead = before.has(runId) && before.get(runId) === (state.liveRuns.get(runId)?.lastSeq ?? -1);
+      if (active.includes(runId) || !known || !unchangedSinceRead) continue;
       const run = this.liveRun(state, runId);
-      this.deliver(this.runSinks(state, runId), textEvent(applyFinal(run, finalTexts.get(runId) ?? null)));
+      this.deliver(this.runSinks(state, runId), textEvent(applyRow(run, finalRows.get(runId))));
       this.finishRun(state, runId);
     }
   }

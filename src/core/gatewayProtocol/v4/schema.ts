@@ -30,6 +30,7 @@ export const Methods = {
   connect: 'connect',
   chatSend: 'chat.send',
   chatAbort: 'chat.abort',
+  sessionsSubscribe: 'sessions.subscribe',
   chatHistory: 'chat.history',
   sessionsList: 'sessions.list',
   sessionsMessagesSubscribe: 'sessions.messages.subscribe',
@@ -41,6 +42,9 @@ export const Events = {
   chat: 'chat',
   agent: 'agent',
   sessionMessage: 'session.message',
+  sessionTool: 'session.tool',
+  sessionsChanged: 'sessions.changed',
+  chatSideResult: 'chat.side_result',
   tick: 'tick',
   shutdown: 'shutdown',
 } as const;
@@ -49,8 +53,16 @@ export const Events = {
  *  trusted local backend pair that may connect on loopback with the shared token and no device. */
 export const ClientIdentity = { id: 'gateway-client', mode: 'backend' } as const;
 
-/** GATEWAY_CLIENT_CAPS: `tool-events` registers this connection for its runs' tool lifecycle. */
-export const ClientCaps = { toolEvents: 'tool-events' } as const;
+/** GATEWAY_CLIENT_CAPS: `tool-events` registers this connection for its runs' tool lifecycle;
+ *  `session-scoped-events` limits `chat`/`agent`/`session.tool`/`chat.side_result` to sessions this
+ *  connection subscribed with `sessions.messages.subscribe` (server-start.ts SESSION_SUBSCRIPTION_EVENTS). */
+export const ClientCaps = { toolEvents: 'tool-events', sessionScopedEvents: 'session-scoped-events' } as const;
+
+/** The display projection cuts longer text (chat-display-projection.helpers.ts truncateChatHistoryText). */
+export const TRUNCATION_MARKER = '\n...(truncated)...';
+
+/** ChatHistoryParamsSchema's maxChars ceiling; without it rows are cut at 8,000 characters. */
+export const HISTORY_MAX_CHARS = 500_000;
 
 export const OperatorScopes = { read: 'operator.read', write: 'operator.write' } as const;
 
@@ -153,7 +165,7 @@ export type ChatSendResult = {
 
 export type ChatAbortParams = { sessionKey: string; runId?: string };
 
-export type ChatHistoryParams = { sessionKey: string; cursor?: string; limit?: number };
+export type ChatHistoryParams = { sessionKey: string; cursor?: string; offset?: number; maxChars?: number };
 
 /** A transcript row as display-projected by the gateway (chat-display-projection.core.ts). */
 export type DisplayMessage = {
@@ -161,7 +173,7 @@ export type DisplayMessage = {
   content?: string | DisplayContentBlock[];
   text?: string;
   usage?: Record<string, number | Record<string, number>>;
-  __openclaw?: { id?: string; seq?: number; runId?: string; idempotencyKey?: string; kind?: string };
+  __openclaw?: { id?: string; seq?: number; runId?: string; idempotencyKey?: string; kind?: string; truncated?: boolean };
 };
 
 export type DisplayContentBlock = { type: string; text?: string; [field: string]: unknown };
@@ -172,6 +184,8 @@ export type ChatHistoryTailResult = {
   sessionId?: string;
   messages: DisplayMessage[];
   deltaCursor?: string;
+  hasMore?: boolean;
+  nextOffset?: number | null;
   sessionInfo?: { key?: string; hasActiveRun?: boolean; activeRunIds?: string[] };
   inFlightRun?: { runId: string; text: string };
 };
@@ -230,7 +244,7 @@ export type SessionsMessagesUnsubscribeParams = { key: string };
 /** The canonical key: `main` resolves to `agent:<default agent>:main`. */
 export type SessionsMessagesSubscribeResult = { subscribed: boolean; key: string };
 
-export type SessionsListParams = Record<string, never>;
+export type SessionsListParams = { limit?: number; offset?: number };
 
 export type SessionRow = {
   key: string;
@@ -245,7 +259,13 @@ export type SessionRow = {
   placement?: { state: string };
 };
 
-export type SessionsListResult = { sessions: SessionRow[] };
+export type SessionsListResult = { sessions: SessionRow[]; hasMore?: boolean; nextOffset?: number | null };
+
+/** chat.side_result payload (chat-broadcast.ts broadcastSideResult): a /btw answer beside the run. */
+export type ChatSideResult = { kind?: string; runId: string; sessionKey: string; seq: number; text?: string; isError?: boolean };
+
+/** sessions.changed payload, reduced to the key it names (keyless changes invalidate every list). */
+export type SessionsChangedEvent = { sessionKey?: string; reason?: string };
 
 /** session.message payload (session-transcript-message.ts). */
 export type SessionMessageEvent = {

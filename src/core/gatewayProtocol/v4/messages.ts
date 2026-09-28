@@ -3,11 +3,13 @@
  * payloads and `sessions.list` rows, reduced to the neutral model.
  */
 
-import type { SessionSummary, TokenUsage, TranscriptMessage, TranscriptRole } from '../model';
+import type { SessionListPage, SessionSummary, TokenUsage, TranscriptMessage, TranscriptRole } from '../model';
+import { TRUNCATION_MARKER } from './schema';
 import {
   isRecord,
   readArray,
   readFiniteNumber,
+  readNonNegativeInteger,
   readPositiveInteger,
   readRecord,
   readString,
@@ -64,8 +66,9 @@ export function readUsage(value: unknown): TokenUsage | null {
   return promptTokens || completionTokens || totalTokens ? { promptTokens, completionTokens, totalTokens } : null;
 }
 
-function runIdOfUserTurn(idempotencyKey: string | null): string | null {
-  return idempotencyKey?.endsWith(USER_TURN_SUFFIX) ? readString(idempotencyKey.slice(0, -USER_TURN_SUFFIX.length)) : null;
+/** Rows carry their run's idempotency key: bare on assistant rows, `<runId>:user` on the user turn. */
+function runIdOfIdempotencyKey(idempotencyKey: string | null): string | null {
+  return idempotencyKey?.endsWith(USER_TURN_SUFFIX) ? readString(idempotencyKey.slice(0, -USER_TURN_SUFFIX.length)) : idempotencyKey;
 }
 
 /** A display message (chat.history tail row) as a transcript message. */
@@ -75,13 +78,17 @@ export function toTranscriptMessage(message: unknown, envelope?: { messageSeq?: 
   }
   const meta = readRecord(message[OPENCLAW_META_FIELD]);
   const role = roleOf(message.role);
+  const shown = displayText(message);
+  const cut = shown.endsWith(TRUNCATION_MARKER);
+  const text = cut ? shown.slice(0, -TRUNCATION_MARKER.length) : shown;
   return {
     role,
-    text: displayText(message),
+    text,
     entryId: readString(meta.id),
     seq: readPositiveInteger(envelope?.messageSeq) ?? readPositiveInteger(meta.seq),
-    runId: readString(envelope?.runId) ?? readString(meta.runId) ?? runIdOfUserTurn(readString(meta.idempotencyKey)),
+    runId: readString(envelope?.runId) ?? readString(meta.runId) ?? runIdOfIdempotencyKey(readString(meta.idempotencyKey)),
     usage: role === 'assistant' ? readUsage(message.usage) : null,
+    truncated: cut || meta.truncated === true,
   };
 }
 
@@ -121,7 +128,11 @@ function readSessionRow(value: unknown): SessionSummary | null {
 }
 
 /** `sessions.list` rows; null when the payload is not a list. */
-export function readSessionList(payload: unknown): SessionSummary[] | null {
-  const sessions = readRecord(payload).sessions;
-  return Array.isArray(sessions) ? sessions.flatMap((row) => readSessionRow(row) ?? []) : null;
+export function readSessionList(payload: unknown): SessionListPage | null {
+  const fields = readRecord(payload);
+  if (!Array.isArray(fields.sessions)) {
+    return null;
+  }
+  const nextOffset = fields.hasMore === true ? readNonNegativeInteger(fields.nextOffset) : null;
+  return { sessions: fields.sessions.flatMap((row) => readSessionRow(row) ?? []), nextOffset };
 }

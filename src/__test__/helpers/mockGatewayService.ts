@@ -60,7 +60,7 @@ export function sessionSummaries(rows: SessionRow[]): SessionSummary[] {
     assertValidResult('sessions.list', result);
     const sessions = v4Adapter.parseSessionList(result);
     if (!sessions) throw new Error('fixture rows did not parse as a session list');
-    return sessions;
+    return sessions.sessions;
 }
 
 type HistoryRow = { role: string; text: string; id?: string; seq?: number; runId?: string };

@@ -10,16 +10,17 @@ import type {
   ConnectionLimits,
   GatewayOperation,
   HistoryRead,
+  HandshakeRejection,
   InboundFrame,
   SendAccepted,
   SendAttachment,
-  SessionSummary,
+  SessionListPage,
   SubscriptionAccepted,
 } from '../model';
-import { classifyHandshakeRejection, rpcErrorCode } from './errors';
+import { classifyHandshakeRejection, missingScopesRejection, readRpcFailure } from './errors';
 import { readEvent } from './events';
 import { readSessionList, readSessionMessage, readTranscript, toTranscriptMessage } from './messages';
-import { readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStrings } from './readers';
+import { MAX_TIMER_DELAY_MS, readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStrings } from './readers';
 import type {
   ChatAbortParams,
   ChatAttachment,
@@ -27,11 +28,13 @@ import type {
   ChatSendParams,
   ConnectParams,
   RequestFrame,
+  SessionsListParams,
   SessionsMessagesSubscribeParams,
 } from './schema';
 import {
   ClientCaps,
   ClientIdentity,
+  HISTORY_MAX_CHARS,
   MAX_PREAUTH_PAYLOAD_BYTES,
   Methods,
   OperatorScopes,
@@ -48,13 +51,28 @@ const METHOD_BY_OPERATION: Record<GatewayOperation, string> = {
   subscribe: Methods.sessionsMessagesSubscribe,
   unsubscribe: Methods.sessionsMessagesUnsubscribe,
   list: Methods.sessionsList,
+  sessionEvents: Methods.sessionsSubscribe,
 };
+
+/** One `sessions.list` page; the service pages through with `offset`. */
+const SESSIONS_PAGE_SIZE = 100;
+
+/** Scopes the chat needs: reading sessions and history, and sending into them. */
+const REQUIRED_SCOPES: readonly string[] = [OperatorScopes.read, OperatorScopes.write];
 
 /** Without these the service can neither start a run nor observe its output. */
 const REQUIRED_OPERATIONS: readonly GatewayOperation[] = ['send', 'subscribe', 'history'];
 
 function request(method: string, params: object): WireRequest {
   return { method, params };
+}
+
+/** The keepalive watchdog runs every tick interval and waits two of them, so both must stay valid timer delays. */
+const MIN_TICK_INTERVAL_MS = 1000;
+const MAX_TICK_INTERVAL_MS = Math.floor(MAX_TIMER_DELAY_MS / 2);
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
 }
 
 function readLimit(value: unknown, fallback: number): number {
@@ -72,7 +90,7 @@ export function readLimits(policy: unknown): ConnectionLimits {
     attachmentMaxBytes,
     // The gateway never accepts an image above the attachment ceiling.
     attachmentMaxImageBytes: Math.min(readLimit(attachments.maxImageBytes, PolicyDefaults.attachmentMaxImageBytes), attachmentMaxBytes),
-    tickIntervalMs: readLimit(fields.tickIntervalMs, PolicyDefaults.tickIntervalMs),
+    tickIntervalMs: clamp(readLimit(fields.tickIntervalMs, PolicyDefaults.tickIntervalMs), MIN_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS),
   };
 }
 
@@ -134,6 +152,7 @@ function readTailHistory(fields: Readonly<Record<string, unknown>>): HistoryRead
     cursor: readString(fields.deltaCursor),
     inFlightRunId: readString(readRecord(fields.inFlightRun).runId),
     activeRunIds: Array.isArray(sessionInfo.activeRunIds) ? readStrings(sessionInfo.activeRunIds) : null,
+    olderPageOffset: fields.hasMore === true ? readNonNegativeInteger(fields.nextOffset) : null,
   };
 }
 
@@ -148,6 +167,7 @@ function readDeltaHistory(fields: Readonly<Record<string, unknown>>): HistoryRea
     cursor,
     inFlightRunId: readString(readRecord(fields.inFlightRun).runId),
     activeRunIds: Array.isArray(sessionInfo.activeRunIds) ? readStrings(sessionInfo.activeRunIds) : null,
+    olderPageOffset: null,
   };
 }
 
@@ -184,7 +204,7 @@ export const v4Adapter: GatewayProtocolAdapter = {
         platform: hello.platform,
         mode: ClientIdentity.mode,
       },
-      caps: [ClientCaps.toolEvents],
+      caps: [ClientCaps.toolEvents, ClientCaps.sessionScopedEvents],
       role: 'operator',
       scopes: [OperatorScopes.read, OperatorScopes.write],
       auth: { token: hello.token },
@@ -212,7 +232,12 @@ export const v4Adapter: GatewayProtocolAdapter = {
   },
 
   classifyRejection: classifyHandshakeRejection,
-  errorCode: rpcErrorCode,
+  parseRpcFailure: readRpcFailure,
+
+  grantRejection(accepted: ConnectionAccepted): HandshakeRejection | null {
+    const missing = REQUIRED_SCOPES.filter((scope) => !accepted.scopes.includes(scope));
+    return missing.length === 0 ? null : missingScopesRejection(missing);
+  },
 
   defaultLimits(): ConnectionLimits {
     return readLimits(undefined);
@@ -247,8 +272,9 @@ export const v4Adapter: GatewayProtocolAdapter = {
     return request(Methods.chatAbort, params);
   },
 
-  historyRequest({ sessionKey, cursor }): WireRequest {
-    const params: ChatHistoryParams = cursor ? { sessionKey, cursor } : { sessionKey };
+  historyRequest({ sessionKey, cursor, olderPageOffset }): WireRequest {
+    const page = cursor ? { cursor } : olderPageOffset === undefined ? {} : { offset: olderPageOffset };
+    const params: ChatHistoryParams = { sessionKey, ...page, maxChars: HISTORY_MAX_CHARS };
     return request(Methods.chatHistory, params);
   },
 
@@ -274,11 +300,16 @@ export const v4Adapter: GatewayProtocolAdapter = {
     return request(Methods.sessionsMessagesUnsubscribe, { key: sessionKey });
   },
 
-  listRequest(): WireRequest {
-    return request(Methods.sessionsList, {});
+  listRequest({ offset }): WireRequest {
+    const params: SessionsListParams = offset ? { limit: SESSIONS_PAGE_SIZE, offset } : { limit: SESSIONS_PAGE_SIZE };
+    return request(Methods.sessionsList, params);
   },
 
-  parseSessionList(payload: unknown): SessionSummary[] | null {
+  parseSessionList(payload: unknown): SessionListPage | null {
     return readSessionList(payload);
+  },
+
+  sessionEventsRequest(): WireRequest {
+    return request(Methods.sessionsSubscribe, {});
   },
 };

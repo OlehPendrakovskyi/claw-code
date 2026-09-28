@@ -40,6 +40,8 @@ const TYPEBOX_FIXTURES = {
   'sessions.messages.subscribe.params.json': 'SessionsMessagesSubscribeParamsSchema',
   'sessions.messages.unsubscribe.params.json': 'SessionsMessagesUnsubscribeParamsSchema',
   'sessions.list.params.json': 'SessionsListParamsSchema',
+  // sessions-subscriptions.ts validates sessions.subscribe with validateSessionsListParams.
+  'sessions.subscribe.params.json': 'SessionsListParamsSchema',
   'event.chat.json': 'ChatEventSchema',
   'event.tick.json': 'TickEventSchema',
   'event.shutdown.json': 'ShutdownEventSchema',
@@ -136,18 +138,20 @@ async function main() {
   const manifest = readPackage(path.resolve(packageDir));
   const distDir = path.join(path.resolve(packageDir), 'dist');
   const versionModule = await loadSchemas(distDir, ['PROTOCOL_VERSION']);
-  const schemas = await loadSchemas(distDir, [...Object.values(TYPEBOX_FIXTURES), ...COMPOSED_SCHEMAS]);
+  const schemas = await loadSchemas(distDir, [...new Set([...Object.values(TYPEBOX_FIXTURES), ...COMPOSED_SCHEMAS])]);
   fs.mkdirSync(FIXTURE_DIR, { recursive: true });
   for (const [file, name] of Object.entries(TYPEBOX_FIXTURES)) {
     writeFixture(file, toJsonSchema(schemas[name], name));
   }
   writeFixture('chat.history.result.json', chatHistoryResult(schemas));
   writeFixture('event.agent.json', agentEvent(schemas));
+  // server-chat.ts broadcasts session.tool with the same payload as the agent tool stream.
+  writeFixture('event.session.tool.json', { ...agentEvent(schemas), title: 'session.tool event' });
   fs.writeFileSync(
     path.join(FIXTURE_DIR, 'VERSION'),
     `openclaw ${manifest.version}\nprotocol ${versionModule.PROTOCOL_VERSION}\n`
   );
-  console.log(`synced ${Object.keys(TYPEBOX_FIXTURES).length + 2} schemas from openclaw ${manifest.version} (protocol ${versionModule.PROTOCOL_VERSION})`);
+  console.log(`synced ${Object.keys(TYPEBOX_FIXTURES).length + 3} schemas from openclaw ${manifest.version} (protocol ${versionModule.PROTOCOL_VERSION})`);
 }
 
 await main();
