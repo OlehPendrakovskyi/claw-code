@@ -10,6 +10,8 @@
 
 import * as vscode from 'vscode';
 import { log } from '../vscode/commands/shared';
+import type { ProtocolSetting } from './gatewayProtocol/registry';
+import { isProtocolSetting } from './gatewayProtocol/registry';
 
 /** SecretStorage key under which the gateway token is stored. */
 export const GATEWAY_TOKEN_SECRET_KEY = 'openclaw.gateway.token';
@@ -28,6 +30,8 @@ export type GatewaySettings = {
   url: string;
   /** Transport: force gateway, force acpx, or auto (gateway when reachable). */
   transport: GatewayTransport;
+  /** Gateway protocol versions the handshake offers: every supported one, or exactly one. */
+  protocolVersion: ProtocolSetting;
 };
 
 export type LegacyTokenMigrationResult = 'completed' | 'noop' | 'incomplete';
@@ -43,7 +47,7 @@ export type LegacyTokenMigrationResult = 'completed' | 'noop' | 'incomplete';
 export class GatewayConfigService {
   /**
    * Read gateway settings from workspace configuration with defaults
-   * (`ws://127.0.0.1:18789` and transport `auto`).
+   * (`ws://127.0.0.1:18789`, transport `auto`, protocol `auto`).
    */
   static getGatewaySettings(): GatewaySettings {
     const config = vscode.workspace.getConfiguration('openclaw');
@@ -53,7 +57,9 @@ export class GatewayConfigService {
     const rawTransport: unknown = config.get('gateway.transport');
     const transport: GatewayTransport =
       rawTransport === 'gateway' || rawTransport === 'acpx' ? rawTransport : 'auto';
-    return { url, transport };
+    const rawProtocol: unknown = config.get('gateway.protocolVersion');
+    const protocolVersion: ProtocolSetting = isProtocolSetting(rawProtocol) ? rawProtocol : 'auto';
+    return { url, transport, protocolVersion };
   }
 
   /** Whether `url` is a `ws:` or `wss:` URL, without fragment, that the gateway client can open. */

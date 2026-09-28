@@ -1,0 +1,340 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatEventSchema",
+  "anyOf": [
+    {
+      "type": "object",
+      "required": [
+        "runId",
+        "sessionKey",
+        "seq",
+        "state",
+        "phase"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "const": "status"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "preparing_workspace"
+            },
+            {
+              "type": "string",
+              "const": "naming_worktree"
+            },
+            {
+              "type": "string",
+              "const": "creating_worktree"
+            },
+            {
+              "type": "string",
+              "const": "running_setup"
+            },
+            {
+              "type": "string",
+              "const": "provisioning_environment"
+            },
+            {
+              "type": "string",
+              "const": "preparing_context"
+            },
+            {
+              "type": "string",
+              "const": "memory_flushing"
+            },
+            {
+              "type": "string",
+              "const": "starting_model"
+            }
+          ]
+        },
+        "retry": {
+          "type": "object",
+          "required": [
+            "attempt",
+            "maxAttempts",
+            "reason"
+          ],
+          "properties": {
+            "attempt": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "maxAttempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            },
+            "reason": {
+              "type": "string",
+              "const": "rate_limit"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "runId",
+        "sessionKey",
+        "seq",
+        "state",
+        "deltaText"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "const": "delta"
+        },
+        "message": {},
+        "deltaText": {
+          "type": "string"
+        },
+        "replace": {
+          "type": "boolean"
+        },
+        "usage": {}
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "runId",
+        "sessionKey",
+        "seq",
+        "state"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "const": "final"
+        },
+        "message": {},
+        "usage": {},
+        "stopReason": {
+          "type": "string"
+        },
+        "yielded": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "runId",
+        "sessionKey",
+        "seq",
+        "state"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "const": "aborted"
+        },
+        "message": {},
+        "errorMessage": {
+          "type": "string"
+        },
+        "stopReason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "runId",
+        "sessionKey",
+        "seq",
+        "state"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "spawnedBy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "const": "error"
+        },
+        "message": {},
+        "errorMessage": {
+          "type": "string"
+        },
+        "errorKind": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "refusal"
+            },
+            {
+              "type": "string",
+              "const": "timeout"
+            },
+            {
+              "type": "string",
+              "const": "rate_limit"
+            },
+            {
+              "type": "string",
+              "const": "context_length"
+            },
+            {
+              "type": "string",
+              "const": "unknown"
+            }
+          ]
+        },
+        "errorDetail": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "model": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "failoverReason": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "providerRuntimeFailureKind": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "providerErrorType": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "httpStatus": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 599
+            },
+            "providerErrorMessagePreview": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "additionalProperties": false
+        },
+        "usage": {},
+        "stopReason": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

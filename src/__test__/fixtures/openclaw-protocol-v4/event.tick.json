@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TickEventSchema",
+  "type": "object",
+  "required": [
+    "ts"
+  ],
+  "properties": {
+    "ts": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,519 +1,181 @@
 /**
- * Unit tests for the agent picker, session history mapping, and gateway
- * session-selection / resume surface added in wave 2.
+ * The agent picker and its session-list and history helpers, fed with real
+ * protocol v4 shapes parsed by the v4 adapter.
  */
 
 import {
-  AgentPicker,
-  COLD_SESSION_PLACEHOLDER,
-  buildAgentSessionItems,
-  isColdSession,
-  isMainAgentSession,
-  isMainAgentSessionKey,
-  mapHistoryMessages,
-  parseSessionRows,
-  toAgentSessionItems,
+    AgentPicker,
+    COLD_SESSION_PLACEHOLDER,
+    buildAgentSessionItems,
+    isMainAgentSessionKey,
+    mapHistoryMessages,
 } from '../core/agentPicker';
-import { GatewayChatService, WebSocketLike } from '../core/gatewayChatService';
-import type { ChatEvent } from '../chat/ChatService';
+import type { AgentSessionItem } from '../core/agentPicker';
+import type { HistorySnapshot, SessionSummary } from '../core/gatewayProtocol/model';
+import { v4Adapter } from '../core/gatewayProtocol/v4/adapter';
+import { assertValidResult, capturedPayload, payloads } from './helpers/gatewayV4';
 
-type MockSocket = WebSocketLike & {
-  handlers: Map<string, Array<(...args: unknown[]) => void>>;
-  sent: string[];
-  emit(event: string, ...args: unknown[]): void;
-};
-
-function createMockWs(): MockSocket {
-  const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
-  const ws: MockSocket = {
-    handlers,
-    sent: [],
-    send(data: string) {
-      ws.sent.push(data);
-    },
-    close() {
-      handlers.get('close')?.forEach((cb) => cb(1000, Buffer.alloc(0)));
-    },
-    on(event: string, cb: (...args: never[]) => void) {
-      const list = handlers.get(event) ?? [];
-      list.push(cb as (...args: unknown[]) => void);
-      handlers.set(event, list);
-    },
-    removeListener(event: string, cb: (...args: unknown[]) => void) {
-      handlers.set(event, (handlers.get(event) ?? []).filter((h) => h !== cb));
-    },
-    emit(event: string, ...args: unknown[]) {
-      for (const cb of [...(handlers.get(event) ?? [])]) {
-        cb(...args);
-      }
-    },
-  };
-  return ws;
+/** Session rows as the gateway sends them, validated, then parsed like the client does. */
+function sessionsFromWire(rows: Record<string, unknown>[]): SessionSummary[] {
+    const payload = payloads.sessionsList(rows);
+    assertValidResult('sessions.list', payload);
+    const sessions = v4Adapter.parseSessionList(payload);
+    if (!sessions) throw new Error('sessions.list payload did not parse');
+    return sessions;
 }
 
-const HELLO_OK = {
-  type: 'res',
-  id: 'cc-1',
-  ok: true,
-  payload: {
-    type: 'hello-ok',
-    protocol: 4,
-    server: { version: '1.0.0', connId: 'conn-1' },
-    features: {
-      methods: ['sessions.list', 'chat.send', 'sessions.messages.subscribe', 'chat.history', 'chat.abort'],
-      events: ['session.message'],
-    },
-    auth: { role: 'operator', scopes: ['operator.read', 'operator.write'] },
-    policy: { maxPayload: 26214400, maxBufferedBytes: 52428800, tickIntervalMs: 15000 },
-  },
-};
+function historyFromWire(payload: Record<string, unknown>): HistorySnapshot {
+    assertValidResult('chat.history', payload);
+    const read = v4Adapter.parseHistory(payload);
+    if (!read || 'reset' in read) throw new Error('chat.history payload is not a snapshot');
+    return read;
+}
 
-const SESSIONS_ROWS = [
-  { key: 'agent:main:main', label: 'Main agent', agentId: 'main', hasActiveRun: true, updatedAt: '2026-09-26T10:00:00Z' },
-  { key: 'agent:main:subagent:0214', agentId: 'main', hasActiveRun: false },
-  { key: 'agent:coder:main', label: 'Coder', agentId: 'coder', updatedAt: '2026-09-26T11:00:00Z' },
-  { key: 'agent:drained:main', agentId: 'drained', placement: { state: 'reclaimed' } },
-  { key: 'agent:cold:main', agentId: 'cold', placement: { state: 'provisioning' } },
-  { key: 'node:dev:xyz', label: 'Node session' },
-  { key: 'main', label: 'Default session' },
-  { agentId: 'no-key' },
-];
+const T0 = 1790605210000;
 
 describe('agentPicker', () => {
-  describe('parseSessionRows', () => {
-    it('parses {sessions: [...]} payloads and skips malformed rows', () => {
-      const parsed = parseSessionRows({ sessions: SESSIONS_ROWS });
-      expect(parsed.ok).toBe(true);
-      expect(parsed.rows.map((r) => r.key)).toEqual([
-        'agent:main:main',
-        'agent:main:subagent:0214',
-        'agent:coder:main',
-        'agent:drained:main',
-        'agent:cold:main',
-        'node:dev:xyz',
-        'main',
-      ]);
+    describe('isMainAgentSessionKey', () => {
+        it('accepts agent main sessions and the bare default alias', () => {
+            expect(isMainAgentSessionKey('agent:dev:main')).toBe(true);
+            expect(isMainAgentSessionKey('main')).toBe(true);
+        });
+
+        it('rejects child, subagent and malformed keys', () => {
+            for (const key of ['agent:dev:subagent:1', 'agent:dev:main:child', 'agent::main', 'agent:dev:other', 'global', '', 5, null]) {
+                expect(isMainAgentSessionKey(key)).toBe(false);
+            }
+        });
     });
 
-    it('accepts a {rows: [...]} payload and skips non-object entries', () => {
-      const parsed = parseSessionRows({ rows: [null, 'agent:x:main', { key: 'agent:y:main' }] });
-      expect(parsed).toEqual({ rows: [{ key: 'agent:y:main' }], ok: true });
+    describe('buildAgentSessionItems', () => {
+        it('turns the real captured session row into a picker item', () => {
+            const sessions = v4Adapter.parseSessionList(capturedPayload('sessionsListResult')) ?? [];
+            expect(buildAgentSessionItems(sessions)).toEqual([
+                {
+                    sessionKey: 'agent:dev:main',
+                    label: 'Hello from probe',
+                    agentId: 'dev',
+                    hasActiveRun: false,
+                    updatedAt: expect.stringMatching(/^2026-09-\d\dT/),
+                    cold: false,
+                },
+            ]);
+        });
+
+        it('keeps only main sessions', () => {
+            const sessions = sessionsFromWire([
+                { key: 'agent:dev:main', agentId: 'dev' },
+                { key: 'main' },
+                { key: 'agent:dev:subagent:abc', agentId: 'dev' },
+                { key: 'agent:dev:cron:nightly', agentId: 'dev' },
+            ]);
+            expect(buildAgentSessionItems(sessions).map((item) => item.sessionKey)).toEqual(['agent:dev:main', 'main']);
+        });
+
+        it('lists running sessions first, then the most recently active by epoch milliseconds', () => {
+            const sessions = sessionsFromWire([
+                { key: 'agent:old:main', updatedAt: T0 },
+                { key: 'agent:newest:main', updatedAt: T0, lastInteractionAt: T0 + 5000 },
+                { key: 'agent:busy:main', updatedAt: T0 - 9000, hasActiveRun: true, activeRunIds: ['run-1'] },
+                { key: 'agent:never:main', updatedAt: null },
+                { key: 'agent:mid:main', lastActivityAt: T0 + 1000 },
+            ]);
+            expect(buildAgentSessionItems(sessions).map((item) => item.sessionKey)).toEqual([
+                'agent:busy:main',
+                'agent:newest:main',
+                'agent:mid:main',
+                'agent:old:main',
+                'agent:never:main',
+            ]);
+        });
+
+        it('reports the latest activity as an ISO timestamp, or null without one', () => {
+            const items = buildAgentSessionItems(sessionsFromWire([
+                { key: 'agent:a:main', updatedAt: T0, lastActivityAt: T0 + 60_000 },
+                { key: 'agent:b:main', updatedAt: null },
+            ]));
+            expect(items.map((item) => item.updatedAt)).toEqual([new Date(T0 + 60_000).toISOString(), null]);
+        });
+
+        it('marks non-materialized placements cold', () => {
+            const items = buildAgentSessionItems(sessionsFromWire([
+                { key: 'agent:local:main', placement: { state: 'local' } },
+                { key: 'agent:active:main', placement: { state: 'active' } },
+                { key: 'agent:reclaimed:main', placement: { state: 'reclaimed' } },
+                { key: 'agent:draining:main', placement: { state: 'draining' } },
+            ]));
+            expect(Object.fromEntries(items.map((item) => [item.sessionKey, item.cold]))).toEqual({
+                'agent:local:main': false,
+                'agent:active:main': false,
+                'agent:reclaimed:main': true,
+                'agent:draining:main': true,
+            });
+        });
+
+        it('labels a session by label, display name, agent id, then key', () => {
+            const items = buildAgentSessionItems(sessionsFromWire([
+                { key: 'agent:a:main', label: 'Pinned', displayName: 'Shown', agentId: 'a', updatedAt: T0 + 4 },
+                { key: 'agent:b:main', displayName: 'Shown', agentId: 'b', updatedAt: T0 + 3 },
+                { key: 'agent:c:main', agentId: 'c', updatedAt: T0 + 2 },
+                { key: 'agent:d:main', updatedAt: T0 + 1 },
+            ]));
+            expect(items.map((item) => item.label)).toEqual(['Pinned', 'Shown', 'c', 'agent:d:main']);
+        });
     });
 
-    it('tolerates bare arrays and junk payloads', () => {
-      expect(parseSessionRows(SESSIONS_ROWS).ok).toBe(true);
-      expect(parseSessionRows({ sessions: 'nope' }).ok).toBe(false);
-      expect(parseSessionRows(null).ok).toBe(false);
-      expect(parseSessionRows('junk').rows).toEqual([]);
-    });
-  });
+    describe('AgentPicker', () => {
+        const pickFirst = { show: async (items: AgentSessionItem[]) => items[0] };
 
-  describe('isMainAgentSessionKey', () => {
-    it('applies the same filter to webview-supplied keys', () => {
-      expect(isMainAgentSessionKey('agent:coder:main')).toBe(true);
-      expect(isMainAgentSessionKey('main')).toBe(true);
-      expect(isMainAgentSessionKey('agent:main:subagent:0214')).toBe(false);
-      expect(isMainAgentSessionKey('node:dev:xyz')).toBe(false);
-      expect(isMainAgentSessionKey(undefined)).toBe(false);
-      expect(isMainAgentSessionKey(42)).toBe(false);
-    });
-  });
+        it('lists main sessions over the transport', async () => {
+            const sessions = sessionsFromWire([{ key: 'agent:dev:main', agentId: 'dev' }, { key: 'agent:dev:subagent:x' }]);
+            const picker = new AgentPicker({ listSessions: async () => sessions }, pickFirst);
+            expect((await picker.listMainSessions()).map((item) => item.sessionKey)).toEqual(['agent:dev:main']);
+        });
 
-  describe('isMainAgentSession', () => {
-    it('accepts agent:<id>:main and the bare default session', () => {
-      expect(isMainAgentSession({ key: 'agent:main:main' })).toBe(true);
-      expect(isMainAgentSession({ key: 'agent:coder:main' })).toBe(true);
-      expect(isMainAgentSession({ key: 'main' })).toBe(true);
+        it('lists nothing without a transport or when the list fails', async () => {
+            expect(await new AgentPicker(null, pickFirst).listMainSessions()).toEqual([]);
+            const failing = new AgentPicker({ listSessions: async () => { throw new Error('not connected'); } }, pickFirst);
+            expect(await failing.listMainSessions()).toEqual([]);
+        });
+
+        it('returns the chosen item, and shows nothing without sessions', async () => {
+            const sessions = sessionsFromWire([{ key: 'agent:dev:main' }]);
+            expect(await new AgentPicker({ listSessions: async () => sessions }, pickFirst).pick()).toMatchObject({ sessionKey: 'agent:dev:main' });
+            const show = jest.fn();
+            expect(await new AgentPicker({ listSessions: async () => [] }, { show }).pick()).toBeUndefined();
+            expect(show).not.toHaveBeenCalled();
+        });
     });
 
-    it('rejects subagent, foreign, and malformed sessions', () => {
-      expect(isMainAgentSession({ key: 'agent:main:subagent:0214' })).toBe(false);
-      expect(isMainAgentSession({ key: 'node:dev:xyz' })).toBe(false);
-      expect(isMainAgentSession({ key: 'agent:main:main:extra' })).toBe(false);
-      expect(isMainAgentSession({ key: '' })).toBe(false);
-    });
-  });
+    describe('mapHistoryMessages', () => {
+        it('maps the real captured tail, dropping the run-failure notice row', () => {
+            const messages = mapHistoryMessages(historyFromWire(capturedPayload('historyTailResult')));
+            expect(messages[0]).toEqual({ role: 'user', content: 'hello from probe', entryId: 'e5f1f654-4655-43f2-9051-1a26d778efcc' });
+            expect(messages.some((message) => message.content.startsWith('This turn ended before a reply'))).toBe(false);
+            expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+        });
 
-  describe('isColdSession', () => {
-    it('flags non-materialized placements and passes warm/absent ones', () => {
-      expect(isColdSession({ key: 'k', placement: { state: 'provisioning' } })).toBe(true);
-      expect(isColdSession({ key: 'k', placement: { state: 'reclaimed' } })).toBe(true);
-      expect(isColdSession({ key: 'k', placement: { state: 'active' } })).toBe(false);
-      expect(isColdSession({ key: 'k', placement: { state: 'local' } })).toBe(false);
-      expect(isColdSession({ key: 'k' })).toBe(false);
-    });
-  });
+        it('skips rows without text and keeps the transcript order', () => {
+            const snapshot = historyFromWire(payloads.historyTail([
+                { role: 'user', text: 'question', seq: 1, id: 'e1' },
+                { role: 'toolResult', text: 'tool output', seq: 2, id: 'e2' },
+                { role: 'assistant', text: '', seq: 3, id: 'e3' },
+                { role: 'assistant', text: 'answer', seq: 4, id: 'e4' },
+            ]));
+            expect(mapHistoryMessages(snapshot)).toEqual([
+                { role: 'user', content: 'question', entryId: 'e1' },
+                { role: 'assistant', content: 'answer', entryId: 'e4' },
+            ]);
+        });
 
-  describe('toAgentSessionItems', () => {
-    it('filters to main-agent sessions, sorts active runs first', () => {
-      const items = toAgentSessionItems(parseSessionRows({ sessions: SESSIONS_ROWS }).rows);
-      expect(items.map((i) => i.sessionKey)).toEqual(['agent:main:main', 'agent:coder:main', 'agent:drained:main', 'agent:cold:main', 'main']);
-    });
-
-    it('carries hasActiveRun, label fallback, and cold flags', () => {
-      const items = buildAgentSessionItems({ sessions: SESSIONS_ROWS });
-      const main = items.find((i) => i.sessionKey === 'agent:main:main');
-      expect(main?.hasActiveRun).toBe(true);
-      expect(main?.agentId).toBe('main');
-      const cold = items.find((i) => i.sessionKey === 'agent:cold:main');
-      expect(cold?.cold).toBe(true);
-      expect(cold?.label).toBe('cold');
-      const drained = items.find((i) => i.sessionKey === 'agent:drained:main');
-      expect(drained?.label).toBe('drained');
+        it('maps nothing for a missing snapshot', () => {
+            expect(mapHistoryMessages(null)).toEqual([]);
+        });
     });
 
-    it('treats activeRunIds as a run indicator', () => {
-      const items = toAgentSessionItems([{ key: 'agent:x:main', activeRunIds: ['run-1'] }]);
-      expect(items[0].hasActiveRun).toBe(true);
+    describe('COLD_SESSION_PLACEHOLDER', () => {
+        it('tells the user the history loads once the session starts', () => {
+            expect(COLD_SESSION_PLACEHOLDER).toMatch(/history will load once it starts/);
+        });
     });
-
-    it('sorts by the newest candidate timestamp, not the first truthy field', () => {
-      const stale = toAgentSessionItems([
-        { key: 'agent:stale:main', lastActivityAt: '2026-09-01T00:00:00Z', lastInteractionAt: '2026-09-28T00:00:00Z' },
-        { key: 'agent:mid:main', lastActivityAt: '2026-09-15T00:00:00Z' },
-      ]);
-      expect(stale.map((i) => i.sessionKey)).toEqual(['agent:stale:main', 'agent:mid:main']);
-    });
-
-    it('keeps the newest candidate when an older one follows it', () => {
-      const items = toAgentSessionItems([
-        { key: 'agent:x:main', lastActivityAt: '2026-09-28T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z' },
-      ]);
-      expect(items[0].updatedAt).toBe('2026-09-28T00:00:00Z');
-    });
-
-    it('sorts an active run ahead of a newer idle session', () => {
-      const items = toAgentSessionItems([
-        { key: 'agent:idle:main', updatedAt: '2026-09-28T00:00:00Z' },
-        { key: 'agent:busy:main', hasActiveRun: true },
-      ]);
-      expect(items.map((i) => i.sessionKey)).toEqual(['agent:busy:main', 'agent:idle:main']);
-    });
-
-    it('ignores unparseable timestamp values', () => {
-      const items = toAgentSessionItems([
-        { key: 'agent:bad:main', lastActivityAt: 'not-a-date', updatedAt: '2026-09-20T00:00:00Z' },
-      ]);
-      expect(items[0].updatedAt).toBe('2026-09-20T00:00:00Z');
-    });
-  });
-
-  describe('AgentPicker', () => {
-    const noQuickPick = { show: async () => undefined };
-
-    it('lists filtered sessions through the transport', async () => {
-      const picker = new AgentPicker({ listSessions: async () => ({ sessions: SESSIONS_ROWS }) }, noQuickPick);
-      const items = await picker.listMainSessions();
-      expect(items.length).toBe(5);
-      expect(items[0].sessionKey).toBe('agent:main:main');
-    });
-
-    it('returns [] without transport or on RPC failure', async () => {
-      expect(await new AgentPicker(null, noQuickPick).listMainSessions()).toEqual([]);
-      const failing = new AgentPicker({
-        listSessions: async () => {
-          throw new Error('rpc down');
-        },
-      }, noQuickPick);
-      expect(await failing.listMainSessions()).toEqual([]);
-    });
-
-    it('pick returns the QuickPick selection and undefined on cancel/empty', async () => {
-      const picker = new AgentPicker(
-        { listSessions: async () => ({ sessions: SESSIONS_ROWS }) },
-        { show: async (items) => items[1] }
-      );
-      const chosen = await picker.pick();
-      expect(chosen?.sessionKey).toBe('agent:coder:main');
-
-      const cancelled = new AgentPicker(
-        { listSessions: async () => ({ sessions: SESSIONS_ROWS }) },
-        { show: async () => undefined }
-      );
-      expect(await cancelled.pick()).toBeUndefined();
-
-      const empty = new AgentPicker({ listSessions: async () => ({ sessions: [] }) }, { show: async () => undefined });
-      expect(await empty.pick()).toBeUndefined();
-    });
-  });
-
-  describe('mapHistoryMessages', () => {
-    it('maps user/assistant rows and skips tool-only or empty rows', () => {
-      const messages = mapHistoryMessages({
-        messages: [
-          { role: 'user', text: 'hello', messageId: 'm1' },
-          { role: 'assistant', text: 'hi there', messageId: 'm2' },
-          { role: 'assistant', text: '', messageId: 'm3' },
-          { role: 'toolUseResult', text: 'tool text' },
-          { role: 'assistant' },
-          'junk',
-        ],
-      });
-      expect(messages).toEqual([
-        { role: 'user', content: 'hello', messageId: 'm1' },
-        { role: 'assistant', content: 'hi there', messageId: 'm2' },
-      ]);
-    });
-
-    it('restores rows without a role as assistant output, as the live stream renders them', () => {
-      const messages = mapHistoryMessages({
-        messages: [{ text: 'omitted' }, { role: null, text: 'null role' }, { role: 0, text: 'junk role' }],
-      });
-      expect(messages).toEqual([
-        { role: 'assistant', content: 'omitted', messageId: null },
-        { role: 'assistant', content: 'null role', messageId: null },
-      ]);
-    });
-
-    it('tolerates missing or malformed payloads', () => {
-      expect(mapHistoryMessages(null)).toEqual([]);
-      expect(mapHistoryMessages({})).toEqual([]);
-      expect(mapHistoryMessages({ messages: 'nope' })).toEqual([]);
-    });
-
-    it('restores the completed row when a partial row for the same id comes first', () => {
-      const messages = mapHistoryMessages({
-        messages: [
-          { role: 'user', text: 'q', messageId: 'u1' },
-          { role: 'assistant', text: 'Hel', delta: 'l', messageId: 'm1' },
-          { role: 'assistant', text: 'Hello world', messageId: 'm1' },
-        ],
-      });
-      expect(messages).toEqual([
-        { role: 'user', content: 'q', messageId: 'u1' },
-        { role: 'assistant', content: 'Hello world', messageId: 'm1' },
-      ]);
-    });
-
-    it('keeps the completed row when a partial row for the same id comes later', () => {
-      const messages = mapHistoryMessages({
-        messages: [
-          { role: 'assistant', text: 'Hello world', messageId: 'm1' },
-          { role: 'assistant', text: 'Hel', delta: 'l', messageId: 'm1' },
-        ],
-      });
-      expect(messages).toEqual([{ role: 'assistant', content: 'Hello world', messageId: 'm1' }]);
-    });
-
-    it('keeps the longest of several partial rows at the first row position', () => {
-      const messages = mapHistoryMessages({
-        messages: [
-          { role: 'assistant', text: 'He', delta: 'e', messageId: 'm1' },
-          { role: 'user', text: 'next', messageId: 'u2' },
-          { role: 'assistant', text: 'Hello', delta: 'llo', messageId: 'm1' },
-          { role: 'assistant', text: 'Hel', delta: 'l', messageId: 'm1' },
-        ],
-      });
-      expect(messages.map((m) => m.content)).toEqual(['Hello', 'next']);
-    });
-
-    it('keeps a lone mixed delta+text row', () => {
-      const messages = mapHistoryMessages({
-        messages: [{ role: 'assistant', text: 'full text', delta: 'text', messageId: 'm1' }],
-      });
-      expect(messages).toEqual([{ role: 'assistant', content: 'full text', messageId: 'm1' }]);
-    });
-
-    it('never dedupes rows without a usable id', () => {
-      const messages = mapHistoryMessages({
-        messages: [
-          { role: 'assistant', text: 'a', messageId: '' },
-          { role: 'assistant', text: 'b' },
-        ],
-      });
-      expect(messages.map((m) => m.content)).toEqual(['a', 'b']);
-    });
-  });
-
-  describe('COLD_SESSION_PLACEHOLDER', () => {
-    it('tells the user history arrives once the session starts', () => {
-      expect(COLD_SESSION_PLACEHOLDER).toContain('Session is unloaded');
-    });
-  });
-
-  describe('GatewayChatService session selection and resume', () => {
-    function makeConnected(log: { lines: string[] }): { svc: GatewayChatService; ws: MockSocket; ready: Promise<void> } {
-      const ws = createMockWs();
-      const svc = new GatewayChatService({
-        url: 'ws://gateway.test:18789',
-        token: 'secret-token-value',
-        logger: {
-          info: (m) => log.lines.push(m),
-          warn: (m) => log.lines.push(m),
-          error: (m) => log.lines.push(m),
-        },
-        wsFactory: () => ws,
-      });
-      void svc.connect();
-      ws.emit('open');
-      ws.emit('message', JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n', ts: 0 } }));
-      ws.emit('message', JSON.stringify(HELLO_OK));
-      return { svc, ws, ready: svc.connect() };
-    }
-
-    function rpcPayload(ws: MockSocket, id: string, payload: unknown): void {
-      ws.emit('message', JSON.stringify({ type: 'res', id, ok: true, payload }));
-    }
-
-    function lastRequest(ws: MockSocket): { id: string; method: string; params?: Record<string, unknown> } {
-      const frame = JSON.parse(ws.sent[ws.sent.length - 1]) as { type: string; id: string; method: string; params?: Record<string, unknown> };
-      expect(frame.type).toBe('req');
-      return frame as { id: string; method: string; params?: Record<string, unknown> };
-    }
-
-    /** Newest request frame with the given method (frames are sent in order). */
-    function lastRequestByMethod(ws: MockSocket, method: string): { id: string; method: string } | null {
-      for (let i = ws.sent.length - 1; i >= 0; i--) {
-        const frame = JSON.parse(ws.sent[i]) as { type: string; id: string; method: string };
-        if (frame.type === 'req' && frame.method === method) {
-          return frame;
-        }
-      }
-      return null;
-    }
-
-    it('setActiveSession routes the next chat.send to the chosen session', async () => {
-      const log = { lines: [] as string[] };
-      const { svc, ws, ready } = makeConnected(log);
-      await ready;
-      svc.setActiveSession('agent:coder:main');
-      expect(svc.getActiveSessionKey()).toBe('agent:coder:main');
-
-      // Catch-up runs only on a cursor/resume path: seed a delta cursor first
-      // (the initial send itself must not replay an unscoped history tail).
-      svc.seedHistory('agent:coder:main', { deltaCursor: 'c0', messages: [] });
-
-      let done: Array<unknown> = [];
-      svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => done.push(e));
-      // The send is gated behind the pre-send subscription acknowledgement, so
-      // resolve the subscribe RPC first; `chat.send` follows on success.
-      let req = lastRequest(ws);
-      expect(req.method).toBe('sessions.messages.subscribe');
-      rpcPayload(ws, req.id, {});
-      await new Promise((r) => setTimeout(r, 0));
-      req = lastRequest(ws);
-      expect(req.method).toBe('chat.send');
-      expect(req.params?.sessionKey).toBe('agent:coder:main');
-      // The cursor-gated catch-up (seeded 'c0') was issued alongside the send;
-      // answer both the acknowledgement and the history replay.
-      const history = lastRequestByMethod(ws, 'chat.history');
-      expect(history).not.toBeNull();
-      rpcPayload(ws, req.id, { sessionKey: 'agent:coder:main' });
-      rpcPayload(ws, history!.id, { messages: [{ role: 'assistant', text: 'routed', messageId: 'm-r1' }], deltaCursor: 'c1' });
-      await new Promise((r) => setTimeout(r, 0));
-      svc.dispose();
-      // The run sink is present at catch-up start and consumes replayed rows:
-      // it is the thread's only delivery channel while the persistent sink is
-      // suspended, so an unseen completed row in the replay is recovered as
-      // content plus its terminal done (the response finished server-side and
-      // its live final frame will not arrive). Routing to the chosen session
-      // is asserted above via chat.send params.
-      expect(done).toEqual([
-        { type: 'text', text: 'routed' },
-        { type: 'done' },
-      ]);
-    });
-
-    it('resumeSession subscribes and replays unseen history (dedup by messageId)', async () => {
-      const log = { lines: [] as string[] };
-      const { svc, ws, ready } = makeConnected(log);
-      await ready;
-      const events: ChatEvent[] = [];
-      svc.resumeSession('agent:main:main', (e) => events.push(e));
-      expect(svc.getActiveSessionKey()).toBe('agent:main:main');
-
-      let req = lastRequest(ws);
-      expect(req.method).toBe('sessions.messages.subscribe');
-      rpcPayload(ws, req.id, {});
-      await new Promise((r) => setTimeout(r, 0));
-
-      req = lastRequest(ws);
-      expect(req.method).toBe('chat.history');
-      rpcPayload(ws, req.id, {
-        messages: [
-          { role: 'assistant', text: 'restored', messageId: 'm-1' },
-          { role: 'assistant', text: '', messageId: 'm-2' },
-        ],
-        deltaCursor: 'cursor-9',
-      });
-      await new Promise((r) => setTimeout(r, 0));
-
-      const texts = events.flatMap((e) => (e.type === 'text' ? [e.text] : []));
-      expect(texts).toEqual(['restored']);
-      // The completed assistant row (full text, no delta) finalizes; the empty
-      // text row does not.
-      expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
-      svc.dispose();
-    });
-
-    it('abort retires only the run sink and keeps other threads\' transcript subscribers', async () => {
-      const log = { lines: [] as string[] };
-      const { svc, ws, ready } = makeConnected(log);
-      await ready;
-      svc.seedHistory('agent:main:main', { deltaCursor: 'c0', messages: [] });
-      const runEvents: ChatEvent[] = [];
-      const transcriptEvents: ChatEvent[] = [];
-      svc.sendMessage('hi', '/tmp', 'codex', 'chat', (e) => runEvents.push(e));
-      // The send is gated behind the pre-send subscription acknowledgement.
-      let req = lastRequest(ws);
-      expect(req.method).toBe('sessions.messages.subscribe');
-      rpcPayload(ws, req.id, {});
-      await new Promise((r) => setTimeout(r, 0));
-      // The pre-send cursor seed for the requested (default) key: issueSend
-      // awaits this snapshot before issuing chat.send.
-      req = lastRequest(ws);
-      expect(req.method).toBe('chat.history');
-      // The snapshot must carry a recovery boundary (cursor + messages),
-      // otherwise the pre-ack send aborts and chat.send is never issued.
-      rpcPayload(ws, req.id, { deltaCursor: 'c0', messages: [] });
-      await new Promise((r) => setTimeout(r, 0));
-      req = lastRequest(ws);
-      expect(req.method).toBe('chat.send');
-      // Resolve the acknowledgement; the gateway resolves the requested key,
-      // so the ack path reuses the established subscription.
-      rpcPayload(ws, req.id, { sessionKey: 'agent:main:main' });
-      await new Promise((r) => setTimeout(r, 0));
-      // A second, transcript-only subscriber on the same session: the session
-      // is already subscribed, so no duplicate subscribe RPC is issued.
-      svc.resumeSession('agent:main:main', (e) => transcriptEvents.push(e));
-
-      svc.abort('agent:main:main');
-      req = lastRequest(ws);
-      expect(req.method).toBe('chat.abort');
-      rpcPayload(ws, req.id, {});
-      await new Promise((r) => setTimeout(r, 0));
-
-      // The run sink is retired with done; the transcript-only subscriber of
-      // another thread on the same session keeps receiving later events.
-      expect(runEvents.some((e) => e.type === 'done')).toBe(true);
-      expect(transcriptEvents.some((e) => e.type === 'done')).toBe(false);
-      ws.emit('message', JSON.stringify({
-        type: 'event',
-        event: 'session.message',
-        payload: { sessionKey: 'agent:main:main', role: 'assistant', delta: 'live' },
-      }));
-      await new Promise((r) => setTimeout(r, 0));
-      expect(transcriptEvents.some((e) => e.type === 'text' && e.text === 'live')).toBe(true);
-      expect(runEvents.some((e) => e.type === 'text' && e.text === 'live')).toBe(false);
-      svc.dispose();
-    });
-
-    it('getHistory returns the raw payload and null on RPC failure', async () => {
-      const log = { lines: [] as string[] };
-      const { svc, ws, ready } = makeConnected(log);
-      await ready;
-      const pending = svc.getHistory('agent:main:main');
-      const req = lastRequest(ws);
-      expect(req.method).toBe('chat.history');
-      expect(req.params?.sessionKey).toBe('agent:main:main');
-      rpcPayload(ws, req.id, { messages: [{ role: 'user', text: 'q' }] });
-      await expect(pending).resolves.toEqual({ messages: [{ role: 'user', text: 'q' }] });
-
-      const failing = svc.getHistory('agent:main:main');
-      const req2 = lastRequest(ws);
-      ws.emit('message', JSON.stringify({ type: 'res', id: req2.id, ok: false, error: { code: 'E', message: 'boom' } }));
-      await expect(failing).resolves.toBeNull();
-      svc.dispose();
-    });
-  });
 });

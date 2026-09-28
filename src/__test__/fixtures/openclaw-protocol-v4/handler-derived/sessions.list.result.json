@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sessions.list result",
+  "x-source": "src/gateway/server-methods/sessions-read.ts listProjectedSessions and GatewaySessionRow (openclaw 2026.9.6)",
+  "type": "object",
+  "required": ["sessions"],
+  "properties": {
+    "sessions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "agentId": { "type": "string", "minLength": 1 },
+          "label": { "type": "string" },
+          "displayName": { "type": "string" },
+          "createdAt": { "type": "number" },
+          "updatedAt": { "type": ["number", "null"] },
+          "lastActivityAt": { "type": "number" },
+          "lastInteractionAt": { "type": "number" },
+          "hasActiveRun": { "type": "boolean" },
+          "activeRunIds": { "type": ["array", "null"], "items": { "type": "string" } },
+          "placement": {
+            "type": "object",
+            "required": ["state"],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": ["local", "requested", "provisioning", "syncing", "starting", "active", "draining", "reconciling", "reclaimed", "failed"]
+              }
+            }
+          }
+        }
+      }
+    },
+    "count": { "type": "integer", "minimum": 0 },
+    "hasMore": { "type": "boolean" },
+    "nextOffset": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

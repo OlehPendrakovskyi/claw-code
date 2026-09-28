@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RequestFrameSchema",
+  "type": "object",
+  "required": [
+    "type",
+    "id",
+    "method"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "req"
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "method": {
+      "type": "string",
+      "minLength": 1
+    },
+    "params": {},
+    "traceparent": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "expectedProfileId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "additionalProperties": false
+}

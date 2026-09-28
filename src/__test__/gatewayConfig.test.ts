@@ -327,12 +327,12 @@ describe('GatewayConfigService', () => {
 
         it('defaults to the local gateway in auto mode', () => {
             useRawSettings({});
-            expect(getGatewaySettings()).toEqual({ url: 'ws://127.0.0.1:18789', transport: 'auto' });
+            expect(getGatewaySettings()).toEqual({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
         });
 
         it('trims the URL and keeps a known transport', () => {
             useRawSettings({ 'gateway.url': '  wss://gw.example  ', 'gateway.transport': 'acpx' });
-            expect(getGatewaySettings()).toEqual({ url: 'wss://gw.example', transport: 'acpx' });
+            expect(getGatewaySettings()).toEqual({ url: 'wss://gw.example', transport: 'acpx', protocolVersion: 'auto' });
         });
 
         it.each([[42, 'gateway'], [{ url: 'x' }, 'bogus'], ['   ', 7]])(
@@ -341,8 +341,19 @@ describe('GatewayConfigService', () => {
                 expect(getGatewaySettings()).toEqual({
                     url: 'ws://127.0.0.1:18789',
                     transport: transport === 'gateway' ? 'gateway' : 'auto',
+                    protocolVersion: 'auto',
                 });
             });
+
+        it('keeps a supported protocol version', () => {
+            useRawSettings({ 'gateway.protocolVersion': '4' });
+            expect(getGatewaySettings().protocolVersion).toBe('4');
+        });
+
+        it.each([[5], ['5'], [null], [{}], [4]])('falls back to auto for a hand-edited protocol version %p', (protocolVersion) => {
+            useRawSettings({ 'gateway.protocolVersion': protocolVersion });
+            expect(getGatewaySettings().protocolVersion).toBe('auto');
+        });
     });
 
     describe('gateway token storage', () => {

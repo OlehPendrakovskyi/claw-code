@@ -13,7 +13,8 @@
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/ChatService';
 import { GatewayChatService } from '../core/gatewayChatService';
-import { GatewayConnectError } from '../core/gatewayHandshake';
+import { GatewayConnectError } from '../core/gatewayProtocol/model';
+import type { ProtocolSetting } from '../core/gatewayProtocol/registry';
 import {
   getGatewaySettings,
   getGatewayToken,
@@ -27,11 +28,14 @@ import { log } from './viewMessaging';
 /** Why the shared gateway client is about to drop its runs. */
 export type GatewayInvalidationReason = 'identity' | 'transport';
 
+/** The active transport for the status badge; `protocolVersion` names the negotiated gateway protocol. */
+export type TransportStatusListener = (transport: 'gateway' | 'acpx', connected: boolean, protocolVersion: number | null) => void;
+
 /** What the current settings ask for, before any connect. */
 type TransportPlan =
   | { kind: 'acpx' }
   | { kind: 'offline'; url: string }
-  | { kind: 'connect'; url: string; token: string; transport: 'gateway' | 'auto' };
+  | { kind: 'connect'; url: string; token: string; protocol: ProtocolSetting; transport: 'gateway' | 'auto' };
 
 /** Resolved backend for one send. */
 export type TransportChoice = {
@@ -57,6 +61,7 @@ export class ChatServiceFactory {
   private gatewayService: GatewayChatService | null = null;
   private cachedUrl = '';
   private cachedToken = '';
+  private cachedProtocol: ProtocolSetting = 'auto';
   /** Completes once legacy-token migration has finished: gateway resolution
    *  waits for it so a valid legacy token is never mistaken for a missing one. */
   private migrationDone: Promise<void> | null = null;
@@ -72,7 +77,7 @@ export class ChatServiceFactory {
 
   constructor(
     private readonly context: vscode.ExtensionContext,
-    private readonly onStatus?: (transport: 'gateway' | 'acpx', connected: boolean) => void,
+    private readonly onStatus?: TransportStatusListener,
     private readonly onGatewayInvalidated?: (reason: GatewayInvalidationReason) => void
   ) {
     this.listeners = [
@@ -137,20 +142,20 @@ export class ChatServiceFactory {
     await this.waitForMigration();
     const plan = await this.planTransport();
     if (plan.kind === 'acpx') {
-      this.onStatus?.('acpx', true);
+      this.onStatus?.('acpx', true, null);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
     }
     if (plan.kind === 'offline') {
-      this.onStatus?.('gateway', false);
+      this.onStatus?.('gateway', false, null);
       return { service: this.parkedGateway(plan.url), transport: 'gateway' };
     }
     this.warnIfCleartext(plan.url);
-    const gateway = this.getOrCreateGateway(plan.url, plan.token);
+    const gateway = this.getOrCreateGateway(plan);
     // connect() lifts the client's suspension, even when it then fails.
     this.gatewaySuspended = false;
     try {
       await this.withTimeout(gateway.connect(), CONNECT_TIMEOUT_MS);
-      this.onStatus?.('gateway', true);
+      this.onStatus?.('gateway', true, gateway.getProtocolVersion());
       return { service: gateway, transport: 'gateway' };
     } catch (err) {
       this.warnIfRejected(err, plan.url);
@@ -161,10 +166,10 @@ export class ChatServiceFactory {
         // chats' connections and retire their session sinks on a transient
         // per-send probe failure. It retries via its own reconnect path, so
         // a later thread can still reach the gateway.
-        this.onStatus?.('acpx', true);
+        this.onStatus?.('acpx', true, null);
         return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
       }
-      this.onStatus?.('gateway', false);
+      this.onStatus?.('gateway', false, gateway.getProtocolVersion());
       return { service: gateway, transport: 'gateway' };
     }
   }
@@ -183,7 +188,7 @@ export class ChatServiceFactory {
     try {
       const plan = await this.planTransport();
       if (plan.kind === 'connect') {
-        this.getOrCreateGateway(plan.url, plan.token);
+        this.getOrCreateGateway(plan);
       }
     } catch (err) {
       log.warn(`gateway settings change could not be applied: ${(err as Error).message}`);
@@ -219,12 +224,12 @@ export class ChatServiceFactory {
       }
       return settings.transport === 'gateway' ? { kind: 'offline', url: settings.url } : { kind: 'acpx' };
     }
-    return { kind: 'connect', url: settings.url, token, transport: settings.transport };
+    return { kind: 'connect', url: settings.url, token, protocol: settings.protocolVersion, transport: settings.transport };
   }
 
   private gatewayUnavailable(transport: 'gateway' | 'auto', message: string): TransportPlan {
     if (transport === 'gateway') {
-      this.onStatus?.('gateway', false);
+      this.onStatus?.('gateway', false, null);
       throw new Error(message);
     }
     return { kind: 'acpx' };
@@ -298,24 +303,25 @@ export class ChatServiceFactory {
     this.gatewayService = null;
     this.cachedUrl = '';
     this.cachedToken = '';
+    this.cachedProtocol = 'auto';
   }
 
-  private createGateway(url: string, token: string): GatewayChatService {
-    const gateway = new GatewayChatService({ url, token });
+  private createGateway(url: string, token: string, protocol: ProtocolSetting = 'auto'): GatewayChatService {
+    const gateway = new GatewayChatService({ url, token, protocol });
     gateway.onConnectionStateChange((connected) => {
       // A parked client's socket drop is expected; the badge follows the active transport.
       if (!this.gatewaySuspended) {
-        this.onStatus?.('gateway', connected);
+        this.onStatus?.('gateway', connected, gateway.getProtocolVersion());
       }
     });
     return gateway;
   }
 
-  private getOrCreateGateway(url: string, token: string): GatewayChatService {
+  private getOrCreateGateway({ url, token, protocol }: Extract<TransportPlan, { kind: 'connect' }>): GatewayChatService {
     if (!this.gatewayService) {
-      this.gatewayService = this.createGateway(url, token);
+      this.gatewayService = this.createGateway(url, token, protocol);
       this.gatewaySuspended = false;
-    } else if (this.cachedUrl !== url || this.cachedToken !== token) {
+    } else if (this.cachedUrl !== url || this.cachedToken !== token || this.cachedProtocol !== protocol) {
       // Update credentials in place: threads keep a reference to this
       // instance for lifecycle actions, so dispose-and-recreate would sever
       // in-flight runs on url/token change.
@@ -327,10 +333,11 @@ export class ChatServiceFactory {
       // of being reported as interrupted.
       this.onGatewayInvalidated?.('identity');
       // A suspended client stays parked (no socket, no reconnect) until resolve() calls connect().
-      this.gatewayService.updateConnection(url, token);
+      this.gatewayService.updateConnection(url, token, protocol);
     }
     this.cachedUrl = url;
     this.cachedToken = token;
+    this.cachedProtocol = protocol;
     return this.gatewayService;
   }
 

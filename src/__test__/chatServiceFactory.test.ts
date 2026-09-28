@@ -5,6 +5,7 @@ const mockConnect = jest.fn();
 // spies, and the factory can run before later const initializers.
 const mockUpdateConnection = jest.fn();
 const mockSuspend = jest.fn();
+const mockGetProtocolVersion = jest.fn((): number | null => 4);
 
 jest.mock('../core/gatewayConfig', () => ({
     isValidGatewayUrl: jest.requireActual('../core/gatewayConfig').isValidGatewayUrl,
@@ -22,6 +23,7 @@ jest.mock('../core/gatewayChatService', () => ({
         dispose: jest.fn(),
         updateConnection: mockUpdateConnection,
         suspend: mockSuspend,
+        getProtocolVersion: mockGetProtocolVersion,
         onConnectionStateChange: (listener: (connected: boolean) => void) => {
             mockConnectionListeners.push(listener);
             return () => undefined;
@@ -45,8 +47,8 @@ import { ChatServiceFactory } from '../webview/chatServiceFactory';
 import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken } from '../core/gatewayConfig';
 import { GatewayChatService } from '../core/gatewayChatService';
 import { ChatService } from '../chat/ChatService';
-import { GatewayConnectError } from '../core/gatewayHandshake';
-import type { HandshakeRejection } from '../core/gatewayHandshake';
+import { GatewayConnectError } from '../core/gatewayProtocol/model';
+import type { HandshakeRejection } from '../core/gatewayProtocol/model';
 
 const mockSettings = getGatewaySettings as jest.MockedFunction<typeof GatewayConfig.getGatewaySettings>;
 const mockToken = getGatewayToken as jest.MockedFunction<typeof GatewayConfig.getGatewayToken>;
@@ -83,20 +85,28 @@ async function changeConfiguration(section: string): Promise<void> {
 
 function statusSpy() {
     const calls: Array<[string, boolean]> = [];
-    return { calls, onStatus: (t: string, ok: boolean) => calls.push([t, ok]) };
+    const versions: Array<number | null> = [];
+    return {
+        calls,
+        versions,
+        onStatus: (t: string, ok: boolean, protocolVersion: number | null) => {
+            calls.push([t, ok]);
+            versions.push(protocolVersion);
+        },
+    };
 }
 
 beforeEach(() => {
     jest.clearAllMocks();
     secretListeners = [];
     mockConnectionListeners.length = 0;
-    mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto' });
+    mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
     mockToken.mockResolvedValue('secret-token');
 });
 
 describe('ChatServiceFactory', () => {
     it('uses acpx without probing when transport is forced to acpx', async () => {
-        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'acpx' });
+        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'acpx', protocolVersion: 'auto' });
         const spy = statusSpy();
         const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
 
@@ -110,7 +120,7 @@ describe('ChatServiceFactory', () => {
     });
 
     it('reuses the existing acpx service across sends', async () => {
-        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'acpx' });
+        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'acpx', protocolVersion: 'auto' });
         const factory = new ChatServiceFactory(contextStub());
         const existing = new ChatService();
 
@@ -123,7 +133,7 @@ describe('ChatServiceFactory', () => {
     });
 
     it('keeps a tokenless gateway client (with status false) when transport is forced to gateway', async () => {
-        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'gateway' });
+        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'gateway', protocolVersion: 'auto' });
         mockToken.mockResolvedValue('');
         const spy = statusSpy();
         const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
@@ -131,7 +141,7 @@ describe('ChatServiceFactory', () => {
         const choice = await factory.resolve();
 
         expect(choice.transport).toBe('gateway');
-        expect(GatewayChatService).toHaveBeenCalledWith({ url: 'ws://x', token: '' });
+        expect(GatewayChatService).toHaveBeenCalledWith({ url: 'ws://x', token: '', protocol: 'auto' });
         expect(spy.calls).toContainEqual(['gateway', false]);
     });
 
@@ -172,7 +182,7 @@ describe('ChatServiceFactory', () => {
 
     it('stays on gateway with status false in forced gateway mode when connect times out', async () => {
         mockConnect.mockReturnValue(new Promise(() => { /* hangs -> factory timeout */ }));
-        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'gateway' });
+        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'gateway', protocolVersion: 'auto' });
         const spy = statusSpy();
         const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
 
@@ -197,7 +207,7 @@ describe('ChatServiceFactory', () => {
         // Same instance is kept (threads hold it for lifecycle actions);
         // credentials are refreshed in place instead of dispose-and-recreate.
         expect(GatewayChatService).toHaveBeenCalledTimes(1);
-        expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'rotated-token');
+        expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'rotated-token', 'auto');
     });
 
     describe('gateway URL validation', () => {
@@ -207,9 +217,9 @@ describe('ChatServiceFactory', () => {
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
-            mockSettings.mockReturnValue({ url: 'not a url', transport: 'auto' });
+            mockSettings.mockReturnValue({ url: 'not a url', transport: 'auto', protocolVersion: 'auto' });
             await expect(factory.resolve()).resolves.toMatchObject({ transport: 'acpx' });
-            mockSettings.mockReturnValue({ url: 'not a url', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'not a url', transport: 'gateway', protocolVersion: 'auto' });
             await expect(factory.resolve()).rejects.toThrow('ws:// or wss://');
 
             expect(mockSuspend).toHaveBeenCalledTimes(1);
@@ -217,7 +227,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('falls back to acpx in auto mode when the URL is not ws:// or wss://', async () => {
-            mockSettings.mockReturnValue({ url: '127.0.0.1:18789', transport: 'auto' });
+            mockSettings.mockReturnValue({ url: '127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
 
             const choice = await factory.resolve();
@@ -227,7 +237,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('rejects the send in forced gateway mode when the URL is invalid', async () => {
-            mockSettings.mockReturnValue({ url: 'https://gateway.example', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'https://gateway.example', transport: 'gateway', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
 
             await expect(factory.resolve()).rejects.toThrow('ws:// or wss://');
@@ -235,7 +245,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('warns once when the token would travel over plain ws:// to a remote host', async () => {
-            mockSettings.mockReturnValue({ url: 'ws://gateway.example:18789', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'ws://gateway.example:18789', transport: 'gateway', protocolVersion: 'auto' });
             mockConnect.mockResolvedValue(undefined);
             const factory = new ChatServiceFactory(contextStub());
 
@@ -267,7 +277,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('rejects the send in forced gateway mode when the token cannot be read', async () => {
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway', protocolVersion: 'auto' });
             mockToken.mockRejectedValue(new Error('keyring locked'));
             const factory = new ChatServiceFactory(contextStub());
 
@@ -282,7 +292,7 @@ describe('ChatServiceFactory', () => {
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             await factory.resolve();
             await factory.resolve();
 
@@ -292,7 +302,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('does not invalidate anything when no gateway client was ever created', async () => {
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const onInvalidated = jest.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
 
@@ -327,7 +337,7 @@ describe('ChatServiceFactory', () => {
         it('resolves without the migration when it hangs past the wait limit', async () => {
             jest.useFakeTimers();
             jest.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
 
             const pending = factory.resolve();
@@ -339,7 +349,7 @@ describe('ChatServiceFactory', () => {
         it('does not make every later send wait again for the same hung migration', async () => {
             jest.useFakeTimers();
             jest.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             const first = factory.resolve();
             await jest.advanceTimersByTimeAsync(5000);
@@ -355,7 +365,7 @@ describe('ChatServiceFactory', () => {
 
         it('retries an incomplete migration on the next send', async () => {
             jest.mocked(migrateLegacyGatewayToken).mockResolvedValueOnce('incomplete').mockResolvedValueOnce('completed');
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             await factory.resolve();
             await factory.resolve();
@@ -365,7 +375,7 @@ describe('ChatServiceFactory', () => {
 
         it('retries a migration that failed, and still resolves the send', async () => {
             jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             await expect(factory.resolve()).resolves.toMatchObject({ transport: 'acpx' });
             await factory.resolve();
@@ -417,7 +427,7 @@ describe('ChatServiceFactory', () => {
                 await jest.advanceTimersByTimeAsync(5000);
                 await expect(auto).resolves.toMatchObject({ transport: 'acpx' });
 
-                mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway' });
+                mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway', protocolVersion: 'auto' });
                 const forced = factory.resolve();
                 const failure = expect(forced).rejects.toThrow('SecretStorage');
                 await jest.advanceTimersByTimeAsync(5000);
@@ -436,7 +446,7 @@ describe('ChatServiceFactory', () => {
             const factory = new ChatServiceFactory(contextStub(), spy.onStatus, onInvalidated);
             await factory.resolve();
 
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway', protocolVersion: 'auto' });
             mockToken.mockResolvedValue('');
             const choice = await factory.resolve();
 
@@ -452,9 +462,9 @@ describe('ChatServiceFactory', () => {
             const onInvalidated = jest.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             await factory.resolve();
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
             mockToken.mockResolvedValue('');
             await factory.resolve();
             mockToken.mockResolvedValue('secret-token');
@@ -468,7 +478,7 @@ describe('ChatServiceFactory', () => {
     describe('reconcile on settings changes', () => {
         it('does nothing before a gateway client exists', async () => {
             const factory = new ChatServiceFactory(contextStub());
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             await changeConfiguration('openclaw.gateway.transport');
             await changeSecrets();
             expect(mockSuspend).not.toHaveBeenCalled();
@@ -481,7 +491,7 @@ describe('ChatServiceFactory', () => {
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             await changeConfiguration('openclaw.chat.model');
             expect(mockSuspend).not.toHaveBeenCalled();
             await changeConfiguration('openclaw.gateway.transport');
@@ -498,7 +508,7 @@ describe('ChatServiceFactory', () => {
 
             mockToken.mockResolvedValue('rotated-token');
             await changeSecrets();
-            expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'rotated-token');
+            expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'rotated-token', 'auto');
 
             mockToken.mockResolvedValue('');
             await changeSecrets();
@@ -506,11 +516,38 @@ describe('ChatServiceFactory', () => {
             expect(mockConnect).toHaveBeenCalledTimes(1);
         });
 
+        it('reconnects a live client with the new hello when the protocol version setting changes', async () => {
+            mockConnect.mockResolvedValue(undefined);
+            const onInvalidated = jest.fn();
+            const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
+            await factory.resolve();
+            expect(GatewayChatService).toHaveBeenCalledWith({ url: 'ws://127.0.0.1:18789', token: 'secret-token', protocol: 'auto' });
+
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: '4' });
+            await changeConfiguration('openclaw.gateway.protocolVersion');
+
+            expect(onInvalidated.mock.calls).toEqual([['identity']]);
+            expect(mockUpdateConnection).toHaveBeenCalledWith('ws://127.0.0.1:18789', 'secret-token', '4');
+            expect(GatewayChatService).toHaveBeenCalledTimes(1);
+        });
+
+        it('leaves the client alone when the protocol version setting is unchanged', async () => {
+            mockConnect.mockResolvedValue(undefined);
+            const onInvalidated = jest.fn();
+            const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
+            await factory.resolve();
+
+            await changeConfiguration('openclaw.gateway.protocolVersion');
+
+            expect(onInvalidated).not.toHaveBeenCalled();
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+        });
+
         it('logs instead of throwing when forced gateway mode cannot read the token', async () => {
             mockConnect.mockResolvedValue(undefined);
             const factory = new ChatServiceFactory(contextStub());
             await factory.resolve();
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway', protocolVersion: 'auto' });
             mockToken.mockRejectedValue(new Error('keyring locked'));
 
             await expect(factory.reconcile()).resolves.toBeUndefined();
@@ -544,11 +581,32 @@ describe('ChatServiceFactory', () => {
             announce(true);
             expect(spy.calls).toEqual([['gateway', false], ['gateway', true]]);
 
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx' });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             await factory.resolve();
             spy.calls.length = 0;
             announce(false);
             expect(spy.calls).toEqual([]);
+        });
+    });
+
+    describe('protocol version in the status', () => {
+        it('reports the negotiated version on connect and on later state changes, none for acpx', async () => {
+            mockConnect.mockResolvedValue(undefined);
+            const spy = statusSpy();
+            const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
+
+            await factory.resolve();
+            expect(spy.calls[spy.calls.length - 1]).toEqual(['gateway', true]);
+            expect(spy.versions[spy.versions.length - 1]).toBe(4);
+
+            mockGetProtocolVersion.mockReturnValueOnce(null);
+            mockConnectionListeners[0](false);
+            expect(spy.versions[spy.versions.length - 1]).toBeNull();
+
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
+            await factory.resolve();
+            expect(spy.calls[spy.calls.length - 1]).toEqual(['acpx', true]);
+            expect(spy.versions[spy.versions.length - 1]).toBeNull();
         });
     });
 
@@ -561,7 +619,7 @@ describe('ChatServiceFactory', () => {
         };
 
         it.each(['auto', 'gateway'] as const)('warns once per code and endpoint in %s mode', async (transport) => {
-            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport });
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport, protocolVersion: 'auto' });
             mockConnect.mockRejectedValue(new GatewayConnectError('rejected', tokenMismatch));
             const factory = new ChatServiceFactory(contextStub());
 
@@ -572,7 +630,7 @@ describe('ChatServiceFactory', () => {
                 'OpenClaw: Gateway rejected the token — run "OpenClaw: Connect to Gateway" to update it. (AUTH_TOKEN_MISMATCH)'
             );
 
-            mockSettings.mockReturnValue({ url: 'ws://localhost:18789', transport });
+            mockSettings.mockReturnValue({ url: 'ws://localhost:18789', transport, protocolVersion: 'auto' });
             await factory.resolve();
             expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
         });

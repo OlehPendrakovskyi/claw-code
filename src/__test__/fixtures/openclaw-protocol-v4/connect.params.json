@@ -1,0 +1,278 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ConnectParamsSchema",
+  "type": "object",
+  "required": [
+    "minProtocol",
+    "maxProtocol",
+    "client"
+  ],
+  "properties": {
+    "minProtocol": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxProtocol": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "client": {
+      "type": "object",
+      "required": [
+        "id",
+        "version",
+        "platform",
+        "mode"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "webchat-ui",
+            "openclaw-control-ui",
+            "openclaw-browser-copilot",
+            "openclaw-tui",
+            "webchat",
+            "cli",
+            "gateway-client",
+            "openclaw-macos",
+            "openclaw-linux",
+            "openclaw-ios",
+            "openclaw-watchos",
+            "openclaw-android",
+            "node-host",
+            "openclaw-worker",
+            "test",
+            "fingerprint",
+            "openclaw-probe"
+          ]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "buildId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 96
+        },
+        "platform": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deviceFamily": {
+          "type": "string",
+          "minLength": 1
+        },
+        "modelIdentifier": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timeZone": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "mode": {
+          "enum": [
+            "webchat",
+            "cli",
+            "ui",
+            "backend",
+            "node",
+            "worker",
+            "probe",
+            "test"
+          ]
+        },
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "caps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "computerUse": {},
+    "workerRuns": {
+      "type": "object",
+      "required": [
+        "bundleHash",
+        "openclawVersion",
+        "protocolFeatures"
+      ],
+      "properties": {
+        "bundleHash": {
+          "type": "string",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "openclawVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "protocolFeatures": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "bundlePrewarm": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false,
+      "x-openclaw-since": "2026.7"
+    },
+    "permissions": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {
+          "type": "boolean"
+        }
+      }
+    },
+    "pathEnv": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scopes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "modelCatalog": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sessionKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": [
+            "shortId"
+          ],
+          "properties": {
+            "agentId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "shortId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "slugHint": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "device": {
+      "type": "object",
+      "required": [
+        "id",
+        "publicKey",
+        "signature",
+        "signedAt",
+        "nonce"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "publicKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "signedAt": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "nonce": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "auth": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "bootstrapToken": {
+          "type": "string"
+        },
+        "deviceToken": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "approvalRuntimeToken": {
+          "type": "string"
+        },
+        "agentRuntimeIdentityToken": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "locale": {
+      "type": "string"
+    },
+    "userAgent": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,2009 @@
+{
+  "//": "Frames captured from a real openclaw@2026.9.6 gateway on loopback (dev agent \"dev\", stub OpenAI-compatible model); session snapshots trimmed to their key, local paths redacted.",
+  "connectChallenge": {
+    "type": "event",
+    "event": "connect.challenge",
+    "payload": {
+      "nonce": "3895d967-2424-485f-b3ca-94c44c444afd",
+      "ts": 1790606195482,
+      "capabilities": [
+        "model-catalog-snapshot"
+      ]
+    }
+  },
+  "helloOk": {
+    "type": "res",
+    "id": "p-1",
+    "ok": true,
+    "payload": {
+      "type": "hello-ok",
+      "protocol": 4,
+      "server": {
+        "version": "2026.9.6",
+        "buildId": "2026.9.6-release-eb377ac59e6c-2026-09-23T16-33-12.144Z",
+        "bootId": "eedfe87a-e188-4eea-8af8-07161cfddd27",
+        "controlUiBuildSource": "bundled",
+        "connId": "7f7a6636-f070-4a8c-ab2d-c4cdd4734a76"
+      },
+      "features": {
+        "methods": [
+          "health",
+          "diagnostics.stability",
+          "doctor.memory.status",
+          "doctor.memory.dreamDiary",
+          "doctor.memory.backfillDreamDiary",
+          "doctor.memory.resetDreamDiary",
+          "doctor.memory.resetGroundedShortTerm",
+          "doctor.memory.repairDreamingArtifacts",
+          "doctor.memory.dedupeDreamDiary",
+          "logs.tail",
+          "channels.status",
+          "channels.start",
+          "channels.stop",
+          "channels.logout",
+          "status",
+          "usage.status",
+          "usage.cost",
+          "tts.status",
+          "tts.providers",
+          "tts.personas",
+          "tts.enable",
+          "tts.disable",
+          "tts.convert",
+          "tts.setProvider",
+          "tts.setPersona",
+          "config.get",
+          "config.set",
+          "config.apply",
+          "config.patch",
+          "config.schema",
+          "config.schema.lookup",
+          "exec.approvals.get",
+          "exec.approvals.set",
+          "exec.approvals.node.get",
+          "exec.approvals.node.set",
+          "exec.approval.get",
+          "exec.approval.list",
+          "exec.approval.request",
+          "exec.approval.waitDecision",
+          "exec.approval.resolve",
+          "exec.approval.grants.list",
+          "exec.approval.grants.revoke",
+          "question.request",
+          "question.waitAnswer",
+          "question.resolve",
+          "question.get",
+          "question.list",
+          "plugin.approval.list",
+          "plugin.approval.request",
+          "plugin.approval.waitDecision",
+          "plugin.approval.resolve",
+          "plugins.uiDescriptors",
+          "plugins.sessionAction",
+          "openclaw.chat",
+          "openclaw.chat.history",
+          "openclaw.changes.list",
+          "openclaw.approval.list",
+          "openclaw.setup.detect",
+          "openclaw.setup.activate",
+          "openclaw.setup.activate.start",
+          "openclaw.setup.auth.start",
+          "openclaw.setup.prepare.start",
+          "wizard.start",
+          "wizard.next",
+          "wizard.cancel",
+          "wizard.status",
+          "talk.catalog",
+          "talk.config",
+          "talk.client.create",
+          "talk.client.transcript",
+          "talk.client.close",
+          "talk.client.toolCall",
+          "talk.client.steer",
+          "talk.session.create",
+          "talk.session.appendAudio",
+          "talk.session.cancelOutput",
+          "talk.session.acknowledgeMark",
+          "talk.session.submitToolResult",
+          "talk.session.steer",
+          "talk.session.close",
+          "talk.speak",
+          "talk.mode",
+          "commands.list",
+          "models.list",
+          "models.authStatus",
+          "models.authLogout",
+          "tools.catalog",
+          "tools.effective",
+          "tools.invoke",
+          "mcp.app.view",
+          "mcp.app.listTools",
+          "mcp.app.listResources",
+          "mcp.app.listResourceTemplates",
+          "mcp.app.readResource",
+          "mcp.app.callTool",
+          "mcp.app.updateModelContext",
+          "board.get",
+          "board.update",
+          "board.widget.put",
+          "board.widget.grant",
+          "board.widget.appView",
+          "board.event",
+          "audit.list",
+          "audit.activity.list",
+          "users.list",
+          "users.self",
+          "users.linkEmail",
+          "users.setDisplayName",
+          "users.setAvatar",
+          "users.setRole",
+          "users.listAuthLinks",
+          "users.listModelAccounts",
+          "users.selectModelAccount",
+          "users.linkAuthProfile",
+          "users.unlinkAuthProfile",
+          "users.authConnect.start",
+          "users.authConnect.answer",
+          "users.authConnect.status",
+          "users.authConnect.cancel",
+          "users.authConnect.catalog",
+          "tasks.list",
+          "tasks.get",
+          "tasks.cancel",
+          "taskSuggestions.list",
+          "taskSuggestions.create",
+          "taskSuggestions.accept",
+          "taskSuggestions.dismiss",
+          "environments.list",
+          "environments.status",
+          "worktrees.list",
+          "worktrees.branches",
+          "fs.listDir",
+          "worktrees.create",
+          "worktrees.remove",
+          "worktrees.restore",
+          "worktrees.gc",
+          "agents.list",
+          "agents.create",
+          "agents.update",
+          "agents.delete",
+          "agents.files.list",
+          "agents.files.get",
+          "agents.files.set",
+          "sessions.files.list",
+          "sessions.files.get",
+          "sessions.files.set",
+          "sessions.files.reveal",
+          "artifacts.list",
+          "artifacts.get",
+          "artifacts.download",
+          "skills.status",
+          "skills.library.list",
+          "skills.library.read",
+          "skills.library.save",
+          "skills.library.mutate",
+          "skills.library.activate",
+          "skills.library.import",
+          "skills.library.upload",
+          "skills.search",
+          "skills.detail",
+          "skills.securityVerdicts",
+          "skills.skillCard",
+          "skills.bins",
+          "skills.upload.begin",
+          "skills.upload.chunk",
+          "skills.upload.commit",
+          "skills.install",
+          "skills.update",
+          "skills.curator.status",
+          "skills.curator.pin",
+          "skills.curator.unpin",
+          "skills.curator.restore",
+          "skills.proposals.list",
+          "skills.proposals.inspect",
+          "skills.proposals.historyStatus",
+          "skills.proposals.historyScan",
+          "skills.proposals.create",
+          "skills.proposals.update",
+          "skills.proposals.revise",
+          "skills.proposals.requestRevision",
+          "skills.proposals.apply",
+          "skills.proposals.reject",
+          "skills.proposals.quarantine",
+          "update.status",
+          "update.run",
+          "voicewake.get",
+          "voicewake.set",
+          "secrets.reload",
+          "secrets.resolve",
+          "voicewake.routing.get",
+          "sessions.list",
+          "sessions.subscribe",
+          "sessions.messages.subscribe",
+          "sessions.messages.unsubscribe",
+          "sessions.viewers.set",
+          "sessions.preview",
+          "sessions.describe",
+          "sessions.branches.list",
+          "sessions.branches.switch",
+          "sessions.rewind",
+          "sessions.fork",
+          "sessions.create",
+          "sessions.recover",
+          "sessions.send",
+          "sessions.abort",
+          "sessions.patch",
+          "sessions.goal.update",
+          "sessions.goal.clear",
+          "sessions.pluginPatch",
+          "sessions.cleanup",
+          "sessions.reset",
+          "sessions.delete",
+          "sessions.compact",
+          "sessions.groups.list",
+          "sessions.groups.defaults",
+          "sessions.groups.put",
+          "sessions.groups.rename",
+          "sessions.groups.update",
+          "sessions.groups.delete",
+          "last-heartbeat",
+          "set-heartbeats",
+          "wake",
+          "node.pair.list",
+          "node.pair.approve",
+          "node.pair.reject",
+          "node.pair.remove",
+          "device.pair.list",
+          "device.pair.approve",
+          "device.pair.reject",
+          "device.pair.remove",
+          "device.pair.rename",
+          "device.token.rotate",
+          "device.token.revoke",
+          "node.rename",
+          "node.list",
+          "node.describe",
+          "node.pluginSurface.refresh",
+          "node.pluginTools.update",
+          "node.skills.update",
+          "node.pending.drain",
+          "node.pending.enqueue",
+          "node.invoke",
+          "node.pending.pull",
+          "node.pending.ack",
+          "node.invoke.progress",
+          "node.invoke.result",
+          "node.event",
+          "cron.get",
+          "cron.list",
+          "cron.status",
+          "cron.scratch.get",
+          "cron.scratch.set",
+          "cron.add",
+          "cron.update",
+          "cron.remove",
+          "cron.run",
+          "cron.runs",
+          "gateway.identity.get",
+          "gateway.restart.preflight",
+          "gateway.restart.request",
+          "system-presence",
+          "system-event",
+          "message.action",
+          "conversations.send",
+          "conversations.turn",
+          "conversations.turn.cancel",
+          "send",
+          "agent",
+          "agent.identity.get",
+          "agent.wait",
+          "chat.history",
+          "chat.startup",
+          "chat.metadata",
+          "chat.message.get",
+          "chat.abort",
+          "chat.send",
+          "terminal.open",
+          "terminal.input",
+          "terminal.resize",
+          "terminal.close",
+          "channels.pairing.list",
+          "channels.pairing.approve",
+          "channels.pairing.dismiss",
+          "attach.grant",
+          "attach.revoke",
+          "push.web.preferences.get",
+          "push.web.preferences.set",
+          "terminal.attach",
+          "terminal.list",
+          "controlUi.githubPreview",
+          "system.info",
+          "agents.workspace.list",
+          "agents.workspace.get",
+          "tts.speak",
+          "plugins.list",
+          "plugins.search",
+          "plugins.install",
+          "plugins.setEnabled",
+          "plugins.uninstall",
+          "plugins.refresh",
+          "controlUi.sessionPullRequests.subscribe",
+          "controlUi.sessionPreview",
+          "gateway.suspend.prepare",
+          "gateway.suspend.status",
+          "gateway.suspend.resume",
+          "chat.toolTitles",
+          "sessions.diff",
+          "openclaw.setup.verify",
+          "environments.create",
+          "environments.destroy",
+          "sessions.catalog.list",
+          "sessions.catalog.read",
+          "terminal.upload",
+          "sessions.catalog.continue",
+          "sessions.catalog.archive",
+          "approval.get",
+          "approval.resolve",
+          "sessions.search",
+          "sessions.dispatch",
+          "sessions.reclaim",
+          "models.probe",
+          "migrations.memory.plan",
+          "migrations.memory.apply",
+          "ui.command",
+          "approval.history",
+          "plugin.surface.refresh",
+          "conversations.list",
+          "session.discussion.info",
+          "session.discussion.open",
+          "board.prompt.authorize",
+          "board.data.read",
+          "board.action",
+          "sessions.observer.visibility",
+          "session.visibility.set",
+          "session.members.list",
+          "session.members.add",
+          "session.members.remove",
+          "session.suggestions.add",
+          "session.suggestions.list",
+          "session.suggestions.resolve",
+          "session.typing",
+          "sessions.companion.ask",
+          "sessions.companion.state",
+          "sessions.companion.reset",
+          "memory.search",
+          "skills.proposals.events.list",
+          "skills.proposals.evaluate",
+          "hooks.status",
+          "tasks.retry",
+          "tasks.dismiss",
+          "audit.run.inspect",
+          "sessions.patchMany",
+          "update.hold",
+          "sessions.catalog.startTerminal",
+          "worker.desktop.observe",
+          "projects.list",
+          "projects.register",
+          "projects.remove",
+          "worker.desktop.launch",
+          "secrets.store.list",
+          "secrets.store.set",
+          "secrets.store.delete",
+          "users.prefs.get",
+          "users.prefs.set",
+          "projects.add",
+          "projects.searchRemote",
+          "desktop.observe",
+          "desktop.launch",
+          "device.scopes.requestUpgrade",
+          "device.scopes.waitUpgrade",
+          "portal.list",
+          "portal.open",
+          "portal.close",
+          "sessions.move",
+          "sessions.assignOwner",
+          "progressCard.get",
+          "progressCard.put",
+          "tools.github.status",
+          "tools.github.configure",
+          "tools.github.authorize.start",
+          "tools.github.authorize.poll",
+          "tools.github.authorize.cancel",
+          "sessions.github.publish",
+          "diagnostics.lanes",
+          "session.members.listEvidence",
+          "plugins.inspect",
+          "users.github.status",
+          "users.github.authorize.start",
+          "users.github.authorize.poll",
+          "users.github.authorize.cancel",
+          "users.github.disconnect",
+          "sessions.github.options",
+          "sessions.github.status",
+          "sessions.github.confirm",
+          "sessions.title.prepare",
+          "users.mentionable",
+          "mentions.list",
+          "mentions.dismiss",
+          "transcripts.list",
+          "transcripts.get",
+          "models.authOrderSet",
+          "canvas.document.view",
+          "plugins.controlUi.list",
+          "plugins.controlUi.reload",
+          "plugins.controlUi.report",
+          "plugins.controlUi.status",
+          "update.runs.get",
+          "update.runs.list",
+          "gateway.suspend.handoff",
+          "transcripts.export",
+          "transcripts.status",
+          "update.report",
+          "skills.workshop.read",
+          "session.publicShare.set",
+          "claws.monitors",
+          "plugins.catalog.browse",
+          "plugins.catalog.categories",
+          "plugins.catalog.get",
+          "tasks.history",
+          "environments.prepare",
+          "models.authRefresh",
+          "models.authLogin",
+          "models.authSetApiKey",
+          "sessions.storage.status",
+          "sessions.storage.run",
+          "plugins.reload",
+          "claws.packages.remove",
+          "canvas.document.preview",
+          "computer.status",
+          "computer.invoke",
+          "sessions.activitySummary.ensure",
+          "controlUi.sessionPullRequests.checks",
+          "diagnostics.cpuProfile",
+          "talk.voice.get",
+          "talk.voice.set",
+          "talk.voice.complete",
+          "plugins.credentials.inspect",
+          "plugins.skills.read",
+          "diagnostics.heapProfile",
+          "desktop.release",
+          "environments.session.status",
+          "environments.session.create",
+          "environments.session.destroy",
+          "environments.session.exec",
+          "sessions.setInvolvement",
+          "transcripts.summarize",
+          "controlUi.linkPreview",
+          "themes.list",
+          "themes.get",
+          "themes.set",
+          "themes.import",
+          "controlUi.githubDetail",
+          "progressCard.refresh",
+          "webSearch.status",
+          "webSearch.test",
+          "sessions.providerReview.continue",
+          "users.linkChannelIdentity",
+          "users.unlinkChannelIdentity",
+          "users.listChannelIdentities",
+          "browser.request",
+          "github.preview",
+          "github.detail",
+          "github.image",
+          "memory.sessionBackfill.preview",
+          "memory.sessionBackfill.apply",
+          "memory.sessionBackfill.rollback"
+        ],
+        "events": [
+          "connect.challenge",
+          "agent",
+          "chat",
+          "chat.metadata.changed",
+          "models.snapshot",
+          "ui.command",
+          "session.approval",
+          "session.message",
+          "session.observer",
+          "session.operation",
+          "session.sharing",
+          "session.sharing.evidence",
+          "session.suggestion",
+          "session.typing",
+          "session.tool",
+          "sessions.changed",
+          "controlUi.sessionPullRequests.changed",
+          "plugins.controlUi.changed",
+          "presence",
+          "tick",
+          "talk.mode",
+          "talk.event",
+          "talk.voice.change",
+          "shutdown",
+          "gateway.suspension",
+          "health",
+          "heartbeat",
+          "cron",
+          "task",
+          "task.suggestion",
+          "node.pair.requested",
+          "node.pair.resolved",
+          "node.presence",
+          "node.hostStats",
+          "node.runnerInventory.changed",
+          "node.invoke.cancel",
+          "node.invoke.input",
+          "node.invoke.request",
+          "device.pair.changed",
+          "device.pair.requested",
+          "device.pair.resolved",
+          "device.pair.setup.completed",
+          "device.pair.setup.deliveryUncertain",
+          "users.prefs.changed",
+          "skills.changed",
+          "plugins.changed",
+          "plugins.install.progress",
+          "voicewake.changed",
+          "voicewake.routing.changed",
+          "exec.approval.requested",
+          "exec.approval.resolved",
+          "question.requested",
+          "question.resolved",
+          "plugin.approval.requested",
+          "plugin.approval.resolved",
+          "openclaw.approval.requested",
+          "openclaw.approval.resolved",
+          "terminal.data",
+          "terminal.exit",
+          "update.available",
+          "update.run.changed",
+          "portal.changed",
+          "progressCard.changed",
+          "mentions.changed"
+        ],
+        "capabilities": [
+          "board-widget-put-canvas-doc",
+          "chat-send-routing-contract",
+          "gateway-restart-target-safe-v1",
+          "model-catalog-snapshot",
+          "node-worker-bundle-retention-v1",
+          "node-worker-bundle-status-v1",
+          "node-worker-captured-exec-policy",
+          "node-worker-environment-session-v1",
+          "node-worker-portal-stream-v1",
+          "profile-binding-v1",
+          "published-model-catalog",
+          "progress-card-agent-scope-v1",
+          "session-scoped-chat-metadata",
+          "session-scoped-model-catalog",
+          "session-unread-ack-contract",
+          "session-goal-start-v1",
+          "session-settings-contract",
+          "session-settings-cas-v1",
+          "openclaw-chat-wizard-cancel",
+          "openclaw-setup-model-ref",
+          "taskSuggestions.acceptModes"
+        ]
+      },
+      "snapshot": {
+        "suspension": {
+          "phase": "accepting"
+        },
+        "presence": [
+          {
+            "host": "OlehPen",
+            "ip": "192.168.30.61",
+            "version": "2026.9.6",
+            "platform": "linux 6.18.33.2-microsoft-standard-WSL2",
+            "deviceFamily": "Linux",
+            "mode": "gateway",
+            "reason": "self",
+            "instanceId": "115e4396-b9e6-4115-8b08-54d9cda7236f",
+            "text": "Gateway: OlehPen (192.168.30.61) · app 2026.9.6 · mode gateway · reason self",
+            "ts": 1790606195487
+          }
+        ],
+        "health": {
+          "ok": true,
+          "ts": 1790606176576,
+          "durationMs": 25,
+          "plugins": {
+            "loaded": [
+              "anthropic",
+              "browser",
+              "canvas",
+              "cua-computer",
+              "device-pair",
+              "file-transfer",
+              "geolocation",
+              "github",
+              "linux-node",
+              "memory-core",
+              "ollama",
+              "openai",
+              "talk-voice",
+              "xai"
+            ],
+            "errors": [],
+            "unavailable": []
+          },
+          "configReload": {
+            "hotReloadStatus": "active"
+          },
+          "channels": {},
+          "channelOrder": [],
+          "channelLabels": {},
+          "heartbeatSeconds": 1800,
+          "defaultAgentId": "dev",
+          "agents": [
+            {
+              "agentId": "dev",
+              "isDefault": true,
+              "heartbeat": {
+                "enabled": true,
+                "every": "30m",
+                "everyMs": 1800000,
+                "prompt": "Follow the heartbeat monitor scratch context when provided. Recurring tasks are automations; create or change their schedules with the automations tool, not heartbeat scratch. Do not infer or repeat old tasks from prior chats. If nothing needs attention, reply NO_REPLY.",
+                "target": "owner",
+                "ackMaxChars": 300
+              },
+              "sessions": {
+                "path": "(redacted path)",
+                "count": 1,
+                "recent": [
+                  {
+                    "key": "agent:dev:main",
+                    "updatedAt": 1790605217778,
+                    "age": 958774
+                  }
+                ]
+              }
+            }
+          ],
+          "sessions": {
+            "path": "(redacted path)",
+            "count": 1,
+            "recent": [
+              {
+                "key": "agent:dev:main",
+                "updatedAt": 1790605217778,
+                "age": 958774
+              }
+            ]
+          },
+          "eventLoop": {
+            "degraded": false,
+            "degradedSinceMs": null,
+            "reasons": [],
+            "intervalMs": 1011.7630499999977,
+            "delayP99Ms": 20.9,
+            "delayMaxMs": 20.9,
+            "utilization": 0.009,
+            "cpuCoreRatio": 0.011,
+            "cpuBreakdown": {
+              "mainThreadCoreRatio": 0.011,
+              "hostUtilization": 0.014,
+              "hostCpuCount": 16,
+              "workerCoreRatio": 0.001,
+              "otherThreadsCoreRatio": 0
+            }
+          }
+        },
+        "stateVersion": {
+          "presence": 1,
+          "health": 3
+        },
+        "uptimeMs": 39278,
+        "appliedConfigHash": "hmac-sha256:v1:tbsZanGJ12TcXrSD0zBfqw4KO1A4qdG5tpfoBh0WU-w",
+        "sessionDefaults": {
+          "defaultAgentId": "dev",
+          "modelConfigured": true,
+          "ownership": "sole",
+          "selectionRequired": false,
+          "mainKey": "main",
+          "mainSessionKey": "agent:dev:main",
+          "scope": "per-sender"
+        },
+        "updateSchedule": {
+          "channel": "stable",
+          "autoEnabled": false
+        }
+      },
+      "controlUiWidgetKinds": [
+        {
+          "pluginId": "session",
+          "kind": "session:report",
+          "label": "Report"
+        },
+        {
+          "pluginId": "session",
+          "kind": "session:progress",
+          "label": "Session progress"
+        },
+        {
+          "pluginId": "session",
+          "kind": "session:website",
+          "label": "Website"
+        }
+      ],
+      "controlUiLinkReaders": [
+        {
+          "pluginId": "github",
+          "id": "github",
+          "label": "GitHub",
+          "icon": "github",
+          "linkReader": {
+            "hosts": [
+              "github.com"
+            ],
+            "pathPattern": "^/[^/]+/[^/]+/(?:issues/[1-9][0-9]{0,9}|pull/[1-9][0-9]{0,9}(?:/files)?)/?$",
+            "detailMethod": "github.detail",
+            "previewMethod": "github.preview",
+            "imageMethod": "github.image"
+          }
+        },
+        {
+          "pluginId": "github",
+          "id": "github-commit",
+          "label": "GitHub",
+          "icon": "github",
+          "linkReader": {
+            "hosts": [
+              "github.com"
+            ],
+            "pathPattern": "^/[^/]+/[^/]+/commit/[a-fA-F0-9]{7,40}/?$",
+            "detailMethod": "github.detail",
+            "imageMethod": "github.image"
+          }
+        }
+      ],
+      "pluginSurfaceUrls": {
+        "canvas": "http://127.0.0.1:18799/__openclaw__/cap/KWyu6A_KGBEAEMb5HYfNqZD9"
+      },
+      "auth": {
+        "method": "token",
+        "role": "operator",
+        "scopes": [
+          "operator.read",
+          "operator.write"
+        ],
+        "recoveryScope": "3iwWskTxN6FA85dyC98nNYCdsesULhIuWOM0vCRtJ7U"
+      },
+      "policy": {
+        "maxPayload": 26214400,
+        "maxBufferedBytes": 52428800,
+        "tickIntervalMs": 30000,
+        "attachments": {
+          "maxBytes": 19464192,
+          "maxImageBytes": 6291456
+        },
+        "allowedSessionVisibilities": [
+          "shared",
+          "read-only",
+          "suggest",
+          "draft"
+        ],
+        "hasMultipleSessionSharingIdentities": false
+      }
+    }
+  },
+  "subscribeResult": {
+    "type": "res",
+    "id": "p-2",
+    "ok": true,
+    "payload": {
+      "subscribed": true,
+      "key": "agent:dev:main"
+    }
+  },
+  "sessionsListResult": {
+    "type": "res",
+    "id": "p-3",
+    "ok": true,
+    "payload": {
+      "ts": 1790606195498,
+      "path": "(redacted path)",
+      "count": 1,
+      "totalCount": 1,
+      "limitApplied": 100,
+      "nextOffset": null,
+      "hasMore": false,
+      "owners": [],
+      "defaults": {
+        "modelProvider": "stub",
+        "model": "echo",
+        "contextTokens": 32000,
+        "agentRuntime": {
+          "id": "auto",
+          "cloudPlacementSupported": false,
+          "devicePlacementSupported": false,
+          "source": "implicit"
+        },
+        "thinkingLevels": [
+          {
+            "id": "off",
+            "label": "off"
+          }
+        ],
+        "thinkingOptions": [
+          "off"
+        ],
+        "thinkingDefault": "off",
+        "modelSelectionTarget": "session"
+      },
+      "sessions": [
+        {
+          "key": "agent:dev:main",
+          "visibility": "shared",
+          "permissionModePending": false,
+          "createdVia": "operator",
+          "participantCount": 1,
+          "createdAt": 1790605210378,
+          "kind": "direct",
+          "classification": "main",
+          "agentId": "dev",
+          "isMain": true,
+          "isBackground": false,
+          "displayName": "Hello from probe",
+          "chatType": "direct",
+          "updatedAt": 1790606184129,
+          "archived": false,
+          "pinned": false,
+          "unread": true,
+          "lastInteractionAt": 1790606183414,
+          "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+          "systemSent": true,
+          "abortedLastRun": true,
+          "thinkingLevels": [
+            {
+              "id": "off",
+              "label": "off"
+            }
+          ],
+          "thinkingOptions": [
+            "off"
+          ],
+          "thinkingDefault": "off",
+          "effectiveFastMode": false,
+          "effectiveFastModeSource": "default",
+          "fastAutoOnSeconds": 60,
+          "inputTokens": 11,
+          "outputTokens": 5,
+          "totalTokens": 11,
+          "totalTokensFresh": true,
+          "estimatedCostUsd": 0,
+          "status": "killed",
+          "startedAt": 1790606183573,
+          "endedAt": 1790606184127,
+          "runtimeMs": 554,
+          "lastRunId": "048a867f-e26d-42b4-8c54-0448be5923b9",
+          "hasAutomation": true,
+          "effectiveResponseUsage": "off",
+          "effectiveQueueMode": "steer",
+          "modelProvider": "stub",
+          "model": "echo",
+          "modelOverrideSource": null,
+          "runtimeSelectionLocked": false,
+          "agentRuntime": {
+            "id": "openclaw",
+            "cloudPlacementSupported": true,
+            "cloudPlacementExecutionMode": "worker-turn",
+            "devicePlacement": {
+              "requiredNodeCommands": [],
+              "consumesWorkerSlot": true
+            },
+            "devicePlacementSupported": true,
+            "source": "implicit"
+          },
+          "contextTokens": 32000,
+          "contextBudgetStatus": {
+            "schemaVersion": 1,
+            "source": "pre-prompt-estimate",
+            "updatedAt": 1790606180904,
+            "provider": "stub",
+            "model": "echo",
+            "route": "fits",
+            "shouldCompact": false,
+            "estimatedPromptTokens": 14894,
+            "contextTokenBudget": 32000,
+            "promptBudgetBeforeReserve": 24000,
+            "reserveTokens": 8000,
+            "effectiveReserveTokens": 8000,
+            "remainingPromptBudgetTokens": 9106,
+            "overflowTokens": 0,
+            "toolResultReducibleChars": 0,
+            "messageCount": 4,
+            "unwindowedMessageCount": 4,
+            "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7"
+          },
+          "snapshotAt": 1790606195498,
+          "placement": {
+            "state": "local",
+            "generation": 0,
+            "createdAtMs": 1790605217284,
+            "updatedAtMs": 1790606184121,
+            "stateChangedAtMs": 1790605217284
+          },
+          "hasActiveRun": false,
+          "activeRunIds": [],
+          "sharingRole": "owner"
+        }
+      ]
+    }
+  },
+  "historyTailResult": {
+    "type": "res",
+    "id": "p-4",
+    "ok": true,
+    "payload": {
+      "sessionKey": "main",
+      "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+      "messages": [
+        {
+          "role": "user",
+          "content": "hello from probe",
+          "timestamp": 1790605210077,
+          "idempotencyKey": "probe-run-1:user",
+          "__openclaw": {
+            "transport": {
+              "clients": [
+                {
+                  "id": "gateway-client",
+                  "mode": "backend",
+                  "displayName": "Claw Code"
+                }
+              ]
+            },
+            "id": "e5f1f654-4655-43f2-9051-1a26d778efcc",
+            "idempotencyKey": "probe-run-1:user",
+            "recordTimestampMs": 1790605217123,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 1
+            },
+            "seq": 1
+          }
+        },
+        {
+          "role": "custom",
+          "customType": "run-failed-before-reply",
+          "content": "This turn ended before a reply: No route-compatible authentication source is configured for openai.",
+          "display": true,
+          "timestamp": 1790605217797,
+          "__openclaw": {
+            "id": "9b631b3e-1997-4d5f-8233-454d7870e675",
+            "recordTimestampMs": 1790605217797,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 2
+            },
+            "seq": 2,
+            "runId": "probe-run-1"
+          }
+        },
+        {
+          "role": "user",
+          "content": "first question",
+          "timestamp": 1790606176633,
+          "idempotencyKey": "e996dbb7-c4f0-4533-974c-e4651031465a:user",
+          "__openclaw": {
+            "transport": {
+              "clients": [
+                {
+                  "id": "gateway-client",
+                  "mode": "backend",
+                  "displayName": "Claw Code"
+                }
+              ]
+            },
+            "id": "0f45db1f-282c-429f-be5c-f45ed41fbb36",
+            "idempotencyKey": "e996dbb7-c4f0-4533-974c-e4651031465a:user",
+            "recordTimestampMs": 1790606178267,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 3
+            },
+            "seq": 3
+          }
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Echo:  Active Subagents\\nnone\""
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "stub",
+          "model": "echo",
+          "usage": {
+            "input": 11,
+            "output": 5,
+            "totalTokens": 16,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1790606179556,
+          "responseId": "c1",
+          "__openclaw": {
+            "runId": "e996dbb7-c4f0-4533-974c-e4651031465a",
+            "id": "02e0dbca-f358-41ce-a7f1-40ac5bfe157c",
+            "recordTimestampMs": 1790606180512,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 6
+            },
+            "seq": 4
+          }
+        },
+        {
+          "role": "user",
+          "content": "second question",
+          "timestamp": 1790606180723,
+          "idempotencyKey": "a5d58120-85b9-4814-8502-54d79086e8f1:user",
+          "__openclaw": {
+            "transport": {
+              "clients": [
+                {
+                  "id": "gateway-client",
+                  "mode": "backend",
+                  "displayName": "Claw Code"
+                }
+              ]
+            },
+            "id": "fc025199-cff5-4f92-827a-079705f2fdef",
+            "idempotencyKey": "a5d58120-85b9-4814-8502-54d79086e8f1:user",
+            "recordTimestampMs": 1790606180790,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 7
+            },
+            "seq": 5
+          }
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Echo:  Active Subagents\\nnone\""
+            }
+          ],
+          "api": "openai-completions",
+          "provider": "stub",
+          "model": "echo",
+          "usage": {
+            "input": 11,
+            "output": 5,
+            "totalTokens": 16,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "stopReason": "stop",
+          "timestamp": 1790606180925,
+          "responseId": "c1",
+          "__openclaw": {
+            "runId": "a5d58120-85b9-4814-8502-54d79086e8f1",
+            "id": "b6a64b62-3bc5-4d2c-a5a9-159fb9618b2e",
+            "recordTimestampMs": 1790606181842,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 8
+            },
+            "seq": 6
+          }
+        },
+        {
+          "role": "user",
+          "content": "third, to be aborted",
+          "timestamp": 1790606183380,
+          "idempotencyKey": "048a867f-e26d-42b4-8c54-0448be5923b9:user",
+          "__openclaw": {
+            "transport": {
+              "clients": [
+                {
+                  "id": "gateway-client",
+                  "mode": "backend",
+                  "displayName": "Claw Code"
+                }
+              ]
+            },
+            "id": "31132e70-9cd0-4313-9d7c-928530556e87",
+            "idempotencyKey": "048a867f-e26d-42b4-8c54-0448be5923b9:user",
+            "recordTimestampMs": 1790606183446,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 9
+            },
+            "seq": 7
+          }
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "Echo:  Activ"
+            }
+          ],
+          "timestamp": 1790606184096,
+          "stopReason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "totalTokens": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "api": "openai-responses",
+          "provider": "openclaw",
+          "model": "gateway-injected",
+          "idempotencyKey": "048a867f-e26d-42b4-8c54-0448be5923b9:assistant",
+          "openclawAbort": {
+            "aborted": true,
+            "origin": "rpc",
+            "runId": "048a867f-e26d-42b4-8c54-0448be5923b9"
+          },
+          "__openclaw": {
+            "runId": "048a867f-e26d-42b4-8c54-0448be5923b9",
+            "id": "d9aaf291-6544-4ccd-8545-209e323806c2",
+            "idempotencyKey": "048a867f-e26d-42b4-8c54-0448be5923b9:assistant",
+            "recordTimestampMs": 1790606184096,
+            "transcriptPosition": {
+              "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+              "rawSeq": 10
+            },
+            "seq": 8
+          }
+        }
+      ],
+      "deltaCursor": "eyJhZ2VudElkIjoiZGV2IiwiZ2VuZXJhdGlvbiI6Ijc5ODQ0MDg2YTU1ODRkMTI5MGFiNjQyMGU3YTJmNDAzIiwibGFzdFNlcSI6MTAsInNlc3Npb25JZCI6IjQxZmQyZGMwLTkzZTgtNDk0Yy1hOWI2LWFiZDk3N2NjYjBkNyIsInZlcnNpb24iOjF9",
+      "hasMore": false,
+      "sessionInfo": {
+        "key": "agent:dev:main",
+        "hasActiveRun": false,
+        "activeRunIds": []
+      }
+    }
+  },
+  "historyDeltaResult": {
+    "type": "res",
+    "id": "p-6",
+    "ok": true,
+    "payload": {
+      "kind": "delta",
+      "messages": [
+        {
+          "sessionKey": "agent:dev:main",
+          "agentId": "dev",
+          "message": {
+            "role": "user",
+            "content": "hello from probe",
+            "timestamp": 1790606195522,
+            "idempotencyKey": "probe-run-2:user",
+            "__openclaw": {
+              "transport": {
+                "clients": [
+                  {
+                    "id": "gateway-client",
+                    "mode": "backend",
+                    "displayName": "Claw Code"
+                  }
+                ]
+              },
+              "id": "b0c076ad-891e-40b0-bfcc-e3465bca48ac",
+              "idempotencyKey": "probe-run-2:user",
+              "recordTimestampMs": 1790606195601,
+              "transcriptPosition": {
+                "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+                "rawSeq": 11
+              },
+              "seq": 9
+            }
+          },
+          "messageId": "b0c076ad-891e-40b0-bfcc-e3465bca48ac",
+          "messageSeq": 9,
+          "session": {
+            "key": "agent:dev:main"
+          },
+          "updatedAt": 1790606196745,
+          "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+          "createdActor": null,
+          "owner": null,
+          "participants": [
+            {
+              "identity": {
+                "type": "observation",
+                "pluginId": null,
+                "accountId": null,
+                "senderKind": "unknown",
+                "id": "gateway-client"
+              }
+            }
+          ],
+          "participantCount": 1,
+          "kind": "direct",
+          "visibility": "shared",
+          "chatType": "direct",
+          "archived": false,
+          "archivedAt": null,
+          "archivedBy": null,
+          "archiveReason": null,
+          "pinned": false,
+          "pinnedAt": null,
+          "unread": true,
+          "markedUnreadAt": null,
+          "agentStatus": null,
+          "observerDigest": null,
+          "activitySummary": {
+            "state": "unavailable",
+            "canEnsure": true
+          },
+          "controlOwnerSessionKey": null,
+          "swarm": null,
+          "permissionMode": null,
+          "permissionModePending": false,
+          "createdVia": "operator",
+          "createdAt": 1790605210378,
+          "label": null,
+          "autoLabel": null,
+          "icon": null,
+          "color": null,
+          "channelAvatarUrl": null,
+          "category": null,
+          "boardPresentation": null,
+          "displayName": "Hello from probe",
+          "thinkingLevel": null,
+          "effectiveFastMode": false,
+          "effectiveFastModeSource": "default",
+          "fastAutoOnSeconds": 60,
+          "toolOverrides": null,
+          "systemSent": true,
+          "abortedLastRun": false,
+          "restartRecoveryStatus": null,
+          "inputTokens": 11,
+          "outputTokens": 5,
+          "totalTokens": 11,
+          "totalTokensFresh": true,
+          "goal": null,
+          "contextTokens": 32000,
+          "contextBudgetStatus": {
+            "schemaVersion": 1,
+            "source": "pre-prompt-estimate",
+            "updatedAt": 1790606195754,
+            "provider": "stub",
+            "model": "echo",
+            "route": "fits",
+            "shouldCompact": false,
+            "estimatedPromptTokens": 14984,
+            "contextTokenBudget": 32000,
+            "promptBudgetBeforeReserve": 24000,
+            "reserveTokens": 8000,
+            "effectiveReserveTokens": 8000,
+            "remainingPromptBudgetTokens": 9016,
+            "overflowTokens": 0,
+            "toolResultReducibleChars": 0,
+            "messageCount": 7,
+            "unwindowedMessageCount": 7,
+            "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7"
+          },
+          "estimatedCostUsd": 0,
+          "effectiveResponseUsage": "off",
+          "modelProvider": "stub",
+          "model": "echo",
+          "activeModelProvider": null,
+          "activeModel": null,
+          "modelOverrideSource": null,
+          "agentRuntime": {
+            "id": "openclaw",
+            "cloudPlacementSupported": true,
+            "cloudPlacementExecutionMode": "worker-turn",
+            "devicePlacement": {
+              "requiredNodeCommands": [],
+              "consumesWorkerSlot": true
+            },
+            "devicePlacementSupported": true,
+            "source": "implicit"
+          },
+          "runtimeSelectionLocked": false,
+          "status": "done",
+          "lastRunError": null,
+          "providerReview": null,
+          "lastRunId": "probe-run-2",
+          "hasAutomation": true,
+          "hasActiveRun": false,
+          "activeRunIds": [],
+          "startedAt": 1790606195762,
+          "endedAt": 1790606196720,
+          "runtimeMs": 958
+        },
+        {
+          "sessionKey": "agent:dev:main",
+          "agentId": "dev",
+          "message": {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Echo:  Active Subagents\\nnone\""
+              }
+            ],
+            "api": "openai-completions",
+            "provider": "stub",
+            "model": "echo",
+            "usage": {
+              "input": 11,
+              "output": 5,
+              "totalTokens": 16,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "cost": {
+                "input": 0,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "total": 0
+              }
+            },
+            "stopReason": "stop",
+            "timestamp": 1790606195773,
+            "responseId": "c1",
+            "__openclaw": {
+              "runId": "probe-run-2",
+              "id": "0cbea3ed-7bfe-4581-b732-eec38f16e472",
+              "recordTimestampMs": 1790606196696,
+              "transcriptPosition": {
+                "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+                "rawSeq": 12
+              },
+              "seq": 10
+            }
+          },
+          "messageId": "0cbea3ed-7bfe-4581-b732-eec38f16e472",
+          "messageSeq": 10,
+          "session": {
+            "key": "agent:dev:main"
+          },
+          "updatedAt": 1790606196745,
+          "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+          "createdActor": null,
+          "owner": null,
+          "participants": [
+            {
+              "identity": {
+                "type": "observation",
+                "pluginId": null,
+                "accountId": null,
+                "senderKind": "unknown",
+                "id": "gateway-client"
+              }
+            }
+          ],
+          "participantCount": 1,
+          "kind": "direct",
+          "visibility": "shared",
+          "chatType": "direct",
+          "archived": false,
+          "archivedAt": null,
+          "archivedBy": null,
+          "archiveReason": null,
+          "pinned": false,
+          "pinnedAt": null,
+          "unread": true,
+          "markedUnreadAt": null,
+          "agentStatus": null,
+          "observerDigest": null,
+          "activitySummary": {
+            "state": "unavailable",
+            "canEnsure": true
+          },
+          "controlOwnerSessionKey": null,
+          "swarm": null,
+          "permissionMode": null,
+          "permissionModePending": false,
+          "createdVia": "operator",
+          "createdAt": 1790605210378,
+          "label": null,
+          "autoLabel": null,
+          "icon": null,
+          "color": null,
+          "channelAvatarUrl": null,
+          "category": null,
+          "boardPresentation": null,
+          "displayName": "Hello from probe",
+          "thinkingLevel": null,
+          "effectiveFastMode": false,
+          "effectiveFastModeSource": "default",
+          "fastAutoOnSeconds": 60,
+          "toolOverrides": null,
+          "systemSent": true,
+          "abortedLastRun": false,
+          "restartRecoveryStatus": null,
+          "inputTokens": 11,
+          "outputTokens": 5,
+          "totalTokens": 11,
+          "totalTokensFresh": true,
+          "goal": null,
+          "contextTokens": 32000,
+          "contextBudgetStatus": {
+            "schemaVersion": 1,
+            "source": "pre-prompt-estimate",
+            "updatedAt": 1790606195754,
+            "provider": "stub",
+            "model": "echo",
+            "route": "fits",
+            "shouldCompact": false,
+            "estimatedPromptTokens": 14984,
+            "contextTokenBudget": 32000,
+            "promptBudgetBeforeReserve": 24000,
+            "reserveTokens": 8000,
+            "effectiveReserveTokens": 8000,
+            "remainingPromptBudgetTokens": 9016,
+            "overflowTokens": 0,
+            "toolResultReducibleChars": 0,
+            "messageCount": 7,
+            "unwindowedMessageCount": 7,
+            "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7"
+          },
+          "estimatedCostUsd": 0,
+          "effectiveResponseUsage": "off",
+          "modelProvider": "stub",
+          "model": "echo",
+          "activeModelProvider": null,
+          "activeModel": null,
+          "modelOverrideSource": null,
+          "agentRuntime": {
+            "id": "openclaw",
+            "cloudPlacementSupported": true,
+            "cloudPlacementExecutionMode": "worker-turn",
+            "devicePlacement": {
+              "requiredNodeCommands": [],
+              "consumesWorkerSlot": true
+            },
+            "devicePlacementSupported": true,
+            "source": "implicit"
+          },
+          "runtimeSelectionLocked": false,
+          "status": "done",
+          "lastRunError": null,
+          "providerReview": null,
+          "lastRunId": "probe-run-2",
+          "hasAutomation": true,
+          "hasActiveRun": false,
+          "activeRunIds": [],
+          "startedAt": 1790606195762,
+          "endedAt": 1790606196720,
+          "runtimeMs": 958
+        }
+      ],
+      "deltaCursor": "eyJhZ2VudElkIjoiZGV2IiwiZ2VuZXJhdGlvbiI6Ijc5ODQ0MDg2YTU1ODRkMTI5MGFiNjQyMGU3YTJmNDAzIiwibGFzdFNlcSI6MTIsInNlc3Npb25JZCI6IjQxZmQyZGMwLTkzZTgtNDk0Yy1hOWI2LWFiZDk3N2NjYjBkNyIsInZlcnNpb24iOjF9",
+      "sessionInfo": {
+        "key": "agent:dev:main",
+        "hasActiveRun": false,
+        "activeRunIds": []
+      }
+    }
+  },
+  "chatSendResult": {
+    "type": "res",
+    "id": "p-5",
+    "ok": true,
+    "payload": {
+      "runId": "probe-run-2",
+      "status": "started"
+    }
+  },
+  "chatStatus": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-2",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 1,
+      "state": "status",
+      "phase": "preparing_workspace"
+    },
+    "seq": 2
+  },
+  "chatDelta1": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-2",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 6,
+      "state": "delta",
+      "deltaText": "Echo:",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Echo:"
+          }
+        ],
+        "timestamp": 1790606195796
+      }
+    },
+    "seq": 11
+  },
+  "chatDelta2": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-2",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 7,
+      "state": "delta",
+      "deltaText": "  Activ",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Echo:  Activ"
+          }
+        ],
+        "timestamp": 1790606196091
+      }
+    },
+    "seq": 13
+  },
+  "chatDelta3": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-2",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 8,
+      "state": "delta",
+      "deltaText": "e Subagents\\nnone\"",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Echo:  Active Subagents\\nnone\""
+          }
+        ],
+        "timestamp": 1790606196391
+      }
+    },
+    "seq": 15
+  },
+  "chatFinal": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-2",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 13,
+      "state": "final",
+      "stopReason": "stop",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Echo:  Active Subagents\\nnone\""
+          }
+        ],
+        "timestamp": 1790606196726
+      }
+    },
+    "seq": 23
+  },
+  "sessionMessageUser": {
+    "type": "event",
+    "event": "session.message",
+    "payload": {
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "message": {
+        "role": "user",
+        "content": "hello from probe",
+        "timestamp": 1790606195522,
+        "idempotencyKey": "probe-run-2:user",
+        "__openclaw": {
+          "transport": {
+            "clients": [
+              {
+                "id": "gateway-client",
+                "mode": "backend",
+                "displayName": "Claw Code"
+              }
+            ]
+          },
+          "id": "b0c076ad-891e-40b0-bfcc-e3465bca48ac",
+          "idempotencyKey": "probe-run-2:user",
+          "recordTimestampMs": 1790606195601,
+          "transcriptPosition": {
+            "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+            "rawSeq": 11
+          },
+          "seq": 9
+        }
+      },
+      "messageId": "b0c076ad-891e-40b0-bfcc-e3465bca48ac",
+      "messageSeq": 9,
+      "session": {
+        "key": "agent:dev:main"
+      },
+      "updatedAt": 1790606195561,
+      "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+      "createdActor": null,
+      "owner": null,
+      "participants": [
+        {
+          "identity": {
+            "type": "observation",
+            "pluginId": null,
+            "accountId": null,
+            "senderKind": "unknown",
+            "id": "gateway-client"
+          }
+        }
+      ],
+      "participantCount": 1,
+      "kind": "direct",
+      "visibility": "shared",
+      "chatType": "direct",
+      "archived": false,
+      "archivedAt": null,
+      "archivedBy": null,
+      "archiveReason": null,
+      "pinned": false,
+      "pinnedAt": null,
+      "unread": true,
+      "markedUnreadAt": null,
+      "agentStatus": null,
+      "observerDigest": null,
+      "activitySummary": {
+        "state": "unavailable",
+        "canEnsure": true
+      },
+      "controlOwnerSessionKey": null,
+      "swarm": null,
+      "permissionMode": null,
+      "permissionModePending": false,
+      "createdVia": "operator",
+      "createdAt": 1790605210378,
+      "label": null,
+      "autoLabel": null,
+      "icon": null,
+      "color": null,
+      "channelAvatarUrl": null,
+      "category": null,
+      "boardPresentation": null,
+      "displayName": "Hello from probe",
+      "thinkingLevel": null,
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "toolOverrides": null,
+      "systemSent": true,
+      "restartRecoveryStatus": null,
+      "inputTokens": 11,
+      "outputTokens": 5,
+      "totalTokens": 11,
+      "totalTokensFresh": true,
+      "goal": null,
+      "contextTokens": 32000,
+      "contextBudgetStatus": {
+        "schemaVersion": 1,
+        "source": "pre-prompt-estimate",
+        "updatedAt": 1790606180904,
+        "provider": "stub",
+        "model": "echo",
+        "route": "fits",
+        "shouldCompact": false,
+        "estimatedPromptTokens": 14894,
+        "contextTokenBudget": 32000,
+        "promptBudgetBeforeReserve": 24000,
+        "reserveTokens": 8000,
+        "effectiveReserveTokens": 8000,
+        "remainingPromptBudgetTokens": 9106,
+        "overflowTokens": 0,
+        "toolResultReducibleChars": 0,
+        "messageCount": 4,
+        "unwindowedMessageCount": 4,
+        "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7"
+      },
+      "estimatedCostUsd": 0,
+      "effectiveResponseUsage": "off",
+      "modelProvider": "stub",
+      "model": "echo",
+      "activeModelProvider": null,
+      "activeModel": null,
+      "modelOverrideSource": null,
+      "agentRuntime": {
+        "id": "openclaw",
+        "cloudPlacementSupported": true,
+        "cloudPlacementExecutionMode": "worker-turn",
+        "devicePlacement": {
+          "requiredNodeCommands": [],
+          "consumesWorkerSlot": true
+        },
+        "devicePlacementSupported": true,
+        "source": "implicit"
+      },
+      "runtimeSelectionLocked": false,
+      "status": "running",
+      "lastRunError": null,
+      "providerReview": null,
+      "lastRunId": null,
+      "hasAutomation": true,
+      "hasActiveRun": true,
+      "activeRunIds": null,
+      "endedAt": null,
+      "runtimeMs": null,
+      "sharingRole": "owner"
+    },
+    "seq": 1
+  },
+  "sessionMessageAssistant": {
+    "type": "event",
+    "event": "session.message",
+    "payload": {
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "Echo:  Active Subagents\\nnone\""
+          }
+        ],
+        "api": "openai-completions",
+        "provider": "stub",
+        "model": "echo",
+        "usage": {
+          "input": 11,
+          "output": 5,
+          "totalTokens": 16,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "total": 0
+          }
+        },
+        "stopReason": "stop",
+        "timestamp": 1790606195773,
+        "responseId": "c1",
+        "__openclaw": {
+          "runId": "probe-run-2",
+          "id": "0cbea3ed-7bfe-4581-b732-eec38f16e472",
+          "recordTimestampMs": 1790606196696,
+          "transcriptPosition": {
+            "source": "l2u1PMkpfFuOozpcogNvVFcHQyanSw7dcEbWfmBDVU0",
+            "rawSeq": 12
+          },
+          "seq": 10
+        }
+      },
+      "messageId": "0cbea3ed-7bfe-4581-b732-eec38f16e472",
+      "messageSeq": 10,
+      "session": {
+        "key": "agent:dev:main"
+      },
+      "updatedAt": 1790606195766,
+      "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7",
+      "createdActor": null,
+      "owner": null,
+      "participants": [
+        {
+          "identity": {
+            "type": "observation",
+            "pluginId": null,
+            "accountId": null,
+            "senderKind": "unknown",
+            "id": "gateway-client"
+          }
+        }
+      ],
+      "participantCount": 1,
+      "kind": "direct",
+      "visibility": "shared",
+      "chatType": "direct",
+      "archived": false,
+      "archivedAt": null,
+      "archivedBy": null,
+      "archiveReason": null,
+      "pinned": false,
+      "pinnedAt": null,
+      "unread": true,
+      "markedUnreadAt": null,
+      "agentStatus": null,
+      "observerDigest": null,
+      "activitySummary": {
+        "state": "unavailable",
+        "canEnsure": true
+      },
+      "controlOwnerSessionKey": null,
+      "swarm": null,
+      "permissionMode": null,
+      "permissionModePending": false,
+      "createdVia": "operator",
+      "createdAt": 1790605210378,
+      "label": null,
+      "autoLabel": null,
+      "icon": null,
+      "color": null,
+      "channelAvatarUrl": null,
+      "category": null,
+      "boardPresentation": null,
+      "displayName": "Hello from probe",
+      "thinkingLevel": null,
+      "effectiveFastMode": false,
+      "effectiveFastModeSource": "default",
+      "fastAutoOnSeconds": 60,
+      "toolOverrides": null,
+      "systemSent": true,
+      "abortedLastRun": false,
+      "restartRecoveryStatus": null,
+      "inputTokens": 11,
+      "outputTokens": 5,
+      "totalTokens": 11,
+      "totalTokensFresh": true,
+      "goal": null,
+      "contextTokens": 32000,
+      "contextBudgetStatus": {
+        "schemaVersion": 1,
+        "source": "pre-prompt-estimate",
+        "updatedAt": 1790606180904,
+        "provider": "stub",
+        "model": "echo",
+        "route": "fits",
+        "shouldCompact": false,
+        "estimatedPromptTokens": 14894,
+        "contextTokenBudget": 32000,
+        "promptBudgetBeforeReserve": 24000,
+        "reserveTokens": 8000,
+        "effectiveReserveTokens": 8000,
+        "remainingPromptBudgetTokens": 9106,
+        "overflowTokens": 0,
+        "toolResultReducibleChars": 0,
+        "messageCount": 4,
+        "unwindowedMessageCount": 4,
+        "sessionId": "41fd2dc0-93e8-494c-a9b6-abd977ccb0d7"
+      },
+      "estimatedCostUsd": 0,
+      "effectiveResponseUsage": "off",
+      "modelProvider": "stub",
+      "model": "echo",
+      "activeModelProvider": "stub",
+      "activeModel": "echo",
+      "modelOverrideSource": null,
+      "agentRuntime": {
+        "id": "openclaw",
+        "cloudPlacementSupported": true,
+        "cloudPlacementExecutionMode": "worker-turn",
+        "devicePlacement": {
+          "requiredNodeCommands": [],
+          "consumesWorkerSlot": true
+        },
+        "devicePlacementSupported": true,
+        "source": "implicit"
+      },
+      "runtimeSelectionLocked": false,
+      "status": "running",
+      "lastRunError": null,
+      "providerReview": null,
+      "lastRunId": null,
+      "hasAutomation": true,
+      "hasActiveRun": true,
+      "activeRunIds": null,
+      "startedAt": 1790606195762,
+      "endedAt": null,
+      "runtimeMs": null,
+      "runId": "probe-run-2",
+      "sharingRole": "owner"
+    },
+    "seq": 19
+  },
+  "tick": {
+    "type": "event",
+    "event": "tick",
+    "payload": {
+      "ts": 1790606196626
+    },
+    "seq": 16
+  },
+  "tokenMismatchRejection": {
+    "type": "res",
+    "id": "p-1",
+    "ok": false,
+    "error": {
+      "code": "INVALID_REQUEST",
+      "message": "unauthorized: gateway token mismatch (provide gateway auth token)",
+      "details": {
+        "code": "AUTH_TOKEN_MISMATCH",
+        "authReason": "token_mismatch",
+        "canRetryWithDeviceToken": false,
+        "recommendedNextStep": "update_auth_credentials"
+      }
+    }
+  },
+  "protocolMismatchRejection": {
+    "type": "res",
+    "id": "c",
+    "ok": false,
+    "error": {
+      "code": "INVALID_REQUEST",
+      "message": "protocol mismatch",
+      "details": {
+        "code": "PROTOCOL_MISMATCH",
+        "clientMinProtocol": 5,
+        "clientMaxProtocol": 5,
+        "expectedProtocol": 4,
+        "minimumProbeProtocol": 3
+      }
+    }
+  },
+  "invalidParamsError": {
+    "type": "res",
+    "id": "bad",
+    "ok": false,
+    "error": {
+      "code": "INVALID_REQUEST",
+      "message": "invalid sessions.messages.subscribe params: must have required property 'key'; at root: unexpected property 'sessionKeys'"
+    }
+  },
+  "chatErrorFirst": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-1",
+      "sessionKey": "agent:dev:main",
+      "agentId": "dev",
+      "seq": 5,
+      "state": "error",
+      "errorMessage": "No route-compatible authentication source is configured for openai."
+    },
+    "seq": 12
+  },
+  "chatErrorSecond": {
+    "type": "event",
+    "event": "chat",
+    "payload": {
+      "runId": "probe-run-1",
+      "sessionKey": "agent:dev:main",
+      "seq": 1,
+      "state": "error",
+      "errorMessage": "⚠️ Agent failed before reply: No route-compatible authentication source is configured for openai.\nTo view logs, run `openclaw logs --follow` in a terminal."
+    },
+    "seq": 13
+  }
+}
