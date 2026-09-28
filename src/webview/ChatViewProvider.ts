@@ -1289,14 +1289,25 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     if (!sharedRun && previousBackend.hasOwnedRun(thread.sessionKey)) {
                         previousBackend.abort(thread.sessionKey);
                     }
-                    const ownCallback = this.transcriptCallbacks.get(thread.id);
-                    if (ownCallback && ownCallback.sessionKey === thread.sessionKey) {
-                        this.transcriptCallbacks.delete(thread.id);
-                        previousBackend.removeTranscriptSink(thread.sessionKey, ownCallback.cb);
-                    }
+                    // The thread keeps its sessionKey and the gateway stays
+                    // alive, so the persistent transcript callback must survive
+                    // the fallback: removing it here would leave the thread
+                    // permanently deaf to external/resumed gateway events even
+                    // after the gateway transport returns. Rebind it fresh
+                    // (epoch was bumped, so the old callback would be
+                    // epoch-dropped anyway); a suspended entry moves back to
+                    // active since its gateway run is retired with the switch.
                     const suspendedOwn = this.suspendedTranscriptSinks.get(thread.id);
                     if (suspendedOwn && suspendedOwn.sessionKey === thread.sessionKey) {
-                        this.suspendedTranscriptSinks.delete(thread.id);
+                        this.restoreSuspendedTranscriptSink(thread);
+                    } else {
+                        const ownCallback = this.transcriptCallbacks.get(thread.id);
+                        if (ownCallback && ownCallback.sessionKey === thread.sessionKey) {
+                            const rebindEpoch = thread.bindingEpoch;
+                            const cb = (event: ChatEvent): void => { void this.handleChatEvent(thread.id, event, rebindEpoch, 'binding'); };
+                            this.transcriptCallbacks.set(thread.id, { sessionKey: thread.sessionKey, cb });
+                            previousBackend.rebindTranscriptSink(thread.sessionKey, cb);
+                        }
                     }
                 }
             } else {
