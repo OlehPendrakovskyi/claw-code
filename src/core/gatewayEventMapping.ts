@@ -16,7 +16,7 @@ import type { ChatEvent } from '../chat/ChatService';
 /** Session key used when the gateway does not echo one back. */
 export const DEFAULT_SESSION_KEY = 'main';
 
-/** Cap for per-message streamed-delta tracking (oldest entry evicted). */
+/** Cap for per-message streamed-delta tracking (least recently updated entry evicted). */
 export const DELTA_TRACK_LIMIT = 200;
 
 const TOOL_CALL_STATUSES = new Set(['running', 'done', 'error', 'failed']);

@@ -305,6 +305,13 @@ export type SessionEvent =
 /* RPC method names (rpc-methods.md)                                   */
 /* ------------------------------------------------------------------ */
 
+/** Handshake error codes that reject the credentials themselves. */
+export const GatewayAuthRejectionCodes: ReadonlySet<string> = new Set([
+  'UNAUTHORIZED',
+  'FORBIDDEN',
+  'INVALID_TOKEN',
+]);
+
 /** Operator RPC methods used by this extension (subset of the catalog). */
 export const GatewayRpcMethods = {
   /** Handshake request — see handshake.md. */
