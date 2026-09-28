@@ -182,6 +182,29 @@ function formatContext(ctx: EditorContext, contextType: ContextType): string {
     return parts.join('\n');
 }
 
+/** Maximum UTF-8 bytes of conversation transcript /compact may embed.
+ *  The acpx transport passes the prompt as a single execve argument, so an
+ *  unbounded transcript would fail with E2BIG on long conversations; sizing
+ *  it to fit the transport budget keeps /compact usable. Truncation happens on
+ *  a char boundary via {@link truncateUtf8}.*/
+export const COMPACT_TRANSCRIPT_MAX_BYTES = 64 * 1024;
+
+/** Truncate `input` to at most `maxBytes` UTF-8 bytes, cutting on a char
+ *  boundary so the result stays valid UTF-8. */
+export function truncateUtf8(input: string, maxBytes: number): string {
+    const asBytes = Buffer.byteLength(input,'utf8');
+    if (asBytes <= maxBytes) {
+        return input;
+    }
+    let end = maxBytes;
+    // Step back over any continuation bytes so a multi-byte char at the
+    // boundary is not split into invalid UTF-8.
+    while (end > 0 && (input.charCodeAt(end) & 0xC0) === 0x80) {
+        end -= 1;
+    }
+    return input.slice(0,end);
+}
+
 export function buildSlashPrompt(
     commandName: string,
     userText: string,
@@ -203,8 +226,19 @@ export function buildSlashPrompt(
     if (transcript) {
         // Compaction must see the conversation it summarizes: the acpx
         // transport starts a fresh exec per send, so without this block the
-        // command has no prior turns to compress.
-        sections.push(`\n--- Conversation So Far ---\n${transcript}\n---`);
+        // command has no prior turns to compress. The acpx transport passes
+        // the resulting prompt as one execve argument, so an unbounded transcript
+        // fails with E2BIG instead of compacting (and blows past the Gateway
+        // cap). Cap the transcript and note the trim so the summary still knows
+        // prior turns were dropped; truncation cuts on a char boundary so the
+        // result stays valid UTF-8.
+        const transcriptBytes = Buffer.byteLength(transcript, 'utf8');
+        const transcriptText = transcriptBytes <= COMPACT_TRANSCRIPT_MAX_BYTES
+            ? transcript
+            : truncateUtf8(transcript, COMPACT_TRANSCRIPT_MAX_BYTES);
+        sections.push(transcriptBytes > COMPACT_TRANSCRIPT_MAX_BYTES
+            ? `\n--- Conversation So Far (truncated; retained ${transcriptText.length} chars) ---\n${transcriptText}\n---`
+            : `\n--- Conversation So Far ---\n${transcriptText}\n---`);
     }
     if (contextBlock) {
         sections.push(contextBlock);

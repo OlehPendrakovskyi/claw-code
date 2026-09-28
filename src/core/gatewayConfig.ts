@@ -351,6 +351,13 @@ private static currentDistroDir(): string | null {
   if (scheme === 'vscode-vscodium') {
     return 'VSCodium';
   }
+  // VSCodium reports the 'vscode-oss' URI scheme (like Code - OSS), so the
+  // scheme alone cannot distinguish it; its product name carries 'Codium'. Its
+  // settings live under a 'VSCodium/User' profile, so a plaintext legacy token
+  // there must be discovered/migrated under that dir, not 'Code'.
+  if (/codium/i.test(vscode.env.appName ?? '')) {
+    return 'VSCodium';
+  }
   // The 'vscode' scheme covers both stable VS Code and Code - OSS builds.
   return /\boss\b/i.test(vscode.env.appName ?? '') ? 'Code - OSS' : 'Code';
 }

@@ -372,7 +372,7 @@ async function readVerifiedImageBytes(p: string): Promise<Buffer | null> {
             return null;
         }
         const fdPath = await openedHandlePath(handle);
-        if (fdPath !== null && fdPath !== p) {
+        if (process.platform !== 'win32' && fdPath !== p) {
             return null;
         }
         // Bounded read: a file that grows after stat() would make readFile()
@@ -635,7 +635,7 @@ export async function readAttachments(
                     throw new Error('attachment path changed during read');
                 }
                 const fdPath = await openedHandlePath(handle);
-                if (fdPath !== null && fdPath !== real) {
+                if (process.platform !== 'win32' && fdPath !== real) {
                     throw new Error('attachment opened outside its canonical path');
                 }
                 // Same bounded-read gate as image verification: loop the
