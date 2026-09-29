@@ -76,10 +76,10 @@ describe('gateway protocol v4 message readers', () => {
             expect(message).toMatchObject({ text: 'before', truncated: true });
         });
 
-        it('keeps the marker text intact when only meta says truncated', () => {
-            const text = `keep${TRUNCATION_MARKER}`;
-            expect(toTranscriptMessage({ role: 'assistant', content: text, __openclaw: { truncated: true } })).toMatchObject({ truncated: true });
-            expect(toTranscriptMessage({ role: 'assistant', content: text })).toMatchObject({ truncated: true });
+        it('flags meta-only truncation and keeps marker-free text intact', () => {
+            const row = { role: 'assistant', text: 'kept in full', entryId: null, seq: null, runId: null, usage: null };
+            expect(toTranscriptMessage({ role: 'assistant', content: 'kept in full', __openclaw: { truncated: true } })).toEqual({ ...row, truncated: true });
+            expect(toTranscriptMessage({ role: 'assistant', content: 'kept in full' })).toEqual({ ...row, truncated: false });
         });
 
         it('maps unknown roles to other', () => {

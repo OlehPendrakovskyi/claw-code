@@ -127,9 +127,10 @@ describe('ChatService buffer and abort bounds', () => {
             expect(events).toEqual([{ type: 'text', text: 'next' }, { type: 'done' }]);
         });
 
-        it('does not parse a dropped line even when it ends in a complete JSON-RPC shape', () => {
+        it('drops a valid JSON-RPC line past the cap even though it parses on its own', () => {
             const { child, events } = start();
-            const over = `${JSON.stringify(say('should not surface'))},${'z'.repeat(STDOUT_LINE_MAX_CHARS)}`;
+            const over = JSON.stringify(say('z'.repeat(STDOUT_LINE_MAX_CHARS)));
+            expect(() => JSON.parse(over)).not.toThrow();
             child.stdout.emit('data', Buffer.from(`${over}\n`));
             child.emit('close', 0, null);
             expect(events).toEqual([{ type: 'done' }]);

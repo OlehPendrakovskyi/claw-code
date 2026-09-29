@@ -65,8 +65,9 @@ describe('gateway protocol v4 event table', () => {
             expect(asTool(readEvent(Events.agent, tool({ phase: 'start' })))?.name).toBe('tool');
             const longArgs = { phase: 'start', args: { blob: 'x'.repeat(5000) } };
             const details = asTool(readEvent(Events.agent, tool(longArgs)))?.details ?? '';
-            expect(details.length).toBeLessThan(4100);
-            expect(details.endsWith('…') || details.length <= 4000).toBe(true);
+            expect(details.length).toBe(4001);
+            expect(details.startsWith('{')).toBe(true);
+            expect(details.endsWith('…')).toBe(true);
         });
     });
 
