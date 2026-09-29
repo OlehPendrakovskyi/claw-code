@@ -70,8 +70,14 @@ class MockGatewayChatService {
     }
 }
 
-export function mockGatewayModule(): { GatewayChatService: typeof MockGatewayChatService; DEFAULT_SESSION_KEY: string } {
-    return { GatewayChatService: MockGatewayChatService, DEFAULT_SESSION_KEY: 'main' };
+class MockPromptAnswerUnconfirmedError extends Error {}
+
+export function mockGatewayModule(): {
+    GatewayChatService: typeof MockGatewayChatService;
+    DEFAULT_SESSION_KEY: string;
+    PromptAnswerUnconfirmedError: typeof MockPromptAnswerUnconfirmedError;
+} {
+    return { GatewayChatService: MockGatewayChatService, DEFAULT_SESSION_KEY: 'main', PromptAnswerUnconfirmedError: MockPromptAnswerUnconfirmedError };
 }
 
 type SessionRow = { key: string; label?: string; agentId?: string; hasActiveRun?: boolean; lastActivityAt?: number; placement?: { state: string } };

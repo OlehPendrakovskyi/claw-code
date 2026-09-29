@@ -263,6 +263,13 @@ class FrameTooLargeError extends Error {}
 /** A request that never reached the gateway. */
 class RequestNotSentError extends Error {}
 
+/** An operator prompt answer whose reply was lost (drop, timeout): the gateway may still have applied it. */
+export class PromptAnswerUnconfirmedError extends Error {}
+
+function neverSent(err: unknown): boolean {
+  return err instanceof FrameTooLargeError || err instanceof RequestNotSentError;
+}
+
 /** The gateway answered a request with an error. */
 class RpcRejectedError extends Error {
   constructor(
@@ -707,19 +714,23 @@ export class GatewayChatService {
     await this.settlePrompt(id, answers ? 'answered' : 'cancelled', (adapter) => adapter.questionReplyRequest({ id, answers }));
   }
 
-  /** An answer whose reply is lost (drop, timeout) may still have been applied: the next backfill settles it. */
+  /** An answer whose reply is lost (drop, timeout) may still have been applied: the next backfill settles it.
+   *  One never sent or refused is forgotten, so no later settle reads it as given here. */
   private async settlePrompt(id: string, outcome: PromptOutcome, build: (adapter: GatewayProtocolAdapter) => WireRequest): Promise<void> {
     this.prompts.noteSubmission(id, outcome);
     try {
       await this.request(build);
       this.prompts.settle(id, outcome);
     } catch (err) {
-      if (!(err instanceof RpcRejectedError)) throw err;
-      if (!(this.connection?.adapter ?? this.offeredAdapter()).isStalePromptFailure(err.failure)) {
+      if (err instanceof RpcRejectedError && (this.connection?.adapter ?? this.offeredAdapter()).isStalePromptFailure(err.failure)) {
+        this.prompts.settle(id, 'withdrawn');
+        return;
+      }
+      if (err instanceof RpcRejectedError || neverSent(err)) {
         this.prompts.forgetSubmission(id);
         throw err;
       }
-      this.prompts.settle(id, 'withdrawn');
+      throw new PromptAnswerUnconfirmedError(errorMessage(err));
     }
   }
 
@@ -749,12 +760,12 @@ export class GatewayChatService {
       return;
     }
     const backfill = this.prompts.beginBackfill();
-    const lists = reads.map(({ kind, request }) =>
-      this.request(() => request)
-        .then(({ adapter: answered, payload }) => ({ kind, prompts: answered.parsePendingPrompts(payload) }))
+    const lists = reads.map((list) =>
+      this.request(() => list.request)
+        .then(({ adapter: answered, payload }) => ({ kind: list.kind, prompts: answered.parsePendingPrompts(list, payload) }))
         .catch((err: Error) => {
-          this.logger.warn(`${request.method} failed ${err.message}`);
-          return { kind, prompts: null };
+          this.logger.warn(`${list.request.method} failed ${err.message}`);
+          return { kind: list.kind, prompts: null };
         })
     );
     void Promise.all(lists).then((results) => {
@@ -773,6 +784,7 @@ export class GatewayChatService {
 
   /** Prompts and full-row reads belong to one endpoint. */
   private releaseEndpointState(): void {
+    this.prompts.cancelBackfill();
     this.prompts.withdraw(PROMPT_KINDS);
     this.rowCompleter.reset();
   }
@@ -1630,7 +1642,7 @@ export class GatewayChatService {
       this.retryLater(owned, err.failure.retryAfterMs ?? SEND_RETRY_DELAY_MS);
       return;
     }
-    const unconfirmed = !(err instanceof RpcRejectedError || err instanceof FrameTooLargeError || err instanceof RequestNotSentError);
+    const unconfirmed = !(err instanceof RpcRejectedError || neverSent(err));
     if (unconfirmed && attemptsLeft) {
       owned.stage = 'unconfirmed';
       // Still connected (an RPC timeout): ask again now; otherwise the next handshake does.

@@ -368,6 +368,12 @@ describe('gateway protocol v4', () => {
             }
         });
 
+        it('reads an inherited object key as no pairing reason', () => {
+            const rejection = classifyHandshakeRejection({ code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED', requestId: 'req-7', reason: 'constructor' } });
+            expect(rejection.pairing).toEqual({ requestId: 'req-7', reason: null });
+            expect(rejection.hint).not.toContain('native code');
+        });
+
         it('offers the device token retry the gateway suggests, and flags a refused device token', () => {
             const tokenMismatch = { code: 'INVALID_REQUEST', message: 'unauthorized', details: { code: 'AUTH_TOKEN_MISMATCH', canRetryWithDeviceToken: true, recommendedNextStep: 'retry_with_device_token' } };
             expect(classifyHandshakeRejection(tokenMismatch)).toMatchObject({ kind: 'permanent', deviceTokenRetry: true });

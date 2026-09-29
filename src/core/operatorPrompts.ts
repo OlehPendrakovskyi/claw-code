@@ -100,6 +100,11 @@ export class OperatorPromptBoard {
     }
   }
 
+  /** The endpoint changed: lists read from the old one must not add its prompts. */
+  cancelBackfill(): void {
+    this.backfill = null;
+  }
+
   /** Call before issuing the backfill reads, so events racing them are neither lost nor resurrected. */
   beginBackfill(): Backfill {
     this.backfill = { requested: new Set(), resolved: new Set() };

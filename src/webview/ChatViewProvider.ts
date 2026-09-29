@@ -34,7 +34,7 @@ import {
 import { buildRecommendations } from './recommendations';
 import { parseFileMentions, buildMention, type FileMention } from './fileMentions';
 import { ChatServiceFactory, type GatewayInvalidationReason } from './chatServiceFactory';
-import { GatewayChatService, DEFAULT_SESSION_KEY } from '../core/gatewayChatService';
+import { GatewayChatService, DEFAULT_SESSION_KEY, PromptAnswerUnconfirmedError } from '../core/gatewayChatService';
 import {
     AgentPicker,
     COLD_SESSION_PLACEHOLDER,
@@ -2180,7 +2180,8 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         await this.submitPrompt(row, answers ? 'answered' : 'cancelled', () => row.gateway.answerQuestion(row.prompt.id, answers));
     }
 
-    /** A failed answer leaves the row pending with the reason, so the user can try again. */
+    /** A failed answer leaves the row pending with the reason, so the user can try again; only one
+     *  the gateway may still have applied stays recorded as given here. */
     private async submitPrompt(row: PromptRow<GatewayChatService>, outcome: PromptOutcome, submit: () => Promise<void>): Promise<void> {
         row.state = 'submitting';
         row.submitted = outcome;
@@ -2192,6 +2193,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             if (row.state === 'submitting') {
                 row.state = 'pending';
                 row.error = err instanceof Error ? err.message : String(err);
+                if (!(err instanceof PromptAnswerUnconfirmedError)) row.submitted = null;
             }
         }
         this.emitState();

@@ -50,11 +50,24 @@ describe('gateway protocol v4 prompts', () => {
             assertValidResult('exec.approval.list', execRows);
             assertValidResult('plugin.approval.list', pluginRows);
             assertValidResult('question.list', questionList);
-            expect(v4Adapter.parsePendingPrompts(execRows)?.map((prompt) => prompt.id)).toEqual(['a1']);
-            expect(v4Adapter.parsePendingPrompts(pluginRows)?.map((prompt) => prompt.id)).toEqual(['plugin:1']);
-            expect(v4Adapter.parsePendingPrompts(questionList)?.map((prompt) => prompt.id)).toEqual(['q1']);
-            expect(v4Adapter.parsePendingPrompts([{ id: 'x', request: { command: 'ls' } }, ...execRows])).toHaveLength(1);
-            expect(v4Adapter.parsePendingPrompts({ nope: true })).toBeNull();
+            const [execList, pluginList, questionRead] = v4Adapter.pendingPromptRequests({ approvals: true, questions: true });
+            expect(v4Adapter.parsePendingPrompts(execList, execRows)?.map((prompt) => prompt.id)).toEqual(['a1']);
+            expect(v4Adapter.parsePendingPrompts(pluginList, pluginRows)?.map((prompt) => prompt.id)).toEqual(['plugin:1']);
+            expect(v4Adapter.parsePendingPrompts(questionRead, questionList)?.map((prompt) => prompt.id)).toEqual(['q1']);
+            expect(v4Adapter.parsePendingPrompts(execList, [{ id: 'x', request: {} }, ...execRows])).toHaveLength(1);
+            expect(v4Adapter.parsePendingPrompts(execList, pluginRows)).toEqual([]);
+            expect(v4Adapter.parsePendingPrompts(execList, { nope: true })).toBeNull();
+            expect(v4Adapter.parsePendingPrompts(questionRead, { nope: true })).toBeNull();
+        });
+
+        it('takes a list row\'s subject from its list, as approvalKind is optional', () => {
+            const [execList, pluginList] = v4Adapter.pendingPromptRequests({ approvals: true, questions: false });
+            const execRows = [payloads.execApproval({ id: 'a1' }, 'ls')];
+            const pluginRows = [payloads.pluginApproval({ id: 'plugin:1' }, 'Write')];
+            assertValidResult('exec.approval.list', execRows);
+            assertValidResult('plugin.approval.list', pluginRows);
+            expect(v4Adapter.parsePendingPrompts(execList, execRows)).toMatchObject([{ id: 'a1', subject: 'exec', title: 'ls' }]);
+            expect(v4Adapter.parsePendingPrompts(pluginList, pluginRows)).toMatchObject([{ id: 'plugin:1', subject: 'plugin', title: 'Write' }]);
         });
 
         it('keeps a long plugin detail to its start and flags a critical one', () => {
@@ -77,6 +90,7 @@ describe('gateway protocol v4 prompts', () => {
             expect(tool({ status: 'failed', failureKind: 'approval_required' })).toMatchObject({ awaitingApproval: 'unavailable' });
             expect(tool({ status: 'error', error: 'exec denied: Headless runs cannot wait for interactive exec approval.' })).toMatchObject({ awaitingApproval: 'unavailable' });
             expect(tool({ status: 'completed' })).toMatchObject({ awaitingApproval: null });
+            expect(tool({ status: 'toString', failureKind: 'approval_required' })).toMatchObject({ awaitingApproval: 'unavailable' });
         });
     });
 

@@ -150,7 +150,7 @@ function readPairingRequest(details: Readonly<Record<string, unknown>>): Pairing
   const reason = readTrimmedString(details.reason);
   return {
     requestId: requestId && PAIRING_REQUEST_ID.test(requestId) ? requestId : null,
-    reason: reason && reason in PAIRING_SUBJECTS ? reason : null,
+    reason: reason && Object.prototype.hasOwnProperty.call(PAIRING_SUBJECTS, reason) ? reason : null,
   };
 }
 

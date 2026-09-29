@@ -211,7 +211,7 @@ export function readPromptEvent(event: string, payload: unknown): InboundEvent |
 /** Whether an exec tool result reports a pending approval, or that no one could be asked for one. */
 export function readApprovalWait(result: unknown): ApprovalWait | null {
   const details = readRecord(readRecord(result).details);
-  if (typeof details.status === 'string' && details.status in APPROVAL_WAITS) return APPROVAL_WAITS[details.status];
+  if (typeof details.status === 'string' && Object.prototype.hasOwnProperty.call(APPROVAL_WAITS, details.status)) return APPROVAL_WAITS[details.status];
   const unasked = details.failureKind === APPROVAL_REQUIRED_FAILURE || (readString(details.error)?.includes(NO_APPROVAL_ROUTE_ERROR) ?? false);
   return unasked ? 'unavailable' : null;
 }
@@ -232,27 +232,28 @@ export function readPromptAccess(accepted: ConnectionAccepted, provedDevice: boo
   };
 }
 
-function listRequest(kind: OperatorPrompt['kind'], method: string): PromptListRequest {
-  return { kind, request: { method, params: {} } };
+function listRequest(kind: OperatorPrompt['kind'], subject: ApprovalSubject | null, method: string): PromptListRequest {
+  return { kind, subject, request: { method, params: {} } };
 }
 
 /** Reads of the prompts that predate the connection (clients.md "Backfill exec approvals"). */
 export function pendingPromptRequests({ approvals, questions }: PromptAccess): PromptListRequest[] {
   return [
-    ...(approvals ? [listRequest('approval', Methods.execApprovalList), listRequest('approval', Methods.pluginApprovalList)] : []),
-    ...(questions ? [listRequest('question', Methods.questionList)] : []),
+    ...(approvals ? [listRequest('approval', 'exec', Methods.execApprovalList), listRequest('approval', 'plugin', Methods.pluginApprovalList)] : []),
+    ...(questions ? [listRequest('question', null, Methods.questionList)] : []),
   ];
 }
 
-function readApprovalRow(row: unknown): ApprovalPrompt | null {
+/** `approvalKind` is optional on a list row: the list read names the subject, the row may only confirm it. */
+function readApprovalRow(subject: ApprovalSubject, row: unknown): ApprovalPrompt | null {
   const kind = readRecord(row).approvalKind;
-  return kind === 'exec' || kind === 'plugin' ? readApproval(kind, row) : null;
+  return kind === undefined || kind === subject ? readApproval(subject, row) : null;
 }
 
 /** An approval list (an array of requested events) or a question list (`{ questions }`). */
-export function readPendingPrompts(payload: unknown): OperatorPrompt[] | null {
-  if (Array.isArray(payload)) {
-    return payload.flatMap((row) => readApprovalRow(row) ?? []);
+export function readPendingPrompts({ subject }: PromptListRequest, payload: unknown): OperatorPrompt[] | null {
+  if (subject !== null) {
+    return Array.isArray(payload) ? payload.flatMap((row) => readApprovalRow(subject, row) ?? []) : null;
   }
   const questions = readRecord(payload).questions;
   return Array.isArray(questions) ? questions.flatMap((row) => readQuestion(row) ?? []) : null;

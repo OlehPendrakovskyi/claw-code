@@ -17,7 +17,7 @@ jest.mock('fs', () => {
 });
 
 import { ChatViewProvider } from '../webview/ChatViewProvider';
-import type { GatewayChatService } from '../core/gatewayChatService';
+import { PromptAnswerUnconfirmedError, type GatewayChatService } from '../core/gatewayChatService';
 import type { OperatorPrompt, QuestionPrompt } from '../core/gatewayProtocol/model';
 import type { PromptChange } from '../core/operatorPrompts';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
@@ -217,10 +217,19 @@ describe('ChatViewProvider prompts', () => {
         it('reads an answer whose reply was lost as given here once the gateway settles it', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('gateway connection closed'));
+            jest.mocked(gateway.resolveApproval).mockRejectedValue(new PromptAnswerUnconfirmedError('gateway connection closed'));
             await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
             gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
+        });
+
+        it('reads the same decision settled after an answer that was never sent as given elsewhere', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt(requestedChange(APPROVAL));
+            jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('not connected to the gateway'));
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
+            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
+            expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once elsewhere']]);
         });
     });
 

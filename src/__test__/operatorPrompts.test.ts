@@ -106,6 +106,14 @@ describe('OperatorPromptBoard', () => {
             expect(resolvedOf(changes)).toEqual([['a1', 'allow-once'], ['a2', 'withdrawn']]);
         });
 
+        it('drops a backfill cancelled before it finished', () => {
+            const { board: prompts, changes } = board();
+            const backfill = prompts.beginBackfill();
+            prompts.cancelBackfill();
+            prompts.finishBackfill(backfill, [approval('a1')], ['approval']);
+            expect(changes).toEqual([]);
+        });
+
         it('drops a backfill a newer one superseded', () => {
             const { board: prompts, changes } = board();
             const older = prompts.beginBackfill();

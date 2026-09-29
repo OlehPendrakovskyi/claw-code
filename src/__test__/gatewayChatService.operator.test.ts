@@ -5,7 +5,7 @@
  * builders.
  */
 
-import { GatewayChatService, type GatewaySend } from '../core/gatewayChatService';
+import { GatewayChatService, PromptAnswerUnconfirmedError, type GatewaySend } from '../core/gatewayChatService';
 import { generateDeviceIdentity } from '../core/gatewayProtocol/deviceIdentity';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from '../core/gatewayProtocol/deviceIdentity';
 import type { OperatorPrompt } from '../core/gatewayProtocol/model';
@@ -254,6 +254,27 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             expect(outcomes(h.changes)).toEqual([['a1', 'allow-once']]);
         });
 
+        it('forgets an answer that was never sent, so a later backfill does not report it as given', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await expect(h.svc.resolveApproval('a1', 'allow-once')).rejects.toThrow();
+            jest.advanceTimersByTime(1000);
+            await handshake(h);
+            answerBackfill(h, {});
+            await settle();
+            expect(outcomes(h.changes)).toEqual([['a1', 'withdrawn']]);
+        });
+
+        it('reports an answer whose reply was lost as unconfirmed', async () => {
+            const h = await connected();
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
+            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await expect(resolving).rejects.toBeInstanceOf(PromptAnswerUnconfirmedError);
+        });
+
         it('re-reads the pending prompts when the event sequence skips, as prompt events are dropped for slow clients', async () => {
             const h = await connected();
             h.socket().receive(eventFrame('tick', { ts: 1 }, 1));
@@ -269,6 +290,19 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             h.svc.updateConnection('ws://other.test:18789', 'other-token');
             expect(outcomes(h.changes)).toEqual([['a1', 'withdrawn']]);
+        });
+
+        it('adds nothing from a backfill of the old endpoint that finishes after the change', async () => {
+            const h = harness(true);
+            const connecting = h.svc.connect();
+            await handshake(h);
+            await connecting;
+            const old = h.socket();
+            old.reply('exec.approval.list', [payloads.execApproval({ id: 'old' }, 'ls')]);
+            await settle();
+            h.svc.updateConnection('ws://other.test:18789', 'other-token');
+            await settle();
+            expect(requested(h.changes)).toEqual([]);
         });
     });
 
