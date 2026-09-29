@@ -2100,7 +2100,9 @@ export class GatewayChatService {
   }
 
   /** Render transcript rows in arrival order. A cut row is read in full first; the rows and run
-   *  events of the session that arrive meanwhile wait behind it, so nothing overtakes it. */
+   *  events of the session that arrive meanwhile wait behind it, so nothing overtakes it. A read
+   *  slower than the render timeout renders the row as it came, still first; the read keeps its
+   *  own place in the completer's per-session queue until it settles. */
   private renderRows(state: SessionState, rows: readonly TranscriptMessage[], render: (rows: readonly TranscriptMessage[]) => void): void {
     if (!state.rowsInFlight && !rows.some(TruncatedRowCompleter.isIncomplete)) {
       render(rows);

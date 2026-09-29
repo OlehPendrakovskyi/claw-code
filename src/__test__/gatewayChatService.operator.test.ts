@@ -499,6 +499,24 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             expect(seen).toEqual([{ type: 'text', text: LONG_REPLY }, { type: 'done' }]);
         });
 
+        it('renders a cut row whose read outlasts the render timeout as it came, still ahead of what followed it', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            const seen = observe(h);
+            await settle();
+            receive(h, 'session.message', cutRow('e1', 'r1', 3));
+            await settle();
+            receive(h, 'chat', payloads.delta({ runId: 'r2', seq: 1 }, 'SECOND', 'SECOND'));
+            receive(h, 'chat', payloads.final({ runId: 'r2', seq: 2 }, 'SECOND'));
+            await settle();
+            expect(seen).toEqual([]);
+            await jest.advanceTimersByTimeAsync(10_000);
+            expect(seen).toEqual([{ type: 'text', text: LONG_REPLY.slice(0, 8000) }, { type: 'text', text: 'SECOND' }, { type: 'done' }]);
+            h.socket().reply('chat.history', fullRead());
+            await jest.advanceTimersByTimeAsync(0);
+            expect(seen).toHaveLength(3);
+        });
+
         it('holds a later run behind an earlier cut row still being read', async () => {
             const h = await connected();
             const seen = observe(h);
