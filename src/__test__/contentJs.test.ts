@@ -1022,5 +1022,131 @@ describe('content-js', () => {
             webview.host({ type: 'agentSelected', sessionKey: 'agent:main:main' });
             expect(webview.document.getElementById('claw-sessions-panel')).toBeNull();
         });
+
+        it('reloads an open panel once per burst of session index changes, keeping the focused row', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            openPanel(webview, 't1');
+            press(webview, webview.document.getElementById('claw-sessions-panel')!, 'ArrowDown');
+            const requestsBefore = postedOfType(webview, 'requestSessions').length;
+            webview.host({ type: 'sessionsChanged' });
+            webview.host({ type: 'sessionsChanged' });
+            await tick(webview, 350);
+            expect(postedOfType(webview, 'requestSessions').slice(requestsBefore)).toEqual([{ type: 'requestSessions', threadId: 't1' }]);
+            webview.host({ type: 'sessionsList', threadId: 't1', sessions: [{ sessionKey: 'agent:new:main', label: 'New' }, ...SESSIONS] });
+            expect(sessionRows(webview).map(row => row.textContent)).toEqual(['New', '● Main', '❄ Coder']);
+            expect(webview.document.activeElement).toBe(sessionRows(webview)[2]);
+        });
+
+        it('asks for nothing when the session index changes with the panel closed', async () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            webview.host({ type: 'sessionsChanged' });
+            await tick(webview, 350);
+            expect(postedOfType(webview, 'requestSessions')).toEqual([]);
+        });
+    });
+
+    describe('operator prompts', () => {
+        const approval = {
+            kind: 'approval',
+            id: 'a1',
+            subject: 'exec',
+            title: XSS,
+            details: ['Working folder: /work', XSS],
+            decisions: ['allow-once', 'deny'],
+            sessionKey: 'agent:main:main',
+            runId: 'r1',
+            expiresAtMs: 4102444800000,
+            state: 'pending',
+            status: '',
+        };
+
+        const question = {
+            kind: 'question',
+            id: 'q1',
+            questions: [
+                { id: 'color', header: 'Color', text: 'Which color?', options: [{ label: 'Red', description: null }, { label: 'Blue', description: XSS }], multiSelect: false, allowsOther: true, secret: false },
+                { id: 'token', header: '', text: 'Token?', options: [], multiSelect: false, allowsOther: true, secret: true },
+            ],
+            sessionKey: 'agent:main:main',
+            runId: null,
+            expiresAtMs: 4102444800000,
+            state: 'pending',
+            status: '',
+        };
+
+        function card(webview: Webview, promptId: string): HTMLElement {
+            const match = Array.from(webview.document.querySelectorAll<HTMLElement>('.prompt-card')).find(el => el.getAttribute('data-prompt-id') === promptId);
+            if (!match) {
+                throw new Error(`no prompt card ${promptId}`);
+            }
+            return match;
+        }
+
+        function buttonLabeled(webview: Webview, promptId: string, label: string): HTMLButtonElement {
+            const button = Array.from(card(webview, promptId).querySelectorAll('button')).find(el => el.textContent === label);
+            if (!button) {
+                throw new Error(`no ${label} button`);
+            }
+            return button;
+        }
+
+        function field(webview: Webview, promptId: string, selector: string): HTMLInputElement {
+            const match = card(webview, promptId).querySelector<HTMLInputElement>(selector);
+            if (!match) {
+                throw new Error(`no ${selector}`);
+            }
+            return match;
+        }
+
+        it('renders an approval as text, never markup, with one button per offered decision', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { prompts: [approval] })]);
+            expect(card(webview, 'a1').getAttribute('role')).toBe('group');
+            expect(card(webview, 'a1').querySelector('.prompt-title')?.textContent).toBe(XSS);
+            expect(Array.from(card(webview, 'a1').querySelectorAll('.prompt-details li'), li => li.textContent)).toEqual(['Working folder: /work', XSS]);
+            expect(webview.document.querySelectorAll('img')).toHaveLength(0);
+            expect(Array.from(card(webview, 'a1').querySelectorAll('button'), button => button.textContent)).toEqual(['Approve once', 'Deny']);
+            click(webview, buttonLabeled(webview, 'a1', 'Deny'));
+            expect(postedOfType(webview, 'resolveApproval')).toEqual([{ type: 'resolveApproval', threadId: 't1', promptId: 'a1', decision: 'deny' }]);
+        });
+
+        it('shows a settled row with its status and no buttons, and a sending row with its buttons disabled', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'Allowed once elsewhere' }, { ...question, state: 'submitting', status: 'Sending…' }] })]);
+            expect(card(webview, 'a1').querySelectorAll('button')).toHaveLength(0);
+            expect(card(webview, 'a1').querySelector('[role="status"]')?.textContent).toBe('Allowed once elsewhere');
+            expect(Array.from(card(webview, 'q1').querySelectorAll('button'), button => button.disabled)).toEqual([true, true]);
+        });
+
+        it('sends the chosen option, or a typed answer in its place, and keeps drafts across re-renders', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { prompts: [question] })]);
+            expect(field(webview, 'q1', '.prompt-other[type="password"]').getAttribute('aria-label')).toBe('Your answer');
+            const blue = card(webview, 'q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1];
+            click(webview, blue);
+            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="password"]'), 's3cret');
+            hostState(webview, [thread('t1', { prompts: [question], messages: [{ role: 'user', content: 'moved on' }] })]);
+            click(webview, buttonLabeled(webview, 'q1', 'Send answer'));
+            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptId: 'q1', answers: { color: ['Blue'], token: ['s3cret'] } });
+            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="text"]'), 'Teal');
+            expect(card(webview, 'q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1].checked).toBe(false);
+            press(webview, field(webview, 'q1', '.prompt-other[type="text"]'), 'Enter');
+            expect(postedOfType(webview, 'answerQuestion').pop()).toMatchObject({ answers: { color: ['Teal'], token: ['s3cret'] } });
+            click(webview, buttonLabeled(webview, 'q1', 'Skip'));
+            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptId: 'q1', answers: null });
+        });
+
+        it('hands focus back to the control that had it when the rows change', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { prompts: [question] })]);
+            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="text"]'), 'Te');
+            hostState(webview, [thread('t1', { prompts: [{ ...question, status: 'Answer every question.' }] })]);
+            expect(webview.document.activeElement).toBe(field(webview, 'q1', '.prompt-other[type="text"]'));
+            expect(field(webview, 'q1', '.prompt-other[type="text"]').value).toBe('Te');
+            hostState(webview, [thread('t1', { prompts: [] })]);
+            expect(webview.document.querySelector('.pane-prompts')).toBeNull();
+        });
     });
 });

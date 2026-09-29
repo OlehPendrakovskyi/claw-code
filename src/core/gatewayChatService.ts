@@ -16,15 +16,25 @@
 import { randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
 import { redactEndpoint, redactPlainSecrets } from './accessInfo/redact';
-import type { GatewayProtocolAdapter, WireRequest } from './gatewayProtocol/adapter';
+import type { ClientHello, GatewayProtocolAdapter, WireRequest } from './gatewayProtocol/adapter';
+import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
+import { proveDevice } from './gatewayProtocol/deviceIdentity';
 import type {
+  ApprovalDecision,
+  ApprovalWait,
   ConnectionAccepted,
   ConnectionLimits,
+  DeviceProof,
   HandshakeRejection,
   HistoryRead,
   HistorySnapshot,
   InboundEvent,
   InboundFrame,
+  OperatorPrompt,
+  PairingRequest,
+  PromptAccess,
+  PromptOutcome,
+  QuestionAnswers,
   RpcFailure,
   SendAttachment,
   SessionSummary,
@@ -36,6 +46,9 @@ import type { ProtocolRange, ProtocolSetting } from './gatewayProtocol/registry'
 import { handshakeAdapter, isAdapter, negotiatedAdapter, resolveProtocolSetting } from './gatewayProtocol/registry';
 import { applyAborted, applyDelta, applyFinal, BoundedSet, newRunText } from './gatewayRunText';
 import type { RunText } from './gatewayRunText';
+import { OperatorPromptBoard } from './operatorPrompts';
+import type { PromptListener } from './operatorPrompts';
+import { TruncatedRowCompleter } from './truncatedRows';
 
 /** The session a thread targets until it opens another one; the gateway resolves the alias. */
 export const DEFAULT_SESSION_KEY = 'main';
@@ -71,7 +84,17 @@ export type GatewayChatServiceOptions = {
   reconnectBaseDelayMs?: number;
   /** Reconnect max delay in ms. */
   reconnectMaxDelayMs?: number;
+  /** This client's device identity and the tokens gateways issued it; without it the client connects as no device. */
+  deviceCredentials?: DeviceCredentialStore;
+  /** Whether a stored device token may be offered to `url` after it refused the shared token (loopback only). */
+  trustsDeviceTokenRetry?: (url: string) => boolean;
 };
+
+/** A pairing approval the client waits for: pending (and retried), approved, or given up on. */
+export type PairingState =
+  | { status: 'pending'; request: PairingRequest; hint: string }
+  | { status: 'approved' }
+  | { status: 'expired'; request: PairingRequest; hint: string };
 
 /** A local send: the run it starts and the sink that receives it. */
 export type GatewaySend = {
@@ -116,6 +139,8 @@ type OwnedRun = {
 
 type RunEvent = Extract<InboundEvent, { runId: string }>;
 
+type ChallengeEvent = Extract<InboundEvent, { kind: 'challenge' }>;
+
 type SessionState = {
   key: string;
   observers: Set<ChatSink>;
@@ -138,9 +163,40 @@ type SessionState = {
   aborting: boolean;
   /** Tool updates already shown, as `agent` and `session.tool` may both carry one. */
   toolUpdates: BoundedSet<string>;
+  /** Transcript rows held back while a cut row among them is read in full; later rows queue behind. */
+  rowsInFlight: Promise<void> | null;
 };
 
-type Connection = { adapter: GatewayProtocolAdapter; accepted: ConnectionAccepted };
+/** `deviceId`: the identity the handshake proved, or null for a device-less connection. */
+type Connection = { adapter: GatewayProtocolAdapter; accepted: ConnectionAccepted; deviceId: string | null };
+
+/** The identity one handshake proves, and the token its gateway issued it before. */
+type DeviceAuth = { identity: DeviceIdentity; storedToken: StoredDeviceToken | null };
+
+/** What one handshake presented, for judging how its rejection may be retried. */
+type HandshakeAttempt = { device: DeviceAuth | null; sentDeviceToken: boolean };
+
+/** Where a local run started: that connection, and the device it proved (null without one). */
+type RunOrigin = { connection: number; deviceId: string | null };
+
+/** The pairing approval being waited for, since the first rejection asked for it. */
+type PairingWait = { sinceMs: number; expired: boolean };
+
+/** A cancel made while disconnected: the device that started its runs may stop them after the next handshake. */
+type QueuedAbort = {
+  state: SessionState;
+  runIds: string[];
+  deviceId: string;
+  sink: ChatSink;
+  /** Some of the cancelled runs could not be stopped anyway. */
+  runContinues: boolean;
+  /** Times its abort already went out and was lost with the socket. */
+  resends: number;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** `lost`: the socket closed before the gateway answered. */
+type AbortOutcome = 'stopped' | 'refused' | 'lost';
 
 /** A run seen streaming, and the connection it was last heard on. */
 type LiveRun = RunText & { heardOn: number | null };
@@ -170,15 +226,35 @@ const NOT_CONNECTED_MESSAGE =
   'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.';
 const RUN_FAILED_MESSAGE = 'The gateway reported that the run failed.';
 const RUN_CONTINUES_NOTICE =
-  'Could not stop the run: the gateway lets only the connection that started it stop it, and the connection was re-established since. It continues on the gateway.';
+  'Could not stop the run: the gateway lets only the connection or the device identity that started it stop it, and neither is connected now. It continues on the gateway.';
 /** `chat.send` attempts before an unanswered send is given up. */
 const MAX_SEND_ATTEMPTS = 3;
 /** Bounds on paging: `sessions.list` pages of 100, and history pages before the latest. */
 const MAX_SESSION_PAGES = 10;
 const MAX_OLDER_HISTORY_PAGES = 4;
 const SEND_RETRY_DELAY_MS = 1000;
+/** Longest a handshake waits for SecretStorage before connecting without a device identity. */
+const DEVICE_LOAD_TIMEOUT_MS = 5000;
+/** A pending approval is retried at this pace; every attempt keeps the gateway's request alive. */
+const PAIRING_RETRY_DELAY_MS = 5000;
+/** How long an unanswered pairing request is retried before the client stops and says so. */
+const PAIRING_WAIT_LIMIT_MS = 15 * 60_000;
+/** How long a cancel made while disconnected waits for the next handshake. */
+const QUEUED_ABORT_LIMIT_MS = 120_000;
+/** How often an abort lost with its socket is held for the next handshake again. */
+const MAX_ABORT_RESENDS = 2;
+/** The official client's reset backoff before its one retry with a stored device token. */
+const DEVICE_TOKEN_RETRY_DELAY_MS = 250;
 const SEND_UNCONFIRMED_MESSAGE =
   'The gateway did not confirm the send before the connection dropped or timed out; the message may still run — reopen the session to check.';
+
+const PROMPT_KINDS: readonly OperatorPrompt['kind'][] = ['approval', 'question'];
+const NO_PROMPT_ACCESS: PromptAccess = { approvals: false, questions: false };
+const PROMPT_GONE_MESSAGE = 'This request is no longer pending, or does not offer that answer.';
+const APPROVAL_ELSEWHERE_NOTICE =
+  'This run is waiting for approval in OpenClaw. Approve it in the OpenClaw Control UI; to approve here, this client needs a paired device identity with the operator.approvals scope.';
+const APPROVAL_UNAVAILABLE_NOTICE =
+  'A command in this run needed approval, but no approval client could see the request, so it did not run. Approving here needs a paired device identity with the operator.approvals scope.';
 
 /** A request the client refused to send because its frame exceeds the gateway's payload limit. */
 class FrameTooLargeError extends Error {}
@@ -216,6 +292,20 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** Run `use` on a value now, or once its promise resolves. */
+function whenReady<T>(value: T | Promise<T>, use: (ready: T) => void): void {
+  if (value instanceof Promise) void value.then(use);
+  else use(value);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function frameText(data: unknown): string | null {
   if (typeof data === 'string') return data;
   return data instanceof Buffer ? data.toString('utf8') : null;
@@ -246,6 +336,7 @@ function newSessionState(key: string): SessionState {
     catchUpAgain: false,
     aborting: false,
     toolUpdates: new BoundedSet(RUN_HISTORY_LIMIT),
+    rowsInFlight: null,
   };
 }
 
@@ -287,6 +378,8 @@ export class GatewayChatService {
   private readonly wsFactory: WebSocketFactory;
   private readonly baseDelayMs: number;
   private readonly maxDelayMs: number;
+  private readonly deviceCredentials: DeviceCredentialStore | null;
+  private readonly trustsDeviceTokenRetry: (url: string) => boolean;
 
   /** Socket of the current attempt, handshaking or live. */
   private ws: WebSocketLike | null = null;
@@ -315,11 +408,20 @@ export class GatewayChatService {
   private readonly sessions = new Map<string, SessionState>();
   /** Requested key → canonical key, as the gateway resolved it. */
   private readonly aliases = new Map<string, string>();
-  /** Run ids this client started: only these are ever aborted. */
-  /** Runs this client started → the connection that started them: only that connection may stop them. */
-  private readonly localRuns = new Map<string, number>();
+  /** Runs this client started → where they started: only that connection or device may stop them. */
+  private readonly localRuns = new Map<string, RunOrigin>();
+  /** The one retry with a stored device token a refused shared token allows, until a handshake succeeds. */
+  private deviceTokenRetry: 'unused' | 'pending' | 'spent' = 'unused';
+  private pairingWait: PairingWait | null = null;
+  /** The identity the latest handshake proved; a queued abort waits for it to connect again. */
+  private lastDeviceId: string | null = null;
+  private readonly queuedAborts = new Set<QueuedAbort>();
+  private readonly pairingListeners = new Set<(state: PairingState) => void>();
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
   private readonly sessionsChangedListeners = new Set<(sessionKey: string | null) => void>();
+  /** Approvals and questions waiting for an operator, across reconnects. */
+  private readonly prompts = new OperatorPromptBoard();
+  private readonly rowCompleter = new TruncatedRowCompleter((sessionKey, entryId) => this.readEntry(sessionKey, entryId));
 
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
   /** Last state told to the listeners: a hello followed by a same-tick close announces nothing. */
@@ -333,6 +435,8 @@ export class GatewayChatService {
     this.wsFactory = deps.wsFactory ?? defaultWsFactory;
     this.baseDelayMs = deps.reconnectBaseDelayMs ?? 1000;
     this.maxDelayMs = deps.reconnectMaxDelayMs ?? 30_000;
+    this.deviceCredentials = deps.deviceCredentials ?? null;
+    this.trustsDeviceTokenRetry = deps.trustsDeviceTokenRetry ?? (() => false);
   }
 
   /** Whether the socket is currently open and handshook. */
@@ -349,6 +453,12 @@ export class GatewayChatService {
   onConnectionStateChange(listener: (connected: boolean) => void): () => void {
     this.connectionListeners.add(listener);
     return () => this.connectionListeners.delete(listener);
+  }
+
+  /** Observe pairing approvals this client waits for; returns the unsubscribe. */
+  onPairingChange(listener: (state: PairingState) => void): () => void {
+    this.pairingListeners.add(listener);
+    return () => this.pairingListeners.delete(listener);
   }
 
   /** Payload and attachment limits the gateway advertised on the latest handshake. */
@@ -389,6 +499,7 @@ export class GatewayChatService {
     this.url = url;
     this.token = token;
     this.protocol = protocol;
+    this.forgetDeviceAuthState();
     this.connectGeneration += 1;
     this.connectPromise = null;
     this.abortRemoteRuns();
@@ -396,11 +507,30 @@ export class GatewayChatService {
     this.retireAllSinks();
     this.sessions.clear();
     this.aliases.clear();
+    this.releaseEndpointState();
     if (!this.ws) {
       return;
     }
     this.closeSocket('gateway connection settings changed');
     this.scheduleReconnect();
+  }
+
+  /** The stored device identity changed (reset, or replaced by another window): prove the current one. */
+  resetDeviceIdentity(): void {
+    this.forgetDeviceAuthState();
+    if (!this.ws || this.disposed) {
+      return;
+    }
+    this.closeSocket('gateway device identity changed');
+    this.scheduleReconnect();
+  }
+
+  /** Pairing waits and the token retry belong to one identity at one endpoint. */
+  private forgetDeviceAuthState(): void {
+    this.pairingWait = null;
+    this.deviceTokenRetry = 'unused';
+    this.lastDeviceId = null;
+    this.abandonQueuedAborts();
   }
 
   /**
@@ -420,6 +550,8 @@ export class GatewayChatService {
       return Promise.resolve();
     }
     this.clearReconnectTimer();
+    // An explicit attempt after the pairing wait gave up starts a new wait.
+    if (this.pairingWait?.expired) this.pairingWait = null;
     const generation = ++this.connectGeneration;
     const attempt: Promise<void> = this.openAndHandshake()
       .then((connection) => this.completeHandshake(generation, connection))
@@ -438,6 +570,7 @@ export class GatewayChatService {
     this.stopConnecting();
     this.abortRemoteRuns();
     this.retireAllSinks();
+    this.releaseEndpointState();
     this.closeSocket('gateway transport suspended');
   }
 
@@ -446,6 +579,7 @@ export class GatewayChatService {
     this.disposed = true;
     this.stopConnecting();
     this.retireAllSinks();
+    this.releaseEndpointState();
     this.closeSocket('gateway client disposed');
   }
 
@@ -474,6 +608,10 @@ export class GatewayChatService {
     this.negotiatedVersion = connection.adapter.version;
     this.reconnectAttempt = 0;
     this.restartDelayMs = 0;
+    this.deviceTokenRetry = 'unused';
+    this.endPairingWait();
+    this.lastDeviceId = connection.deviceId;
+    this.sendQueuedAborts(connection.deviceId);
     this.lastConnectionSeq = null;
     ws.on('message', (data: unknown) => {
       if (this.liveWs === ws) {
@@ -486,6 +624,7 @@ export class GatewayChatService {
     this.warnAboutMissingOperations(connection);
     this.adoptSessionAliases(accepted.sessionAliases);
     this.subscribeSessionEvents();
+    this.backfillPrompts(connection);
     this.resubscribeSessions();
     this.announceConnection(true);
   }
@@ -515,6 +654,98 @@ export class GatewayChatService {
     return () => this.sessionsChangedListeners.delete(listener);
   }
 
+  /* ---------------------------------------------------------------- */
+  /* Operator prompts: approvals and agent questions                   */
+  /* ---------------------------------------------------------------- */
+
+  /** Observe approvals and questions waiting for an operator; pending ones are replayed first.
+   *  A prompt's session key is canonical, or the session of the run it names. */
+  onApprovalRequest(listener: PromptListener): () => void {
+    return this.prompts.subscribe(listener);
+  }
+
+  /** Which prompts the live connection may see and answer; none while disconnected. */
+  getPromptAccess(): PromptAccess {
+    const connection = this.connection;
+    return connection ? connection.adapter.promptAccess(connection.accepted, connection.deviceId !== null) : NO_PROMPT_ACCESS;
+  }
+
+  /** Answer a pending approval; one settled meanwhile elsewhere is withdrawn instead. */
+  async resolveApproval(id: string, decision: ApprovalDecision): Promise<void> {
+    const prompt = this.prompts.get(id);
+    if (prompt?.kind !== 'approval' || !prompt.decisions.includes(decision)) {
+      throw new Error(PROMPT_GONE_MESSAGE);
+    }
+    await this.settlePrompt(id, decision, (adapter) => adapter.approvalResolveRequest({ id, subject: prompt.subject, decision }));
+  }
+
+  /** Answer every question of a pending question prompt at once, or decline it with null. */
+  async answerQuestion(id: string, answers: QuestionAnswers | null): Promise<void> {
+    if (this.prompts.get(id)?.kind !== 'question') {
+      throw new Error(PROMPT_GONE_MESSAGE);
+    }
+    await this.settlePrompt(id, answers ? 'answered' : 'cancelled', (adapter) => adapter.questionReplyRequest({ id, answers }));
+  }
+
+  private async settlePrompt(id: string, outcome: PromptOutcome, build: (adapter: GatewayProtocolAdapter) => WireRequest): Promise<void> {
+    try {
+      await this.request(build);
+      this.prompts.settle(id, outcome);
+    } catch (err) {
+      const stale = err instanceof RpcRejectedError && (this.connection?.adapter ?? this.offeredAdapter()).isStalePromptFailure(err.failure);
+      if (!stale) throw err;
+      this.prompts.settle(id, 'withdrawn');
+    }
+  }
+
+  /** The canonical session a prompt waits in: its own key, else the session following its run. */
+  private locatePrompt(prompt: OperatorPrompt): OperatorPrompt {
+    const runId = prompt.runId;
+    const runSession = runId ? [...this.sessions.values()].find((state) => state.liveRuns.has(runId) || state.owned?.followed.has(runId)) : undefined;
+    const sessionKey = prompt.sessionKey ? this.canonicalSessionKey(prompt.sessionKey) : (runSession?.key ?? null);
+    return sessionKey === prompt.sessionKey ? prompt : { ...prompt, sessionKey };
+  }
+
+  /** Announce what waited before this connection; prompts of kinds it may no longer see are gone for it. */
+  private backfillPrompts({ adapter, accepted, deviceId }: Connection): void {
+    const access = adapter.promptAccess(accepted, deviceId !== null);
+    this.prompts.withdraw(PROMPT_KINDS.filter((kind) => !(kind === 'approval' ? access.approvals : access.questions)));
+    if (!access.approvals) {
+      this.logger.info('approvals are not visible to this connection (operator.approvals and a device identity needed): shown as notices only');
+    }
+    const reads = adapter.pendingPromptRequests(access);
+    if (reads.length === 0) {
+      return;
+    }
+    const backfill = this.prompts.beginBackfill();
+    const lists = reads.map(({ kind, request }) =>
+      this.request(() => request)
+        .then(({ adapter: answered, payload }) => ({ kind, prompts: answered.parsePendingPrompts(payload) }))
+        .catch((err: Error) => {
+          this.logger.warn(`${request.method} failed ${err.message}`);
+          return { kind, prompts: null };
+        })
+    );
+    void Promise.all(lists).then((results) => {
+      const failed = new Set(results.filter((result) => result.prompts === null).map((result) => result.kind));
+      const listed = results.flatMap((result) => result.prompts ?? []).map((prompt) => this.locatePrompt(prompt));
+      this.prompts.finishBackfill(backfill, listed, PROMPT_KINDS.filter((kind) => !failed.has(kind) && results.some((result) => result.kind === kind)));
+    });
+  }
+
+  /** A tool waits for an approval this connection cannot show, or no one could be asked: say so. */
+  private approvalWaitNotice(wait: ApprovalWait | null): ChatEvent[] {
+    if (wait === 'unavailable') return [{ type: 'notice', text: APPROVAL_UNAVAILABLE_NOTICE }];
+    if (wait === 'pending' && !this.getPromptAccess().approvals) return [{ type: 'notice', text: APPROVAL_ELSEWHERE_NOTICE }];
+    return [];
+  }
+
+  /** Prompts and full-row reads belong to one endpoint. */
+  private releaseEndpointState(): void {
+    this.prompts.withdraw(PROMPT_KINDS);
+    this.rowCompleter.reset();
+  }
+
   private warnAboutMissingOperations({ adapter, accepted }: Connection): void {
     const missing = adapter.missingOperations(accepted.features);
     if (missing.length > 0) {
@@ -540,11 +771,13 @@ export class GatewayChatService {
     this.ws = ws;
     const range = this.handshakeRange();
     const adapter = handshakeAdapter(range);
+    const deviceAuth = this.loadDeviceAuth();
     return new Promise<Connection>((resolve, reject) => {
       let settled = false;
       // Kept for the close that follows the error frame: it must not reclassify the rejection.
       let rejection: HandshakeRejection | null = null;
       let connectRequestId: string | null = null;
+      const attempt: HandshakeAttempt = { device: null, sentDeviceToken: false };
       const settle = (): boolean => {
         if (settled) return false;
         settled = true;
@@ -569,27 +802,33 @@ export class GatewayChatService {
       const failRejected = (rejected: HandshakeRejection): void => {
         // Only the live handshake listener gets here, so the handshake is still unsettled.
         settle();
-        rejection = { ...rejected, message: this.redactGatewayMessage(rejected.message) };
+        rejection = this.reviewRejection({ ...rejected, message: this.redactGatewayMessage(rejected.message) }, attempt);
         const detail = rejection.message ? `: ${rejection.message}` : '';
         reject(new GatewayConnectError(`gateway handshake rejected code=${rejection.code}${detail}`, rejection));
         closeQuietly();
       };
-      const sendHello = (): void => {
-        if (connectRequestId !== null) return;
-        connectRequestId = this.allocId();
-        const hello = adapter.connectRequest({
-          token: this.token,
-          minProtocol: range.min,
-          maxProtocol: range.max,
-          clientVersion: CLIENT_VERSION,
-          platform: process.platform,
-        });
-        const serialized = adapter.encodeRequest(connectRequestId, hello);
+      const transmitHello = (requestId: string, challenge: ChallengeEvent, device: DeviceAuth | null): void => {
+        if (settled) return;
+        attempt.device = device;
+        const hello = this.nextClientHello(range, device);
+        attempt.sentDeviceToken = hello.deviceToken !== undefined;
+        const proof = device ? this.deviceProof(adapter, hello, device.identity, challenge) : undefined;
+        if (proof === null) {
+          fail('gateway connect challenge carries no usable nonce or timestamp');
+          return;
+        }
+        const serialized = adapter.encodeRequest(requestId, adapter.connectRequest(hello, proof));
         if (Buffer.byteLength(serialized) > adapter.preAuthPayloadLimitBytes) {
           failRejected(oversizedConnectRejection(adapter.preAuthPayloadLimitBytes));
           return;
         }
         ws.send(serialized);
+      };
+      const sendHello = (challenge: ChallengeEvent): void => {
+        if (connectRequestId !== null) return;
+        const requestId = this.allocId();
+        connectRequestId = requestId;
+        whenReady(deviceAuth, (device) => transmitHello(requestId, challenge, device));
       };
       const accept = (payload: unknown): void => {
         const accepted = adapter.parseHello(payload);
@@ -613,13 +852,14 @@ export class GatewayChatService {
         }
         settle();
         this.liveWs = ws;
-        resolve({ adapter: negotiated, accepted });
+        this.keepIssuedDeviceToken(attempt.device, accepted);
+        resolve({ adapter: negotiated, accepted, deviceId: attempt.device?.identity.deviceId ?? null });
       };
       const onMessage = (data: unknown): void => {
         const text = frameText(data);
         const frame = text === null ? null : adapter.decodeFrame(text);
         if (frame?.type === 'event') {
-          if (frame.event?.kind === 'challenge') sendHello();
+          if (frame.event?.kind === 'challenge') sendHello(frame.event);
           return;
         }
         if (!frame || frame.id !== connectRequestId) return;
@@ -640,7 +880,7 @@ export class GatewayChatService {
           return;
         }
         abandon('gateway closed before handshake completed');
-        this.handleSocketClosed(rejection);
+        this.handleSocketClosed(rejection, attempt.device !== null);
       };
       const handshakeTimer = setTimeout(() => fail('gateway handshake timed out waiting for connect.challenge or hello'), HANDSHAKE_TIMEOUT_MS);
       ws.on('message', onMessage);
@@ -649,16 +889,146 @@ export class GatewayChatService {
     });
   }
 
+  /** The identity this handshake proves, or null to connect without one (no store, or SecretStorage failed). */
+  private loadDeviceAuth(): Promise<DeviceAuth | null> | null {
+    const store = this.deviceCredentials;
+    if (!store) {
+      return null;
+    }
+    const gateway = this.gatewayKey();
+    const load = async (): Promise<DeviceAuth> => {
+      const identity = await store.loadIdentity();
+      const storedToken = await store.loadToken(gateway, identity.deviceId).catch(() => null);
+      return { identity, storedToken };
+    };
+    return withTimeout(load(), DEVICE_LOAD_TIMEOUT_MS, 'SecretStorage timed out').catch((err: unknown) => {
+      this.logger.warn(`gateway device identity unavailable; connecting without one ${errorMessage(err)}`);
+      return null;
+    });
+  }
+
+  /** The hello of the next attempt; it carries the stored device token once, when a retry with it is due. */
+  private nextClientHello(range: ProtocolRange, device: DeviceAuth | null): ClientHello {
+    const hello = { token: this.token, minProtocol: range.min, maxProtocol: range.max, clientVersion: CLIENT_VERSION, platform: process.platform };
+    const retryToken = this.deviceTokenRetry === 'pending' ? device?.storedToken?.token : undefined;
+    if (!retryToken) {
+      return hello;
+    }
+    this.deviceTokenRetry = 'spent';
+    return { ...hello, deviceToken: retryToken };
+  }
+
+  /** Null when the challenge lacks the nonce or timestamp a device signs. */
+  private deviceProof(adapter: GatewayProtocolAdapter, hello: ClientHello, identity: DeviceIdentity, challenge: ChallengeEvent): DeviceProof | null {
+    const { nonce, issuedAtMs } = challenge;
+    if (nonce === null || issuedAtMs === null) {
+      return null;
+    }
+    return proveDevice(identity, adapter, hello, { nonce, issuedAtMs });
+  }
+
+  /** Device tokens are kept per gateway origin, so one gateway's token never reaches another. */
+  private gatewayKey(): string {
+    try {
+      return new URL(this.url).origin;
+    } catch {
+      return this.url;
+    }
+  }
+
+  /** Persist a token the hello issued, unless it is the stored one, whose recorded grant stays. */
+  private keepIssuedDeviceToken(device: DeviceAuth | null, accepted: ConnectionAccepted): void {
+    const store = this.deviceCredentials;
+    const token = accepted.deviceToken;
+    if (!store || !device || !token || device.storedToken?.token === token) {
+      return;
+    }
+    const record: StoredDeviceToken = { deviceId: device.identity.deviceId, role: accepted.role, token, scopes: accepted.scopes };
+    store.storeToken(this.gatewayKey(), record).catch((err: unknown) => {
+      this.logger.warn(`storing the gateway device token failed ${errorMessage(err)}`);
+    });
+  }
+
+  /** Act on what a rejection says about this device's token, and allow the one retry the gateway offers. */
+  private reviewRejection(rejection: HandshakeRejection, attempt: HandshakeAttempt): HandshakeRejection {
+    const store = this.deviceCredentials;
+    if (rejection.staleDeviceToken && attempt.sentDeviceToken && store && attempt.device) {
+      this.logger.warn('gateway refused the stored device token; forgetting it');
+      store.clearToken(this.gatewayKey(), attempt.device.identity.deviceId).catch((err: unknown) => {
+        this.logger.warn(`clearing the gateway device token failed ${errorMessage(err)}`);
+      });
+    }
+    if (!this.allowsDeviceTokenRetry(rejection, attempt)) {
+      return rejection;
+    }
+    this.deviceTokenRetry = 'pending';
+    return { ...rejection, kind: 'backoff', retryAfterMs: DEVICE_TOKEN_RETRY_DELAY_MS };
+  }
+
+  /** shouldRetryGatewayWithDeviceToken: once, with a stored token, and only to a trusted endpoint. */
+  private allowsDeviceTokenRetry(rejection: HandshakeRejection, attempt: HandshakeAttempt): boolean {
+    return (
+      rejection.deviceTokenRetry === true &&
+      this.deviceTokenRetry === 'unused' &&
+      !attempt.sentDeviceToken &&
+      Boolean(attempt.device?.storedToken) &&
+      this.trustsDeviceTokenRetry(this.url)
+    );
+  }
+
+  /** Nothing tells a rejected client that its device was approved, so a pending approval is asked
+   *  about again at a slow pace, until approved or the wait limit passes. */
+  private notePairingRequired(pairing: PairingRequest, hint: string): void {
+    const wait = (this.pairingWait ??= { sinceMs: Date.now(), expired: false });
+    if (wait.expired) {
+      return;
+    }
+    if (Date.now() - wait.sinceMs < PAIRING_WAIT_LIMIT_MS) {
+      this.announcePairing({ status: 'pending', request: pairing, hint });
+      return;
+    }
+    wait.expired = true;
+    this.logger.warn('gateway device pairing was not approved in time; no longer retrying');
+    this.announcePairing({ status: 'expired', request: pairing, hint });
+  }
+
+  private awaitsPairing(rejection: HandshakeRejection): boolean {
+    return rejection.pairing !== undefined && this.pairingWait !== null && !this.pairingWait.expired;
+  }
+
+  private endPairingWait(): void {
+    if (!this.pairingWait) {
+      return;
+    }
+    this.pairingWait = null;
+    this.announcePairing({ status: 'approved' });
+  }
+
+  private announcePairing(state: PairingState): void {
+    for (const listener of [...this.pairingListeners]) listener(state);
+  }
+
   /** The current socket closed: subscriptions and RPCs die with it. Accepted runs survive a
    *  reconnect, except after a permanent or pause rejection, when none follows until the
-   *  user reconnects or changes the settings. */
-  private handleSocketClosed(rejection: HandshakeRejection | null): void {
+   *  user reconnects or changes the settings, or the gateway approves this device. */
+  private handleSocketClosed(rejection: HandshakeRejection | null, provedDevice: boolean): void {
     this.liveWs = null;
     this.connection = null;
     this.stopKeepalive();
     this.announceConnection(false);
     this.forgetSubscriptions();
     this.rejectAllPending('gateway connection closed');
+    // Only a device the gateway can pair is worth waiting for.
+    if (rejection?.pairing && provedDevice) {
+      this.notePairingRequired(rejection.pairing, rejection.hint);
+    }
+    if (rejection?.kind === 'pause' && this.awaitsPairing(rejection)) {
+      this.logger.info('gateway waits for this device to be approved; asking again shortly');
+      this.finishOwnedRuns(`The gateway rejected this connection, so the run was interrupted. ${rejection.hint}`);
+      this.reconnectAttempt = 0;
+      this.scheduleReconnect(PAIRING_RETRY_DELAY_MS);
+      return;
+    }
     if (rejection && rejection.kind !== 'backoff') {
       this.logger.warn(`gateway rejected the handshake code=${rejection.code}; not reconnecting until the connection settings change`);
       this.finishOwnedRuns(`The gateway rejected this connection, so the run was interrupted. ${rejection.hint}`);
@@ -683,7 +1053,10 @@ export class GatewayChatService {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.connect().catch((err: Error) => {
-        this.logger.error(`gateway reconnect failed ${this.redactCredentials(err.message)}`);
+        // A pending approval fails every attempt until it is granted; that is waiting, not an error.
+        const message = `gateway reconnect failed ${this.redactCredentials(err.message)}`;
+        if (err instanceof GatewayConnectError && err.rejection.pairing) this.logger.info(message);
+        else this.logger.error(message);
       });
     }, delay);
   }
@@ -1252,7 +1625,7 @@ export class GatewayChatService {
 
   private rememberLocalRun(runId: string): void {
     this.localRuns.delete(runId);
-    this.localRuns.set(runId, this.connectionCount);
+    this.localRuns.set(runId, { connection: this.connectionCount, deviceId: this.connection?.deviceId ?? null });
     if (this.localRuns.size > RUN_HISTORY_LIMIT) {
       const [oldest] = this.localRuns.keys();
       this.localRuns.delete(oldest);
@@ -1312,15 +1685,22 @@ export class GatewayChatService {
     return [...owned.followed].filter((runId) => this.localRuns.has(runId) && !state.finishedRuns.has(runId));
   }
 
-  /** The gateway lets only the connection that started a run stop it (without device identity). */
+  /** The gateway lets only the connection or the device that started a run stop it (canRequesterAbortChatRun). */
   private stoppableHere(runId: string): boolean {
-    return this.liveWs !== null && this.localRuns.get(runId) === this.connectionCount;
+    const origin = this.localRuns.get(runId);
+    const deviceId = this.connection?.deviceId ?? null;
+    if (!this.liveWs || !origin) {
+      return false;
+    }
+    return origin.connection === this.connectionCount || (deviceId !== null && origin.deviceId === deviceId);
   }
 
   /**
    * Cancel the local run of a session and complete its sink with one `done`.
-   * `chat.abort` goes out only for runs this connection started; a send still
-   * preparing has none. A run the gateway will not let this connection stop
+   * `chat.abort` goes out only for runs this connection, or this device over
+   * an earlier connection, started; a send still preparing has none. While
+   * disconnected, the abort of a run this device started waits for the next
+   * handshake. A run the gateway will not let this connection stop
    * keeps running and streaming to the session's observers, and the sink
    * says so. Transcript sinks of other threads on the session stay.
    */
@@ -1334,13 +1714,64 @@ export class GatewayChatService {
     state.unclaimed = [];
     const runIds = owned.stage === 'preparing' ? [] : this.localRunsOf(state, owned);
     const stoppable = runIds.filter((runId) => this.stoppableHere(runId));
-    const unstoppable = runIds.length > stoppable.length;
+    const queueable = runIds.filter((runId) => this.stoppableOnReconnect(runId));
+    const unstoppable = runIds.length > stoppable.length + queueable.length;
     if (stoppable.length > 0) {
       this.sendAborts(state, stoppable, owned.sink, unstoppable);
       return;
     }
+    if (this.lastDeviceId && queueable.length > 0) {
+      this.queueAbort(state, queueable, this.lastDeviceId, owned.sink, unstoppable);
+      return;
+    }
     this.completeAbortedSink(owned.sink, unstoppable);
     this.releaseIfIdle(state);
+  }
+
+  /** Disconnected, but the device that started the run will connect again and may stop it then. */
+  private stoppableOnReconnect(runId: string): boolean {
+    const deviceId = this.localRuns.get(runId)?.deviceId ?? null;
+    return !this.liveWs && !this.disposed && deviceId !== null && deviceId === this.lastDeviceId;
+  }
+
+  /** Hold a cancel for the next handshake; its sink completes once the gateway answered, as a sent abort's does. */
+  private queueAbort(state: SessionState, runIds: string[], deviceId: string, sink: ChatSink, runContinues: boolean, resends = 0): void {
+    state.aborting = true;
+    const timer = setTimeout(() => this.endQueuedAbort(queued, true), QUEUED_ABORT_LIMIT_MS);
+    const queued: QueuedAbort = { state, runIds, deviceId, sink, runContinues, resends, timer };
+    queued.timer.unref?.();
+    this.queuedAborts.add(queued);
+    this.logger.info(`gateway disconnected; chat.abort waits for the next handshake runs=${runIds.length}`);
+  }
+
+  /** After a handshake the same device sends the queued aborts; another identity may not. */
+  private sendQueuedAborts(deviceId: string | null): void {
+    for (const queued of [...this.queuedAborts]) {
+      const { state } = queued;
+      const unfinished = queued.runIds.filter((runId) => !state.finishedRuns.has(runId));
+      if (deviceId !== queued.deviceId || this.sessions.get(state.key) !== state) {
+        this.endQueuedAbort(queued, true);
+      } else if (unfinished.length === 0) {
+        this.endQueuedAbort(queued, queued.runContinues);
+      } else {
+        clearTimeout(queued.timer);
+        this.queuedAborts.delete(queued);
+        this.sendAborts(state, unfinished, queued.sink, queued.runContinues, queued.resends);
+      }
+    }
+  }
+
+  /** A queued abort that will not be sent: its sink completes, with the notice when runs may go on. */
+  private endQueuedAbort(queued: QueuedAbort, runContinues: boolean): void {
+    clearTimeout(queued.timer);
+    this.queuedAborts.delete(queued);
+    queued.state.aborting = false;
+    this.completeAbortedSink(queued.sink, runContinues);
+    this.releaseIfIdle(queued.state);
+  }
+
+  private abandonQueuedAborts(): void {
+    for (const queued of [...this.queuedAborts]) this.endQueuedAbort(queued, true);
   }
 
   private completeAbortedSink(sink: ChatSink, runContinues: boolean): void {
@@ -1349,28 +1780,36 @@ export class GatewayChatService {
   }
 
   /** `chat.abort` per run; a stopped run ends, one the gateway refused to stop is still followed
-   *  by the session's observers. The sink completes once the gateway answered. */
-  private sendAborts(state: SessionState, runIds: string[], sink: ChatSink, runContinues: boolean): void {
+   *  by the session's observers. The sink completes once the gateway answered. An abort lost with
+   *  its socket waits for the next handshake, a bounded number of times. */
+  private sendAborts(state: SessionState, runIds: string[], sink: ChatSink, runContinues: boolean, resends = 0): void {
     state.aborting = true;
     const aborts = runIds.map((runId) =>
       this.request((adapter) => adapter.abortRequest({ sessionKey: state.key, runId }))
-        .then(() => {
-          this.finishRun(state, runId);
-          return true;
+        .then((): AbortOutcome => {
+          // Catch-up or the run's own aborted event may have ended it meanwhile.
+          if (!state.finishedRuns.has(runId)) this.finishRun(state, runId);
+          return 'stopped';
         })
-        .catch((err: Error) => {
+        .catch((err: Error): AbortOutcome => {
           this.logger.warn(`chat.abort failed ${err.message}`);
-          return false;
+          return err instanceof RpcRejectedError ? 'refused' : 'lost';
         })
     );
-    void Promise.all(aborts).then((stopped) => {
+    void Promise.all(aborts).then((outcomes) => {
+      const resend = runIds.filter((runId, index) => outcomes[index] === 'lost' && this.stoppableOnReconnect(runId));
+      const failed = outcomes.filter((outcome) => outcome !== 'stopped').length > resend.length;
+      if (this.lastDeviceId && resend.length > 0 && resends < MAX_ABORT_RESENDS) {
+        this.queueAbort(state, resend, this.lastDeviceId, sink, runContinues || failed, resends + 1);
+        return;
+      }
       state.aborting = false;
-      this.completeAbortedSink(sink, runContinues || stopped.includes(false));
+      this.completeAbortedSink(sink, runContinues || outcomes.some((outcome) => outcome !== 'stopped'));
       this.releaseIfIdle(state);
     });
   }
 
-  /** Best-effort `chat.abort` for every run this connection started, sent before the socket closes. */
+  /** Best-effort `chat.abort` for every run this connection may stop, sent before the socket closes. */
   private abortRemoteRuns(): void {
     for (const state of this.sessions.values()) {
       const owned = state.owned;
@@ -1383,6 +1822,7 @@ export class GatewayChatService {
 
   /** Complete every run sink (with an error first when given). */
   private finishOwnedRuns(failure?: string): void {
+    this.abandonQueuedAborts();
     for (const state of this.sessions.values()) {
       const owned = state.owned;
       if (!owned) continue;
@@ -1464,6 +1904,12 @@ export class GatewayChatService {
       case 'sessionsChanged':
         for (const listener of [...this.sessionsChangedListeners]) listener(event.sessionKey);
         return;
+      case 'promptRequested':
+        this.prompts.add(this.locatePrompt(event.prompt));
+        return;
+      case 'promptResolved':
+        this.prompts.settle(event.id, event.outcome);
+        return;
       case 'keepalive':
       case 'challenge':
         return;
@@ -1539,7 +1985,8 @@ export class GatewayChatService {
         const update = `${event.runId}|${event.toolCallId}|${event.seq}`;
         if (state.toolUpdates.has(update)) return;
         state.toolUpdates.add(update);
-        this.deliver(sinks, [{ type: 'toolCall', id: event.toolCallId, title: event.name, status: event.status, details: event.details }]);
+        const toolCall: ChatEvent = { type: 'toolCall', id: event.toolCallId, title: event.name, status: event.status, details: event.details };
+        this.deliver(sinks, [toolCall, ...this.approvalWaitNotice(event.awaitingApproval)]);
         return;
       }
       case 'runSideResult':
@@ -1590,13 +2037,44 @@ export class GatewayChatService {
     if (message.role !== 'assistant' || runId === null || state.finishedRuns.has(runId)) {
       return;
     }
-    const events = usageEvent(message.usage);
-    if (message.text && !state.streamedRuns.has(runId)) {
-      state.streamedRuns.add(runId);
-      // A row alone does not prove the run still streams, so a later send does not wait for it.
-      events.unshift(...textEvent(applyRow(this.liveRun(state, runId, null), message)));
+    if (!message.text || state.streamedRuns.has(runId)) {
+      this.deliver(this.runSinks(state, runId), usageEvent(message.usage));
+      return;
     }
-    this.deliver(this.runSinks(state, runId), events);
+    state.streamedRuns.add(runId);
+    // A row alone does not prove the run still streams, so a later send does not wait for it.
+    const run = this.liveRun(state, runId, null);
+    this.renderRows(state, [message], ([row]) => {
+      this.deliver(this.runSinks(state, runId), [...textEvent(applyRow(run, row)), ...usageEvent(row.usage)]);
+    });
+  }
+
+  /** Render transcript rows in arrival order. A cut row is read in full first, and rows that
+   *  arrive meanwhile wait behind it. */
+  private renderRows(state: SessionState, rows: readonly TranscriptMessage[], render: (rows: readonly TranscriptMessage[]) => void): void {
+    if (!state.rowsInFlight && !rows.some(TruncatedRowCompleter.isIncomplete)) {
+      render(rows);
+      return;
+    }
+    const completed = Promise.all(rows.map((row) => this.rowCompleter.complete(state.key, row)));
+    const turn = (state.rowsInFlight ?? Promise.resolve())
+      .then(() => completed)
+      .then(render)
+      .catch((err: unknown) => this.logger.warn(`transcript row render failed ${errorMessage(err)}`));
+    state.rowsInFlight = turn;
+    void turn.then(() => {
+      if (state.rowsInFlight === turn) state.rowsInFlight = null;
+    });
+  }
+
+  /** One transcript entry read uncut, for a row the gateway cut. */
+  private async readEntry(sessionKey: string, entryId: string): Promise<TranscriptMessage | null> {
+    if (!this.supports('history')) {
+      return null;
+    }
+    const { adapter, payload } = await this.request((wire) => wire.messageRequest({ sessionKey, entryId }));
+    const read = adapter.parseHistory(payload);
+    return read && !('reset' in read) ? (read.messages.find((message) => message.entryId === entryId) ?? null) : null;
   }
 
   /* ---------------------------------------------------------------- */
@@ -1679,12 +2157,16 @@ export class GatewayChatService {
 
   private replayRows(state: SessionState, rows: readonly TranscriptMessage[]): void {
     const tracked = new Set(this.trackedRuns(state));
-    for (const row of rows) {
+    const shown = rows.filter((row) => {
       const ownedByTrackedRun = row.runId !== null && (tracked.has(row.runId) || state.streamedRuns.has(row.runId));
-      if (row.role !== 'assistant' || !row.text || ownedByTrackedRun) continue;
-      const text = row.truncated ? row.text + TRUNCATED_SUFFIX : row.text;
-      this.deliver([...state.observers], [...textEvent(text), ...usageEvent(row.usage), { type: 'done' }]);
-    }
+      return row.role === 'assistant' && row.text !== '' && !ownedByTrackedRun;
+    });
+    this.renderRows(state, shown, (completed) => {
+      for (const row of completed) {
+        const text = row.truncated ? row.text + TRUNCATED_SUFFIX : row.text;
+        this.deliver([...state.observers], [...textEvent(text), ...usageEvent(row.usage), { type: 'done' }]);
+      }
+    });
   }
 
   /** A tracked run the gateway no longer reports active ended while the socket was away. A run
@@ -1701,9 +2183,18 @@ export class GatewayChatService {
       const known = state.liveRuns.has(runId) || mentioned.has(runId);
       const unchangedSinceRead = before.has(runId) && before.get(runId) === (state.liveRuns.get(runId)?.lastSeq ?? -1);
       if (active.includes(runId) || !known || !unchangedSinceRead) continue;
-      const run = this.liveRun(state, runId);
-      this.deliver(this.runSinks(state, runId), textEvent(applyRow(run, finalRows.get(runId))));
-      this.finishRun(state, runId);
+      this.settleRun(state, runId, finalRows.get(runId));
     }
+  }
+
+  /** End a run with the last row it left, completed first when the gateway cut it. */
+  private settleRun(state: SessionState, runId: string, finalRow: TranscriptMessage | undefined): void {
+    const run = this.liveRun(state, runId);
+    this.renderRows(state, finalRow ? [finalRow] : [], ([row]) => {
+      // Its end may have been heard while the row was read.
+      if (state.finishedRuns.has(runId)) return;
+      this.deliver(this.runSinks(state, runId), textEvent(applyRow(run, row)));
+      this.finishRun(state, runId);
+    });
   }
 }

@@ -2,12 +2,11 @@
  * Protocol v4 error codes and handshake rejection classification.
  *
  * Mirrors packages/gateway-protocol/src/{gateway-error-details,connect-error-details}.ts
- * and the official client's shouldPauseGatewayReconnect, except that failures
- * it recovers with a stored device token are terminal here: this client has no
- * device identity and authenticates with the shared token only.
+ * and the official client's shouldPauseGatewayReconnect and
+ * shouldRetryGatewayWithDeviceToken (packages/gateway-client/src/).
  */
 
-import type { HandshakeRejection, HandshakeRejectionKind, RpcFailure } from '../model';
+import type { HandshakeRejection, HandshakeRejectionKind, PairingRequest, RpcFailure } from '../model';
 import { PROTOCOL_MISMATCH_HINT } from '../model';
 import { readDelayMs, readRecord, readTrimmedString, readString } from './readers';
 
@@ -90,9 +89,9 @@ const AUTH_CONFIGURATION_CODES: ReadonlySet<string> = new Set([
   Codes.CONTROL_UI_ORIGIN_NOT_ALLOWED,
 ]);
 
-const DEVICE_IDENTITY_CODES: ReadonlySet<string> = new Set([
-  Codes.DEVICE_IDENTITY_REQUIRED,
-  Codes.CONTROL_UI_DEVICE_IDENTITY_REQUIRED,
+const DEVICE_IDENTITY_CODES: ReadonlySet<string> = new Set([Codes.DEVICE_IDENTITY_REQUIRED, Codes.CONTROL_UI_DEVICE_IDENTITY_REQUIRED]);
+
+const DEVICE_PROOF_CODES: ReadonlySet<string> = new Set([
   Codes.DEVICE_AUTH_INVALID,
   Codes.DEVICE_AUTH_DEVICE_ID_MISMATCH,
   Codes.DEVICE_AUTH_SIGNATURE_EXPIRED,
@@ -108,14 +107,16 @@ const VERSION_CODES: ReadonlySet<string> = new Set([
   Codes.CONTROL_UI_BUILD_MISMATCH,
 ]);
 
-const NO_DEVICE_IDENTITY =
-  'Claw Code authenticates with the shared gateway token only; it has no device identity to pair (not implemented).';
+const RESET_IDENTITY = 'run "OpenClaw: Reset Gateway Device Identity" and approve the new device';
 
 export const RejectionHints = {
   credentials: 'Gateway rejected the token — run "OpenClaw: Connect to Gateway" to update it.',
   scopes: 'The gateway did not grant the operator.read/operator.write scopes — review the token\'s scopes in OpenClaw.',
-  pairing: `The gateway requires device pairing for this connection. ${NO_DEVICE_IDENTITY} Connect over loopback, e.g. through an SSH tunnel to the gateway host.`,
-  deviceIdentity: `The gateway requires a paired device identity for this connection. ${NO_DEVICE_IDENTITY} Connect over loopback, e.g. through an SSH tunnel to the gateway host.`,
+  scopesNotGranted:
+    'The gateway granted this connection no operator.read/operator.write — approve this device in OpenClaw (`openclaw devices list`), or connect over loopback.',
+  deviceIdentity:
+    'The gateway requires a device identity, but none could be read from SecretStorage — check the OS keyring, then run "OpenClaw: Connect to Gateway".',
+  deviceProof: `The gateway rejected this device's signature — check the system clock, or ${RESET_IDENTITY}.`,
   version: PROTOCOL_MISMATCH_HINT,
   authConfiguration: "The gateway's authentication setup rejected this client — review gateway.auth in OpenClaw.",
   forbidden: 'The gateway refused this client — check its role and scope policy in OpenClaw.',
@@ -130,16 +131,55 @@ type RejectionInput = {
   topCode: string;
   nextStep: unknown;
   pauseReconnect: unknown;
+  details: Readonly<Record<string, unknown>>;
 };
+
+/** PAIRING_CONNECT_REQUEST_ID_PATTERN: ids outside it are not echoed into UI text. */
+const PAIRING_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** ConnectPairingRequiredReasons and what each asks the operator to approve. */
+const PAIRING_SUBJECTS: Readonly<Record<string, string>> = {
+  'not-paired': 'this device',
+  'role-upgrade': "this device's role upgrade",
+  'scope-upgrade': "this device's scope upgrade",
+  'metadata-upgrade': "this device's changed details",
+};
+
+function readPairingRequest(details: Readonly<Record<string, unknown>>): PairingRequest {
+  const requestId = readTrimmedString(details.requestId);
+  const reason = readTrimmedString(details.reason);
+  return {
+    requestId: requestId && PAIRING_REQUEST_ID.test(requestId) ? requestId : null,
+    reason: reason && reason in PAIRING_SUBJECTS ? reason : null,
+  };
+}
+
+/** The approval steps of docs/cli/devices.md and the Control UI Devices page. */
+export function pairingHint({ requestId, reason }: PairingRequest): string {
+  const subject = PAIRING_SUBJECTS[reason ?? 'not-paired'];
+  const command = requestId
+    ? `run \`openclaw devices approve ${requestId}\` on the gateway host`
+    : 'run `openclaw devices list`, then `openclaw devices approve <requestId>` on the gateway host';
+  return `The gateway waits for an operator to approve ${subject}: ${command}, or approve it on the Devices page of the OpenClaw Control UI.`;
+}
+
+function isPairingRequired({ code, detailCode, topCode }: RejectionInput): boolean {
+  return code === Codes.PAIRING_REQUIRED || (!detailCode && topCode === ErrorCodes.NOT_PAIRED);
+}
+
+/** shouldRetryGatewayWithDeviceToken: the gateway's own hints that a stored device token would do. */
+function allowsDeviceTokenRetry({ code, details, nextStep }: RejectionInput): boolean {
+  return code === Codes.AUTH_TOKEN_MISMATCH || details.canRetryWithDeviceToken === true || nextStep === ConnectRecoverySteps.RETRY_WITH_DEVICE_TOKEN;
+}
 
 /** Pairing, rate limits and startup: the conditions a later attempt can outlive. */
 type Verdict = { kind: HandshakeRejectionKind; hint: string; throttled?: boolean };
 
 function transientVerdict(input: RejectionInput): Verdict | null {
-  const { code, detailCode, topCode } = input;
-  if (code === Codes.PAIRING_REQUIRED || (!detailCode && topCode === ErrorCodes.NOT_PAIRED)) {
+  const { code } = input;
+  if (isPairingRequired(input)) {
     const waits = input.pauseReconnect === false || input.nextStep === ConnectRecoverySteps.WAIT_THEN_RETRY;
-    return { kind: waits ? 'backoff' : 'pause', hint: RejectionHints.pairing, throttled: true };
+    return { kind: waits ? 'backoff' : 'pause', hint: pairingHint(readPairingRequest(input.details)), throttled: true };
   }
   if (code === Codes.AUTH_RATE_LIMITED) return { kind: 'backoff', hint: RejectionHints.rateLimited, throttled: true };
   if (code === Codes.AUTHENTICATED_PROFILE_UNAVAILABLE) return { kind: 'backoff', hint: RejectionHints.transient };
@@ -153,6 +193,7 @@ function permanentHint(input: RejectionInput): string | null {
   if (CREDENTIAL_CODES.has(code)) return RejectionHints.credentials;
   if (AUTH_CONFIGURATION_CODES.has(code)) return RejectionHints.authConfiguration;
   if (DEVICE_IDENTITY_CODES.has(code)) return RejectionHints.deviceIdentity;
+  if (DEVICE_PROOF_CODES.has(code)) return RejectionHints.deviceProof;
   if (VERSION_CODES.has(code)) return RejectionHints.version;
   if (topCode === ErrorCodes.FORBIDDEN) return RejectionHints.forbidden;
   if (!detailCode && topCode === ErrorCodes.INVALID_REQUEST) return RejectionHints.invalidRequest;
@@ -174,6 +215,7 @@ export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
     topCode,
     nextStep: details.recommendedNextStep,
     pauseReconnect: details.pauseReconnect,
+    details,
   };
   const retryAfterMs = readDelayMs(fields.retryAfterMs) ?? readDelayMs(details.retryAfterMs);
   const permanent = permanentHint(input);
@@ -186,6 +228,9 @@ export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
     hint: verdict.hint,
     ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(verdict.throttled ? { throttled: true } : {}),
+    ...(isPairingRequired(input) ? { pairing: readPairingRequest(details) } : {}),
+    ...(allowsDeviceTokenRetry(input) ? { deviceTokenRetry: true } : {}),
+    ...(input.code === Codes.AUTH_DEVICE_TOKEN_MISMATCH ? { staleDeviceToken: true } : {}),
   };
 }
 
@@ -197,11 +242,13 @@ export function readRpcFailure(error: unknown): RpcFailure {
   const fields = readRecord(error);
   const message = readString(fields.message) ?? '';
   const retryAfterMs = readDelayMs(fields.retryAfterMs);
+  const reason = readString(readRecord(fields.details).reason);
   return {
     code: readString(fields.code) ?? 'unknown',
     message: message.length > RPC_MESSAGE_LIMIT ? `${message.slice(0, RPC_MESSAGE_LIMIT)}…` : message,
     retryable: fields.retryable === true,
     ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -212,6 +259,6 @@ export function missingScopesRejection(missing: readonly string[]): HandshakeRej
     kind: 'permanent',
     code: 'MISSING_SCOPE',
     message: `the gateway granted no ${missing.join(', ')}`,
-    hint: RejectionHints.pairing,
+    hint: RejectionHints.scopesNotGranted,
   };
 }

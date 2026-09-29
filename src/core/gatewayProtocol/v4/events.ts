@@ -1,10 +1,12 @@
 /**
  * Protocol v4 events (`chat`, `agent` tool stream, `session.message`, `tick`,
- * `shutdown`, `connect.challenge`) reduced to neutral inbound events.
+ * `shutdown`, `connect.challenge`, and the approval and question events of
+ * ./prompts.ts) reduced to neutral inbound events.
  */
 
 import type { InboundEvent, ToolStatus } from '../model';
 import { displayText, readSessionMessage, readUsage } from './messages';
+import { readApprovalWait, readPromptEvent } from './prompts';
 import { describeJson, readDelayMs, readNonNegativeInteger, readRecord, readString, readText } from './readers';
 import { Events } from './schema';
 
@@ -91,6 +93,7 @@ function agentEvent(payload: Readonly<Record<string, unknown>>): InboundEvent | 
     name: readString(data.name) ?? 'tool',
     status: toolStatus(data),
     details: toolDetails(data),
+    awaitingApproval: data.phase === 'result' ? readApprovalWait(data.result) : null,
   };
 }
 
@@ -124,8 +127,8 @@ export function readEvent(event: string, payload: unknown): InboundEvent | null 
     case Events.shutdown:
       return shutdownEvent(fields);
     case Events.connectChallenge:
-      return { kind: 'challenge' };
+      return { kind: 'challenge', nonce: readString(fields.nonce), issuedAtMs: readNonNegativeInteger(fields.ts) };
     default:
-      return null;
+      return readPromptEvent(event, payload);
   }
 }

@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "exec.approval.requested event",
+  "x-source": "src/gateway/server-methods/approval-shared.ts buildRequestedApprovalEvent, request built by exec-approval.ts exec.approval.request (openclaw 2026.9.6); also the rows of exec.approval.list",
+  "type": "object",
+  "required": ["id", "request", "createdAtMs", "expiresAtMs"],
+  "properties": {
+    "approvalKind": { "const": "exec" },
+    "id": { "type": "string", "minLength": 1 },
+    "request": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string" },
+        "commandPreview": { "type": "string" },
+        "commandArgv": { "type": "array", "items": { "type": "string" } },
+        "cwd": { "type": ["string", "null"] },
+        "host": { "type": ["string", "null"] },
+        "nodeId": { "type": ["string", "null"] },
+        "security": { "type": ["string", "null"] },
+        "ask": { "type": ["string", "null"] },
+        "warningText": { "type": ["string", "null"] },
+        "commandAnalysis": {
+          "type": ["object", "null"],
+          "properties": { "warningLines": { "type": "array", "items": { "type": "string" } } }
+        },
+        "allowedDecisions": {
+          "type": "array",
+          "items": { "enum": ["allow-once", "allow-always", "deny"] },
+          "minItems": 1
+        },
+        "agentId": { "type": ["string", "null"] },
+        "sessionKey": { "type": ["string", "null"] },
+        "sessionId": { "type": ["string", "null"] },
+        "runId": { "type": ["string", "null"] },
+        "toolCallId": { "type": ["string", "null"] }
+      }
+    },
+    "createdAtMs": { "type": "integer", "minimum": 0 },
+    "expiresAtMs": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

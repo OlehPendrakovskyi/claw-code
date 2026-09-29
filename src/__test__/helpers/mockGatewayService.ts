@@ -8,7 +8,8 @@
 
 import type { ChatEvent } from '../../chat/ChatService';
 import type { GatewaySend } from '../../core/gatewayChatService';
-import type { HistorySnapshot, SessionSummary } from '../../core/gatewayProtocol/model';
+import type { ApprovalDecision, HistorySnapshot, QuestionAnswers, SessionSummary } from '../../core/gatewayProtocol/model';
+import type { PromptChange, PromptListener } from '../../core/operatorPrompts';
 import { v4Adapter } from '../../core/gatewayProtocol/v4/adapter';
 import { assertValidResult, payloads } from './gatewayV4';
 
@@ -46,6 +47,27 @@ class MockGatewayChatService {
     captureSessionState = jest.fn(() => null);
     restoreSessionState = jest.fn();
     dispose = jest.fn();
+    private readonly promptListeners: PromptListener[] = [];
+    private readonly sessionsChangedListeners: Array<(sessionKey: string | null) => void> = [];
+    onApprovalRequest = jest.fn((listener: PromptListener): (() => void) => {
+        this.promptListeners.push(listener);
+        return () => undefined;
+    });
+    onSessionsChanged = jest.fn((listener: (sessionKey: string | null) => void): (() => void) => {
+        this.sessionsChangedListeners.push(listener);
+        return () => undefined;
+    });
+    resolveApproval = jest.fn(async (_id: string, _decision: ApprovalDecision): Promise<void> => undefined);
+    answerQuestion = jest.fn(async (_id: string, _answers: QuestionAnswers | null): Promise<void> => undefined);
+
+    /** Deliver a prompt change to the provider, as the real client's board would. */
+    emitPrompt(change: PromptChange): void {
+        for (const listener of this.promptListeners) listener(change);
+    }
+
+    emitSessionsChanged(sessionKey: string | null = null): void {
+        for (const listener of this.sessionsChangedListeners) listener(sessionKey);
+    }
 }
 
 export function mockGatewayModule(): { GatewayChatService: typeof MockGatewayChatService; DEFAULT_SESSION_KEY: string } {

@@ -6,7 +6,7 @@ import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
-import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
+import { migrateLegacyGatewayToken, promptForGatewayToken, resetDeviceIdentity } from '../core/gatewayConfig';
 import { redactEndpoint, redactPlainSecrets } from '../core/accessInfo/redact';
 import {
     log,
@@ -124,6 +124,10 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('openclaw.gateway.resetDeviceIdentity', () => confirmDeviceIdentityReset(context))
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('openclaw.chat.open', () => {
             vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
         })
@@ -184,6 +188,27 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     log.info(`activate() complete — ${context.subscriptions.length} subscriptions`);
+}
+
+const RESET_DEVICE_IDENTITY = 'Reset Identity';
+
+/** The chat client notices the deleted identity and reconnects as a new device. */
+async function confirmDeviceIdentityReset(context: vscode.ExtensionContext): Promise<void> {
+    const choice = await vscode.window.showWarningMessage(
+        'Reset the gateway device identity? Claw Code forgets its device key and device tokens, and every gateway that requires pairing must approve it again.',
+        { modal: true },
+        RESET_DEVICE_IDENTITY
+    );
+    if (choice !== RESET_DEVICE_IDENTITY) {
+        return;
+    }
+    try {
+        await resetDeviceIdentity(context.secrets);
+        void vscode.window.showInformationMessage('OpenClaw: gateway device identity reset. The next connection pairs a new device.');
+    } catch (err) {
+        log.error(`resetting the gateway device identity failed: ${err instanceof Error ? err.message : String(err)}`);
+        void vscode.window.showErrorMessage('OpenClaw: could not reset the gateway device identity. Check the logs for details.');
+    }
 }
 
 export function deactivate() {

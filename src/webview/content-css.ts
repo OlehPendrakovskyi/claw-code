@@ -156,6 +156,7 @@ export const CONTENT_CSS = `
         }
 
         .pane.collapsed .pane-body,
+        .pane.collapsed .pane-prompts,
         .pane.collapsed .composer-shell {
             display: none;
         }
@@ -431,6 +432,127 @@ export const CONTENT_CSS = `
             color: var(--vscode-descriptionForeground, #9d9d9d);
             font-size: 12px;
             font-style: italic;
+        }
+
+        .pane-prompts {
+            max-height: 45vh;
+            overflow-y: auto;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .pane-prompts:focus {
+            outline: none;
+        }
+
+        .prompt-card {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+            background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.1));
+            font-size: 12px;
+        }
+
+        .prompt-card.prompt-resolved {
+            border-color: var(--openclaw-surface-border);
+            background: var(--openclaw-surface-raised);
+            opacity: 0.8;
+        }
+
+        .prompt-heading {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-weight: 600;
+        }
+
+        .prompt-expiry,
+        .prompt-option-description,
+        .prompt-details {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            font-weight: normal;
+        }
+
+        .prompt-title {
+            font-family: var(--vscode-editor-font-family, monospace);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 160px;
+            overflow-y: auto;
+        }
+
+        .prompt-details {
+            padding-left: 16px;
+        }
+
+        .prompt-question {
+            border: none;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .prompt-question-text {
+            margin-bottom: 2px;
+        }
+
+        .prompt-option {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            cursor: pointer;
+        }
+
+        .prompt-other {
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.16));
+            background: var(--vscode-input-background, transparent);
+            color: var(--vscode-input-foreground, inherit);
+            font: inherit;
+        }
+
+        .prompt-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .prompt-btn {
+            border: 1px solid var(--openclaw-neutral-border-strong);
+            background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.06));
+            color: var(--vscode-button-secondaryForeground, inherit);
+            border-radius: 6px;
+            padding: 3px 10px;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .prompt-btn-primary {
+            border-color: transparent;
+            background: var(--vscode-button-background, #0e639c);
+            color: var(--vscode-button-foreground, #fff);
+        }
+
+        .prompt-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .prompt-btn:focus-visible,
+        .prompt-field:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, #007fd4);
+            outline-offset: 1px;
+        }
+
+        .prompt-status:empty {
+            display: none;
         }
 
         .message-tool {

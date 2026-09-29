@@ -50,6 +50,10 @@ export const SESSIONS_PANEL_JS = `
             var sessionsPanelThreadId = '';
             var sessionsRequestThreadId = '';
             var sessionsPanelRows = [];
+            var sessionsRefreshTimer = null;
+
+            /** Coalesces a burst of session index changes into one reload of an open panel. */
+            var SESSIONS_REFRESH_DELAY_MS = 300;
 
             var SESSIONS_ROW_STYLE = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
 
@@ -92,6 +96,7 @@ export const SESSIONS_PANEL_JS = `
             function createSessionRow(session, threadId) {
                 var row = createSessionsRow(describeSessionRow(session));
                 row.title = session.sessionKey || '';
+                row.setAttribute('data-session-key', session.sessionKey || '');
                 // The panel lives on document.body, outside the pane click delegation.
                 row.addEventListener('click', function(ev) {
                     ev.stopPropagation();
@@ -134,6 +139,7 @@ export const SESSIONS_PANEL_JS = `
                 var threadId = sessionsRequestThreadId;
                 var opener = findSessionsButton(threadId);
                 var focusWasOnOpener = document.activeElement === opener || document.activeElement === document.body || !document.activeElement;
+                var focusedSessionKey = focusedSessionRowKey();
                 dismissSessionsPanel();
                 sessionsPanelThreadId = threadId;
                 var panel = document.createElement('div');
@@ -153,7 +159,9 @@ export const SESSIONS_PANEL_JS = `
                 sessionsPanelRows.forEach(function(row) { panel.appendChild(row); });
                 panel.addEventListener('keydown', handleSessionsPanelKeydown);
                 document.body.appendChild(panel);
-                if (focusWasOnOpener) {
+                if (focusedSessionKey !== null) {
+                    (findSessionRow(focusedSessionKey) || sessionsPanelRows[0]).focus();
+                } else if (focusWasOnOpener) {
                     sessionsPanelRows[0].focus();
                 }
                 // Deferred so the click that opened the panel does not dismiss it.
@@ -166,6 +174,33 @@ export const SESSIONS_PANEL_JS = `
                     };
                     document.addEventListener('click', sessionsPanelDismiss);
                 }, 0);
+            }
+
+            /** The session key of the focused row of an open panel, '' for a notice row, null when focus is elsewhere. */
+            function focusedSessionRowKey() {
+                var panel = document.getElementById('claw-sessions-panel');
+                var active = document.activeElement;
+                return panel && active && panel.contains(active) ? (active.getAttribute('data-session-key') || '') : null;
+            }
+
+            function findSessionRow(sessionKey) {
+                for (var i = 0; i < sessionsPanelRows.length; i++) {
+                    if (sessionsPanelRows[i].getAttribute('data-session-key') === sessionKey) { return sessionsPanelRows[i]; }
+                }
+                return null;
+            }
+
+            /** The gateway's session index changed: an open panel reloads its list, keeping the focused row. */
+            function refreshSessionsPanel() {
+                if (!document.getElementById('claw-sessions-panel') || sessionsRefreshTimer !== null) {
+                    return;
+                }
+                sessionsRefreshTimer = setTimeout(function() {
+                    sessionsRefreshTimer = null;
+                    if (document.getElementById('claw-sessions-panel')) {
+                        requestSessionsPanel(sessionsPanelThreadId);
+                    }
+                }, SESSIONS_REFRESH_DELAY_MS);
             }
 
             function dismissSessionsPanel(options) {
@@ -200,6 +235,298 @@ export const SESSIONS_PANEL_JS = `
                     if (buttons[i].getAttribute('data-thread-id') === threadId) { return buttons[i]; }
                 }
                 return null;
+            }
+`;
+
+/** Approval and question rows: built from DOM nodes (text is never parsed as markup), answered with
+ *  native buttons and fields, their typed drafts kept across re-renders. Uses CONTENT_JS's `vscode`. */
+export const OPERATOR_PROMPTS_JS = `
+            var promptDrafts = Object.create(null);
+
+            var DECISION_LABELS = { 'allow-once': 'Approve once', 'allow-always': 'Always allow', 'deny': 'Deny' };
+
+            function promptNode(tag, className, text) {
+                var node = document.createElement(tag);
+                if (className) { node.className = className; }
+                if (text) { node.textContent = text; }
+                return node;
+            }
+
+            function promptDraft(promptId, questionId) {
+                var byQuestion = promptDrafts[promptId] || (promptDrafts[promptId] = Object.create(null));
+                return byQuestion[questionId] || (byQuestion[questionId] = { selected: [], other: '' });
+            }
+
+            function markPromptControl(control, prompt, threadId, focusKey) {
+                control.setAttribute('data-prompt-id', prompt.id);
+                control.setAttribute('data-thread-id', threadId);
+                control.setAttribute('data-focus-key', prompt.id + '|' + focusKey);
+                control.disabled = prompt.state !== 'pending';
+                return control;
+            }
+
+            function promptButton(prompt, threadId, action, label, primary) {
+                var button = promptNode('button', 'prompt-btn' + (primary ? ' prompt-btn-primary' : ''), label);
+                button.type = 'button';
+                button.setAttribute('data-action', action);
+                return markPromptControl(button, prompt, threadId, action);
+            }
+
+            function decisionButton(prompt, threadId, decision) {
+                var button = promptButton(prompt, threadId, 'prompt-decision', DECISION_LABELS[decision] || decision, decision !== 'deny');
+                button.setAttribute('data-decision', decision);
+                button.setAttribute('data-focus-key', prompt.id + '|prompt-decision|' + decision);
+                return button;
+            }
+
+            function formatPromptExpiry(expiresAtMs) {
+                var at = new Date(Number(expiresAtMs));
+                return isNaN(at.getTime()) ? '' : 'Expires at ' + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+
+            function promptCard(prompt, heading) {
+                var card = promptNode('div', 'prompt-card prompt-' + prompt.kind + (prompt.state === 'resolved' ? ' prompt-resolved' : ''));
+                card.setAttribute('role', 'group');
+                card.setAttribute('aria-label', heading);
+                card.setAttribute('data-prompt-id', prompt.id);
+                var head = promptNode('div', 'prompt-heading', heading);
+                if (prompt.state !== 'resolved') {
+                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(prompt.expiresAtMs)));
+                }
+                card.appendChild(head);
+                return card;
+            }
+
+            function promptStatus(prompt) {
+                var status = promptNode('div', 'prompt-status', prompt.status || '');
+                status.setAttribute('role', 'status');
+                return status;
+            }
+
+            function promptActions(buttons) {
+                var actions = promptNode('div', 'prompt-actions');
+                buttons.forEach(function(button) { actions.appendChild(button); });
+                return actions;
+            }
+
+            function renderApprovalCard(prompt, threadId) {
+                var card = promptCard(prompt, prompt.subject === 'exec' ? 'Run this command?' : 'Allow this action?');
+                card.appendChild(promptNode(prompt.subject === 'exec' ? 'pre' : 'div', 'prompt-title', prompt.title));
+                if ((prompt.details || []).length) {
+                    var details = promptNode('ul', 'prompt-details');
+                    prompt.details.forEach(function(line) { details.appendChild(promptNode('li', '', line)); });
+                    card.appendChild(details);
+                }
+                if (prompt.state !== 'resolved') {
+                    card.appendChild(promptActions((prompt.decisions || []).map(function(decision) {
+                        return decisionButton(prompt, threadId, decision);
+                    })));
+                }
+                card.appendChild(promptStatus(prompt));
+                return card;
+            }
+
+            function renderQuestionOption(prompt, question, option, index, threadId) {
+                var label = promptNode('label', 'prompt-option');
+                var input = document.createElement('input');
+                input.type = question.multiSelect ? 'checkbox' : 'radio';
+                input.name = 'prompt|' + prompt.id + '|' + question.id;
+                input.value = option.label;
+                input.className = 'prompt-field prompt-choice';
+                input.checked = promptDraft(prompt.id, question.id).selected.indexOf(option.label) !== -1;
+                input.setAttribute('data-question-id', question.id);
+                label.appendChild(markPromptControl(input, prompt, threadId, question.id + '|' + index));
+                label.appendChild(promptNode('span', 'prompt-option-label', option.label));
+                if (option.description) {
+                    label.appendChild(promptNode('span', 'prompt-option-description', option.description));
+                }
+                return label;
+            }
+
+            function renderQuestionOther(prompt, question, threadId) {
+                var input = document.createElement('input');
+                var caption = question.options.length ? 'Other answer' : 'Your answer';
+                input.type = question.secret ? 'password' : 'text';
+                input.className = 'prompt-field prompt-other';
+                input.value = promptDraft(prompt.id, question.id).other;
+                input.placeholder = caption;
+                input.autocomplete = 'off';
+                input.setAttribute('aria-label', caption);
+                input.setAttribute('data-question-id', question.id);
+                return markPromptControl(input, prompt, threadId, question.id + '|other');
+            }
+
+            function renderQuestionItem(prompt, question, threadId) {
+                var fieldset = promptNode('fieldset', 'prompt-question');
+                fieldset.appendChild(promptNode('legend', 'prompt-question-text', question.header ? question.header + ': ' + question.text : question.text));
+                question.options.forEach(function(option, index) {
+                    fieldset.appendChild(renderQuestionOption(prompt, question, option, index, threadId));
+                });
+                if (question.allowsOther) {
+                    fieldset.appendChild(renderQuestionOther(prompt, question, threadId));
+                }
+                return fieldset;
+            }
+
+            function renderQuestionCard(prompt, threadId) {
+                var card = promptCard(prompt, 'The agent asks');
+                (prompt.questions || []).forEach(function(question) {
+                    card.appendChild(renderQuestionItem(prompt, question, threadId));
+                });
+                if (prompt.state !== 'resolved') {
+                    card.appendChild(promptActions([
+                        promptButton(prompt, threadId, 'prompt-answer', 'Send answer', true),
+                        promptButton(prompt, threadId, 'prompt-skip', 'Skip', false),
+                    ]));
+                }
+                card.appendChild(promptStatus(prompt));
+                return card;
+            }
+
+            function renderPanePrompts(thread) {
+                var region = promptNode('div', 'pane-prompts');
+                region.setAttribute('data-thread-id', thread.id);
+                region.setAttribute('aria-live', 'polite');
+                region.setAttribute('aria-label', 'Requests waiting for you');
+                region.tabIndex = -1;
+                (thread.prompts || []).forEach(function(prompt) {
+                    region.appendChild(prompt.kind === 'approval' ? renderApprovalCard(prompt, thread.id) : renderQuestionCard(prompt, thread.id));
+                });
+                return region;
+            }
+
+            /** Rebuilds the rows only when they changed, handing focus back to the control that had it. */
+            function syncPanePrompts(pane, cache, thread) {
+                var prompts = thread.prompts || [];
+                var json = JSON.stringify(prompts);
+                var live = childWithClass(pane, 'pane-prompts');
+                if (live && cache.prompts === json) {
+                    return;
+                }
+                cache.prompts = json;
+                var hadFocus = Boolean(live) && live.contains(document.activeElement);
+                var focusKey = hadFocus ? document.activeElement.getAttribute('data-focus-key') : null;
+                if (!prompts.length) {
+                    if (live) { live.remove(); }
+                    return;
+                }
+                var fresh = renderPanePrompts(thread);
+                if (live) {
+                    live.replaceWith(fresh);
+                } else {
+                    pane.insertBefore(fresh, childWithClass(pane, 'composer-shell'));
+                }
+                if (hadFocus) {
+                    restorePromptFocus(fresh, focusKey);
+                }
+            }
+
+            function restorePromptFocus(region, focusKey) {
+                var controls = region.querySelectorAll('[data-focus-key]');
+                for (var i = 0; i < controls.length; i++) {
+                    if (controls[i].getAttribute('data-focus-key') === focusKey && !controls[i].disabled) {
+                        controls[i].focus();
+                        return;
+                    }
+                }
+                region.focus();
+            }
+
+            /** Drafts of prompts no pane shows any more are dropped. */
+            function prunePromptDrafts(threads) {
+                var shown = Object.create(null);
+                threads.forEach(function(thread) {
+                    (thread.prompts || []).forEach(function(prompt) { shown[prompt.id] = true; });
+                });
+                Object.keys(promptDrafts).forEach(function(promptId) {
+                    if (!shown[promptId]) { delete promptDrafts[promptId]; }
+                });
+            }
+
+            function findThreadPrompt(threadId, promptId) {
+                var thread = getThreadById(threadId);
+                var prompts = (thread && thread.prompts) || [];
+                for (var i = 0; i < prompts.length; i++) {
+                    if (prompts[i].id === promptId) { return prompts[i]; }
+                }
+                return null;
+            }
+
+            /** A typed answer replaces the chosen option of a single-choice question, and the other way round. */
+            function updatePromptDraft(field) {
+                var promptId = field.getAttribute('data-prompt-id');
+                var questionId = field.getAttribute('data-question-id');
+                var prompt = findThreadPrompt(field.getAttribute('data-thread-id'), promptId);
+                if (!prompt || !questionId) { return; }
+                var draft = promptDraft(promptId, questionId);
+                var fieldset = field.closest('.prompt-question');
+                var single = field.type === 'radio' || (fieldset && fieldset.querySelector('input[type="radio"]'));
+                if (field.classList.contains('prompt-other')) {
+                    draft.other = field.value;
+                    if (single && field.value) {
+                        draft.selected = [];
+                        fieldset.querySelectorAll('.prompt-choice').forEach(function(choice) { choice.checked = false; });
+                    }
+                    return;
+                }
+                draft.selected = Array.from(fieldset.querySelectorAll('.prompt-choice'))
+                    .filter(function(choice) { return choice.checked; })
+                    .map(function(choice) { return choice.value; });
+                var other = single && fieldset.querySelector('.prompt-other');
+                if (other) {
+                    draft.other = '';
+                    other.value = '';
+                }
+            }
+
+            function collectPromptAnswers(prompt) {
+                var answers = {};
+                (prompt.questions || []).forEach(function(question) {
+                    var draft = promptDraft(prompt.id, question.id);
+                    var other = question.secret ? draft.other : draft.other.trim();
+                    var values = question.multiSelect ? draft.selected.slice() : draft.selected.slice(0, 1);
+                    if (other) {
+                        values = question.multiSelect ? values.concat([other]) : [other];
+                    }
+                    answers[question.id] = values;
+                });
+                return answers;
+            }
+
+            /** Handles a prompt button; false for every other action. */
+            function handlePromptAction(action, actionEl) {
+                var promptId = actionEl.getAttribute('data-prompt-id');
+                var threadId = actionEl.getAttribute('data-thread-id');
+                if (action === 'prompt-decision') {
+                    vscode.postMessage({ type: 'resolveApproval', threadId: threadId, promptId: promptId, decision: actionEl.getAttribute('data-decision') });
+                    return true;
+                }
+                if (action === 'prompt-answer') {
+                    var prompt = findThreadPrompt(threadId, promptId);
+                    if (prompt) {
+                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: collectPromptAnswers(prompt) });
+                    }
+                    return true;
+                }
+                if (action === 'prompt-skip') {
+                    vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: null });
+                    return true;
+                }
+                return false;
+            }
+
+            /** Enter in a typed answer sends the question's answers. */
+            function handlePromptKeydown(event) {
+                var field = event.target.closest('.prompt-other');
+                if (!field || event.key !== 'Enter' || event.isComposing) {
+                    return;
+                }
+                event.preventDefault();
+                var card = field.closest('.prompt-card');
+                var submit = card && card.querySelector('[data-action="prompt-answer"]');
+                if (submit && !submit.disabled) {
+                    submit.click();
+                }
             }
 `;
 
@@ -1213,6 +1540,7 @@ ${TOOL_STATUS_JS}
                     cache.header = headerHtml;
                 }
                 syncPaneBody(pane, cache, thread);
+                syncPanePrompts(pane, cache, thread);
                 // CSP drops style attributes parsed from markup; CSSOM writes still apply.
                 updatePaneContextUsage(pane, thread);
                 syncComposer(pane, thread);
@@ -1228,6 +1556,7 @@ ${TOOL_STATUS_JS}
                         }
                     });
                 });
+                prunePromptDrafts(state.threads);
             }
 
             function removeStalePanes() {
@@ -1713,6 +2042,9 @@ ${TOOL_STATUS_JS}
                 if (threadId) {
                     setActiveThread(threadId);
                 }
+                if (handlePromptAction(action, actionEl)) {
+                    return;
+                }
 
                 if (action === 'toggleCollapse') {
                     collapseOverrides[threadId] = !wasCollapsed;
@@ -1829,7 +2161,21 @@ ${TOOL_STATUS_JS}
                 renderKeepingCaret(threadId, textarea);
             }
 
+            paneGrid.addEventListener('change', function(event) {
+                var choice = event.target.closest('.prompt-choice');
+                if (choice) {
+                    updatePromptDraft(choice);
+                }
+            });
+
+            paneGrid.addEventListener('keydown', handlePromptKeydown);
+
             paneGrid.addEventListener('input', function(event) {
+                var promptField = event.target.closest('.prompt-other');
+                if (promptField) {
+                    updatePromptDraft(promptField);
+                    return;
+                }
                 var textarea = event.target.closest('.composer-input');
                 if (textarea) {
                     cancelSessionsRequest();
@@ -2172,6 +2518,10 @@ ${TOOL_STATUS_JS}
                     dismissSessionsPanel();
                     return;
                 }
+                if (message.type === 'sessionsChanged') {
+                    refreshSessionsPanel();
+                    return;
+                }
                 if (message.type === 'transportStatus') {
                     var badge = document.getElementById('claw-transport-status');
                     if (!badge) {
@@ -2224,6 +2574,7 @@ ${TOOL_STATUS_JS}
             }
 
 ${SESSIONS_PANEL_JS}
+${OPERATOR_PROMPTS_JS}
             function hasFileDrag(dataTransfer) {
                 if (!dataTransfer || !dataTransfer.types) {
                     return false;

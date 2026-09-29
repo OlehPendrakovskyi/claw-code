@@ -3,11 +3,12 @@
  * model and parses v4 responses and events back into it.
  */
 
-import type { ClientHello, GatewayProtocolAdapter, WireRequest } from '../adapter';
+import type { ClientHello, DeviceClaim, GatewayProtocolAdapter, WireRequest } from '../adapter';
 import type {
   ConnectionAccepted,
   ConnectionFeatures,
   ConnectionLimits,
+  DeviceProof,
   GatewayOperation,
   HistoryRead,
   HandshakeRejection,
@@ -19,6 +20,14 @@ import type {
 } from '../model';
 import { classifyHandshakeRejection, missingScopesRejection, readRpcFailure } from './errors';
 import { readEvent } from './events';
+import {
+  approvalResolveRequest,
+  isStalePromptFailure,
+  pendingPromptRequests,
+  questionResolveRequest,
+  readPendingPrompts,
+  readPromptAccess,
+} from './prompts';
 import { readSessionList, readSessionMessage, readTranscript, toTranscriptMessage } from './messages';
 import { MAX_TIMER_DELAY_MS, readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStrings } from './readers';
 import type {
@@ -26,6 +35,8 @@ import type {
   ChatAttachment,
   ChatHistoryParams,
   ChatSendParams,
+  ConnectAuth,
+  ConnectDevice,
   ConnectParams,
   RequestFrame,
   SessionsListParams,
@@ -59,6 +70,12 @@ const SESSIONS_PAGE_SIZE = 100;
 
 /** Scopes the chat needs: reading sessions and history, and sending into them. */
 const REQUIRED_SCOPES: readonly string[] = [OperatorScopes.read, OperatorScopes.write];
+
+/** Scopes the handshake requests and the device signs. A paired device asking for more than it was
+ *  approved for triggers a scope-upgrade pairing request, so extend this list deliberately. */
+export const REQUESTED_SCOPES: readonly string[] = [...REQUIRED_SCOPES, OperatorScopes.approvals, OperatorScopes.questions];
+
+const CLIENT_ROLE = 'operator';
 
 /** Without these the service can neither start a run nor observe its output. */
 const REQUIRED_OPERATIONS: readonly GatewayOperation[] = ['send', 'subscribe', 'history'];
@@ -109,6 +126,24 @@ function readSessionAliases(snapshot: unknown): ReadonlyMap<string, string> {
   const alias = readString(defaults.mainKey);
   const canonical = readString(defaults.mainSessionKey);
   return new Map(alias && canonical && alias !== canonical ? [[alias, canonical]] : []);
+}
+
+function connectAuth({ token, deviceToken }: ClientHello): ConnectAuth {
+  return deviceToken ? { token, deviceToken } : { token };
+}
+
+/** resolveSignatureToken (node-connect-reconcile.ts): the credential the device signature binds. */
+function signatureToken(auth: ConnectAuth): string {
+  return auth.token ?? auth.deviceToken ?? '';
+}
+
+/** normalizeDeviceMetadataForAuth (gateway-client device-auth.ts): trimmed, ASCII letters lowercased. */
+function normalizeDeviceMetadata(value: string): string {
+  return value.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+}
+
+function toConnectDevice({ deviceId, publicKey, signature, signedAtMs, nonce }: DeviceProof): ConnectDevice {
+  return { id: deviceId, publicKey, signature, signedAt: signedAtMs, nonce };
 }
 
 function toChatAttachment({ name, mimeType, data }: SendAttachment): ChatAttachment {
@@ -193,7 +228,14 @@ export const v4Adapter: GatewayProtocolAdapter = {
     return null;
   },
 
-  connectRequest(hello: ClientHello): WireRequest {
+  /** buildDeviceAuthPayloadV3 (gateway-client device-auth.ts); the empty last field is the unsent client.deviceFamily. */
+  deviceAuthPayload(hello: ClientHello, { deviceId, nonce, signedAtMs }: DeviceClaim): string {
+    const client = [ClientIdentity.id, ClientIdentity.mode, CLIENT_ROLE, REQUESTED_SCOPES.join(','), String(signedAtMs)];
+    const token = signatureToken(connectAuth(hello));
+    return ['v3', deviceId, ...client, token, nonce, normalizeDeviceMetadata(hello.platform), ''].join('|');
+  },
+
+  connectRequest(hello: ClientHello, device?: DeviceProof): WireRequest {
     const params: ConnectParams = {
       minProtocol: hello.minProtocol,
       maxProtocol: hello.maxProtocol,
@@ -204,13 +246,13 @@ export const v4Adapter: GatewayProtocolAdapter = {
         platform: hello.platform,
         mode: ClientIdentity.mode,
       },
-      caps: [ClientCaps.toolEvents, ClientCaps.sessionScopedEvents],
-      role: 'operator',
-      scopes: [OperatorScopes.read, OperatorScopes.write],
-      auth: { token: hello.token },
+      caps: [ClientCaps.toolEvents, ClientCaps.sessionScopedEvents, ClientCaps.approvals],
+      role: CLIENT_ROLE,
+      scopes: [...REQUESTED_SCOPES],
+      auth: connectAuth(hello),
       userAgent: `claw-code/${hello.clientVersion}`,
     };
-    return request(Methods.connect, params);
+    return request(Methods.connect, device ? { ...params, device: toConnectDevice(device) } : params);
   },
 
   parseHello(payload: unknown): ConnectionAccepted | null {
@@ -228,6 +270,7 @@ export const v4Adapter: GatewayProtocolAdapter = {
       role: readString(auth.role) ?? 'unknown',
       scopes: readStrings(auth.scopes),
       sessionAliases: readSessionAliases(hello.snapshot),
+      deviceToken: readString(auth.deviceToken),
     };
   },
 
@@ -278,6 +321,11 @@ export const v4Adapter: GatewayProtocolAdapter = {
     return request(Methods.chatHistory, params);
   },
 
+  messageRequest({ sessionKey, entryId }): WireRequest {
+    const params: ChatHistoryParams = { sessionKey, messageId: entryId, limit: 1, maxChars: HISTORY_MAX_CHARS };
+    return request(Methods.chatHistory, params);
+  },
+
   parseHistory(payload: unknown): HistoryRead | null {
     const fields = readRecord(payload);
     if (fields.kind === 'reset') return { reset: true };
@@ -312,4 +360,11 @@ export const v4Adapter: GatewayProtocolAdapter = {
   sessionEventsRequest(): WireRequest {
     return request(Methods.sessionsSubscribe, {});
   },
+
+  promptAccess: readPromptAccess,
+  pendingPromptRequests,
+  parsePendingPrompts: readPendingPrompts,
+  approvalResolveRequest,
+  questionReplyRequest: questionResolveRequest,
+  isStalePromptFailure,
 };

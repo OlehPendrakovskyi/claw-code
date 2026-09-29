@@ -1,4 +1,5 @@
 import type * as GatewayConfig from '../core/gatewayConfig';
+import type { PairingState } from '../core/gatewayChatService';
 
 const mockConnect = jest.fn();
 // Declare before the hoisted jest.mock factories: they reference these
@@ -6,6 +7,15 @@ const mockConnect = jest.fn();
 const mockUpdateConnection = jest.fn();
 const mockSuspend = jest.fn();
 const mockGetProtocolVersion = jest.fn((): number | null => 4);
+const mockResetDeviceIdentity = jest.fn();
+const mockIdentityListeners: Array<() => void> = [];
+const mockDeviceStore = {
+    onDidChangeIdentity: (listener: () => void) => {
+        mockIdentityListeners.push(listener);
+        return { dispose: () => undefined };
+    },
+    dispose: jest.fn(),
+};
 
 jest.mock('../core/gatewayConfig', () => ({
     isValidGatewayUrl: jest.requireActual('../core/gatewayConfig').isValidGatewayUrl,
@@ -13,9 +23,12 @@ jest.mock('../core/gatewayConfig', () => ({
     getGatewaySettings: jest.fn(),
     getGatewayToken: jest.fn(),
     migrateLegacyGatewayToken: jest.fn(async () => undefined),
+    isLoopbackGatewayUrl: jest.requireActual('../core/gatewayConfig').isLoopbackGatewayUrl,
+    SecretDeviceCredentialStore: jest.fn(() => mockDeviceStore),
 }));
 
 const mockConnectionListeners: Array<(connected: boolean) => void> = [];
+const mockPairingListeners: Array<(state: PairingState) => void> = [];
 
 jest.mock('../core/gatewayChatService', () => ({
     GatewayChatService: jest.fn().mockImplementation(() => ({
@@ -28,6 +41,11 @@ jest.mock('../core/gatewayChatService', () => ({
             mockConnectionListeners.push(listener);
             return () => undefined;
         },
+        onPairingChange: (listener: (state: PairingState) => void) => {
+            mockPairingListeners.push(listener);
+            return () => undefined;
+        },
+        resetDeviceIdentity: mockResetDeviceIdentity,
     })),
 }));
 
@@ -100,6 +118,8 @@ beforeEach(() => {
     jest.clearAllMocks();
     secretListeners = [];
     mockConnectionListeners.length = 0;
+    mockPairingListeners.length = 0;
+    mockIdentityListeners.length = 0;
     mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
     mockToken.mockResolvedValue('secret-token');
 });
@@ -141,7 +161,7 @@ describe('ChatServiceFactory', () => {
         const choice = await factory.resolve();
 
         expect(choice.transport).toBe('gateway');
-        expect(GatewayChatService).toHaveBeenCalledWith({ url: 'ws://x', token: '', protocol: 'auto' });
+        expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: 'ws://x', token: '', protocol: 'auto' }));
         expect(spy.calls).toContainEqual(['gateway', false]);
     });
 
@@ -521,7 +541,7 @@ describe('ChatServiceFactory', () => {
             const onInvalidated = jest.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
-            expect(GatewayChatService).toHaveBeenCalledWith({ url: 'ws://127.0.0.1:18789', token: 'secret-token', protocol: 'auto' });
+            expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: 'ws://127.0.0.1:18789', token: 'secret-token', protocol: 'auto' }));
 
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: '4' });
             await changeConfiguration('openclaw.gateway.protocolVersion');
@@ -648,6 +668,73 @@ describe('ChatServiceFactory', () => {
             );
             await factory.resolve();
             expect(vscode.window.showWarningMessage).toHaveBeenCalledWith('OpenClaw: Approve this device. (PAIRING_REQUIRED)');
+        });
+    });
+    describe('device identity and pairing', () => {
+        const pending = (requestId: string, status: 'pending' | 'expired' = 'pending'): PairingState => ({
+            status,
+            request: { requestId, reason: 'not-paired' },
+            hint: `The gateway waits for an operator to approve this device: run \`openclaw devices approve ${requestId}\` on the gateway host.`,
+        });
+
+        it('gives the gateway client the SecretStorage device store and trusts only loopback with a device token', async () => {
+            const factory = new ChatServiceFactory(contextStub());
+            mockConnect.mockResolvedValue(undefined);
+            await factory.resolve();
+            const options = jest.mocked(GatewayChatService).mock.calls[0][0];
+            expect(options.deviceCredentials).toBe(mockDeviceStore);
+            expect(options.trustsDeviceTokenRetry?.('ws://127.0.0.1:18789')).toBe(true);
+            expect(options.trustsDeviceTokenRetry?.('wss://gateway.example')).toBe(false);
+        });
+
+        it('announces each pairing request once, with the approve command to copy, and then its approval', async () => {
+            jest.mocked(vscode.window.showWarningMessage).mockResolvedValue('Copy Command' as never);
+            const factory = new ChatServiceFactory(contextStub());
+            mockConnect.mockResolvedValue(undefined);
+            await factory.resolve();
+            const announce = mockPairingListeners[0];
+            announce(pending('req-1'));
+            announce(pending('req-1'));
+            await new Promise((resolve) => setImmediate(resolve));
+            expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
+            expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
+                expect.stringMatching(/openclaw devices approve req-1.*connects as soon as it is approved/),
+                'Copy Command'
+            );
+            expect(vscode.env.clipboard.writeText).toHaveBeenCalledWith('openclaw devices approve req-1');
+            announce(pending('req-2'));
+            expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(2);
+            announce({ status: 'approved' });
+            announce({ status: 'approved' });
+            expect(vscode.window.showInformationMessage).toHaveBeenCalledTimes(1);
+        });
+
+        it('says when it gave up waiting for an approval', async () => {
+            jest.mocked(vscode.window.showWarningMessage).mockResolvedValue(undefined);
+            const factory = new ChatServiceFactory(contextStub());
+            mockConnect.mockResolvedValue(undefined);
+            await factory.resolve();
+            mockPairingListeners[0](pending('req-1', 'expired'));
+            expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('not approved in time'), 'Copy Command');
+            expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+        });
+
+        it('leaves a pairing rejection to the pairing notification', async () => {
+            const factory = new ChatServiceFactory(contextStub());
+            const rejection = { kind: 'pause', code: 'PAIRING_REQUIRED', message: '', hint: 'Approve.', pairing: { requestId: 'req-1', reason: null } } as const;
+            mockConnect.mockRejectedValueOnce(new GatewayConnectError('rejected', rejection));
+            await factory.resolve();
+            expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+        });
+
+        it('makes the gateway client prove the new identity once the stored one changed', async () => {
+            const factory = new ChatServiceFactory(contextStub());
+            mockConnect.mockResolvedValue(undefined);
+            for (const listener of mockIdentityListeners) listener();
+            expect(mockResetDeviceIdentity).not.toHaveBeenCalled();
+            await factory.resolve();
+            for (const listener of mockIdentityListeners) listener();
+            expect(mockResetDeviceIdentity).toHaveBeenCalledTimes(1);
         });
     });
 });

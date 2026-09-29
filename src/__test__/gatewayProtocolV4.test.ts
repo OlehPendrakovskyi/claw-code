@@ -64,18 +64,30 @@ describe('gateway protocol v4', () => {
     });
 
     describe('requests', () => {
-        it('frame a connect the gateway accepts: closed client enums, tool events, both operator scopes', () => {
+        it('frame a connect the gateway accepts: closed client enums, tool events, approvals and the operator scopes', () => {
             const frame = assertValidRequest(v4Adapter.encodeRequest('cc-1', v4Adapter.connectRequest(hello)));
             expect(frame.params).toEqual({
                 minProtocol: 4,
                 maxProtocol: 4,
                 client: { id: 'gateway-client', displayName: 'Claw Code', version: '0.2.1', platform: 'linux', mode: 'backend' },
-                caps: ['tool-events', 'session-scoped-events'],
+                caps: ['tool-events', 'session-scoped-events', 'approvals'],
                 role: 'operator',
-                scopes: ['operator.read', 'operator.write'],
+                scopes: ['operator.read', 'operator.write', 'operator.approvals', 'operator.questions'],
                 auth: { token: 'secret' },
                 userAgent: 'claw-code/0.2.1',
             });
+        });
+
+        it('frame a connect with a device proof the connect schema accepts, and sign what it sends', () => {
+            const device = { deviceId: 'a'.repeat(64), publicKey: 'cHVibGlj', signature: 'c2ln', signedAtMs: 1790605209429, nonce: 'n-1' };
+            const frame = assertValidRequest(v4Adapter.encodeRequest('cc-1', v4Adapter.connectRequest({ ...hello, deviceToken: 'dt' }, device)));
+            expect(frame.params).toMatchObject({
+                auth: { token: 'secret', deviceToken: 'dt' },
+                device: { id: 'a'.repeat(64), publicKey: 'cHVibGlj', signature: 'c2ln', signedAt: 1790605209429, nonce: 'n-1' },
+            });
+            const payload = v4Adapter.deviceAuthPayload({ ...hello, platform: ' Linux' }, { deviceId: 'd1', nonce: 'n-1', signedAtMs: 5 });
+            const scopes = (frame.params.scopes as string[]).join(',');
+            expect(payload).toBe(`v3|d1|gateway-client|backend|operator|${scopes}|5|secret|n-1|linux|`);
         });
 
         it('send the message under an idempotency key that becomes the run id, without a queue mode', () => {
@@ -134,9 +146,16 @@ describe('gateway protocol v4', () => {
     });
 
     describe('hello', () => {
+        it('reads the device token the gateway issued', () => {
+            const payload = { ...capturedPayload('helloOk'), auth: { role: 'operator', scopes: ['operator.read'], deviceToken: 'dtok', issuedAtMs: 1 } };
+            assertValidResult('connect', payload);
+            expect(v4Adapter.parseHello(payload)?.deviceToken).toBe('dtok');
+        });
+
         it('reads protocol, server, limits, features and grants from a real hello-ok', () => {
             const accepted = v4Adapter.parseHello(capturedPayload('helloOk'));
             expect(accepted).toMatchObject({
+                deviceToken: null,
                 protocolVersion: 4,
                 serverVersion: '2026.9.6',
                 role: 'operator',
@@ -243,6 +262,7 @@ describe('gateway protocol v4', () => {
                 name: 'exec',
                 status: 'running',
                 details: '{\n  "command": "ls"\n}',
+                awaitingApproval: null,
             });
             expect(decodedEvent(eventFrame('agent', result))).toMatchObject({ status: 'error', details: 'denied' });
             expect(decodedEvent(eventFrame('agent', { ...start, stream: 'lifecycle' }))).toBeNull();
@@ -261,7 +281,8 @@ describe('gateway protocol v4', () => {
         it('reads keepalive, shutdown and challenge, and ignores events it does not consume', () => {
             expect(decodedEvent(JSON.stringify(captured.tick))).toEqual({ kind: 'keepalive' });
             expect(decodedEvent(eventFrame('shutdown', { reason: 'restart', restartExpectedMs: 5000 }))).toEqual({ kind: 'shutdown', reason: 'restart', restartExpectedMs: 5000 });
-            expect(decodedEvent(JSON.stringify(captured.connectChallenge))).toEqual({ kind: 'challenge' });
+            expect(decodedEvent(JSON.stringify(captured.connectChallenge))).toEqual({ kind: 'challenge', nonce: '3895d967-2424-485f-b3ca-94c44c444afd', issuedAtMs: 1790606195482 });
+            expect(decodedEvent(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 7, ts: -1 } }))).toEqual({ kind: 'challenge', nonce: null, issuedAtMs: null });
             expect(decodedEvent(JSON.stringify({ type: 'event', event: 'presence', payload: {} }))).toBeNull();
         });
 
@@ -327,10 +348,42 @@ describe('gateway protocol v4', () => {
             expect(classifyHandshakeRejection({ code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED', recommendedNextStep: 'wait_then_retry' } })).toMatchObject({ kind: 'backoff', throttled: true });
         });
 
-        it('explains that remote device pairing is not implemented', () => {
-            const rejection = classifyHandshakeRejection({ code: 'INVALID_REQUEST', message: 'device identity required', details: { code: 'DEVICE_IDENTITY_REQUIRED' } });
-            expect(rejection).toMatchObject({ kind: 'permanent' });
-            expect(rejection.hint).toMatch(/no device identity to pair \(not implemented\).*loopback/);
+        it('names the pairing request and the command that approves it', () => {
+            const error = {
+                code: 'NOT_PAIRED',
+                message: 'pairing required: device is asking for more scopes than currently approved',
+                details: { code: 'PAIRING_REQUIRED', reason: 'scope-upgrade', requestId: 'req-7', remediationHint: 'Review the requested scopes, then approve the pending upgrade.', deviceId: 'd1', requestedRole: 'operator' },
+            };
+            assertValidError(error);
+            const rejection = classifyHandshakeRejection(error);
+            expect(rejection).toMatchObject({ kind: 'pause', pairing: { requestId: 'req-7', reason: 'scope-upgrade' } });
+            expect(rejection.hint).toContain("approve this device's scope upgrade: run `openclaw devices approve req-7`");
+        });
+
+        it('points at the pending list when the pairing request id is missing or unsafe to echo', () => {
+            for (const requestId of [undefined, 'bad id; rm -rf', '']) {
+                const rejection = classifyHandshakeRejection({ code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED', requestId, reason: 'bogus' } });
+                expect(rejection.pairing).toEqual({ requestId: null, reason: null });
+                expect(rejection.hint).toContain('`openclaw devices list`, then `openclaw devices approve <requestId>`');
+            }
+        });
+
+        it('offers the device token retry the gateway suggests, and flags a refused device token', () => {
+            const tokenMismatch = { code: 'INVALID_REQUEST', message: 'unauthorized', details: { code: 'AUTH_TOKEN_MISMATCH', canRetryWithDeviceToken: true, recommendedNextStep: 'retry_with_device_token' } };
+            expect(classifyHandshakeRejection(tokenMismatch)).toMatchObject({ kind: 'permanent', deviceTokenRetry: true });
+            expect(classifyHandshakeRejection(captured.tokenMismatchRejection.error).deviceTokenRetry).toBe(true);
+            const deviceMismatch = classifyHandshakeRejection({ code: 'INVALID_REQUEST', message: 'unauthorized', details: { code: 'AUTH_DEVICE_TOKEN_MISMATCH' } });
+            expect(deviceMismatch).toMatchObject({ kind: 'permanent', staleDeviceToken: true });
+            expect(deviceMismatch.deviceTokenRetry).toBeUndefined();
+        });
+
+        it('tells a missing device identity from a rejected device signature', () => {
+            const missing = classifyHandshakeRejection({ code: 'NOT_PAIRED', message: 'device identity required', details: { code: 'DEVICE_IDENTITY_REQUIRED' } });
+            expect(missing).toMatchObject({ kind: 'permanent', hint: expect.stringContaining('SecretStorage') });
+            for (const code of ['DEVICE_AUTH_SIGNATURE_INVALID', 'DEVICE_AUTH_SIGNATURE_EXPIRED', 'DEVICE_AUTH_NONCE_MISMATCH', 'DEVICE_AUTH_DEVICE_ID_MISMATCH']) {
+                const rejected = classifyHandshakeRejection({ code: 'INVALID_REQUEST', message: 'device signature invalid', details: { code, reason: 'device-signature' } });
+                expect(rejected).toMatchObject({ kind: 'permanent', hint: expect.stringContaining('Reset Gateway Device Identity') });
+            }
         });
 
         it('backs off on a top-level INVALID_REQUEST with an unknown detail code, and on startup', () => {

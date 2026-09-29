@@ -8,8 +8,10 @@
 
 import type {
   AbortRequest,
+  ApprovalResolution,
   ConnectionAccepted,
   ConnectionFeatures,
+  DeviceProof,
   ConnectionLimits,
   GatewayOperation,
   HandshakeRejection,
@@ -17,6 +19,10 @@ import type {
   HistoryRequest,
   InboundFrame,
   ListRequest,
+  MessageRequest,
+  OperatorPrompt,
+  PromptAccess,
+  QuestionReply,
   RpcFailure,
   SendAccepted,
   SendRequest,
@@ -28,6 +34,9 @@ import type {
 /** A request ready to be framed. */
 export type WireRequest = { method: string; params: object };
 
+/** A read of the pending prompts of one kind. */
+export type PromptListRequest = { kind: OperatorPrompt['kind']; request: WireRequest };
+
 /** What the client tells the gateway about itself in the handshake. */
 export type ClientHello = {
   token: string;
@@ -35,7 +44,12 @@ export type ClientHello = {
   maxProtocol: number;
   clientVersion: string;
   platform: string;
+  /** A token the gateway issued this device, sent beside a refused shared token. */
+  deviceToken?: string;
 };
+
+/** What a device signature binds besides the hello: who signs, and the challenge it answers. */
+export type DeviceClaim = { deviceId: string; nonce: string; signedAtMs: number };
 
 export interface GatewayProtocolAdapter {
   readonly version: number;
@@ -46,7 +60,9 @@ export interface GatewayProtocolAdapter {
   /** Null for data that is not a frame of this protocol. */
   decodeFrame(data: string): InboundFrame | null;
 
-  connectRequest(hello: ClientHello): WireRequest;
+  /** The exact text a device signs to prove itself in `hello`. */
+  deviceAuthPayload(hello: ClientHello, claim: DeviceClaim): string;
+  connectRequest(hello: ClientHello, device?: DeviceProof): WireRequest;
   /** The accepted handshake, or null when the payload is not a hello. */
   parseHello(payload: unknown): ConnectionAccepted | null;
   classifyRejection(error: unknown): HandshakeRejection;
@@ -65,6 +81,8 @@ export interface GatewayProtocolAdapter {
   parseSendAccepted(payload: unknown): SendAccepted | null;
   abortRequest(request: AbortRequest): WireRequest;
   historyRequest(request: HistoryRequest): WireRequest;
+  /** Answered like a tail read, holding the entry (and at most its sibling rows). */
+  messageRequest(request: MessageRequest): WireRequest;
   parseHistory(payload: unknown): HistoryRead | null;
   subscribeRequest(request: SubscriptionRequest): WireRequest;
   parseSubscription(payload: unknown): SubscriptionAccepted | null;
@@ -73,4 +91,15 @@ export interface GatewayProtocolAdapter {
   parseSessionList(payload: unknown): SessionListPage | null;
   /** Subscribe the connection to session index and tool events of the sessions it may read. */
   sessionEventsRequest(): WireRequest;
+
+  /** Which approvals and questions the handshake's grants, and whether it proved a device, let
+   *  this connection see and answer. */
+  promptAccess(accepted: ConnectionAccepted, provedDevice: boolean): PromptAccess;
+  /** Reads of the prompts pending since before the connection, for the kinds it may see. */
+  pendingPromptRequests(access: PromptAccess): PromptListRequest[];
+  parsePendingPrompts(payload: unknown): OperatorPrompt[] | null;
+  approvalResolveRequest(resolution: ApprovalResolution): WireRequest;
+  questionReplyRequest(reply: QuestionReply): WireRequest;
+  /** The prompt a resolve named was already settled or is gone. */
+  isStalePromptFailure(failure: RpcFailure): boolean;
 }

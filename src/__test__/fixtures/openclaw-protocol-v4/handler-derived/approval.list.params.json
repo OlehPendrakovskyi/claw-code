@@ -1,0 +1,7 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "exec.approval.list / plugin.approval.list params",
+  "x-source": "src/gateway/server-methods/exec-approval.ts and plugin-approval.ts (openclaw 2026.9.6): the handlers read no params; this client sends none",
+  "type": "object",
+  "maxProperties": 0
+}

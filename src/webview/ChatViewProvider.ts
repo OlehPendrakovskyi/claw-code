@@ -44,6 +44,16 @@ import {
     type AgentSessionItem,
 } from '../core/agentPicker';
 import type { HistorySnapshot, SendAttachment, SessionSummary } from '../core/gatewayProtocol/model';
+import type { PromptChange } from '../core/operatorPrompts';
+import {
+    INCOMPLETE_ANSWER_MESSAGE,
+    isOfferedDecision,
+    newPromptRow,
+    readQuestionAnswers,
+    toPromptView,
+    type PromptRow,
+    type PromptView,
+} from './operatorPromptView';
 
 export type { Recommendation } from './recommendations';
 
@@ -146,6 +156,9 @@ const SESSION_UNVERIFIABLE_MESSAGE = 'Could not check this session with the gate
 
 const SEND_DURING_OPEN_MESSAGE = 'A session is being opened in this thread. Send the message again once it has loaded.';
 
+/** Settled approval and question rows kept for display, oldest dropped first. */
+const SETTLED_PROMPT_LIMIT = 50;
+
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'openclaw.chat';
 
@@ -209,6 +222,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private readonly bootstrapTimers = new Map<vscode.Webview, ReturnType<typeof setTimeout>>();
     private visibleThreadIds: string[] = [];
     private activeThreadId = '';
+    /** Approvals and questions by prompt id; a settled row stays until its session's next turn. */
+    private readonly operatorPrompts = new Map<string, PromptRow<GatewayChatService>>();
+    /** Gateway clients whose prompt and session-index events this provider follows. */
+    private readonly watchedGateways = new WeakSet<GatewayChatService>();
 
     private readonly chatServiceFactory: ChatServiceFactory;
 
@@ -518,6 +535,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                         await this.openFileInEditor(msg.filePath, msg.line);
                     }
                     break;
+                case 'resolveApproval':
+                    await this.handleResolveApproval(msg.promptId, msg.decision);
+                    break;
+                case 'answerQuestion':
+                    await this.handleAnswerQuestion(msg.promptId, msg.answers);
+                    break;
             }
         });
     }
@@ -675,6 +698,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         thread.status = 'idle';
         this.threadNotices.delete(thread.id);
         this.runNotices.delete(thread.id);
+        this.dropSettledPrompts(thread);
         if (!this.suspendedTranscriptSinks.get(thread.id)) {
             // The persistent callback captured the pre-bump bindingEpoch: rebind
             // it, or every later transcript event is epoch-dropped.
@@ -1083,6 +1107,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     ): Promise<boolean> {
         this.commitPendingAssistantText(thread);
         this.runNotices.delete(thread.id);
+        this.dropSettledPrompts(thread);
         const history = withHistory ? conversationHistory(thread.messages) : [];
         const userRow: ChatMessage = { role: 'user', content: displayText };
         thread.messages.push(userRow);
@@ -1622,8 +1647,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
-        return this.chatServiceFactory.resolve(existing);
+    private async resolveServiceForSend(existing?: ChatService | GatewayChatService): Promise<{ service: ChatService | GatewayChatService; transport: 'gateway' | 'acpx' }> {
+        const choice = await this.chatServiceFactory.resolve(existing);
+        this.watchGateway(choice.service);
+        return choice;
     }
 
     /** Runs before the shared gateway client retires every sink with a
@@ -1923,6 +1950,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     ...snapshot,
                     notice: this.threadNotices.get(snapshot.id),
                     runNotices: this.runNotices.get(snapshot.id) ?? [],
+                    prompts: this.promptViewsFor(snapshot.id),
                 }));
             const totalMessages = threads.reduce((sum, t) => sum + t.messages.length, 0);
             log.info(`emitState: ${threads.length} threads, ${totalMessages} msgs, active=${this.activeThreadId}, sidebar=${!!this.sidebarView}, popout=${!!this.popOutPanel}, debug=${!!this.debugPanel}`);
@@ -2013,9 +2041,112 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     /** Throws when a configured gateway cannot be used (invalid URL, SecretStorage failure). */
     private async resolveGatewayOrThrow(): Promise<GatewayChatService | null> {
         const choice = await this.chatServiceFactory.resolve();
+        this.watchGateway(choice.service);
         return choice.transport === 'gateway' && choice.service instanceof GatewayChatService
             ? choice.service
             : null;
+    }
+
+    /** Follow a gateway client's approvals, questions and session-index changes, once per client. */
+    private watchGateway(service: ChatService | GatewayChatService): void {
+        if (!(service instanceof GatewayChatService) || this.watchedGateways.has(service)) {
+            return;
+        }
+        this.watchedGateways.add(service);
+        service.onApprovalRequest(change => this.applyPromptChange(service, change));
+        service.onSessionsChanged(() => this.handleSessionsChanged());
+    }
+
+    /** The session index changed: the allowlist refetches on its next check, and open sessions panels reload. */
+    private handleSessionsChanged(): void {
+        this.allowlistFetchedAt = 0;
+        postToAll(this.allWebviews(), { type: 'sessionsChanged' });
+    }
+
+    private applyPromptChange(gateway: GatewayChatService, change: PromptChange): void {
+        if (change.type === 'requested') {
+            this.operatorPrompts.set(change.prompt.id, newPromptRow(change.prompt, gateway));
+        } else {
+            const row = this.operatorPrompts.get(change.id);
+            if (!row || row.state === 'resolved') {
+                return;
+            }
+            row.answeredHere = row.state === 'submitting';
+            row.state = 'resolved';
+            row.outcome = change.outcome;
+            this.pruneSettledPrompts();
+        }
+        this.emitState();
+    }
+
+    private pruneSettledPrompts(): void {
+        const settled = [...this.operatorPrompts.values()].filter(row => row.state === 'resolved');
+        for (const row of settled.slice(0, Math.max(0, settled.length - SETTLED_PROMPT_LIMIT))) {
+            this.operatorPrompts.delete(row.prompt.id);
+        }
+    }
+
+    /** Rows of the session a thread is bound to on the gateway that raised them. */
+    private promptRowsFor(thread: ChatThreadState): Array<PromptRow<GatewayChatService>> {
+        return [...this.operatorPrompts.values()].filter(row =>
+            row.prompt.sessionKey !== null && this.backendFor(thread) === row.gateway &&
+            this.boundToGatewaySession(thread, row.prompt.sessionKey));
+    }
+
+    private promptViewsFor(threadId: string): PromptView[] {
+        const thread = this.threads.get(threadId);
+        return thread ? this.promptRowsFor(thread).map(toPromptView) : [];
+    }
+
+    /** A new turn or a clear leaves only the prompts still waiting. */
+    private dropSettledPrompts(thread: ChatThreadState): void {
+        for (const row of this.promptRowsFor(thread)) {
+            if (row.state === 'resolved') this.operatorPrompts.delete(row.prompt.id);
+        }
+    }
+
+    private pendingPromptRow(promptId: unknown): PromptRow<GatewayChatService> | undefined {
+        const row = typeof promptId === 'string' ? this.operatorPrompts.get(promptId) : undefined;
+        return row?.state === 'pending' ? row : undefined;
+    }
+
+    private async handleResolveApproval(promptId: unknown, decision: unknown): Promise<void> {
+        const row = this.pendingPromptRow(promptId);
+        if (!row || !isOfferedDecision(row.prompt, decision)) {
+            return;
+        }
+        await this.submitPrompt(row, () => row.gateway.resolveApproval(row.prompt.id, decision));
+    }
+
+    /** `answers` null declines the question; anything else must answer every question it asks. */
+    private async handleAnswerQuestion(promptId: unknown, rawAnswers: unknown): Promise<void> {
+        const row = this.pendingPromptRow(promptId);
+        if (row?.prompt.kind !== 'question') {
+            return;
+        }
+        const answers = rawAnswers === null ? null : readQuestionAnswers(row.prompt, rawAnswers);
+        if (rawAnswers !== null && answers === null) {
+            row.error = INCOMPLETE_ANSWER_MESSAGE;
+            this.emitState();
+            return;
+        }
+        await this.submitPrompt(row, () => row.gateway.answerQuestion(row.prompt.id, answers));
+    }
+
+    /** A failed answer leaves the row pending with the reason, so the user can try again. */
+    private async submitPrompt(row: PromptRow<GatewayChatService>, submit: () => Promise<void>): Promise<void> {
+        row.state = 'submitting';
+        row.error = null;
+        this.emitState();
+        try {
+            await submit();
+        } catch (err) {
+            if (row.state === 'submitting') {
+                row.state = 'pending';
+                row.error = err instanceof Error ? err.message : String(err);
+            }
+        }
+        this.emitState();
     }
 
     /** Answer a sessions request to the webview that asked, empty with an error when unavailable. */

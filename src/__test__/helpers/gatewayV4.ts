@@ -48,6 +48,12 @@ const PARAMS_SCHEMAS: Record<string, string> = {
     'sessions.messages.unsubscribe': 'sessions.messages.unsubscribe.params.json',
     'sessions.list': 'sessions.list.params.json',
     'sessions.subscribe': 'sessions.subscribe.params.json',
+    'exec.approval.list': 'handler-derived/approval.list.params.json',
+    'plugin.approval.list': 'handler-derived/approval.list.params.json',
+    'exec.approval.resolve': 'exec.approval.resolve.params.json',
+    'plugin.approval.resolve': 'plugin.approval.resolve.params.json',
+    'question.list': 'question.list.params.json',
+    'question.resolve': 'question.resolve.params.json',
 };
 
 const RESULT_SCHEMAS: Record<string, string> = {
@@ -58,6 +64,12 @@ const RESULT_SCHEMAS: Record<string, string> = {
     'sessions.messages.unsubscribe': 'handler-derived/sessions.messages.subscribe.result.json',
     'sessions.list': 'handler-derived/sessions.list.result.json',
     'sessions.subscribe': 'handler-derived/sessions.subscribe.result.json',
+    'exec.approval.list': 'exec.approval.list.result.json',
+    'plugin.approval.list': 'plugin.approval.list.result.json',
+    'exec.approval.resolve': 'handler-derived/approval.resolve.result.json',
+    'plugin.approval.resolve': 'handler-derived/approval.resolve.result.json',
+    'question.list': 'question.list.result.json',
+    'question.resolve': 'question.resolve.result.json',
 };
 
 const EVENT_SCHEMAS: Record<string, string> = {
@@ -70,6 +82,12 @@ const EVENT_SCHEMAS: Record<string, string> = {
     'session.message': 'handler-derived/event.session.message.json',
     tick: 'event.tick.json',
     shutdown: 'event.shutdown.json',
+    'exec.approval.requested': 'handler-derived/event.exec.approval.requested.json',
+    'exec.approval.resolved': 'handler-derived/event.approval.resolved.json',
+    'plugin.approval.requested': 'handler-derived/event.plugin.approval.requested.json',
+    'plugin.approval.resolved': 'handler-derived/event.approval.resolved.json',
+    'question.requested': 'event.question.requested.json',
+    'question.resolved': 'event.question.resolved.json',
 };
 
 /** Methods whose results the fixtures do not model; any object is accepted. */
@@ -166,13 +184,31 @@ export function displayMessage({ role, text, seq, runId, id, usage }: Message): 
 
 type RunRef = { runId: string; sessionKey?: string; seq: number };
 
+/** Fields of an approval or question request a spec varies. */
+type PromptRef = { id: string; sessionKey?: string | null; runId?: string | null; expiresAtMs?: number };
+
+type WireQuestion = { questionId: string; question: string; header?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean; isOther?: boolean; isSecret?: boolean };
+
+/** Far enough ahead that no spec's clock reaches it unless it means to. */
+export const PROMPT_EXPIRES_AT_MS = 4_102_444_800_000;
+
+function promptEnvelope({ id, expiresAtMs = PROMPT_EXPIRES_AT_MS }: PromptRef, request: JsonObject): JsonObject {
+    return { id, request, createdAtMs: 1_790_606_196_000, expiresAtMs };
+}
+
+function promptSession({ sessionKey = CANONICAL_MAIN, runId = null }: PromptRef): JsonObject {
+    return { sessionKey, runId, agentId: 'dev' };
+}
+
 export const payloads = {
     challenge: (): JsonObject => ({ nonce: 'nonce-1', ts: 1790605209429, capabilities: ['model-catalog-snapshot'] }),
-    helloOk(overrides: { protocol?: number; methods?: string[]; tickIntervalMs?: number; policy?: JsonObject } = {}): JsonObject {
+    helloOk(overrides: { protocol?: number; methods?: string[]; tickIntervalMs?: number; policy?: JsonObject; scopes?: string[] } = {}): JsonObject {
         const hello = capturedPayload('helloOk');
         const features = hello.features as JsonObject;
+        const auth = hello.auth as JsonObject;
         return {
             ...hello,
+            auth: overrides.scopes ? { ...auth, scopes: overrides.scopes } : auth,
             protocol: overrides.protocol ?? hello.protocol,
             features: { ...features, methods: overrides.methods ?? features.methods },
             policy: overrides.policy ?? { ...(hello.policy as JsonObject), tickIntervalMs: overrides.tickIntervalMs ?? 30_000 },
@@ -240,6 +276,22 @@ export const payloads = {
     }),
     historyReset: (): JsonObject => ({ kind: 'reset' }),
     sessionsList: (sessions: JsonObject[]): JsonObject => ({ sessions }),
+    execApproval: (ref: PromptRef, command: string, extra: JsonObject = {}): JsonObject =>
+        promptEnvelope(ref, { command, cwd: '/work', host: 'gateway', warningText: null, allowedDecisions: ['allow-once', 'allow-always', 'deny'], ...promptSession(ref), ...extra }),
+    pluginApproval: (ref: PromptRef, title: string, extra: JsonObject = {}): JsonObject =>
+        promptEnvelope(ref, { pluginId: 'guard', title, description: 'Writes outside the workspace', severity: 'warning', toolName: 'write', ...promptSession(ref), ...extra }),
+    approvalResolved: (id: string, decision: string): JsonObject => ({ id, decision, resolvedBy: 'Control UI', ts: 1_790_606_197_000, request: {} }),
+    question: (ref: PromptRef, questions: WireQuestion[]): JsonObject => ({
+        id: ref.id,
+        questions: questions.map((question) => ({ header: '', options: [], ...question })),
+        agentId: 'dev',
+        ...(ref.sessionKey === null ? {} : { sessionKey: ref.sessionKey ?? CANONICAL_MAIN }),
+        ...(ref.runId ? { runId: ref.runId } : {}),
+        createdAtMs: 1_790_606_196_000,
+        expiresAtMs: ref.expiresAtMs ?? PROMPT_EXPIRES_AT_MS,
+        status: 'pending',
+    }),
+    questionResolved: (id: string, status: string): JsonObject => (status === 'answered' ? { id, status, answers: { answers: {} } } : { id, status }),
 };
 
 /* ---------------------------------------------------------------- */

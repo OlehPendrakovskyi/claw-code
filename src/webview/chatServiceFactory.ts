@@ -13,15 +13,18 @@
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/ChatService';
 import { GatewayChatService } from '../core/gatewayChatService';
+import type { PairingState } from '../core/gatewayChatService';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
 import type { ProtocolSetting } from '../core/gatewayProtocol/registry';
 import {
   getGatewaySettings,
   getGatewayToken,
+  isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
   sendsTokenInCleartext,
   LegacyTokenMigrationResult,
+  SecretDeviceCredentialStore,
 } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
 
@@ -42,6 +45,8 @@ export type TransportChoice = {
   service: ChatService | GatewayChatService;
   transport: 'gateway' | 'acpx';
 };
+
+const COPY_COMMAND = 'Copy Command';
 
 /** Connection probe timeout for `auto` fallback decisions. */
 const CONNECT_TIMEOUT_MS = 4000;
@@ -74,17 +79,23 @@ export class ChatServiceFactory {
 
   private readonly rejectionWarnings = new Set<string>();
   private readonly listeners: vscode.Disposable[];
+  private readonly deviceCredentials: SecretDeviceCredentialStore;
+  /** The pairing notification last shown (status and request), so each is shown once. */
+  private shownPairing: string | null = null;
 
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly onStatus?: TransportStatusListener,
     private readonly onGatewayInvalidated?: (reason: GatewayInvalidationReason) => void
   ) {
+    this.deviceCredentials = new SecretDeviceCredentialStore(context.secrets);
     this.listeners = [
       vscode.workspace.onDidChangeConfiguration((event) => {
         if (event.affectsConfiguration('openclaw.gateway')) void this.reconcile();
       }),
       context.secrets.onDidChange(() => void this.reconcile()),
+      this.deviceCredentials.onDidChangeIdentity(() => this.gatewayService?.resetDeviceIdentity()),
+      this.deviceCredentials,
     ];
   }
 
@@ -273,9 +284,10 @@ export class ChatServiceFactory {
     return existing instanceof ChatService ? existing : new ChatService();
   }
 
-  /** A rejection that retrying cannot fix is shown once per code and endpoint. */
+  /** A rejection that retrying cannot fix is shown once per code and endpoint; a pending pairing
+   *  has its own notification. */
   private warnIfRejected(err: unknown, url: string): void {
-    if (!(err instanceof GatewayConnectError) || err.rejection.kind === 'backoff') {
+    if (!(err instanceof GatewayConnectError) || err.rejection.kind === 'backoff' || err.rejection.pairing) {
       return;
     }
     const key = `${err.rejection.code}|${url}`;
@@ -306,14 +318,50 @@ export class ChatServiceFactory {
     this.cachedProtocol = 'auto';
   }
 
+  /** Each pairing request is announced once, with the command that approves it; so is its expiry. */
+  private announcePairing(state: PairingState): void {
+    if (state.status === 'approved') {
+      this.announcePairingApproved();
+      return;
+    }
+    const shown = `${state.status}|${state.request.requestId ?? ''}`;
+    if (this.shownPairing === shown) {
+      return;
+    }
+    this.shownPairing = shown;
+    const followUp =
+      state.status === 'pending'
+        ? 'Claw Code connects as soon as it is approved.'
+        : 'It was not approved in time: approve it, then send a message to reconnect.';
+    const command = state.request.requestId ? `openclaw devices approve ${state.request.requestId}` : null;
+    void vscode.window.showWarningMessage(`OpenClaw: ${state.hint} ${followUp}`, ...(command ? [COPY_COMMAND] : [])).then((choice) => {
+      if (choice === COPY_COMMAND && command) void vscode.env.clipboard.writeText(command);
+    });
+  }
+
+  private announcePairingApproved(): void {
+    if (this.shownPairing === null) {
+      return;
+    }
+    this.shownPairing = null;
+    void vscode.window.showInformationMessage('OpenClaw: this device was approved; the gateway is connected.');
+  }
+
   private createGateway(url: string, token: string, protocol: ProtocolSetting = 'auto'): GatewayChatService {
-    const gateway = new GatewayChatService({ url, token, protocol });
+    const gateway = new GatewayChatService({
+      url,
+      token,
+      protocol,
+      deviceCredentials: this.deviceCredentials,
+      trustsDeviceTokenRetry: isLoopbackGatewayUrl,
+    });
     gateway.onConnectionStateChange((connected) => {
       // A parked client's socket drop is expected; the badge follows the active transport.
       if (!this.gatewaySuspended) {
         this.onStatus?.('gateway', connected, gateway.getProtocolVersion());
       }
     });
+    gateway.onPairingChange((state) => this.announcePairing(state));
     return gateway;
   }
 

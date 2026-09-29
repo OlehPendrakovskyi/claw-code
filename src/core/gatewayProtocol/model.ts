@@ -33,6 +33,26 @@ export type ConnectionAccepted = {
   scopes: readonly string[];
   /** Session key aliases the gateway resolves (the `main` alias → its canonical main session). */
   sessionAliases: ReadonlyMap<string, string>;
+  /** A reusable credential the gateway issued this device for the connection's role. */
+  deviceToken: string | null;
+};
+
+/** A device's signed answer to the connect challenge. */
+export type DeviceProof = {
+  deviceId: string;
+  /** Raw public key, unpadded base64url. */
+  publicKey: string;
+  signature: string;
+  signedAtMs: number;
+  nonce: string;
+};
+
+/** A pairing request waiting for an operator's approval in OpenClaw. */
+export type PairingRequest = {
+  /** Null when the gateway did not name one; `openclaw devices list` shows it. */
+  requestId: string | null;
+  /** Why approval is needed: a new device, or a role, scope or metadata upgrade. */
+  reason: string | null;
 };
 
 /**
@@ -54,6 +74,12 @@ export type HandshakeRejection = {
   throttled?: boolean;
   /** What the user can do about it. */
   hint: string;
+  /** The approval the gateway waits for. */
+  pairing?: PairingRequest;
+  /** The shared token was refused, but the gateway would accept this device's stored token. */
+  deviceTokenRetry?: boolean;
+  /** The device token the client sent is no longer valid. */
+  staleDeviceToken?: boolean;
 };
 
 /** What the user can do when client and gateway share no protocol version. */
@@ -81,10 +107,12 @@ export type SendRequest = { sessionKey: string; text: string; runId: string; att
 export type AbortRequest = { sessionKey: string; runId?: string };
 /** `cursor` reads what follows it; `olderPageOffset` reads the page before a tail. */
 export type HistoryRequest = { sessionKey: string; cursor?: string; olderPageOffset?: number };
+/** One transcript entry read on its own, uncut up to the gateway's text ceiling. */
+export type MessageRequest = { sessionKey: string; entryId: string };
 export type ListRequest = { offset?: number };
 
-/** A failed RPC as the gateway described it. */
-export type RpcFailure = { code: string; message: string; retryable: boolean; retryAfterMs?: number };
+/** A failed RPC as the gateway described it; `reason` is its machine-readable cause. */
+export type RpcFailure = { code: string; message: string; retryable: boolean; retryAfterMs?: number; reason?: string };
 export type SubscriptionRequest = { sessionKey: string };
 
 /** The gateway accepted a send; `runId` names the run its output streams under. */
@@ -148,6 +176,68 @@ export type SessionListPage = { sessions: SessionSummary[]; nextOffset: number |
 
 export type ToolStatus = 'running' | 'done' | 'error';
 
+export type ApprovalWait = 'pending' | 'unavailable';
+
+/** A reviewer's answer to an approval request. */
+export type ApprovalDecision = 'allow-once' | 'allow-always' | 'deny';
+
+/** What an approval guards: a shell command, or a tool action a plugin holds back. */
+export type ApprovalSubject = 'exec' | 'plugin';
+
+/** A run step that waits until an operator allows or denies it. */
+export type ApprovalPrompt = {
+  kind: 'approval';
+  id: string;
+  subject: ApprovalSubject;
+  /** The command, or the plugin's title for the action. */
+  title: string;
+  /** Lines that help decide: description, working folder, warnings. */
+  details: readonly string[];
+  decisions: readonly ApprovalDecision[];
+  sessionKey: string | null;
+  runId: string | null;
+  expiresAtMs: number;
+};
+
+export type QuestionOption = { label: string; description: string | null };
+
+export type QuestionItem = {
+  id: string;
+  header: string;
+  text: string;
+  options: readonly QuestionOption[];
+  multiSelect: boolean;
+  /** A typed answer is accepted besides the options (always, when there are none). */
+  allowsOther: boolean;
+  secret: boolean;
+};
+
+/** Questions an agent asks the operator; all of them are answered together. */
+export type QuestionPrompt = {
+  kind: 'question';
+  id: string;
+  questions: readonly QuestionItem[];
+  sessionKey: string | null;
+  runId: string | null;
+  expiresAtMs: number;
+};
+
+export type OperatorPrompt = ApprovalPrompt | QuestionPrompt;
+
+/** How a prompt stopped waiting; `withdrawn` covers resolved elsewhere and gone from the gateway. */
+export type PromptOutcome = ApprovalDecision | 'answered' | 'cancelled' | 'expired' | 'withdrawn';
+
+/** Answers by question id: one value each, or several where a question allows multiple. */
+export type QuestionAnswers = Readonly<Record<string, readonly string[]>>;
+
+/** Which prompts the connection's grants let it see and answer. */
+export type PromptAccess = { approvals: boolean; questions: boolean };
+
+export type ApprovalResolution = { id: string; subject: ApprovalSubject; decision: ApprovalDecision };
+
+/** Answers to a question prompt, or null to decline it. */
+export type QuestionReply = { id: string; answers: QuestionAnswers | null };
+
 /** Everything the gateway pushes that the chat service reacts to. */
 export type InboundEvent =
   /** The run is alive but has produced nothing visible yet (startup phases). */
@@ -175,15 +265,21 @@ export type InboundEvent =
       name: string;
       status: ToolStatus;
       details: string;
+      /** The tool's result says it waits for an approval, or that no one could be asked for one. */
+      awaitingApproval: ApprovalWait | null;
     }
   /** An answer given beside the run (a /btw side question). */
   | { kind: 'runSideResult'; runId: string; sessionKey: string; seq: number; text: string; isError: boolean }
   | { kind: 'transcriptMessage'; sessionKey: string; message: TranscriptMessage }
   /** The session index changed: lists of sessions may be stale. */
   | { kind: 'sessionsChanged'; sessionKey: string | null }
+  /** An approval or question waits for an operator. */
+  | { kind: 'promptRequested'; prompt: OperatorPrompt }
+  | { kind: 'promptResolved'; id: string; outcome: PromptOutcome }
   | { kind: 'keepalive' }
   | { kind: 'shutdown'; reason: string; restartExpectedMs: number | null }
-  | { kind: 'challenge' };
+  /** The pre-connect challenge a device signs; null fields were missing or malformed. */
+  | { kind: 'challenge'; nonce: string | null; issuedAtMs: number | null };
 
 /** A parsed inbound frame. */
 export type InboundFrame =

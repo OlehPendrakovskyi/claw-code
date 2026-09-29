@@ -86,6 +86,10 @@
       {
         "command": "openclaw.chat.connectGateway",
         "title": "OpenClaw: Connect to Gateway"
+      },
+      {
+        "command": "openclaw.gateway.resetDeviceIdentity",
+        "title": "OpenClaw: Reset Gateway Device Identity"
       }
     ],
     "keybindings": [

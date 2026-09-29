@@ -5,8 +5,12 @@
  * real gateway or validated builders.
  */
 
-import { GatewayChatService, type GatewaySend } from '../core/gatewayChatService';
+import { createPublicKey, verify } from 'crypto';
+import { GatewayChatService, type GatewaySend, type PairingState } from '../core/gatewayChatService';
+import { generateDeviceIdentity } from '../core/gatewayProtocol/deviceIdentity';
+import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from '../core/gatewayProtocol/deviceIdentity';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
+import { v4Adapter } from '../core/gatewayProtocol/v4/adapter';
 import type { ProtocolSetting } from '../core/gatewayProtocol/registry';
 import type { ChatEvent } from '../chat/ChatService';
 import {
@@ -25,6 +29,34 @@ import {
 jest.mock('ws', () => jest.fn());
 
 const TOKEN = 'secret-token-value';
+const GATEWAY_ORIGIN = 'ws://gateway.test:18789';
+
+/** SecretStorage stand-in: one identity, tokens keyed by gateway origin. */
+class MemoryDeviceStore implements DeviceCredentialStore {
+    identity: DeviceIdentity = generateDeviceIdentity();
+    readonly tokens = new Map<string, StoredDeviceToken>();
+    failIdentity = false;
+    readonly stored: StoredDeviceToken[] = [];
+
+    async loadIdentity(): Promise<DeviceIdentity> {
+        if (this.failIdentity) throw new Error('keyring locked');
+        return this.identity;
+    }
+
+    async loadToken(gateway: string, deviceId: string): Promise<StoredDeviceToken | null> {
+        const token = this.tokens.get(gateway);
+        return token?.deviceId === deviceId ? token : null;
+    }
+
+    async storeToken(gateway: string, token: StoredDeviceToken): Promise<void> {
+        this.stored.push(token);
+        this.tokens.set(gateway, token);
+    }
+
+    async clearToken(gateway: string, deviceId: string): Promise<void> {
+        if (this.tokens.get(gateway)?.deviceId === deviceId) this.tokens.delete(gateway);
+    }
+}
 
 type Harness = {
     svc: GatewayChatService;
@@ -63,7 +95,9 @@ describe('GatewayChatService', () => {
         expect(violations).toEqual([]);
     });
 
-    function harness(opts: { token?: string; protocol?: ProtocolSetting; throwOnOpen?: unknown } = {}): Harness {
+    type HarnessOptions = { token?: string; protocol?: ProtocolSetting; throwOnOpen?: unknown; device?: DeviceCredentialStore; trustsDeviceTokenRetry?: boolean };
+
+    function harness(opts: HarnessOptions = {}): Harness {
         const sockets: MockSocket[] = [];
         const logs: string[] = [];
         const svc = new GatewayChatService({
@@ -78,6 +112,8 @@ describe('GatewayChatService', () => {
             },
             reconnectBaseDelayMs: 100,
             reconnectMaxDelayMs: 1000,
+            deviceCredentials: opts.device,
+            trustsDeviceTokenRetry: () => opts.trustsDeviceTokenRetry === true,
         });
         services.push(svc);
         return { svc, sockets, socket: () => sockets[sockets.length - 1], logs };
@@ -180,14 +216,14 @@ describe('GatewayChatService', () => {
             expect(h.sockets).toHaveLength(2);
         });
 
-        it('pauses while a device pairing is pending', async () => {
+        it('pauses on a pending pairing when it proved no device', async () => {
             jest.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             h.socket().replyError('connect', { code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED' } });
             const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
-            expect(error.rejection.hint).toMatch(/not implemented/);
+            expect(error.rejection.hint).toMatch(/openclaw devices approve/);
             jest.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
@@ -1546,7 +1582,7 @@ describe('GatewayChatService', () => {
             const hello = payloads.helloOk();
             completeHandshake(h.socket(), { ...hello, auth: { role: 'operator', scopes: [] } });
             const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
-            expect(error.rejection).toMatchObject({ kind: 'permanent', code: 'MISSING_SCOPE', hint: expect.stringContaining('SSH tunnel') });
+            expect(error.rejection).toMatchObject({ kind: 'permanent', code: 'MISSING_SCOPE', hint: expect.stringContaining('approve this device') });
             jest.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
@@ -1727,6 +1763,278 @@ describe('GatewayChatService', () => {
                 expect(() => h.socket().receive(raw)).not.toThrow();
             }
             expect(() => h.socket().emit('message', Buffer.from('{"type":"event","event":"tick","payload":{"ts":1}}'))).not.toThrow();
+        });
+    });
+    describe('device identity', () => {
+        /** The challenge arrives; the device loads from its store before the connect goes out. */
+        async function answerChallenge(h: Harness): Promise<void> {
+            h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
+            await settle();
+        }
+
+        async function deviceConnected(store: MemoryDeviceStore, hello: Record<string, unknown> = payloads.helloOk()): Promise<Harness> {
+            const h = harness({ device: store });
+            const connecting = h.svc.connect();
+            await answerChallenge(h);
+            h.socket().reply('connect', hello);
+            await connecting;
+            return h;
+        }
+
+        function helloIssuing(deviceToken: string): Record<string, unknown> {
+            const hello = payloads.helloOk();
+            return { ...hello, auth: { ...(hello.auth as Record<string, unknown>), deviceToken } };
+        }
+
+        function pairingStates(h: Harness): PairingState[] {
+            const states: PairingState[] = [];
+            h.svc.onPairingChange((state) => states.push(state));
+            return states;
+        }
+
+        function pairingRequired(requestId: string): Record<string, unknown> {
+            return { code: 'NOT_PAIRED', message: 'pairing required: device is not approved yet', details: { code: 'PAIRING_REQUIRED', reason: 'not-paired', requestId } };
+        }
+
+        const tokenMismatch = {
+            code: 'INVALID_REQUEST',
+            message: 'unauthorized: gateway token mismatch',
+            details: { code: 'AUTH_TOKEN_MISMATCH', canRetryWithDeviceToken: true, recommendedNextStep: 'retry_with_device_token' },
+        };
+
+        it('signs the challenge with the stored identity, verifiable with its public key', async () => {
+            const store = new MemoryDeviceStore();
+            const h = await deviceConnected(store);
+            const challenge = payloads.challenge();
+            const device = h.socket().lastRequest('connect').params.device as Record<string, unknown>;
+            expect(device).toMatchObject({ id: store.identity.deviceId, publicKey: store.identity.publicKey, nonce: challenge.nonce, signedAt: challenge.ts });
+            const hello = { token: TOKEN, minProtocol: 4, maxProtocol: 4, clientVersion: '0.2.1', platform: process.platform };
+            const payload = v4Adapter.deviceAuthPayload(hello, { deviceId: store.identity.deviceId, nonce: String(challenge.nonce), signedAtMs: Number(challenge.ts) });
+            const signature = Buffer.from(String(device.signature), 'base64url');
+            expect(verify(null, Buffer.from(payload), createPublicKey(store.identity.privateKey), signature)).toBe(true);
+        });
+
+        it('keeps the token the gateway issued under its origin, and leaves an unchanged one alone', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            const h = await deviceConnected(store, helloIssuing('dtok-1'));
+            await settle();
+            expect(store.tokens.get(GATEWAY_ORIGIN)).toEqual({ deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-1', scopes: expect.any(Array) });
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            await answerChallenge(h);
+            h.socket().reply('connect', helloIssuing('dtok-1'));
+            await settle();
+            expect(store.stored).toHaveLength(1);
+            expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN });
+        });
+
+        it('connects as no device when SecretStorage fails, or without a store', async () => {
+            const store = new MemoryDeviceStore();
+            store.failIdentity = true;
+            const h = await deviceConnected(store);
+            expect(h.socket().lastRequest('connect').params).not.toHaveProperty('device');
+            expect(h.logs).toContainEqual(expect.stringContaining('device identity unavailable'));
+            const plain = await connected();
+            expect(plain.socket().lastRequest('connect').params).not.toHaveProperty('device');
+        });
+
+        it('will not prove a device against a challenge without a timestamp', async () => {
+            const h = harness({ device: new MemoryDeviceStore() });
+            const connecting = h.svc.connect();
+            h.socket().receive(JSON.stringify({ type: 'event', event: 'connect.challenge', payload: { nonce: 'n-1' } }));
+            await expect(connecting).rejects.toThrow(/no usable nonce or timestamp/);
+            expect(methods(h.sockets[0])).not.toContain('connect');
+        });
+
+        it('waits for a pending approval, asking again at a slow pace, and resumes once approved', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            const h = harness({ device: store });
+            const states = pairingStates(h);
+            const connecting = h.svc.connect();
+            await answerChallenge(h);
+            h.socket().replyError('connect', pairingRequired('req-1'));
+            const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
+            expect(error.rejection).toMatchObject({ kind: 'pause', pairing: { requestId: 'req-1' } });
+            expect(states).toEqual([{ status: 'pending', request: { requestId: 'req-1', reason: 'not-paired' }, hint: expect.stringContaining('openclaw devices approve req-1') }]);
+            jest.advanceTimersByTime(4999);
+            expect(h.sockets).toHaveLength(1);
+            jest.advanceTimersByTime(1);
+            expect(h.sockets).toHaveLength(2);
+            await answerChallenge(h);
+            h.socket().reply('connect', helloIssuing('dtok-approved'));
+            await settle();
+            expect(h.svc.isRunning).toBe(true);
+            expect(states[states.length - 1]).toEqual({ status: 'approved' });
+            expect(store.tokens.get(GATEWAY_ORIGIN)?.token).toBe('dtok-approved');
+        });
+
+        it('stops asking once the approval wait limit passes, until the next explicit connect', async () => {
+            jest.useFakeTimers();
+            const h = harness({ device: new MemoryDeviceStore() });
+            const states = pairingStates(h);
+            h.svc.connect().catch(() => undefined);
+            for (let attempt = 0; attempt < 400 && states.every((state) => state.status === 'pending'); attempt++) {
+                await answerChallenge(h);
+                h.socket().replyError('connect', pairingRequired('req-1'));
+                await settle();
+                jest.advanceTimersByTime(5000);
+            }
+            expect(states[states.length - 1]).toMatchObject({ status: 'expired', request: { requestId: 'req-1' } });
+            expect(h.sockets.length).toBeGreaterThan(170);
+            const attempts = h.sockets.length;
+            jest.advanceTimersByTime(60_000);
+            expect(h.sockets).toHaveLength(attempts);
+            h.svc.connect().catch(() => undefined);
+            await answerChallenge(h);
+            h.socket().replyError('connect', pairingRequired('req-1'));
+            await settle();
+            expect(states[states.length - 1]).toMatchObject({ status: 'pending' });
+        });
+
+        it('retries a refused shared token once with the stored device token, and forgets a refused one', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-old', scopes: ['operator.read'] });
+            const h = harness({ device: store, trustsDeviceTokenRetry: true });
+            const connecting = h.svc.connect();
+            await answerChallenge(h);
+            expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN });
+            h.socket().replyError('connect', tokenMismatch);
+            await expect(connecting).rejects.toMatchObject({ rejection: { kind: 'backoff', code: 'AUTH_TOKEN_MISMATCH' } });
+            jest.advanceTimersByTime(1000);
+            await answerChallenge(h);
+            expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN, deviceToken: 'dtok-old' });
+            h.socket().replyError('connect', { code: 'INVALID_REQUEST', message: 'unauthorized: device token mismatch', details: { code: 'AUTH_DEVICE_TOKEN_MISMATCH' } });
+            await settle();
+            expect(store.tokens.has(GATEWAY_ORIGIN)).toBe(false);
+            jest.advanceTimersByTime(60_000);
+            expect(h.sockets).toHaveLength(2);
+        });
+
+        it('offers no stored device token to an untrusted endpoint', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-old', scopes: [] });
+            const h = harness({ device: store });
+            const connecting = h.svc.connect();
+            await answerChallenge(h);
+            h.socket().replyError('connect', tokenMismatch);
+            await expect(connecting).rejects.toMatchObject({ rejection: { kind: 'permanent' } });
+            jest.advanceTimersByTime(60_000);
+            expect(h.sockets).toHaveLength(1);
+        });
+
+        it('stops a run it started before a reconnect, as the same device', async () => {
+            jest.useFakeTimers();
+            const h = await deviceConnected(new MemoryDeviceStore());
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            await answerChallenge(h);
+            h.socket().reply('connect', payloads.helloOk());
+            await settle();
+            h.svc.abort(CANONICAL_MAIN);
+            expect(h.socket().lastRequest('chat.abort').params).toEqual({ sessionKey: CANONICAL_MAIN, runId });
+            h.socket().reply('chat.abort', { ok: true, aborted: true, runIds: [runId] });
+            await settle();
+            expect(run.events).toEqual([{ type: 'done' }]);
+        });
+
+        /** A device-proved run, its socket dropped: the cancel happens while disconnected. */
+        async function cancelledWhileDown(store: MemoryDeviceStore): Promise<{ h: Harness; run: Send; runId: string }> {
+            const h = await deviceConnected(store);
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            h.svc.abort(CANONICAL_MAIN);
+            return { h, run, runId };
+        }
+
+        async function reconnectAsDevice(h: Harness): Promise<void> {
+            jest.advanceTimersByTime(1000);
+            await answerChallenge(h);
+            h.socket().reply('connect', payloads.helloOk());
+            await settle();
+        }
+
+        it('holds a cancel made while disconnected and sends it right after the same device reconnects', async () => {
+            jest.useFakeTimers();
+            const { h, run, runId } = await cancelledWhileDown(new MemoryDeviceStore());
+            expect(run.events).toEqual([]);
+            await reconnectAsDevice(h);
+            expect(h.socket().lastRequest('chat.abort').params).toEqual({ sessionKey: CANONICAL_MAIN, runId });
+            expect(send(h, CANONICAL_MAIN).events[0]).toEqual({ type: 'error', message: expect.stringContaining('still aborting') });
+            h.socket().reply('chat.abort', { ok: true, aborted: true, runIds: [runId] });
+            await settle();
+            expect(run.events).toEqual([{ type: 'done' }]);
+        });
+
+        it('sends an abort lost with its socket again after the same device reconnects', async () => {
+            jest.useFakeTimers();
+            const h = await deviceConnected(new MemoryDeviceStore());
+            const run = send(h, CANONICAL_MAIN);
+            const runId = await accepted(h);
+            h.svc.abort(CANONICAL_MAIN);
+            expect(methods(h.socket())).toContain('chat.abort');
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await settle();
+            expect(run.events).toEqual([]);
+            await reconnectAsDevice(h);
+            expect(h.socket().lastRequest('chat.abort').params).toEqual({ sessionKey: CANONICAL_MAIN, runId });
+            h.socket().reply('chat.abort', { ok: true, aborted: true, runIds: [runId] });
+            await settle();
+            expect(run.events).toEqual([{ type: 'done' }]);
+        });
+
+        it('says the run continues when the gateway refuses the held cancel', async () => {
+            jest.useFakeTimers();
+            const { h, run } = await cancelledWhileDown(new MemoryDeviceStore());
+            await reconnectAsDevice(h);
+            h.socket().replyError('chat.abort', { code: 'INVALID_REQUEST', message: 'unauthorized' });
+            await settle();
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
+        });
+
+        it('drops a held cancel when the device identity changes, and says the run continues', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            const { h, run } = await cancelledWhileDown(store);
+            store.identity = generateDeviceIdentity();
+            h.svc.resetDeviceIdentity();
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
+            await reconnectAsDevice(h);
+            expect(methods(h.socket())).not.toContain('chat.abort');
+        });
+
+        it('gives a held cancel up when no handshake completes in time', async () => {
+            jest.useFakeTimers();
+            const { h, run } = await cancelledWhileDown(new MemoryDeviceStore());
+            jest.advanceTimersByTime(119_000);
+            expect(run.events).toEqual([]);
+            jest.advanceTimersByTime(1000);
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
+            expect(h.sockets.every((socket) => !methods(socket).includes('chat.abort'))).toBe(true);
+        });
+
+        it('cannot stop a run an earlier identity started, and says so', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            const h = await deviceConnected(store);
+            const run = send(h, CANONICAL_MAIN);
+            await accepted(h);
+            store.identity = generateDeviceIdentity();
+            h.svc.resetDeviceIdentity();
+            jest.advanceTimersByTime(1000);
+            await answerChallenge(h);
+            expect(h.socket().lastRequest('connect').params.device).toMatchObject({ id: store.identity.deviceId });
+            h.socket().reply('connect', payloads.helloOk());
+            await settle();
+            h.svc.abort(CANONICAL_MAIN);
+            expect(methods(h.socket())).not.toContain('chat.abort');
+            expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
         });
     });
 });

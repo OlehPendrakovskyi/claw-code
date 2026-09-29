@@ -45,6 +45,21 @@ const TYPEBOX_FIXTURES = {
   'event.chat.json': 'ChatEventSchema',
   'event.tick.json': 'TickEventSchema',
   'event.shutdown.json': 'ShutdownEventSchema',
+  'exec.approval.resolve.params.json': 'ExecApprovalResolveParamsSchema',
+  'plugin.approval.resolve.params.json': 'PluginApprovalResolveParamsSchema',
+  'question.list.params.json': 'QuestionListParamsSchema',
+  'question.list.result.json': 'QuestionListResultSchema',
+  'question.resolve.params.json': 'QuestionResolveParamsSchema',
+  'question.resolve.result.json': 'QuestionResolveResultSchema',
+  'event.question.requested.json': 'QuestionRequestedEventSchema',
+  'event.question.resolved.json': 'QuestionResolvedEventSchema',
+};
+
+/** exec.approval.list / plugin.approval.list answer with an array of their requested events
+ *  (approval-record-lookup.ts listVisiblePendingApprovalRequests). */
+const APPROVAL_LIST_FIXTURES = {
+  'exec.approval.list.result.json': 'event.exec.approval.requested.json',
+  'plugin.approval.list.result.json': 'event.plugin.approval.requested.json',
 };
 
 /** Schemas composed into fixtures below rather than written on their own. */
@@ -111,9 +126,13 @@ function writeFixture(file, schema) {
   fs.writeFileSync(path.join(FIXTURE_DIR, file), `${JSON.stringify(schema, null, 2)}\n`);
 }
 
+/** A schema without its document header, for embedding in another. */
+function strip(schema) {
+  return Object.fromEntries(Object.entries(schema).filter(([key]) => key !== '$schema' && key !== 'title'));
+}
+
 /** chat.history answers a tail read (no TypeBox schema) or a cursor read (delta or reset). */
 function chatHistoryResult(schemas) {
-  const strip = (schema) => Object.fromEntries(Object.entries(schema).filter(([key]) => key !== '$schema' && key !== 'title'));
   return {
     $schema: 'http://json-schema.org/draft-07/schema#',
     title: 'chat.history result',
@@ -144,6 +163,9 @@ async function main() {
     writeFixture(file, toJsonSchema(schemas[name], name));
   }
   writeFixture('chat.history.result.json', chatHistoryResult(schemas));
+  for (const [file, rowFile] of Object.entries(APPROVAL_LIST_FIXTURES)) {
+    writeFixture(file, { $schema: 'http://json-schema.org/draft-07/schema#', title: file.replace('.json', ''), type: 'array', items: strip(readHandlerDerived(rowFile)) });
+  }
   writeFixture('event.agent.json', agentEvent(schemas));
   // server-chat.ts broadcasts session.tool with the same payload as the agent tool stream.
   writeFixture('event.session.tool.json', { ...agentEvent(schemas), title: 'session.tool event' });
@@ -151,7 +173,8 @@ async function main() {
     path.join(FIXTURE_DIR, 'VERSION'),
     `openclaw ${manifest.version}\nprotocol ${versionModule.PROTOCOL_VERSION}\n`
   );
-  console.log(`synced ${Object.keys(TYPEBOX_FIXTURES).length + 3} schemas from openclaw ${manifest.version} (protocol ${versionModule.PROTOCOL_VERSION})`);
+  const written = Object.keys(TYPEBOX_FIXTURES).length + Object.keys(APPROVAL_LIST_FIXTURES).length + 3;
+  console.log(`synced ${written} schemas from openclaw ${manifest.version} (protocol ${versionModule.PROTOCOL_VERSION})`);
 }
 
 await main();

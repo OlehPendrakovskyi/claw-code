@@ -1,0 +1,207 @@
+import * as vscode from 'vscode';
+
+const mockResolve = jest.fn();
+
+jest.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: jest.fn().mockImplementation(() => ({
+        resolve: (...args: unknown[]) => mockResolve(...args),
+        dispose: jest.fn(),
+    })),
+}));
+
+jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+
+jest.mock('fs', () => {
+    const actual = jest.requireActual('fs');
+    return { ...actual, promises: { ...actual.promises, realpath: async (p: string) => p } };
+});
+
+import { ChatViewProvider } from '../webview/ChatViewProvider';
+import type { GatewayChatService } from '../core/gatewayChatService';
+import type { OperatorPrompt } from '../core/gatewayProtocol/model';
+import type { PromptChange } from '../core/operatorPrompts';
+import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
+
+type Posted = Record<string, unknown>;
+type ThreadState = { id: string; prompts: Array<Record<string, unknown>> };
+type StateMessage = { type: 'state'; threads: ThreadState[] };
+type FakeWebview = { posted: Posted[]; send(message: unknown): Promise<void>; webview: vscode.Webview };
+type FakeView = { webview: vscode.Webview; visible: boolean; show: (preserveFocus?: boolean) => void; onDidDispose: vscode.Event<void> };
+type TestGateway = GatewayChatService & { emitPrompt(change: PromptChange): void; emitSessionsChanged(sessionKey?: string | null): void };
+
+const { GatewayChatService: MockGatewayChatService } =
+    jest.requireMock<{ GatewayChatService: new () => TestGateway }>('../core/gatewayChatService');
+
+const MAIN = 'agent:main:main';
+const CODER = 'agent:coder:main';
+
+const APPROVAL: OperatorPrompt = {
+    kind: 'approval',
+    id: 'a1',
+    subject: 'exec',
+    title: 'rm -rf build',
+    details: ['Working folder: /work'],
+    decisions: ['allow-once', 'deny'],
+    sessionKey: MAIN,
+    runId: 'r1',
+    expiresAtMs: 4_102_444_800_000,
+};
+
+const QUESTION: OperatorPrompt = {
+    kind: 'question',
+    id: 'q1',
+    questions: [
+        { id: 'color', header: 'Color', text: 'Which?', options: [{ label: 'Red', description: null }, { label: 'Blue', description: null }], multiSelect: false, allowsOther: false, secret: false },
+    ],
+    sessionKey: MAIN,
+    runId: null,
+    expiresAtMs: 4_102_444_800_000,
+};
+
+function makeWebview(): FakeWebview {
+    let handler: (message: unknown) => Promise<void> = async () => undefined;
+    const posted: Posted[] = [];
+    const webview: vscode.Webview = {
+        options: {},
+        html: '',
+        cspSource: 'vscode-webview:',
+        postMessage: async (message: Posted) => { posted.push(message); return true; },
+        onDidReceiveMessage: (cb: (message: unknown) => Promise<void>) => { handler = cb; return { dispose() {} }; },
+        asWebviewUri: (uri: vscode.Uri) => uri,
+    };
+    return { posted, webview, send: (message) => handler(message) };
+}
+
+function makeProvider(): FakeWebview {
+    const workspaceState = { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined) };
+    const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
+        globalState: { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined), setKeysForSync: jest.fn() },
+        workspaceState,
+    };
+    const provider = new ChatViewProvider(vscode.Uri.file('/ext'), context as vscode.ExtensionContext);
+    const sidebar = makeWebview();
+    const view: FakeView = { webview: sidebar.webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    provider.resolveWebviewView(view as vscode.WebviewView, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
+    return sidebar;
+}
+
+const { setImmediate: realSetImmediate } = jest.requireActual<typeof import('timers')>('timers');
+
+async function flush(): Promise<void> {
+    for (let i = 0; i < 10; i++) {
+        await new Promise(resolve => realSetImmediate(resolve));
+    }
+}
+
+function promptsOf(webview: FakeWebview, threadId = 'thread-1'): Array<Record<string, unknown>> {
+    const states = webview.posted.filter((message): message is StateMessage => message.type === 'state');
+    return states[states.length - 1].threads.find(thread => thread.id === threadId)?.prompts ?? [];
+}
+
+function summaries(prompts: Array<Record<string, unknown>>): Array<[unknown, unknown, unknown]> {
+    return prompts.map(prompt => [prompt.id, prompt.state, prompt.status]);
+}
+
+describe('ChatViewProvider prompts', () => {
+    let gateway: TestGateway;
+
+    beforeEach(() => {
+        jest.useFakeTimers();
+        gateway = new MockGatewayChatService();
+        jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: MAIN, label: 'Main' }, { key: CODER, label: 'Coder' }]));
+        jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([]));
+        mockResolve.mockReset();
+        mockResolve.mockResolvedValue({ service: gateway, transport: 'gateway' });
+    });
+
+    afterEach(() => jest.useRealTimers());
+
+    async function boundTo(sessionKey: string): Promise<FakeWebview> {
+        const sidebar = makeProvider();
+        await sidebar.send({ type: 'openSession', sessionKey, threadId: 'thread-1' });
+        await flush();
+        return sidebar;
+    }
+
+    describe('rows', () => {
+        it('shows a prompt only in the thread bound to its session', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            gateway.emitPrompt({ type: 'requested', prompt: { ...QUESTION, sessionKey: CODER } });
+            expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'pending', '']]);
+            expect(promptsOf(sidebar)[0]).toMatchObject({ kind: 'approval', title: 'rm -rf build', decisions: ['allow-once', 'deny'] });
+        });
+
+        it('reads an approval resolved elsewhere, and one that expired, as settled rows', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            gateway.emitPrompt({ type: 'requested', prompt: QUESTION });
+            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'deny' });
+            gateway.emitPrompt({ type: 'resolved', id: 'q1', outcome: 'expired' });
+            expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Denied elsewhere'], ['q1', 'resolved', 'Expired without an answer']]);
+        });
+
+        it('drops settled rows at the next turn and keeps the waiting ones', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            gateway.emitPrompt({ type: 'requested', prompt: QUESTION });
+            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
+            await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'next' });
+            await flush();
+            expect(summaries(promptsOf(sidebar))).toEqual([['q1', 'pending', '']]);
+        });
+    });
+
+    describe('answers', () => {
+        it('resolves an approval with an offered decision and marks it answered here', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            jest.mocked(gateway.resolveApproval).mockImplementation(async (id, decision) => gateway.emitPrompt({ type: 'resolved', id, outcome: decision }));
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
+            expect(gateway.resolveApproval).toHaveBeenCalledWith('a1', 'allow-once');
+            expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
+        });
+
+        it('ignores a decision the approval does not offer and a prompt it does not know', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-always' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'nope', decision: 'deny' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: { id: 'a1' }, decision: 'deny' });
+            expect(gateway.resolveApproval).not.toHaveBeenCalled();
+        });
+
+        it('keeps a row pending with the reason when the answer fails', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: APPROVAL });
+            jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('gateway rpc error code=UNAVAILABLE'));
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'deny' });
+            expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'pending', 'gateway rpc error code=UNAVAILABLE']]);
+        });
+
+        it('sends question answers only when every question has an allowed answer, and declines with null', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt({ type: 'requested', prompt: QUESTION });
+            gateway.emitPrompt({ type: 'requested', prompt: { ...QUESTION, id: 'q2' } });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q1', answers: { color: ['Green'] } });
+            expect(gateway.answerQuestion).not.toHaveBeenCalled();
+            expect(promptsOf(sidebar)[0]).toMatchObject({ state: 'pending', status: expect.stringContaining('Answer every question') });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q1', answers: { color: [' Blue '] } });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('q1', { color: ['Blue'] });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q2', answers: null });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('q2', null);
+        });
+    });
+
+    describe('session index changes', () => {
+        it('tells the webviews and refetches the session list on the next key check', async () => {
+            const sidebar = await boundTo(MAIN);
+            const listed = jest.mocked(gateway.listSessions).mock.calls.length;
+            gateway.emitSessionsChanged('agent:new:main');
+            expect(sidebar.posted.filter(message => message.type === 'sessionsChanged')).toHaveLength(1);
+            await sidebar.send({ type: 'openSession', sessionKey: 'agent:new:main', threadId: 'thread-1' });
+            await flush();
+            expect(jest.mocked(gateway.listSessions).mock.calls.length).toBeGreaterThan(listed);
+        });
+    });
+});

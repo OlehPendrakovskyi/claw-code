@@ -3,18 +3,27 @@
  *
  * Reads the `openclaw.gateway.*` configuration block, manages the gateway
  * auth token in VS Code SecretStorage, and performs a one-time migration of
- * a legacy plaintext `openclaw.gateway.token` setting into SecretStorage.
+ * a legacy plaintext `openclaw.gateway.token` setting into SecretStorage, and
+ * keeps the device identity and the device tokens gateways issued it there too.
  *
- * Tokens are never logged and never returned in error messages.
+ * Tokens and keys are never logged and never returned in error messages.
  */
 
 import * as vscode from 'vscode';
 import { log } from '../vscode/commands/shared';
+import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
+import { exportDeviceIdentity, generateDeviceIdentity, importDeviceIdentity } from './gatewayProtocol/deviceIdentity';
 import type { ProtocolSetting } from './gatewayProtocol/registry';
 import { isProtocolSetting } from './gatewayProtocol/registry';
 
 /** SecretStorage key under which the gateway token is stored. */
 export const GATEWAY_TOKEN_SECRET_KEY = 'openclaw.gateway.token';
+
+/** SecretStorage key of the device's Ed25519 private key (PKCS#8 PEM). */
+export const DEVICE_IDENTITY_SECRET_KEY = 'openclaw.gateway.deviceIdentity';
+
+/** SecretStorage key of the device tokens gateways issued, as JSON keyed by gateway origin. */
+export const DEVICE_TOKENS_SECRET_KEY = 'openclaw.gateway.deviceTokens';
 
 /** Legacy plaintext configuration key migrated into SecretStorage once.
  *  Relative to the `openclaw` configuration section (full setting id is
@@ -65,6 +74,12 @@ export class GatewayConfigService {
   /** Whether `url` is a `ws:` or `wss:` URL, without fragment, that the gateway client can open. */
   static isValidGatewayUrl(url: string): boolean {
     return GatewayConfigService.parseUrl(url) !== null;
+  }
+
+  /** Whether `url` names this machine: only there may a stored device token back a refused shared token. */
+  static isLoopbackGatewayUrl(url: string): boolean {
+    const parsed = GatewayConfigService.parseUrl(url);
+    return parsed !== null && GatewayConfigService.isLoopbackHost(parsed.hostname);
   }
 
   /** Whether a token sent to `url` would cross the network unencrypted:
@@ -160,6 +175,14 @@ export class GatewayConfigService {
       value.trim() ? 'Gateway token saved to SecretStorage.' : 'Gateway token cleared.'
     );
     return true;
+  }
+
+  /** Forget the device identity and every device token, so the next connect pairs a new device. */
+  static resetDeviceIdentity(secrets: vscode.SecretStorage): Promise<void> {
+    return serializeDeviceSecrets(async () => {
+      await secrets.delete(DEVICE_TOKENS_SECRET_KEY);
+      await secrets.delete(DEVICE_IDENTITY_SECRET_KEY);
+    });
   }
 
   private static secretWriteQueue: Promise<unknown> = Promise.resolve();
@@ -328,10 +351,132 @@ type LegacyTokenSite = {
   precedence: number;
 };
 
+let deviceSecretQueue: Promise<unknown> = Promise.resolve();
+
+/** Device secrets are read-modify-written by every connect; one queue keeps the writes whole. */
+function serializeDeviceSecrets<T>(task: () => Promise<T>): Promise<T> {
+  const run = deviceSecretQueue.then(task);
+  deviceSecretQueue = run.catch(() => undefined);
+  return run;
+}
+
+type DeviceTokenMap = Record<string, StoredDeviceToken>;
+
+function isStoredDeviceToken(value: unknown): value is StoredDeviceToken {
+  if (typeof value !== 'object' || value === null) return false;
+  const { deviceId, role, token, scopes } = value as Record<string, unknown>;
+  const hasStrings = typeof deviceId === 'string' && typeof role === 'string' && typeof token === 'string' && token !== '';
+  return hasStrings && Array.isArray(scopes) && scopes.every((scope) => typeof scope === 'string');
+}
+
+function parseDeviceTokens(json: string | undefined): DeviceTokenMap {
+  try {
+    const parsed: unknown = JSON.parse(json ?? '{}');
+    if (typeof parsed !== 'object' || parsed === null) return {};
+    return Object.fromEntries(Object.entries(parsed).filter(([, token]) => isStoredDeviceToken(token))) as DeviceTokenMap;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The device identity and its tokens in SecretStorage. The identity is
+ * created on first use and cached; a change made elsewhere (the reset
+ * command, another window) is reported to `onDidChangeIdentity` listeners,
+ * a write made here is not.
+ */
+export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscode.Disposable {
+  private identity: Promise<DeviceIdentity> | null = null;
+  /** The persisted key as last read or written here. */
+  private knownIdentity: string | undefined;
+  private readonly identityListeners = new Set<() => void>();
+  private readonly subscription: vscode.Disposable;
+
+  constructor(private readonly secrets: vscode.SecretStorage) {
+    this.subscription = secrets.onDidChange((event) => {
+      if (event.key !== DEVICE_IDENTITY_SECRET_KEY) return;
+      this.noticeIdentityChange().catch((err: unknown) => {
+        log.warn(`reading the gateway device identity failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    });
+  }
+
+  loadIdentity(): Promise<DeviceIdentity> {
+    if (!this.identity) {
+      const loading = serializeDeviceSecrets(() => this.readOrCreateIdentity());
+      // A failed read is retried by the next connect.
+      loading.catch(() => {
+        if (this.identity === loading) this.identity = null;
+      });
+      this.identity = loading;
+    }
+    return this.identity;
+  }
+
+  onDidChangeIdentity(listener: () => void): vscode.Disposable {
+    this.identityListeners.add(listener);
+    return { dispose: () => this.identityListeners.delete(listener) };
+  }
+
+  async loadToken(gateway: string, deviceId: string): Promise<StoredDeviceToken | null> {
+    const token = parseDeviceTokens(await this.secrets.get(DEVICE_TOKENS_SECRET_KEY))[gateway];
+    return token?.deviceId === deviceId ? token : null;
+  }
+
+  storeToken(gateway: string, token: StoredDeviceToken): Promise<void> {
+    return this.updateTokens((tokens) => ({ ...tokens, [gateway]: token }));
+  }
+
+  clearToken(gateway: string, deviceId: string): Promise<void> {
+    return this.updateTokens((tokens) =>
+      tokens[gateway]?.deviceId === deviceId ? Object.fromEntries(Object.entries(tokens).filter(([key]) => key !== gateway)) : tokens
+    );
+  }
+
+  dispose(): void {
+    this.subscription.dispose();
+    this.identityListeners.clear();
+  }
+
+  private async readOrCreateIdentity(): Promise<DeviceIdentity> {
+    const stored = await this.secrets.get(DEVICE_IDENTITY_SECRET_KEY);
+    const identity = stored ? importDeviceIdentity(stored) : null;
+    if (identity) {
+      this.knownIdentity = stored;
+      return identity;
+    }
+    if (stored) log.warn('the stored gateway device identity is unreadable; creating a new one');
+    const created = generateDeviceIdentity();
+    const pem = exportDeviceIdentity(created);
+    this.knownIdentity = pem;
+    await this.secrets.store(DEVICE_IDENTITY_SECRET_KEY, pem);
+    return created;
+  }
+
+  private async noticeIdentityChange(): Promise<void> {
+    const current = await this.secrets.get(DEVICE_IDENTITY_SECRET_KEY);
+    if (current === this.knownIdentity) {
+      return;
+    }
+    this.knownIdentity = current;
+    this.identity = null;
+    for (const listener of [...this.identityListeners]) listener();
+  }
+
+  private updateTokens(update: (tokens: DeviceTokenMap) => DeviceTokenMap): Promise<void> {
+    return serializeDeviceSecrets(async () => {
+      const tokens = update(parseDeviceTokens(await this.secrets.get(DEVICE_TOKENS_SECRET_KEY)));
+      await this.secrets.store(DEVICE_TOKENS_SECRET_KEY, JSON.stringify(tokens));
+    });
+  }
+}
+
 /** Backward-compatible delegates over {@link GatewayConfigService}. */
 export const getGatewaySettings = GatewayConfigService.getGatewaySettings;
 export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
 export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
+export const isLoopbackGatewayUrl = GatewayConfigService.isLoopbackGatewayUrl;
+export const resetDeviceIdentity = GatewayConfigService.resetDeviceIdentity;
 export const getGatewayToken = GatewayConfigService.getGatewayToken;
 export const setGatewayToken = GatewayConfigService.setGatewayToken;
 export const migrateLegacyGatewayToken = GatewayConfigService.migrateLegacyGatewayToken;

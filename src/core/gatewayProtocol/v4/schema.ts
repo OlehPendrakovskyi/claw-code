@@ -35,6 +35,12 @@ export const Methods = {
   sessionsList: 'sessions.list',
   sessionsMessagesSubscribe: 'sessions.messages.subscribe',
   sessionsMessagesUnsubscribe: 'sessions.messages.unsubscribe',
+  execApprovalList: 'exec.approval.list',
+  execApprovalResolve: 'exec.approval.resolve',
+  pluginApprovalList: 'plugin.approval.list',
+  pluginApprovalResolve: 'plugin.approval.resolve',
+  questionList: 'question.list',
+  questionResolve: 'question.resolve',
 } as const;
 
 export const Events = {
@@ -47,6 +53,12 @@ export const Events = {
   chatSideResult: 'chat.side_result',
   tick: 'tick',
   shutdown: 'shutdown',
+  execApprovalRequested: 'exec.approval.requested',
+  execApprovalResolved: 'exec.approval.resolved',
+  pluginApprovalRequested: 'plugin.approval.requested',
+  pluginApprovalResolved: 'plugin.approval.resolved',
+  questionRequested: 'question.requested',
+  questionResolved: 'question.resolved',
 } as const;
 
 /** GATEWAY_CLIENT_IDS / GATEWAY_CLIENT_MODES are closed enums; `gateway-client`/`backend` is the
@@ -56,7 +68,7 @@ export const ClientIdentity = { id: 'gateway-client', mode: 'backend' } as const
 /** GATEWAY_CLIENT_CAPS: `tool-events` registers this connection for its runs' tool lifecycle;
  *  `session-scoped-events` limits `chat`/`agent`/`session.tool`/`chat.side_result` to sessions this
  *  connection subscribed with `sessions.messages.subscribe` (server-start.ts SESSION_SUBSCRIPTION_EVENTS). */
-export const ClientCaps = { toolEvents: 'tool-events', sessionScopedEvents: 'session-scoped-events' } as const;
+export const ClientCaps = { toolEvents: 'tool-events', sessionScopedEvents: 'session-scoped-events', approvals: 'approvals' } as const;
 
 /** The display projection cuts longer text (chat-display-projection.helpers.ts truncateChatHistoryText). */
 export const TRUNCATION_MARKER = '\n...(truncated)...';
@@ -64,7 +76,13 @@ export const TRUNCATION_MARKER = '\n...(truncated)...';
 /** ChatHistoryParamsSchema's maxChars ceiling; without it rows are cut at 8,000 characters. */
 export const HISTORY_MAX_CHARS = 500_000;
 
-export const OperatorScopes = { read: 'operator.read', write: 'operator.write' } as const;
+export const OperatorScopes = {
+  read: 'operator.read',
+  write: 'operator.write',
+  approvals: 'operator.approvals',
+  questions: 'operator.questions',
+  admin: 'operator.admin',
+} as const;
 
 /* ---------------------------------------------------------------- */
 /* Frames (frames.ts)                                                */
@@ -107,10 +125,18 @@ export type ConnectParams = {
   caps?: string[];
   role?: string;
   scopes?: string[];
-  auth?: { token?: string };
+  auth?: ConnectAuth;
   locale?: string;
   userAgent?: string;
+  device?: ConnectDevice;
 };
+
+/** ConnectParamsSchema.auth, restricted to the fields this client sends. */
+export type ConnectAuth = { token?: string; deviceToken?: string };
+
+/** ConnectParamsSchema.device, verified by connect-device-proof.ts: `id` must be the hex SHA-256 of the
+ *  raw public key, `signedAt` within 2 minutes of the gateway clock, `nonce` the challenge's. */
+export type ConnectDevice = { id: string; publicKey: string; signature: string; signedAt: number; nonce: string };
 
 /** SessionDefaultsSchema (snapshot.ts): the alias `mainKey` resolves to `mainSessionKey`. */
 export type SessionDefaults = { defaultAgentId: string; mainKey: string; mainSessionKey: string };
@@ -165,7 +191,8 @@ export type ChatSendResult = {
 
 export type ChatAbortParams = { sessionKey: string; runId?: string };
 
-export type ChatHistoryParams = { sessionKey: string; cursor?: string; offset?: number; maxChars?: number };
+/** `messageId` (a row's `__openclaw.id`) reads the rows around one entry; `limit` 1 narrows that to the entry. */
+export type ChatHistoryParams = { sessionKey: string; cursor?: string; offset?: number; messageId?: string; limit?: number; maxChars?: number };
 
 /** A transcript row as display-projected by the gateway (chat-display-projection.core.ts). */
 export type DisplayMessage = {
@@ -276,3 +303,82 @@ export type SessionMessageEvent = {
   messageSeq?: number;
   runId?: string;
 };
+
+/* ---------------------------------------------------------------- */
+/* Approvals and questions (exec-approval.ts, plugin-approval.ts,    */
+/* approval-shared.ts, questions.ts)                                 */
+/* ---------------------------------------------------------------- */
+
+/** ApprovalDecisionSchema; `deny` is always allowed. */
+export type ApprovalDecisionValue = 'allow-once' | 'allow-always' | 'deny';
+
+/** The sanitized exec request record the gateway broadcasts (exec-approval.ts `request`). */
+export type ExecApprovalRequest = {
+  command: string;
+  commandPreview?: string;
+  cwd?: string | null;
+  host?: string | null;
+  warningText?: string | null;
+  commandAnalysis?: { warningLines?: string[] } | null;
+  allowedDecisions?: ApprovalDecisionValue[];
+  agentId?: string | null;
+  sessionKey?: string | null;
+  runId?: string | null;
+};
+
+/** The plugin request record (plugin-approval.ts `request`). */
+export type PluginApprovalRequest = {
+  title: string;
+  description: string;
+  detail?: string | null;
+  severity?: 'info' | 'warning' | 'critical' | null;
+  toolName?: string | null;
+  pluginId?: string | null;
+  allowedDecisions?: ApprovalDecisionValue[];
+  agentId?: string | null;
+  sessionKey?: string | null;
+  runId?: string | null;
+};
+
+/** buildRequestedApprovalEvent: `*.approval.requested` payloads and `*.approval.list` rows. */
+export type ApprovalRequestedEvent<Request> = {
+  approvalKind?: 'exec' | 'plugin';
+  id: string;
+  request: Request;
+  createdAtMs: number;
+  expiresAtMs: number;
+};
+
+/** handleApprovalResolve's `*.approval.resolved` payload; expiry broadcasts nothing. */
+export type ApprovalResolvedEvent = { id: string; decision: ApprovalDecisionValue; resolvedBy?: string | null; ts: number; request?: unknown };
+
+/** ExecApprovalResolveParamsSchema / PluginApprovalResolveParamsSchema, restricted to what this client sends. */
+export type ApprovalResolveParams = { id: string; decision: ApprovalDecisionValue };
+
+/** QuestionSchema. */
+export type QuestionWire = {
+  questionId: string;
+  header: string;
+  question: string;
+  options: Array<{ label: string; description?: string }>;
+  multiSelect?: boolean;
+  isOther?: boolean;
+  isSecret?: boolean;
+};
+
+/** QuestionRecordSchema: `question.requested` payloads and `question.list` rows. */
+export type QuestionRecord = {
+  id: string;
+  questions: QuestionWire[];
+  agentId?: string;
+  sessionKey?: string;
+  runId?: string;
+  createdAtMs: number;
+  expiresAtMs: number;
+  status: 'pending' | 'answered' | 'cancelled' | 'expired';
+};
+
+export type QuestionResolvedEvent = { id: string; status: 'answered' | 'cancelled' | 'expired' };
+
+/** QuestionResolveParamsSchema: every question answered at once, or the request cancelled. */
+export type QuestionResolveParams = { id: string; answers: { answers: Record<string, string[]> } } | { id: string; cancel: true };
