@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { childEnv, resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
@@ -742,7 +743,8 @@ export class ChatService {
         try {
             child = spawn(run.launch.command, run.args, {
                 cwd: run.cwd,
-                env: childEnv(),
+                // acpx's `#!/usr/bin/env node` and every agent it runs resolve through this PATH.
+                env: envWithAbsolutePath(),
                 stdio: ['pipe', 'pipe', 'pipe'],
                 shell: false,
                 windowsHide: true,

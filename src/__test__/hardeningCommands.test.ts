@@ -11,23 +11,39 @@ jest.mock('../core/configIO', () => ({
 }));
 
 import * as vscode from 'vscode';
+import { getHardeningCommandPrefix } from '../core/configIO';
 import { execFileAsync } from '../vscode/commands/shared';
 import { showHardeningAccessSummary } from '../vscode/commands/hardening';
 
 describe('hardening commands', () => {
     describe('showHardeningAccessSummary', () => {
-        it('runs the status check with only the absolute PATH entries', async () => {
+        beforeEach(() => {
             Object.assign(vscode.workspace, { isTrusted: true });
             Object.assign(vscode.window, { showTextDocument: jest.fn() });
             jest.mocked(vscode.workspace.openTextDocument).mockResolvedValue({} as never);
-            jest.mocked(execFileAsync).mockResolvedValue({ stdout: '', stderr: '' } as never);
-            const env = jest.replaceProperty(process, 'env', { PATH: '.:node_modules/.bin:/usr/bin', HOME: '/home/u' });
+            jest.mocked(execFileAsync).mockReset().mockResolvedValue({ stdout: '', stderr: '' } as never);
+            jest.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw');
+        });
+
+        async function summarizeWith(env: NodeJS.ProcessEnv): Promise<void> {
+            const replaced = jest.replaceProperty(process, 'env', env);
             try {
                 await showHardeningAccessSummary();
             } finally {
-                env.restore();
+                replaced.restore();
             }
-            expect(execFileAsync).toHaveBeenCalledWith('openclaw', ['status', '--all'], expect.objectContaining({ env: { PATH: '/usr/bin', HOME: '/home/u' } }));
+        }
+
+        // `sh` stands in for the CLI: /bin/sh exists on every POSIX machine, so the lookup needs no fixture files.
+        it('runs the status check by absolute path, with only the absolute PATH entries', async () => {
+            jest.mocked(getHardeningCommandPrefix).mockReturnValue('sh');
+            await summarizeWith({ PATH: '.:node_modules/.bin:/bin', HOME: '/home/u' });
+            expect(execFileAsync).toHaveBeenCalledWith('/bin/sh', ['status', '--all'], expect.objectContaining({ env: { PATH: '/bin', HOME: '/home/u' } }));
+        });
+
+        it('runs nothing when the command is on no absolute PATH entry', async () => {
+            await summarizeWith({ PATH: '.:node_modules/.bin', HOME: '/home/u' });
+            expect(execFileAsync).not.toHaveBeenCalled();
         });
     });
 });

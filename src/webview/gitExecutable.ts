@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 import * as path from 'path';
-import { absolutePathEntries, pathKey, type Env } from '../core/searchPath';
+import { absolutePathEntries, isExecutableFile, pathKey, type Env } from '../core/searchPath';
 
 /** The part of the built-in Git extension's API this uses. */
 type GitExtensionExports = { getAPI(version: 1): { git: { path: string } } };
@@ -37,14 +36,5 @@ async function gitExtensionPath(): Promise<string | undefined> {
         return path.isAbsolute(gitPath) ? gitPath : undefined;
     } catch {
         return undefined;
-    }
-}
-
-function isExecutableFile(filePath: string): boolean {
-    try {
-        fs.accessSync(filePath, fs.constants.X_OK);
-        return fs.statSync(filePath).isFile();
-    } catch {
-        return false;
     }
 }

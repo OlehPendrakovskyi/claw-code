@@ -68,7 +68,7 @@ const entryCache = new Map<string, AcpxEntry>();
 /** Windows cannot spawn npm's `acpx.cmd` without a shell, so acpx's JS entry
  *  runs under Node instead; POSIX runs `acpx` itself through its shebang. Only
  *  absolute PATH entries count on either, and the child must get the same
- *  PATH ({@link childEnv}), or the shebang's `node` could still come from the workspace. */
+ *  PATH (`envWithAbsolutePath` in core/searchPath), or the shebang's `node` could still come from the workspace. */
 export function resolveAcpxLaunch(
     platform: NodeJS.Platform = process.platform,
     env: Env = process.env,
@@ -117,20 +117,6 @@ function cachedEntry(dirs: string[], pathExt: string, host: LauncherHost): AcpxE
         entryCache.delete(key);
     }
     return entry;
-}
-
-/** `env` with PATH cut to its absolute entries, in order: acpx's `#!/usr/bin/env node`
- *  and every agent command acpx runs resolve through it, so none can reach the workspace.
- *  With none left PATH is dropped, as an empty POSIX PATH means the cwd. */
-export function childEnv(platform: NodeJS.Platform = process.platform, env: Env = process.env): Env {
-    const key = platform === 'win32' ? Object.keys(env).find(name => name.toUpperCase() === 'PATH') : 'PATH';
-    const value = key === undefined ? undefined : env[key];
-    if (key === undefined || value === undefined) {
-        return { ...env };
-    }
-    const { [key]: _dropped, ...rest } = env;
-    const dirs = platform === 'win32' ? searchDirs(value) : posixSearchDirs(value);
-    return dirs.length === 0 ? rest : { ...rest, [key]: dirs.join(platform === 'win32' ? ';' : ':') };
 }
 
 /** Windows env names are case-insensitive, a plain copy of the env is not. */
