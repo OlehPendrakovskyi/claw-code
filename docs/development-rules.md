@@ -1,0 +1,106 @@
+# Development Rules (derived from the claw-code retrospective, 2026-09-27)
+
+Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~25 fix commits, a day of fixes).
+
+## General rules (any project)
+
+1. **Resource ownership is designed before code.** For every mutable resource (socket, callback, buffer, run) — a single owner, explicit lifecycle (register/retire/replace), and documented semantics. Multiple maps with different keys pointing at one resource = future races.
+
+2. **Every `await` is a state-transition boundary.** After each await — revalidate preconditions (entity still active, generation unchanged, ownership retained). Capture generation/epoch identifiers BEFORE the await, compare AFTER.
+
+3. **Monotonic epoch/generation for all async invalidation.** Bump BEFORE destructive operations (abort/close), check BEFORE applying results. Terminal events (done/close) are idempotent.
+
+4. **A Promise is never checked as a boolean.** Async validation only via await. An unchecked Promise is always truthy.
+
+5. **Untrusted input is validated at every trust boundary** — semantically (not just shape), and re-validated after each await when the data is externally controllable.
+
+6. **Filesystem checklist:** realpath at ingestion → containment check → open with O_NOFOLLOW (+O_NONBLOCK for potentially special files) → fstat-vs-lstat (dev/ino) + isFile() → revalidate after await. Check-then-use is a race by default. Residual windows must be documented honestly, naming the responsible component.
+
+7. **Tests exercise interleavings, not the happy path:** send during abort, rebind during send, reconnect during a run, duplicate frames. Every fixed race gets a regression test that fails without the fix. A test that codifies wrong behavior is a bug; when semantics change, re-read test contracts.
+
+8. **A "push → N findings" loop is a design symptom, not a code one.** If a review round finds problems in a fresh fix — stop and rethink the architecture instead of patching. Adversarial self-review BEFORE pushing is cheaper than day-long fix cycles.
+
+9. **Small focused PRs.** A large PR (12 commits, concurrency core) = hours of review and churn. Ship the concurrency core as a separate PR with its own design.
+
+10. **Log hygiene:** never log secrets/prompts/file contents; only counters, keys, ids.
+
+11. **Background process infrastructure:** interval ≥ maximum run duration (no overlaps); durable progress markers; single-flight.
+
+## claw-code specifics (VS Code extension + OpenClaw gateway)
+
+1. **Session/thread ownership model:** run sink vs transcript sink vs persistent callback; callback key is the thread id (threads share sessions). abort/clear/reset only when `status==='running'` with local ownership (`hasOwnedRun`); never abort behind idle subscribers.
+
+2. **Streaming invariants:** frames may omit messageId; delta vs text vs mixed (cumulative/divergent); dedupe complete frames claim-before-dispatch; the seen-set holds only complete assistant rows; catch-up is gated on cursor + `allowUnscopedCatchUp` only for no-history paths; pre-ack buffers are provisionally associated with every in-flight send (ownership is unknown until settlement — see 23); `chat.send` only after subscription ack; `done` is idempotent.
+
+3. **Config/SecretStorage:** token only in SecretStorage; migration iterates ALL targets (user/workspace/folder × normal/language × Code/Code-OSS/VSCodium/Insiders + nested .code-workspace); per-folder updates in multi-root; scope comes from @types/vscode — `{languageId, uri?}` (there is no folderUri field); tri-state migration result, retry incomplete, never cache failure; deprecated settings registered in package.json.
+
+4. **Webview:** only createElement/textContent (no innerHTML with data); interactive rows are buttons (a11y); session keys from the webview are validated against the sessions.list allowlist (awaited); emitState after every await that changes rendering.
+
+5. **Paths/attachments:** containment on resolve AND on read; O_NOFOLLOW + O_NONBLOCK + isFile + dev/ino + recheck after await; slash commands use the same guards as handleSend.
+
+6. **Repo process:** explicit branch fetch (refspec hygiene, `git remote prune`), rebase onto the remote tip before pushing (verify with ls-remote), Conventional Commits, gates before every commit, run tests via the canonical `npm test` script (`"test": "jest"`) and diagnose hangs explicitly rather than force-terminating runs with `--forceExit`; Copilot protocol: verify every finding against HEAD (snapshots are often stale), reply in every thread, resolve threads, stop-rule for a round without commits, check the Open/Previously missed sections in overview review bodies.
+
+## PR #11 bug classes (for future review checklists)
+
+- Stale continuation after await (generation not captured/not checked) — ~15 findings
+- Duplicated delivery (live + catch-up + pre-ack buffer without attribution) — ~10
+- Over/under-aggressive teardown (retiring all sinks vs leaking callbacks) — ~8
+- Path traversal / symlink TOCTOU / special files / case comparisons — ~8
+- Mixed delta+text frames (lost/duplicated text, poisoning the seen-set) — ~6
+- Token migration (scope semantics, multi-root, language-override, distro paths) — ~8
+- Async validation without await (allowlist bypass) — ~3
+- Fixes introducing new bugs (settled-first, union retry) — ~4
+
+## PR #11 lessons (rounds 7–12, 2026-09-27) — error classes and preventive rules
+
+12. **Platform-dependent test setup goes inside a guarded hook.** `mkfifo`/POSIX-only operations in `beforeEach` run before `it.skip`, so the test fails on Windows. Rule: guard fixture setup/teardown with the same `process.platform` condition as the test itself.
+
+13. **`Number(x) || fallback` is not validation.** `NaN` is falsy, so `NaN || fallback` selects the fallback rather than letting `NaN` pass. The real failure modes are the opposite: a valid `0` also selects the fallback, while truthy invalid values such as `Infinity` and negative numbers pass unchecked. Rule: validate numeric values from untrusted input with a `Number.isFinite(v) && v >= 0`-style helper (toFinite*), not `||`.
+
+14. **"Rendered" paths without a cursor are an early boundary, not a skip.** If catch-up is gated on a cursor and history was rendered without one — do not skip catch-up entirely: seeded rows form a boundary, deliver replay after it, and dedupe the seeded tail with ordered fingerprints (keyless rows are not covered by the messageId seen-set).
+
+15. **Parse foreign configs per the product's specification, not guesswork.** Discovery/migration for chained language-override keys (`[ts][js]`) must rely on the product's actual semantics (VS Code `overrideIdentifiersFromKey` — indexing under each identifier), otherwise the guard misses valid data.
+
+16. **Suspend ≠ dispose: transport lifecycle invariants.** Stopping a transport (fallback/switch) must: close the socket and reconnect loop, retire run sinks with `done`, BUT preserve persistent transcript/resume sinks and make them re-subscribable; purge pre-ack buffers together with their keys; a retired send resets the thread's streaming status synchronously (emitState), otherwise the UI hangs in "running".
+
+17. **Aborts swallow late events entirely.** Late `chat`/`session.message` frames for an aborted run are skipped just like other late events; the terminal flow delivers `done` from the run's own terminal `chat` frame (`state: final`/`aborted`/`error` in protocol v4).
+
+18. **Empty string ≠ missing value.** At all protocol boundaries, empty `messageId`/`delta`/`role:''` are treated as missing (asNonEmptyString), otherwise empty keys corrupt dedupe/seen-sets.
+
+19. **Every review round is a bug class, not a line.** After a finding, grep the whole diff (and then the codebase) for the same class; fix similar valid spots in the same commit. Post-PR: a separate codebase-wide pass with a PR immediately following the current one.
+
+20. **Rules are a living document.** Every technical PR, after its review cycle, adds a declarative rule to development-rules.md (not "we fixed X", but "always do Y"). Distilled into a wiki how-to for portability across projects.
+
+21. **GitHub language is English.** All communication on GitHub (code comments, JSDoc, PR titles, descriptions, threads, summary comments, review bodies) is English-only, for any project, by owner decision (2026-09-29: for claw-code — unconditionally, regardless of community-project status). Does not apply to internal chats/memory. Applies to new content only; existing Russian comments are not rewritten. Repository documentation is included: every new repository document must be written in English.
+
+22. **Delta rows do not shadow final rows.** On any recovery/dedup path keyed by id, a row with a non-empty `delta` (partial text) must be skipped in favor of a final row with the same id, otherwise the recovered transcript is truncated to the delta.
+
+23. **Pre-ack frames for foreign keys are buffered with wide attribution.** A key frame (a `session.message` row, or a terminal `chat` frame with `state: final`/`aborted`/`error`) whose key has no sink yet, while a pre-ack send is in flight, is buffered attributed to all in-flight sends (the owner is unknown until settlement — remap yields the resolved key, and the preAck set stores requested); drain correlates on settled requested→resolved and drops ambiguous ones. Finalizing on such a key earlier is a no-op that loses the terminal event and leaves "eternal streaming" after the ack.
+
+## Protocol rework lessons (owner rounds, 2026-09-28/29)
+
+24. **!VERY IMPORTANT! Never invent protocols, wire formats, APIs, CLI semantics, or library behavior.** External contracts (gateway protocol, JSON-RPC, handshake, third-party tools) must be written ONLY from documentation or actual source code. If none is at hand — ask the owner for docs/sources/a link. Only after an explicit "none exists" is empirical probing permitted. Applies to ALL development, not just claw-code. Precedent: the assumed OpenClaw gateway contract (`sessions.messages.subscribe {sessionKeys}`, `chat.send {text, queueMode}`, `session_end`, `deltaCursor`) was rejected by the real gateway — the protocol had to be rewritten entirely.
+
+25. **Wire frames are tested against the product's real schemas.** Every outgoing frame is validated against JSON Schema exported from the real gateway's TypeBox schemas (fixtures, regenerable via `scripts/sync-openclaw-protocol.mjs`), plus frames captured from a live gateway; the implementation is verified end-to-end against a real instance on loopback.
+
+26. **Protocol versioning goes through an adapter + negotiation.** Version-neutral model, `GatewayProtocolAdapter`, a v4 adapter, registration negotiates the version from a setting (`openclaw.gateway.protocolVersion: auto | 4`); an unsupported version yields a clear permanent error; the negotiated version is visible in the status badge and logs.
+
+27. **Handshake uses the server's closed enums.** Client id/mode only from the gateway's permitted values (e.g. `gateway-client/backend`); failures are classified by `error.details.code` exactly as the server sends them (`AUTH_*`, `DEVICE_AUTH_*`, `PAIRING_REQUIRED`, `PROTOCOL_MISMATCH`); credential/protocol failures stop reconnecting with a clear message, rate-limit/unavailability is backed off while respecting `retryAfterMs`; `hello-ok.policy` is parsed and clamps client limits.
+
+28. **Runs are correlated by the runId from the ack, not by shared mutable state.** Seq-dedupe/replace of events; retrying a send whose ack was lost reuses the same idempotency key; only an explicit `ok:false` is a rejection; `chat.abort` is sent only over the connection that started the run; a non-stoppable run keeps streaming with a notification; the canonical session key is learned from hello-ok/subscribe; catch-up by cursor with reset.
+
+29. **Third-party CLI agents are described by their real behavior, not guesses.** For acpx: the real output format (ACP JSON-RPC from `--format json`), stdin `exec --file -` (the prompt as one explicit ACP text block — a leading `[` is parsed as content blocks), exit 5 = denied permission after a response (a normal completion with a notice), JSON-RPC ids are attributed by direction (an agent-side error ≠ a failed prompt), images are ACP image blocks, not temp files.
+
+30. **External commands run only from absolute paths.** PATH entries without an absolute path (relative, repo-planted) are ignored (protection against planted node.exe/cli.js); npm/pnpm shims on Windows resolve to the JS entry and run through node without a shell; children never receive an empty PATH; PATH is read case-sensitively on POSIX.
+
+31. **Sensitive settings are user-scope only.** A legacy token is never accepted from workspace settings; devices are identified per-host via device identity (pairing), secrets live in robust credential storage; a workspace `.acpxrc.json` (which can override the agent command) executes only after explicit approval of that exact file (per folder + content hash).
+
+32. **Limits are measured in the form the transport actually reads.** The prompt budget is computed over the JSON-escaped payload (not raw text), per-file/per-image/frame limits come from the gateway's `hello-ok.policy`, not invented constants; the Windows argv budget uses worst-case quoting, NUL → one-byte substitute.
+
+## Process lessons from the owner rounds (2026-09-28/29)
+
+33. **Fact-checking against the real environment beats internal models.** Reviews/fixes made against an imagined contract have no value — verification against the live gateway/real schemas is mandatory before approving code correctness (see rule #24).
+
+## Test coverage
+
+34. **Maximum unit-test coverage is a mandatory standard.** Every block of code written (logic, branches, guards, parsers, error handlers) gets unit tests; coverage aims for maximum, not "covered the happy path". Test: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them.
