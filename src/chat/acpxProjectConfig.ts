@@ -4,7 +4,11 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 
 /** The one project-level file acpx 0.19.3 reads, from its `--cwd` (no parent
- *  walk, no opt-out flag): it can redefine agent commands and MCP servers. */
+ *  walk, no opt-out flag): it can redefine agent commands and MCP servers.
+ *  acpx reopens it by path after our check, and that same `--cwd` is the agent's
+ *  workspace, so it cannot be pointed at a private copy. The gap lets only a
+ *  process already writing in the workspace swap the file, milliseconds before a
+ *  send; one running as the user could run any command anyway. */
 const PROJECT_CONFIG_NAME = '.acpxrc.json';
 
 const APPROVALS_KEY = 'openclaw.acpx.approvedProjectConfigs';

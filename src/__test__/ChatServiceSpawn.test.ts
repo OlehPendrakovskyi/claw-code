@@ -904,6 +904,16 @@ describe('ChatService.sendMessage', () => {
             expect(first.onRunComplete).toHaveBeenCalledTimes(1);
         });
 
+        it('does not retry without images once the workspace config stopped being approved', () => {
+            const first = start(`see ${staged.marker}`);
+            projectConfigSpy.mockReturnValue({ status: 'unapproved', configPath: '/tmp/.acpxrc.json', approvalKey: 'k', text: '{}' });
+            first.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'x', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } } }));
+            first.child.emit('close', 2, null);
+            expect(spawnMock).toHaveBeenCalledTimes(1);
+            expect(first.events).toEqual([{ type: 'error', message: expect.stringContaining('changed after it was approved') }, { type: 'done' }]);
+            expect(first.onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
         it('reports the refusal instead of retrying a prompt that had no images', () => {
             const { child, events } = start('text only');
             child.stdout.emit('data', jsonLines({

@@ -719,7 +719,7 @@ export class ChatService {
                 completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_REFUSED_MESSAGE);
                 return;
             }
-            // Re-checked at the last moment; acpx still reads the file again itself right after.
+            // Re-checked just before the spawn; acpx then reads the file again itself (see acpxProjectConfig).
             if (checkProjectConfig(run.cwd).status !== 'trusted') {
                 completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_CHANGED_MESSAGE);
                 return;
@@ -753,6 +753,11 @@ export class ChatService {
             return;
         }
         const retry = fallback === undefined ? undefined : () => {
+            // A second acpx reads the workspace config afresh.
+            if (checkProjectConfig(run.cwd).status !== 'trusted') {
+                completeWithoutProcess(run.onEvent, run.onRunComplete, PROJECT_CONFIG_CHANGED_MESSAGE);
+                return;
+            }
             run.onEvent({ type: 'notice', text: IMAGES_NOT_SENT_NOTICE });
             this.startRun(run, fallback, undefined);
         };
