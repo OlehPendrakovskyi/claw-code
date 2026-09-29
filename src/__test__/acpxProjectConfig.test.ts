@@ -14,7 +14,7 @@ function freshModule(): typeof ProjectConfigModule {
     jest.isolateModules(() => {
         const isolatedVscode = jest.requireActual<typeof vscode>('vscode');
         showWarningMock = jest.mocked(isolatedVscode.window.showWarningMessage);
-        showTextDocumentMock = jest.fn(async () => undefined);
+        showTextDocumentMock = jest.fn(async () => ({ document: { isDirty: false } }));
         Object.assign(isolatedVscode.window, { showTextDocument: showTextDocumentMock });
         module = jest.requireActual('../chat/acpxProjectConfig');
     });
@@ -154,6 +154,14 @@ describe('acpxProjectConfig', () => {
                 await expect(config.requestProjectConfigApproval(unapproved())).resolves.toBe(true);
                 expect(showTextDocumentMock).toHaveBeenCalledWith(expect.objectContaining({ fsPath: configPath }), { preview: true });
                 expect(config.checkProjectConfig(workspace)).toEqual({ status: 'trusted' });
+            });
+
+            it('refuses when the reviewed buffer has unsaved changes, as acpx reads the file', async () => {
+                showTextDocumentMock.mockResolvedValueOnce({ document: { isDirty: true } });
+                showWarningMock.mockResolvedValueOnce('Open File to Review' as never).mockResolvedValueOnce('Allow and Run' as never);
+                await expect(config.requestProjectConfigApproval(unapproved())).resolves.toBe(false);
+                expect(showWarningMock).toHaveBeenLastCalledWith(expect.stringContaining('unsaved changes'));
+                expect(config.checkProjectConfig(workspace).status).toBe('unapproved');
             });
 
             it('refuses when the file changed while it was open for review', async () => {

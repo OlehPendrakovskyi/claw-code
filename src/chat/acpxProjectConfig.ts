@@ -18,6 +18,7 @@ const PREVIEW_MAX_CHARS = 2000;
 const CONFIG_MAX_BYTES = 256 * 1024;
 const ALLOW_ACTION = 'Allow and Run';
 const REVIEW_ACTION = 'Open File to Review';
+const DIRTY_REVIEW_MESSAGE = 'The acpx config has unsaved changes in the editor, so what you reviewed is not what acpx would read. Save or revert it, then send again.';
 const APPROVAL_QUESTION = 'This workspace has an acpx config that can change which commands acpx runs for agents and MCP servers. Run acpx with it?';
 
 /** A FIFO opens without waiting for a writer; the regular-file check then refuses it. */
@@ -95,11 +96,19 @@ async function approveAfterReview(check: UnapprovedConfig): Promise<boolean> {
     if (review !== REVIEW_ACTION) {
         return false;
     }
-    await vscode.window.showTextDocument(vscode.Uri.file(check.configPath), { preview: true });
+    const editor = await vscode.window.showTextDocument(vscode.Uri.file(check.configPath), { preview: true });
     const choice = await vscode.window.showWarningMessage(
         APPROVAL_QUESTION, { modal: true, detail: `${check.configPath}, as opened in the editor.` }, ALLOW_ACTION);
+    if (choice !== ALLOW_ACTION) {
+        return false;
+    }
+    // Unsaved edits are what the user read, but acpx reads the file: approve only a buffer that is the file.
+    if (editor.document.isDirty) {
+        void vscode.window.showWarningMessage(DIRTY_REVIEW_MESSAGE);
+        return false;
+    }
     // The approval covers the bytes the user reviewed, not an edit made meanwhile.
-    return choice === ALLOW_ACTION && currentApprovalKey(check) === check.approvalKey;
+    return currentApprovalKey(check) === check.approvalKey;
 }
 
 type UnapprovedConfig = Extract<ProjectConfigCheck, { status: 'unapproved' }>;
