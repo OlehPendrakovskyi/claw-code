@@ -208,6 +208,16 @@ describe('ChatService.sendMessage', () => {
                 }
             });
 
+        it('drops the PATH of acpx when no absolute entry is left, as an empty POSIX PATH searches the cwd', () => {
+            const env = jest.replaceProperty(process, 'env', { PATH: '.:bin', HOME: '/home/u' });
+            try {
+                withPlatform('linux', () => start());
+                expect(spawnMock.mock.calls[0][2]?.env).toEqual({ HOME: '/home/u' });
+            } finally {
+                env.restore();
+            }
+        });
+
         it('starts acpx without a shell in its own process group on POSIX so abort reaches the agent', () => {
             withPlatform('linux', () => start());
             expect(spawnMock.mock.calls[0][0]).toBe('acpx');

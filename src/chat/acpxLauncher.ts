@@ -120,14 +120,17 @@ function cachedEntry(dirs: string[], pathExt: string, host: LauncherHost): AcpxE
 }
 
 /** `env` with PATH cut to its absolute entries, in order: acpx's `#!/usr/bin/env node`
- *  and every agent command acpx runs resolve through it, so none can reach the workspace. */
+ *  and every agent command acpx runs resolve through it, so none can reach the workspace.
+ *  With none left PATH is dropped, as an empty POSIX PATH means the cwd. */
 export function childEnv(platform: NodeJS.Platform = process.platform, env: Env = process.env): Env {
     const key = platform === 'win32' ? Object.keys(env).find(name => name.toUpperCase() === 'PATH') : 'PATH';
-    if (key === undefined || env[key] === undefined) {
+    const value = key === undefined ? undefined : env[key];
+    if (key === undefined || value === undefined) {
         return { ...env };
     }
-    const dirs = platform === 'win32' ? searchDirs(env[key]) : posixSearchDirs(env[key]);
-    return { ...env, [key]: dirs.join(platform === 'win32' ? ';' : ':') };
+    const { [key]: _dropped, ...rest } = env;
+    const dirs = platform === 'win32' ? searchDirs(value) : posixSearchDirs(value);
+    return dirs.length === 0 ? rest : { ...rest, [key]: dirs.join(platform === 'win32' ? ';' : ':') };
 }
 
 /** Windows env names are case-insensitive, a plain copy of the env is not. */
