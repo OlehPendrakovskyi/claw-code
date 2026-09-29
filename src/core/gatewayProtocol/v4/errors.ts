@@ -135,6 +135,12 @@ type RejectionInput = {
 };
 
 /** PAIRING_CONNECT_REQUEST_ID_PATTERN: ids outside it are not echoed into UI text. */
+/** Longest a refused handshake's `retryAfterMs` may hold back reconnecting, as a restart announcement may. */
+const MAX_HANDSHAKE_RETRY_WAIT_MS = 5 * 60_000;
+
+/** Longest a retryable RPC refusal may hold a send back; the run shows no progress meanwhile. */
+const MAX_RPC_RETRY_WAIT_MS = 60_000;
+
 const PAIRING_REQUEST_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 
 /** ConnectPairingRequiredReasons and what each asks the operator to approve. */
@@ -217,7 +223,7 @@ export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
     pauseReconnect: details.pauseReconnect,
     details,
   };
-  const retryAfterMs = readDelayMs(fields.retryAfterMs) ?? readDelayMs(details.retryAfterMs);
+  const retryAfterMs = readDelayMs(fields.retryAfterMs, MAX_HANDSHAKE_RETRY_WAIT_MS) ?? readDelayMs(details.retryAfterMs, MAX_HANDSHAKE_RETRY_WAIT_MS);
   const permanent = permanentHint(input);
   const verdict: Verdict = transientVerdict(input) ??
     (permanent ? { kind: 'permanent', hint: permanent } : { kind: 'backoff', hint: RejectionHints.transient });
@@ -241,7 +247,7 @@ const RPC_MESSAGE_LIMIT = 300;
 export function readRpcFailure(error: unknown): RpcFailure {
   const fields = readRecord(error);
   const message = readString(fields.message) ?? '';
-  const retryAfterMs = readDelayMs(fields.retryAfterMs);
+  const retryAfterMs = readDelayMs(fields.retryAfterMs, MAX_RPC_RETRY_WAIT_MS);
   const reason = readString(readRecord(fields.details).reason);
   return {
     code: readString(fields.code) ?? 'unknown',

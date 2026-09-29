@@ -407,7 +407,9 @@ describe('gateway protocol v4', () => {
 
         it('throttles rate limits and caps absurd retry delays', () => {
             expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'locked', details: { code: 'AUTH_RATE_LIMITED' } })).toMatchObject({ kind: 'backoff', throttled: true });
-            expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', retryAfterMs: 1e20 }).retryAfterMs).toBe(2 ** 31 - 1);
+            expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', retryAfterMs: 1e20 }).retryAfterMs).toBe(5 * 60_000);
+            expect(classifyHandshakeRejection({ code: 'UNAVAILABLE', message: 'x', details: { retryAfterMs: 86_400_000 } }).retryAfterMs).toBe(5 * 60_000);
+            expect(v4Adapter.parseRpcFailure({ code: 'UNAVAILABLE', message: 'busy', retryable: true, retryAfterMs: 86_400_000 }).retryAfterMs).toBe(60_000);
         });
 
         it('tolerates junk', () => {
