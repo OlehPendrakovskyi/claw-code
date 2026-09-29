@@ -19,7 +19,8 @@ jest.mock('fs', () => {
 import { ChatViewProvider } from '../webview/ChatViewProvider';
 import { PromptAnswerUnconfirmedError, type GatewayChatService } from '../core/gatewayChatService';
 import type { OperatorPrompt, QuestionPrompt } from '../core/gatewayProtocol/model';
-import type { PromptChange } from '../core/operatorPrompts';
+import { keyOf, type PromptChange } from '../core/operatorPrompts';
+import { MAX_TYPED_ANSWER_CHARS } from '../webview/operatorPromptView';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
 
 type Posted = Record<string, unknown>;
@@ -61,7 +62,7 @@ const QUESTION: QuestionPrompt = {
 const EXPIRES_AT_MS = 4_102_444_800_000;
 
 function requestedChange(prompt: OperatorPrompt): PromptChange {
-    return { type: 'requested', prompt, expiresAtMs: EXPIRES_AT_MS };
+    return { type: 'requested', key: keyOf(prompt), prompt, expiresAtMs: EXPIRES_AT_MS };
 }
 
 function makeWebview(): FakeWebview {
@@ -142,16 +143,34 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             gateway.emitPrompt(requestedChange(QUESTION));
-            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'deny' });
-            gateway.emitPrompt({ type: 'resolved', id: 'q1', outcome: 'expired' });
+            gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'deny' });
+            gateway.emitPrompt({ type: 'resolved', key: 'question:q1', outcome: 'expired' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Denied elsewhere'], ['q1', 'resolved', 'Expired without an answer']]);
+        });
+
+        it('keeps prompts of different sources apart when they share an id', async () => {
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt(requestedChange({ ...APPROVAL, id: 'x1' }));
+            gateway.emitPrompt(requestedChange({ ...QUESTION, id: 'x1' }));
+            gateway.emitPrompt({ type: 'resolved', key: 'question:x1', outcome: 'expired' });
+            expect(promptsOf(sidebar).map(prompt => [prompt.key, prompt.state])).toEqual([['exec:x1', 'pending'], ['question:x1', 'resolved']]);
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:x1', decision: 'deny' });
+            expect(gateway.resolveApproval).toHaveBeenCalledWith('exec:x1', 'deny');
+        });
+
+        it('sends the time left rather than the host clock deadline', async () => {
+            jest.useFakeTimers({ now: EXPIRES_AT_MS - 90_000 });
+            const sidebar = await boundTo(MAIN);
+            gateway.emitPrompt(requestedChange(APPROVAL));
+            expect(promptsOf(sidebar)[0]).toMatchObject({ expiresInMs: 90_000 });
+            expect(promptsOf(sidebar)[0]).not.toHaveProperty('expiresAtMs');
         });
 
         it('drops settled rows at the next turn and keeps the waiting ones', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             gateway.emitPrompt(requestedChange(QUESTION));
-            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
+            gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'allow-once' });
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'next' });
             await flush();
             expect(summaries(promptsOf(sidebar))).toEqual([['q1', 'pending', '']]);
@@ -162,18 +181,18 @@ describe('ChatViewProvider prompts', () => {
         it('resolves an approval with an offered decision and marks it answered here', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockImplementation(async (id, decision) => gateway.emitPrompt({ type: 'resolved', id, outcome: decision }));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
-            expect(gateway.resolveApproval).toHaveBeenCalledWith('a1', 'allow-once');
+            jest.mocked(gateway.resolveApproval).mockImplementation(async (key, decision) => gateway.emitPrompt({ type: 'resolved', key, outcome: decision }));
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
+            expect(gateway.resolveApproval).toHaveBeenCalledWith('exec:a1', 'allow-once');
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
         });
 
         it('ignores a decision the approval does not offer and a prompt it does not know', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-always' });
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'nope', decision: 'deny' });
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: { id: 'a1' }, decision: 'deny' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-always' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'nope', decision: 'deny' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: { id: 'a1' }, decision: 'deny' });
             expect(gateway.resolveApproval).not.toHaveBeenCalled();
         });
 
@@ -181,7 +200,7 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('gateway rpc error code=UNAVAILABLE'));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'deny' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'deny' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'pending', 'gateway rpc error code=UNAVAILABLE']]);
         });
 
@@ -189,28 +208,45 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(QUESTION));
             gateway.emitPrompt(requestedChange({ ...QUESTION, id: 'q2' }));
-            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q1', answers: { color: ['Green'] } });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: ['Green'] } });
             expect(gateway.answerQuestion).not.toHaveBeenCalled();
             expect(promptsOf(sidebar)[0]).toMatchObject({ state: 'pending', status: expect.stringContaining('Answer every question') });
-            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q1', answers: { color: [' Blue '] } });
-            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('q1', { color: ['Blue'] });
-            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q2', answers: null });
-            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('q2', null);
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: [' Blue '] } });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('question:q1', { color: ['Blue'] });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q2', answers: null });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('question:q2', null);
+        });
+
+        it('sends each picked option once', async () => {
+            const sidebar = await boundTo(MAIN);
+            const multi: QuestionPrompt = { ...QUESTION, questions: [{ ...QUESTION.questions[0], multiSelect: true }] };
+            gateway.emitPrompt(requestedChange(multi));
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: ['Red', 'Red', 'Blue'] } });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('question:q1', { color: ['Red', 'Blue'] });
+        });
+
+        it('refuses a typed answer too long to send, and says so', async () => {
+            const sidebar = await boundTo(MAIN);
+            const open: QuestionPrompt = { ...QUESTION, questions: [{ ...QUESTION.questions[0], allowsOther: true }] };
+            gateway.emitPrompt(requestedChange(open));
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: ['x'.repeat(MAX_TYPED_ANSWER_CHARS + 1)] } });
+            expect(gateway.answerQuestion).not.toHaveBeenCalled();
+            expect(promptsOf(sidebar)[0]).toMatchObject({ state: 'pending', status: expect.stringContaining('Shorten the typed answer') });
         });
 
         it('keeps a picked option exactly as offered, trimming only typed text', async () => {
             const sidebar = await boundTo(MAIN);
             const padded: QuestionPrompt = { ...QUESTION, questions: [{ ...QUESTION.questions[0], options: [{ label: 'Yes ', description: null }] }] };
             gateway.emitPrompt(requestedChange(padded));
-            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptId: 'q1', answers: { color: ['Yes '] } });
-            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('q1', { color: ['Yes '] });
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: ['Yes '] } });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('question:q1', { color: ['Yes '] });
         });
 
         it('accepts an answer only from a thread that shows the prompt', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange({ ...APPROVAL, sessionKey: CODER }));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
-            await sidebar.send({ type: 'resolveApproval', promptId: 'a1', decision: 'allow-once' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
+            await sidebar.send({ type: 'resolveApproval', promptKey: 'exec:a1', decision: 'allow-once' });
             expect(gateway.resolveApproval).not.toHaveBeenCalled();
         });
 
@@ -218,8 +254,8 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             jest.mocked(gateway.resolveApproval).mockRejectedValue(new PromptAnswerUnconfirmedError('gateway connection closed'));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
-            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
+            gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'allow-once' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
         });
 
@@ -227,8 +263,8 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('not connected to the gateway'));
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'allow-once' });
-            gateway.emitPrompt({ type: 'resolved', id: 'a1', outcome: 'allow-once' });
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
+            gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'allow-once' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once elsewhere']]);
         });
     });
@@ -238,8 +274,8 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange({ ...APPROVAL, sessionKey: null }));
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'pending', '']]);
-            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptId: 'a1', decision: 'deny' });
-            expect(gateway.resolveApproval).toHaveBeenCalledWith('a1', 'deny');
+            await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'deny' });
+            expect(gateway.resolveApproval).toHaveBeenCalledWith('exec:a1', 'deny');
         });
 
         it('warns when no thread is bound to the gateway', async () => {

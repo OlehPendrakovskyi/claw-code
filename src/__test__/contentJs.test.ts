@@ -1051,13 +1051,14 @@ describe('content-js', () => {
         const approval = {
             kind: 'approval',
             id: 'a1',
+            key: 'exec:a1',
             subject: 'exec',
             title: XSS,
             details: ['Working folder: /work', XSS],
             decisions: ['allow-once', 'deny'],
             sessionKey: 'agent:main:main',
             runId: 'r1',
-            expiresAtMs: 4102444800000,
+            expiresInMs: 3_600_000,
             state: 'pending',
             status: '',
         };
@@ -1065,35 +1066,36 @@ describe('content-js', () => {
         const question = {
             kind: 'question',
             id: 'q1',
+            key: 'question:q1',
             questions: [
                 { id: 'color', header: 'Color', text: 'Which color?', options: [{ label: 'Red', description: null }, { label: 'Blue', description: XSS }], multiSelect: false, allowsOther: true, secret: false },
                 { id: 'token', header: '', text: 'Token?', options: [], multiSelect: false, allowsOther: true, secret: true },
             ],
             sessionKey: 'agent:main:main',
             runId: null,
-            expiresAtMs: 4102444800000,
+            expiresInMs: 3_600_000,
             state: 'pending',
             status: '',
         };
 
-        function card(webview: Webview, promptId: string): HTMLElement {
-            const match = Array.from(webview.document.querySelectorAll<HTMLElement>('.prompt-card')).find(el => el.getAttribute('data-prompt-id') === promptId);
+        function card(webview: Webview, promptKey: string): HTMLElement {
+            const match = Array.from(webview.document.querySelectorAll<HTMLElement>('.prompt-card')).find(el => el.getAttribute('data-prompt-key') === promptKey);
             if (!match) {
-                throw new Error(`no prompt card ${promptId}`);
+                throw new Error(`no prompt card ${promptKey}`);
             }
             return match;
         }
 
-        function buttonLabeled(webview: Webview, promptId: string, label: string): HTMLButtonElement {
-            const button = Array.from(card(webview, promptId).querySelectorAll('button')).find(el => el.textContent === label);
+        function buttonLabeled(webview: Webview, promptKey: string, label: string): HTMLButtonElement {
+            const button = Array.from(card(webview, promptKey).querySelectorAll('button')).find(el => el.textContent === label);
             if (!button) {
                 throw new Error(`no ${label} button`);
             }
             return button;
         }
 
-        function field(webview: Webview, promptId: string, selector: string): HTMLInputElement {
-            const match = card(webview, promptId).querySelector<HTMLInputElement>(selector);
+        function field(webview: Webview, promptKey: string, selector: string): HTMLInputElement {
+            const match = card(webview, promptKey).querySelector<HTMLInputElement>(selector);
             if (!match) {
                 throw new Error(`no ${selector}`);
             }
@@ -1103,48 +1105,67 @@ describe('content-js', () => {
         it('renders an approval as text, never markup, with one button per offered decision', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { prompts: [approval] })]);
-            expect(card(webview, 'a1').getAttribute('role')).toBe('group');
-            expect(card(webview, 'a1').querySelector('.prompt-title')?.textContent).toBe(XSS);
-            expect(Array.from(card(webview, 'a1').querySelectorAll('.prompt-details li'), li => li.textContent)).toEqual(['Working folder: /work', XSS]);
+            expect(card(webview, 'exec:a1').getAttribute('role')).toBe('group');
+            expect(card(webview, 'exec:a1').querySelector('.prompt-title')?.textContent).toBe(XSS);
+            expect(Array.from(card(webview, 'exec:a1').querySelectorAll('.prompt-details li'), li => li.textContent)).toEqual(['Working folder: /work', XSS]);
             expect(webview.document.querySelectorAll('img')).toHaveLength(0);
-            expect(Array.from(card(webview, 'a1').querySelectorAll('button'), button => button.textContent)).toEqual(['Approve once', 'Deny']);
-            click(webview, buttonLabeled(webview, 'a1', 'Deny'));
-            expect(postedOfType(webview, 'resolveApproval')).toEqual([{ type: 'resolveApproval', threadId: 't1', promptId: 'a1', decision: 'deny' }]);
+            expect(Array.from(card(webview, 'exec:a1').querySelectorAll('button'), button => button.textContent)).toEqual(['Approve once', 'Deny']);
+            click(webview, buttonLabeled(webview, 'exec:a1', 'Deny'));
+            expect(postedOfType(webview, 'resolveApproval')).toEqual([{ type: 'resolveApproval', threadId: 't1', promptKey: 'exec:a1', decision: 'deny' }]);
+        });
+
+        it('keeps cards of different sources apart when their prompts share an id', () => {
+            const webview = loadWebview();
+            const plugin = { ...approval, subject: 'plugin', key: 'plugin:a1', title: 'Write' };
+            hostState(webview, [thread('t1', { prompts: [approval, plugin] })]);
+            expect(card(webview, 'plugin:a1').querySelector('.prompt-title')?.textContent).toBe('Write');
+            click(webview, buttonLabeled(webview, 'plugin:a1', 'Deny'));
+            expect(postedOfType(webview, 'resolveApproval')).toEqual([{ type: 'resolveApproval', threadId: 't1', promptKey: 'plugin:a1', decision: 'deny' }]);
+        });
+
+        it('fixes a deadline on this clock from the time left when the prompt first arrives', () => {
+            const webview = loadWebview();
+            const expiry = () => card(webview, 'exec:a1').querySelector('.prompt-expiry')?.textContent;
+            hostState(webview, [thread('t1', { prompts: [approval] })]);
+            const shown = expiry();
+            expect(shown).toMatch(/^Expires at /);
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, expiresInMs: 1_800_000, status: 'Sending…' }] })]);
+            expect(expiry()).toBe(shown);
         });
 
         it('shows a settled row with its status and no buttons, and a sending row with its buttons disabled', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'Allowed once elsewhere' }, { ...question, state: 'submitting', status: 'Sending…' }] })]);
-            expect(card(webview, 'a1').querySelectorAll('button')).toHaveLength(0);
-            expect(card(webview, 'a1').querySelector('.prompt-status')?.textContent).toBe('Allowed once elsewhere');
-            expect(Array.from(card(webview, 'q1').querySelectorAll('button'), button => button.disabled)).toEqual([true, true]);
+            expect(card(webview, 'exec:a1').querySelectorAll('button')).toHaveLength(0);
+            expect(card(webview, 'exec:a1').querySelector('.prompt-status')?.textContent).toBe('Allowed once elsewhere');
+            expect(Array.from(card(webview, 'question:q1').querySelectorAll('button'), button => button.disabled)).toEqual([true, true]);
         });
 
         it('sends the chosen option, or a typed answer in its place, and keeps drafts across re-renders', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { prompts: [question] })]);
-            expect(field(webview, 'q1', '.prompt-other[type="password"]').getAttribute('aria-label')).toBe('Your answer');
-            const blue = card(webview, 'q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1];
+            expect(field(webview, 'question:q1', '.prompt-other[type="password"]').getAttribute('aria-label')).toBe('Your answer');
+            const blue = card(webview, 'question:q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1];
             click(webview, blue);
-            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="password"]'), 's3cret');
+            typeInto(webview, () => field(webview, 'question:q1', '.prompt-other[type="password"]'), 's3cret');
             hostState(webview, [thread('t1', { prompts: [question], messages: [{ role: 'user', content: 'moved on' }] })]);
-            click(webview, buttonLabeled(webview, 'q1', 'Send answer'));
-            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptId: 'q1', answers: { color: ['Blue'], token: ['s3cret'] } });
-            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="text"]'), 'Teal');
-            expect(card(webview, 'q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1].checked).toBe(false);
-            press(webview, field(webview, 'q1', '.prompt-other[type="text"]'), 'Enter');
+            click(webview, buttonLabeled(webview, 'question:q1', 'Send answer'));
+            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptKey: 'question:q1', answers: { color: ['Blue'], token: ['s3cret'] } });
+            typeInto(webview, () => field(webview, 'question:q1', '.prompt-other[type="text"]'), 'Teal');
+            expect(card(webview, 'question:q1').querySelectorAll<HTMLInputElement>('.prompt-choice')[1].checked).toBe(false);
+            press(webview, field(webview, 'question:q1', '.prompt-other[type="text"]'), 'Enter');
             expect(postedOfType(webview, 'answerQuestion').pop()).toMatchObject({ answers: { color: ['Teal'], token: ['s3cret'] } });
-            click(webview, buttonLabeled(webview, 'q1', 'Skip'));
-            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptId: 'q1', answers: null });
+            click(webview, buttonLabeled(webview, 'question:q1', 'Skip'));
+            expect(postedOfType(webview, 'answerQuestion').pop()).toEqual({ type: 'answerQuestion', threadId: 't1', promptKey: 'question:q1', answers: null });
         });
 
         it('hands focus back to the control that had it when the rows change', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { prompts: [question] })]);
-            typeInto(webview, () => field(webview, 'q1', '.prompt-other[type="text"]'), 'Te');
+            typeInto(webview, () => field(webview, 'question:q1', '.prompt-other[type="text"]'), 'Te');
             hostState(webview, [thread('t1', { prompts: [{ ...question, status: 'Answer every question.' }] })]);
-            expect(webview.document.activeElement).toBe(field(webview, 'q1', '.prompt-other[type="text"]'));
-            expect(field(webview, 'q1', '.prompt-other[type="text"]').value).toBe('Te');
+            expect(webview.document.activeElement).toBe(field(webview, 'question:q1', '.prompt-other[type="text"]'));
+            expect(field(webview, 'question:q1', '.prompt-other[type="text"]').value).toBe('Te');
             hostState(webview, [thread('t1', { prompts: [] })]);
             expect(webview.document.querySelector('.pane-prompts')).toBeNull();
             expect(webview.document.activeElement).toBe(composer(webview, 't1'));
@@ -1154,12 +1175,12 @@ describe('content-js', () => {
             const webview = loadWebview();
             const command = 'ls \u202Eexe.txt\u200B' + '\n'.repeat(40) + 'rm -rf ~';
             hostState(webview, [thread('t1', { prompts: [{ ...approval, title: command, details: [] }] })]);
-            const shown = card(webview, 'a1').querySelector('.prompt-command')?.textContent ?? '';
+            const shown = card(webview, 'exec:a1').querySelector('.prompt-command')?.textContent ?? '';
             expect(shown).toContain('‹U+202E›');
             expect(shown).toContain('‹U+200B›');
             expect(shown).toContain('‹39 blank lines›');
             expect(shown).toContain('rm -rf ~');
-            expect(Array.from(card(webview, 'a1').querySelectorAll('.prompt-warnings li'), li => li.textContent)).toEqual([
+            expect(Array.from(card(webview, 'exec:a1').querySelectorAll('.prompt-warnings li'), li => li.textContent)).toEqual([
                 'Contains hidden or direction-changing characters, shown as ‹U+…›.',
                 'Contains runs of blank lines, shown collapsed.',
             ]);
@@ -1193,7 +1214,7 @@ describe('content-js', () => {
             hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'Denied' }] })]);
             expect(announcer()).toBe(region);
             expect(region?.textContent).toBe('Denied');
-            expect(card(webview, 'a1').querySelector('[role="status"]')).toBeNull();
+            expect(card(webview, 'exec:a1').querySelector('[role="status"]')).toBeNull();
         });
     });
 

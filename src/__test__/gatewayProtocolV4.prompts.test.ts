@@ -11,6 +11,11 @@ function decodedEvent(frame: string): unknown {
     return decoded?.type === 'event' ? decoded.event : undefined;
 }
 
+/** A frame the gateway schema would reject, to see what the client makes of it. */
+function unvalidatedFrame(event: string, payload: unknown): string {
+    return JSON.stringify({ type: 'event', event, payload });
+}
+
 function framed(wire: { method: string; params: object }): { method: string; params: Record<string, unknown> } {
     return assertValidRequest(v4Adapter.encodeRequest('cc-1', wire));
 }
@@ -35,10 +40,17 @@ describe('gateway protocol v4 prompts', () => {
         });
 
         it('lists the pending prompts of the granted kinds only', () => {
-            const reads = v4Adapter.pendingPromptRequests({ approvals: false, questions: true });
-            expect(reads.map(({ kind, request }) => [kind, framed(request).method])).toEqual([['question', 'question.list']]);
-            const all = v4Adapter.pendingPromptRequests({ approvals: true, questions: true }).map(({ request }) => framed(request).method);
-            expect(all).toEqual(['exec.approval.list', 'plugin.approval.list', 'question.list']);
+            const hello = accepted(['operator.admin']);
+            const reads = v4Adapter.pendingPromptRequests({ approvals: false, questions: true }, hello);
+            expect(reads.map(({ source, request }) => [source, framed(request).method])).toEqual([['question', 'question.list']]);
+            const all = v4Adapter.pendingPromptRequests({ approvals: true, questions: true }, hello).map(({ source, request }) => [source, framed(request).method]);
+            expect(all).toEqual([['exec', 'exec.approval.list'], ['plugin', 'plugin.approval.list'], ['question', 'question.list']]);
+        });
+
+        it('skips a list the gateway does not advertise', () => {
+            const hello = accepted(['operator.admin'], ['exec.approval.list', 'exec.approval.resolve', 'question.list', 'question.resolve']);
+            const reads = v4Adapter.pendingPromptRequests({ approvals: true, questions: true }, hello);
+            expect(reads.map(({ source }) => source)).toEqual(['exec', 'question']);
         });
     });
 
@@ -50,7 +62,7 @@ describe('gateway protocol v4 prompts', () => {
             assertValidResult('exec.approval.list', execRows);
             assertValidResult('plugin.approval.list', pluginRows);
             assertValidResult('question.list', questionList);
-            const [execList, pluginList, questionRead] = v4Adapter.pendingPromptRequests({ approvals: true, questions: true });
+            const [execList, pluginList, questionRead] = v4Adapter.pendingPromptRequests({ approvals: true, questions: true }, accepted(['operator.admin']));
             expect(v4Adapter.parsePendingPrompts(execList, execRows)?.map((prompt) => prompt.id)).toEqual(['a1']);
             expect(v4Adapter.parsePendingPrompts(pluginList, pluginRows)?.map((prompt) => prompt.id)).toEqual(['plugin:1']);
             expect(v4Adapter.parsePendingPrompts(questionRead, questionList)?.map((prompt) => prompt.id)).toEqual(['q1']);
@@ -61,7 +73,7 @@ describe('gateway protocol v4 prompts', () => {
         });
 
         it('takes a list row\'s subject from its list, as approvalKind is optional', () => {
-            const [execList, pluginList] = v4Adapter.pendingPromptRequests({ approvals: true, questions: false });
+            const [execList, pluginList] = v4Adapter.pendingPromptRequests({ approvals: true, questions: false }, accepted(['operator.admin']));
             const execRows = [payloads.execApproval({ id: 'a1' }, 'ls')];
             const pluginRows = [payloads.pluginApproval({ id: 'plugin:1' }, 'Write')];
             assertValidResult('exec.approval.list', execRows);
@@ -79,8 +91,30 @@ describe('gateway protocol v4 prompts', () => {
 
         it('reads an unknown resolution decision as withdrawn and ignores prompt events without an id', () => {
             const unknown = JSON.stringify({ type: 'event', event: 'exec.approval.resolved', payload: { id: 'a1', decision: 'maybe', ts: 1 } });
-            expect(decodedEvent(unknown)).toEqual({ kind: 'promptResolved', id: 'a1', outcome: 'withdrawn' });
+            expect(decodedEvent(unknown)).toEqual({ kind: 'promptResolved', source: 'exec', id: 'a1', outcome: 'withdrawn' });
             expect(decodedEvent(JSON.stringify({ type: 'event', event: 'question.resolved', payload: { status: 'expired' } }))).toBeNull();
+        });
+
+        it('names the source of a resolution, as ids are unique only within one', () => {
+            const resolvedBy = (event: string, payload: unknown) => decodedEvent(eventFrame(event, payload));
+            expect(resolvedBy('plugin.approval.resolved', payloads.approvalResolved('x1', 'deny'))).toMatchObject({ source: 'plugin', id: 'x1' });
+            expect(resolvedBy('question.resolved', payloads.questionResolved('x1', 'cancelled'))).toMatchObject({ source: 'question', id: 'x1' });
+        });
+
+        it('offers deny alone when the allowed decisions name none known here, and the defaults only when none are given', () => {
+            const decisions = (extra: Record<string, unknown>) =>
+                (decodedEvent(unvalidatedFrame('exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls', extra))) as { prompt: { decisions: string[] } }).prompt.decisions;
+            expect(decisions({ allowedDecisions: ['allow-session'] })).toEqual(['deny']);
+            expect(decisions({ allowedDecisions: undefined })).toEqual(['allow-once', 'allow-always', 'deny']);
+            expect(decisions({ allowedDecisions: ['allow-once'] })).toEqual(['allow-once', 'deny']);
+        });
+
+        it('drops a question prompt whose question ids break the pattern or repeat, as its answers could not be keyed', () => {
+            const question = (items: Array<{ questionId: string; question: string }>) => decodedEvent(unvalidatedFrame('question.requested', payloads.question({ id: 'q1' }, items)));
+            expect(question([{ questionId: 'pick', question: 'Which?' }])).toMatchObject({ kind: 'promptRequested' });
+            expect(question([{ questionId: '__proto__', question: 'Which?' }])).toBeNull();
+            expect(question([{ questionId: 'Pick', question: 'Which?' }])).toBeNull();
+            expect(question([{ questionId: 'pick', question: 'One?' }, { questionId: 'pick', question: 'Two?' }])).toBeNull();
         });
 
         it('reads whether an exec tool result waits for an approval', () => {

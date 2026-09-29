@@ -9,7 +9,7 @@
 import type {
   AbortRequest,
   ApprovalResolution,
-  ApprovalSubject,
+  PromptSource,
   ConnectionAccepted,
   ConnectionFeatures,
   DeviceProof,
@@ -35,8 +35,8 @@ import type {
 /** A request ready to be framed. */
 export type WireRequest = { method: string; params: object };
 
-/** A read of the pending prompts of one kind; an approval list serves one subject. */
-export type PromptListRequest = { kind: OperatorPrompt['kind']; subject: ApprovalSubject | null; request: WireRequest };
+/** A read of the pending prompts of one source. */
+export type PromptListRequest = { source: PromptSource; request: WireRequest };
 
 /** What the client tells the gateway about itself in the handshake. */
 export type ClientHello = {
@@ -97,7 +97,7 @@ export interface GatewayProtocolAdapter {
    *  this connection see and answer. */
   promptAccess(accepted: ConnectionAccepted, provedDevice: boolean): PromptAccess;
   /** Reads of the prompts pending since before the connection, for the kinds it may see. */
-  pendingPromptRequests(access: PromptAccess): PromptListRequest[];
+  pendingPromptRequests(access: PromptAccess, accepted: ConnectionAccepted): PromptListRequest[];
   parsePendingPrompts(list: PromptListRequest, payload: unknown): OperatorPrompt[] | null;
   approvalResolveRequest(resolution: ApprovalResolution): WireRequest;
   questionReplyRequest(reply: QuestionReply): WireRequest;

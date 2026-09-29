@@ -69,7 +69,7 @@ function requested(changes: PromptChange[]): OperatorPrompt[] {
 }
 
 function outcomes(changes: PromptChange[]): Array<[string, string]> {
-    return changes.flatMap((change): Array<[string, string]> => (change.type === 'resolved' ? [[change.id, change.outcome]] : []));
+    return changes.flatMap((change): Array<[string, string]> => (change.type === 'resolved' ? [[change.key, change.outcome]] : []));
 }
 
 function methods(socket: MockSocket): string[] {
@@ -172,11 +172,11 @@ describe('GatewayChatService operator prompts and cut rows', () => {
                 runId: 'r1',
                 lifetimeMs: expect.any(Number),
             }]);
-            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            const resolving = h.svc.resolveApproval('exec:a1', 'allow-once');
             expect(h.socket().lastRequest('exec.approval.resolve').params).toEqual({ id: 'a1', decision: 'allow-once' });
             h.socket().reply('exec.approval.resolve', { ok: true });
             await resolving;
-            expect(outcomes(h.changes)).toEqual([['a1', 'allow-once']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'allow-once']]);
         });
 
         it('resolves a plugin approval through its own method and offers only the decisions it allows, deny always', async () => {
@@ -184,12 +184,12 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'plugin.approval.requested', payloads.pluginApproval({ id: 'plugin:1' }, 'Write a file', { allowedDecisions: ['allow-once'] }));
             const [prompt] = requested(h.changes);
             expect(prompt).toMatchObject({ subject: 'plugin', title: 'Write a file', decisions: ['allow-once', 'deny'], details: ['Writes outside the workspace', 'Tool: write', 'Plugin: guard'] });
-            await expect(h.svc.resolveApproval('plugin:1', 'allow-always')).rejects.toThrow(/no longer pending/);
+            await expect(h.svc.resolveApproval('plugin:plugin:1', 'allow-always')).rejects.toThrow(/no longer pending/);
             expect(methods(h.socket())).not.toContain('plugin.approval.resolve');
-            const resolving = h.svc.resolveApproval('plugin:1', 'deny');
+            const resolving = h.svc.resolveApproval('plugin:plugin:1', 'deny');
             h.socket().reply('plugin.approval.resolve', { ok: true });
             await resolving;
-            expect(outcomes(h.changes)).toEqual([['plugin:1', 'deny']]);
+            expect(outcomes(h.changes)).toEqual([['plugin:plugin:1', 'deny']]);
         });
 
         it('settles an approval resolved elsewhere, and withdraws one a late resolve finds gone', async () => {
@@ -197,16 +197,16 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a2' }, 'pwd'));
             receive(h, 'exec.approval.resolved', payloads.approvalResolved('a1', 'deny'));
-            const resolving = h.svc.resolveApproval('a2', 'allow-once');
+            const resolving = h.svc.resolveApproval('exec:a2', 'allow-once');
             h.socket().replyError('exec.approval.resolve', { code: 'INVALID_REQUEST', message: 'unknown or expired approval id', details: { reason: 'APPROVAL_NOT_FOUND' } });
             await resolving;
-            expect(outcomes(h.changes)).toEqual([['a1', 'deny'], ['a2', 'withdrawn']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'deny'], ['exec:a2', 'withdrawn']]);
         });
 
         it('keeps an approval pending when its resolve fails for another reason', async () => {
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
-            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            const resolving = h.svc.resolveApproval('exec:a1', 'allow-once');
             h.socket().replyError('exec.approval.resolve', { code: 'UNAVAILABLE', message: 'approval resolve unavailable' });
             await expect(resolving).rejects.toThrow(/UNAVAILABLE/);
             expect(outcomes(h.changes)).toEqual([]);
@@ -221,7 +221,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             jest.advanceTimersByTime(4999);
             expect(outcomes(h.changes)).toEqual([]);
             jest.advanceTimersByTime(1);
-            expect(outcomes(h.changes)).toEqual([['a1', 'expired']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'expired']]);
         });
 
         it('names the session following the run when a request carries no session key', async () => {
@@ -230,6 +230,22 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             const runId = await accepted(h);
             receive(h, 'plugin.approval.requested', payloads.pluginApproval({ id: 'plugin:2', sessionKey: null, runId }, 'Write'));
             expect(requested(h.changes)[0]).toMatchObject({ sessionKey: CANONICAL_MAIN, runId });
+        });
+
+        it('keeps an exec approval, a plugin approval and a question apart when they share an id', async () => {
+            const h = await connected();
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'x1' }, 'ls'));
+            receive(h, 'plugin.approval.requested', payloads.pluginApproval({ id: 'x1' }, 'Write'));
+            receive(h, 'question.requested', payloads.question({ id: 'x1' }, [{ questionId: 'pick', question: 'Which?' }]));
+            receive(h, 'plugin.approval.resolved', payloads.approvalResolved('x1', 'deny'));
+            expect(requested(h.changes)).toHaveLength(3);
+            expect(outcomes(h.changes)).toEqual([['plugin:x1', 'deny']]);
+            const resolving = h.svc.resolveApproval('exec:x1', 'allow-once');
+            await settle();
+            expect(h.socket().lastRequest('exec.approval.resolve').params).toMatchObject({ id: 'x1', decision: 'allow-once' });
+            h.socket().reply('exec.approval.resolve', { ok: true });
+            await resolving;
+            expect(outcomes(h.changes)).toEqual([['plugin:x1', 'deny'], ['exec:x1', 'allow-once']]);
         });
 
         it('replays pending approvals to a late listener', async () => {
@@ -244,14 +260,14 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             jest.useFakeTimers();
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
-            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            const resolving = h.svc.resolveApproval('exec:a1', 'allow-once');
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await expect(resolving).rejects.toThrow();
             jest.advanceTimersByTime(1000);
             await handshake(h);
             answerBackfill(h, {});
             await settle();
-            expect(outcomes(h.changes)).toEqual([['a1', 'allow-once']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'allow-once']]);
         });
 
         it('forgets an answer that was never sent, so a later backfill does not report it as given', async () => {
@@ -259,18 +275,18 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            await expect(h.svc.resolveApproval('a1', 'allow-once')).rejects.toThrow();
+            await expect(h.svc.resolveApproval('exec:a1', 'allow-once')).rejects.toThrow();
             jest.advanceTimersByTime(1000);
             await handshake(h);
             answerBackfill(h, {});
             await settle();
-            expect(outcomes(h.changes)).toEqual([['a1', 'withdrawn']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'withdrawn']]);
         });
 
         it('reports an answer whose reply was lost as unconfirmed', async () => {
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
-            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            const resolving = h.svc.resolveApproval('exec:a1', 'allow-once');
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await expect(resolving).rejects.toBeInstanceOf(PromptAnswerUnconfirmedError);
         });
@@ -289,7 +305,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             h.svc.updateConnection('ws://other.test:18789', 'other-token');
-            expect(outcomes(h.changes)).toEqual([['a1', 'withdrawn']]);
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'withdrawn']]);
         });
 
         it('adds nothing from a backfill of the old endpoint that finishes after the change', async () => {
@@ -317,7 +333,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'raced' }, 'make test'));
             answerBackfill(h, {});
             await settle();
-            expect(outcomes(h.changes)).toEqual([['old', 'withdrawn']]);
+            expect(outcomes(h.changes)).toEqual([['exec:old', 'withdrawn']]);
             expect(requested(h.changes).map((prompt) => prompt.id)).toEqual(['old', 'raced']);
         });
 
@@ -332,6 +348,21 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             h.socket().replyError('question.list', { code: 'UNAVAILABLE', message: 'busy' });
             await settle();
             expect(outcomes(h.changes)).toEqual([]);
+        });
+
+        it('still settles exec approvals when only the plugin list failed', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
+            receive(h, 'plugin.approval.requested', payloads.pluginApproval({ id: 'p1' }, 'Write'));
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            jest.advanceTimersByTime(1000);
+            await handshake(h);
+            h.socket().reply('exec.approval.list', []);
+            h.socket().replyError('plugin.approval.list', { code: 'UNAVAILABLE', message: 'busy' });
+            h.socket().reply('question.list', { questions: [] });
+            await settle();
+            expect(outcomes(h.changes)).toEqual([['exec:a1', 'withdrawn']]);
         });
 
         it('lists nothing without the scopes, and says where a waiting approval is when a tool reports one', async () => {
@@ -385,11 +416,11 @@ describe('GatewayChatService operator prompts and cut rows', () => {
                     { id: 'token', header: '', text: 'API token?', options: [], multiSelect: false, allowsOther: true, secret: true },
                 ],
             });
-            const answering = h.svc.answerQuestion('q1', { color: ['Teal'], token: ['s3cret'] });
+            const answering = h.svc.answerQuestion('question:q1', { color: ['Teal'], token: ['s3cret'] });
             expect(h.socket().lastRequest('question.resolve').params).toEqual({ id: 'q1', answers: { answers: { color: ['Teal'], token: ['s3cret'] } } });
             h.socket().reply('question.resolve', { status: 'answered', answers: { answers: { color: ['Teal'], token: ['s3cret'] } } });
             await answering;
-            expect(outcomes(h.changes)).toEqual([['q1', 'answered']]);
+            expect(outcomes(h.changes)).toEqual([['question:q1', 'answered']]);
         });
 
         it('declines a question by cancelling it, and follows one that expires or is answered elsewhere', async () => {
@@ -397,13 +428,13 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'question.requested', payloads.question({ id: 'q1' }, questions));
             receive(h, 'question.requested', payloads.question({ id: 'q2' }, questions));
             receive(h, 'question.requested', payloads.question({ id: 'q3' }, questions));
-            const declining = h.svc.answerQuestion('q1', null);
+            const declining = h.svc.answerQuestion('question:q1', null);
             expect(h.socket().lastRequest('question.resolve').params).toEqual({ id: 'q1', cancel: true });
             h.socket().reply('question.resolve', { status: 'cancelled' });
             await declining;
             receive(h, 'question.resolved', payloads.questionResolved('q2', 'expired'));
             receive(h, 'question.resolved', payloads.questionResolved('q3', 'answered'));
-            expect(outcomes(h.changes)).toEqual([['q1', 'cancelled'], ['q2', 'expired'], ['q3', 'answered']]);
+            expect(outcomes(h.changes)).toEqual([['question:q1', 'cancelled'], ['question:q2', 'expired'], ['question:q3', 'answered']]);
         });
 
         it('ignores a question record that is not pending or has a malformed question', async () => {

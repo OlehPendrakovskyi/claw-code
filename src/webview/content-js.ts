@@ -262,9 +262,9 @@ export const OPERATOR_PROMPTS_JS = `
                 return node;
             }
 
-            function promptDraft(threadId, promptId, questionId) {
+            function promptDraft(threadId, promptKey, questionId) {
                 var byPrompt = promptDrafts[threadId] || (promptDrafts[threadId] = Object.create(null));
-                var byQuestion = byPrompt[promptId] || (byPrompt[promptId] = Object.create(null));
+                var byQuestion = byPrompt[promptKey] || (byPrompt[promptKey] = Object.create(null));
                 return byQuestion[questionId] || (byQuestion[questionId] = { selected: [], other: '' });
             }
 
@@ -273,9 +273,9 @@ export const OPERATOR_PROMPTS_JS = `
             }
 
             function markPromptControl(control, prompt, threadId, focusKey) {
-                control.setAttribute('data-prompt-id', prompt.id);
+                control.setAttribute('data-prompt-key', prompt.key);
                 control.setAttribute('data-thread-id', threadId);
-                control.setAttribute('data-focus-key', prompt.id + '|' + focusKey);
+                control.setAttribute('data-focus-key', prompt.key + '|' + focusKey);
                 control.disabled = prompt.state !== 'pending';
                 return control;
             }
@@ -290,7 +290,7 @@ export const OPERATOR_PROMPTS_JS = `
             function decisionButton(prompt, threadId, decision) {
                 var button = promptButton(prompt, threadId, 'prompt-decision', DECISION_LABELS[decision] || decision, decision !== 'deny');
                 button.setAttribute('data-decision', decision);
-                button.setAttribute('data-focus-key', prompt.id + '|prompt-decision|' + decision);
+                button.setAttribute('data-focus-key', prompt.key + '|prompt-decision|' + decision);
                 return button;
             }
 
@@ -326,10 +326,10 @@ export const OPERATOR_PROMPTS_JS = `
                 var card = promptNode('div', 'prompt-card prompt-' + prompt.kind + (prompt.state === 'resolved' ? ' prompt-resolved' : ''));
                 card.setAttribute('role', 'group');
                 card.setAttribute('aria-label', heading);
-                card.setAttribute('data-prompt-id', prompt.id);
+                card.setAttribute('data-prompt-key', prompt.key);
                 var head = promptNode('div', 'prompt-heading', heading);
                 if (prompt.state !== 'resolved') {
-                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(prompt.expiresAtMs)));
+                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(promptDeadlines[prompt.key])));
                 }
                 card.appendChild(head);
                 return card;
@@ -385,10 +385,10 @@ export const OPERATOR_PROMPTS_JS = `
                 var label = promptNode('label', 'prompt-option');
                 var input = document.createElement('input');
                 input.type = question.multiSelect ? 'checkbox' : 'radio';
-                input.name = 'prompt|' + threadId + '|' + prompt.id + '|' + question.id;
+                input.name = 'prompt|' + threadId + '|' + prompt.key + '|' + question.id;
                 input.value = option.label;
                 input.className = 'prompt-field prompt-choice';
-                input.checked = promptDraft(threadId, prompt.id, question.id).selected.indexOf(option.label) !== -1;
+                input.checked = promptDraft(threadId, prompt.key, question.id).selected.indexOf(option.label) !== -1;
                 input.setAttribute('data-question-id', question.id);
                 label.appendChild(markPromptControl(input, prompt, threadId, question.id + '|' + index));
                 label.appendChild(promptNode('span', 'prompt-option-label', option.label));
@@ -403,7 +403,7 @@ export const OPERATOR_PROMPTS_JS = `
                 var caption = question.options.length ? 'Other answer' : 'Your answer';
                 input.type = question.secret ? 'password' : 'text';
                 input.className = 'prompt-field prompt-other';
-                input.value = promptDraft(threadId, prompt.id, question.id).other;
+                input.value = promptDraft(threadId, prompt.key, question.id).other;
                 input.placeholder = caption;
                 input.autocomplete = 'off';
                 input.setAttribute('aria-label', caption);
@@ -468,29 +468,30 @@ export const OPERATOR_PROMPTS_JS = `
             /** What changed since the last render: new prompts, and statuses that moved on. */
             function promptAnnouncement(previous, prompts) {
                 return prompts.map(function(prompt) {
-                    if (!(prompt.id in previous)) { return describeArrival(prompt); }
-                    return previous[prompt.id] !== prompt.status && prompt.status ? prompt.status : '';
+                    if (!(prompt.key in previous)) { return describeArrival(prompt); }
+                    return previous[prompt.key] !== prompt.status && prompt.status ? prompt.status : '';
                 }).filter(Boolean).join('. ');
             }
 
-            function statusById(prompts) {
-                var byId = Object.create(null);
-                prompts.forEach(function(prompt) { byId[prompt.id] = prompt.status || ''; });
-                return byId;
+            function statusByKey(prompts) {
+                var byKey = Object.create(null);
+                prompts.forEach(function(prompt) { byKey[prompt.key] = prompt.status || ''; });
+                return byKey;
             }
 
             /** Rebuilds the rows only when they changed, handing focus back to the control that had it,
              *  or to the composer once the last row is gone. */
             function syncPanePrompts(pane, cache, thread) {
                 var prompts = thread.prompts || [];
-                var json = JSON.stringify(prompts);
+                // The time left shrinks with every state; the deadline it fixed does not, so it is no change.
+                var json = JSON.stringify(prompts, function(name, value) { return name === 'expiresInMs' ? undefined : value; });
                 var live = childWithClass(pane, 'pane-prompts');
                 if ((live || !prompts.length) && cache.prompts === json) {
                     return;
                 }
                 var announcement = promptAnnouncement(cache.promptStatuses || Object.create(null), prompts);
                 cache.prompts = json;
-                cache.promptStatuses = statusById(prompts);
+                cache.promptStatuses = statusByKey(prompts);
                 if (announcement) { promptAnnouncer(pane).textContent = announcement; }
                 var hadFocus = Boolean(live) && live.contains(document.activeElement);
                 var focusKey = hadFocus ? document.activeElement.getAttribute('data-focus-key') : null;
@@ -526,25 +527,42 @@ export const OPERATOR_PROMPTS_JS = `
                 region.focus();
             }
 
+            /** Local deadlines by prompt key, fixed from the time left when a prompt first arrived:
+             *  the host's clock may not be this one's (a remote extension host). */
+            var promptDeadlines = Object.create(null);
+
+            function fixPromptDeadlines(threads) {
+                var shown = Object.create(null);
+                threads.forEach(function(thread) {
+                    (thread.prompts || []).forEach(function(prompt) {
+                        if (!(prompt.key in promptDeadlines)) { promptDeadlines[prompt.key] = Date.now() + Number(prompt.expiresInMs); }
+                        shown[prompt.key] = true;
+                    });
+                });
+                Object.keys(promptDeadlines).forEach(function(key) {
+                    if (!shown[key]) { delete promptDeadlines[key]; }
+                });
+            }
+
             /** Drafts of prompts a pane no longer shows are dropped. */
             function prunePromptDrafts(threads) {
                 var shown = Object.create(null);
                 threads.forEach(function(thread) {
                     shown[thread.id] = Object.create(null);
-                    (thread.prompts || []).forEach(function(prompt) { shown[thread.id][prompt.id] = true; });
+                    (thread.prompts || []).forEach(function(prompt) { shown[thread.id][prompt.key] = true; });
                 });
                 Object.keys(promptDrafts).forEach(function(threadId) {
-                    Object.keys(promptDrafts[threadId]).forEach(function(promptId) {
-                        if (!shown[threadId] || !shown[threadId][promptId]) { delete promptDrafts[threadId][promptId]; }
+                    Object.keys(promptDrafts[threadId]).forEach(function(promptKey) {
+                        if (!shown[threadId] || !shown[threadId][promptKey]) { delete promptDrafts[threadId][promptKey]; }
                     });
                 });
             }
 
-            function findThreadPrompt(threadId, promptId) {
+            function findThreadPrompt(threadId, promptKey) {
                 var thread = getThreadById(threadId);
                 var prompts = (thread && thread.prompts) || [];
                 for (var i = 0; i < prompts.length; i++) {
-                    if (prompts[i].id === promptId) { return prompts[i]; }
+                    if (prompts[i].key === promptKey) { return prompts[i]; }
                 }
                 return null;
             }
@@ -552,10 +570,10 @@ export const OPERATOR_PROMPTS_JS = `
             /** A typed answer replaces the chosen option of a single-choice question, and the other way round. */
             function updatePromptDraft(field) {
                 var threadId = field.getAttribute('data-thread-id');
-                var promptId = field.getAttribute('data-prompt-id');
+                var promptKey = field.getAttribute('data-prompt-key');
                 var questionId = field.getAttribute('data-question-id');
-                if (!findThreadPrompt(threadId, promptId) || !questionId) { return; }
-                var draft = promptDraft(threadId, promptId, questionId);
+                if (!findThreadPrompt(threadId, promptKey) || !questionId) { return; }
+                var draft = promptDraft(threadId, promptKey, questionId);
                 var fieldset = field.closest('.prompt-question');
                 var single = field.type === 'radio' || (fieldset && fieldset.querySelector('input[type="radio"]'));
                 if (field.classList.contains('prompt-other')) {
@@ -579,7 +597,7 @@ export const OPERATOR_PROMPTS_JS = `
             function collectPromptAnswers(threadId, prompt) {
                 var answers = {};
                 (prompt.questions || []).forEach(function(question) {
-                    var draft = promptDraft(threadId, prompt.id, question.id);
+                    var draft = promptDraft(threadId, prompt.key, question.id);
                     var other = question.secret ? draft.other : draft.other.trim();
                     var values = question.multiSelect ? draft.selected.slice() : draft.selected.slice(0, 1);
                     if (other) {
@@ -592,21 +610,21 @@ export const OPERATOR_PROMPTS_JS = `
 
             /** Handles a prompt button; false for every other action. */
             function handlePromptAction(action, actionEl) {
-                var promptId = actionEl.getAttribute('data-prompt-id');
+                var promptKey = actionEl.getAttribute('data-prompt-key');
                 var threadId = actionEl.getAttribute('data-thread-id');
                 if (action === 'prompt-decision') {
-                    vscode.postMessage({ type: 'resolveApproval', threadId: threadId, promptId: promptId, decision: actionEl.getAttribute('data-decision') });
+                    vscode.postMessage({ type: 'resolveApproval', threadId: threadId, promptKey: promptKey, decision: actionEl.getAttribute('data-decision') });
                     return true;
                 }
                 if (action === 'prompt-answer') {
-                    var prompt = findThreadPrompt(threadId, promptId);
+                    var prompt = findThreadPrompt(threadId, promptKey);
                     if (prompt) {
-                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: collectPromptAnswers(threadId, prompt) });
+                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptKey: promptKey, answers: collectPromptAnswers(threadId, prompt) });
                     }
                     return true;
                 }
                 if (action === 'prompt-skip') {
-                    vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: null });
+                    vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptKey: promptKey, answers: null });
                     return true;
                 }
                 return false;
@@ -2663,6 +2681,7 @@ ${TOOL_STATUS_JS}
                     var focus = captureComposerFocus();
                     state.activeThreadId = message.activeThreadId || '';
                     state.threads = Array.isArray(message.threads) ? message.threads : [];
+                    fixPromptDeadlines(state.threads);
                     availableModels = Array.isArray(message.models) ? message.models.map(String) : [];
                     if (typeof message.collapseCompleted === 'boolean') {
                         collapseCompleted = message.collapseCompleted;

@@ -20,6 +20,7 @@ import type {
   OperatorPrompt,
   PromptAccess,
   PromptOutcome,
+  PromptSource,
   QuestionItem,
   QuestionOption,
   QuestionPrompt,
@@ -56,6 +57,9 @@ const APPROVAL_REQUIRED_FAILURE = 'approval_required';
  *  (bash-tools buildHeadlessExecApprovalDeniedMessage); the gateway gives it no code. */
 const NO_APPROVAL_ROUTE_ERROR = 'cannot wait for interactive exec approval';
 
+/** QuestionSchema `questionId`; the answers of a reply are keyed by the same pattern. */
+const QUESTION_ID = /^[a-z][a-z0-9_]*$/;
+
 const RESOLVE_METHODS: Record<ApprovalSubject, string> = {
   exec: Methods.execApprovalResolve,
   plugin: Methods.pluginApprovalResolve,
@@ -65,10 +69,11 @@ function isDecision(value: unknown): value is ApprovalDecision {
   return typeof value === 'string' && (DEFAULT_DECISIONS as readonly string[]).includes(value);
 }
 
-/** The offered decisions in canonical order; deny is always among them so a reviewer can fail closed. */
+/** The offered decisions in canonical order; deny is always among them so a reviewer can fail closed.
+ *  Only a missing list means the defaults: one naming no decision known here offers deny alone. */
 function readDecisions(value: unknown): ApprovalDecision[] {
+  if (value === undefined) return [...DEFAULT_DECISIONS];
   const offered = readArray(value).filter(isDecision);
-  if (offered.length === 0) return [...DEFAULT_DECISIONS];
   return DEFAULT_DECISIONS.filter((decision) => decision === 'deny' || offered.includes(decision));
 }
 
@@ -142,7 +147,7 @@ function readQuestionItem(value: unknown): QuestionItem | null {
   const fields = readRecord(value);
   const id = readString(fields.questionId);
   const text = readString(fields.question);
-  if (!id || !text) {
+  if (!id || !QUESTION_ID.test(id) || !text) {
     return null;
   }
   const options = readArray(fields.options).flatMap((option) => readOption(option) ?? []);
@@ -164,7 +169,9 @@ function readQuestion(payload: unknown): QuestionPrompt | null {
   const id = readString(fields.id);
   const lifetimeMs = readLifetime(fields);
   const questions = readArray(fields.questions).flatMap((question) => readQuestionItem(question) ?? []);
-  const complete = questions.length > 0 && questions.length === readArray(fields.questions).length;
+  // Answers are keyed by question id, so a repeated one could not be answered apart.
+  const distinct = new Set(questions.map((question) => question.id)).size === questions.length;
+  const complete = questions.length > 0 && questions.length === readArray(fields.questions).length && distinct;
   if (!id || lifetimeMs === null || fields.status !== 'pending' || !complete) {
     return null;
   }
@@ -175,10 +182,10 @@ function requested(prompt: OperatorPrompt | null): InboundEvent | null {
   return prompt ? { kind: 'promptRequested', prompt } : null;
 }
 
-function resolved(payload: unknown, outcomeOf: (fields: Readonly<Record<string, unknown>>) => PromptOutcome): InboundEvent | null {
+function resolved(source: PromptSource, payload: unknown, outcomeOf: (fields: Readonly<Record<string, unknown>>) => PromptOutcome): InboundEvent | null {
   const fields = readRecord(payload);
   const id = readString(fields.id);
-  return id ? { kind: 'promptResolved', id, outcome: outcomeOf(fields) } : null;
+  return id ? { kind: 'promptResolved', source, id, outcome: outcomeOf(fields) } : null;
 }
 
 function approvalOutcome(fields: Readonly<Record<string, unknown>>): PromptOutcome {
@@ -199,10 +206,11 @@ export function readPromptEvent(event: string, payload: unknown): InboundEvent |
     case Events.questionRequested:
       return requested(readQuestion(payload));
     case Events.execApprovalResolved:
+      return resolved('exec', payload, approvalOutcome);
     case Events.pluginApprovalResolved:
-      return resolved(payload, approvalOutcome);
+      return resolved('plugin', payload, approvalOutcome);
     case Events.questionResolved:
-      return resolved(payload, questionOutcome);
+      return resolved('question', payload, questionOutcome);
     default:
       return null;
   }
@@ -232,16 +240,20 @@ export function readPromptAccess(accepted: ConnectionAccepted, provedDevice: boo
   };
 }
 
-function listRequest(kind: OperatorPrompt['kind'], subject: ApprovalSubject | null, method: string): PromptListRequest {
-  return { kind, subject, request: { method, params: {} } };
-}
+const LIST_METHODS: ReadonlyArray<{ source: PromptSource; method: string }> = [
+  { source: 'exec', method: Methods.execApprovalList },
+  { source: 'plugin', method: Methods.pluginApprovalList },
+  { source: 'question', method: Methods.questionList },
+];
 
-/** Reads of the prompts that predate the connection (clients.md "Backfill exec approvals"). */
-export function pendingPromptRequests({ approvals, questions }: PromptAccess): PromptListRequest[] {
-  return [
-    ...(approvals ? [listRequest('approval', 'exec', Methods.execApprovalList), listRequest('approval', 'plugin', Methods.pluginApprovalList)] : []),
-    ...(questions ? [listRequest('question', null, Methods.questionList)] : []),
-  ];
+/** Reads of the prompts that predate the connection (clients.md "Backfill exec approvals"),
+ *  of the sources the connection may see and whose list the gateway advertises. */
+export function pendingPromptRequests({ approvals, questions }: PromptAccess, accepted: ConnectionAccepted): PromptListRequest[] {
+  const visible = (source: PromptSource): boolean => (source === 'question' ? questions : approvals);
+  return LIST_METHODS.filter(({ source, method }) => visible(source) && accepted.features.methods.has(method)).map(({ source, method }) => ({
+    source,
+    request: { method, params: {} },
+  }));
 }
 
 /** `approvalKind` is optional on a list row: the list read names the subject, the row may only confirm it. */
@@ -251,9 +263,9 @@ function readApprovalRow(subject: ApprovalSubject, row: unknown): ApprovalPrompt
 }
 
 /** An approval list (an array of requested events) or a question list (`{ questions }`). */
-export function readPendingPrompts({ subject }: PromptListRequest, payload: unknown): OperatorPrompt[] | null {
-  if (subject !== null) {
-    return Array.isArray(payload) ? payload.flatMap((row) => readApprovalRow(subject, row) ?? []) : null;
+export function readPendingPrompts({ source }: PromptListRequest, payload: unknown): OperatorPrompt[] | null {
+  if (source !== 'question') {
+    return Array.isArray(payload) ? payload.flatMap((row) => readApprovalRow(source, row) ?? []) : null;
   }
   const questions = readRecord(payload).questions;
   return Array.isArray(questions) ? questions.flatMap((row) => readQuestion(row) ?? []) : null;

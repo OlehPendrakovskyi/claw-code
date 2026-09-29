@@ -9,18 +9,18 @@
  * row may so outlive its real deadline until the gateway says otherwise.
  */
 
-import type { OperatorPrompt, PromptOutcome } from './gatewayProtocol/model';
+import type { OperatorPrompt, PromptOutcome, PromptSource } from './gatewayProtocol/model';
 
-/** `expiresAtMs` is the local-clock deadline. */
+/** `key` names the prompt across sources (see {@link promptKey}); `expiresAtMs` is the local-clock deadline. */
 export type PromptChange =
-  | { type: 'requested'; prompt: OperatorPrompt; expiresAtMs: number }
-  | { type: 'resolved'; id: string; outcome: PromptOutcome };
+  | { type: 'requested'; key: string; prompt: OperatorPrompt; expiresAtMs: number }
+  | { type: 'resolved'; key: string; outcome: PromptOutcome };
 
 export type PromptListener = (change: PromptChange) => void;
 
 type PromptKind = OperatorPrompt['kind'];
 
-type PendingPrompt = { prompt: OperatorPrompt; expiresAtMs: number; expiry: ReturnType<typeof setTimeout> };
+type PendingPrompt = { key: string; prompt: OperatorPrompt; expiresAtMs: number; expiry: ReturnType<typeof setTimeout> };
 
 /** Node timers overflow past this delay; a later deadline is re-armed when this one fires. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
@@ -28,7 +28,21 @@ const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 /** Pending prompts kept per kind; past it the oldest is withdrawn, so a flooding gateway cannot grow the board. */
 export const MAX_PENDING_PER_KIND = 256;
 
-/** A backfill read in flight: what changed meanwhile must win over its older answer. */
+/** A prompt's identity here: the gateway keeps exec approvals, plugin approvals and questions
+ *  apart, so an id is unique only within its source. */
+export function promptKey(source: PromptSource, id: string): string {
+  return `${source}:${id}`;
+}
+
+export function sourceOf(prompt: OperatorPrompt): PromptSource {
+  return prompt.kind === 'approval' ? prompt.subject : 'question';
+}
+
+export function keyOf(prompt: OperatorPrompt): string {
+  return promptKey(sourceOf(prompt), prompt.id);
+}
+
+/** A backfill read in flight, by prompt key: what changed meanwhile must win over its older answer. */
 export type Backfill = { readonly requested: Set<string>; readonly resolved: Set<string> };
 
 export type BoardOptions = { now?: () => number; onOverflow?: () => void };
@@ -50,53 +64,54 @@ export class OperatorPromptBoard {
   /** Observe prompts; the ones already pending are replayed first. Returns the unsubscribe. */
   subscribe(listener: PromptListener): () => void {
     this.listeners.add(listener);
-    for (const { prompt, expiresAtMs } of this.pending.values()) listener({ type: 'requested', prompt, expiresAtMs });
+    for (const { key, prompt, expiresAtMs } of this.pending.values()) listener({ type: 'requested', key, prompt, expiresAtMs });
     return () => this.listeners.delete(listener);
   }
 
-  get(id: string): OperatorPrompt | undefined {
-    return this.pending.get(id)?.prompt;
+  get(key: string): OperatorPrompt | undefined {
+    return this.pending.get(key)?.prompt;
   }
 
   /** A prompt is announced once; a repeat (live event and backfill row) is ignored. */
   add(prompt: OperatorPrompt): void {
-    if (this.pending.has(prompt.id)) {
+    const key = keyOf(prompt);
+    if (this.pending.has(key)) {
       return;
     }
-    this.backfill?.requested.add(prompt.id);
+    this.backfill?.requested.add(key);
     this.makeRoomFor(prompt.kind);
     const expiresAtMs = this.now() + prompt.lifetimeMs;
-    const entry: PendingPrompt = { prompt, expiresAtMs, expiry: this.armExpiry(prompt.id, expiresAtMs) };
-    this.pending.set(prompt.id, entry);
-    this.emit({ type: 'requested', prompt, expiresAtMs });
+    const entry: PendingPrompt = { key, prompt, expiresAtMs, expiry: this.armExpiry(key, expiresAtMs) };
+    this.pending.set(key, entry);
+    this.emit({ type: 'requested', key, prompt, expiresAtMs });
   }
 
-  settle(id: string, outcome: PromptOutcome): void {
-    this.backfill?.resolved.add(id);
-    this.submissions.delete(id);
-    const entry = this.pending.get(id);
+  settle(key: string, outcome: PromptOutcome): void {
+    this.backfill?.resolved.add(key);
+    this.submissions.delete(key);
+    const entry = this.pending.get(key);
     if (!entry) {
       return;
     }
     clearTimeout(entry.expiry);
-    this.pending.delete(id);
-    this.emit({ type: 'resolved', id, outcome });
+    this.pending.delete(key);
+    this.emit({ type: 'resolved', key, outcome });
   }
 
   /** An answer is on its way; if its reply is lost and the prompt then vanishes, this was its outcome. */
-  noteSubmission(id: string, outcome: PromptOutcome): void {
-    this.submissions.set(id, outcome);
+  noteSubmission(key: string, outcome: PromptOutcome): void {
+    this.submissions.set(key, outcome);
   }
 
-  /** The gateway refused the answer: it applied nothing. */
-  forgetSubmission(id: string): void {
-    this.submissions.delete(id);
+  /** The answer never reached the gateway, or it refused it: nothing was applied. */
+  forgetSubmission(key: string): void {
+    this.submissions.delete(key);
   }
 
   /** Every pending prompt of the kinds is gone for this client (access lost, endpoint changed). */
   withdraw(kinds: readonly PromptKind[]): void {
-    for (const { prompt } of [...this.pending.values()]) {
-      if (kinds.includes(prompt.kind)) this.settle(prompt.id, 'withdrawn');
+    for (const { key, prompt } of [...this.pending.values()]) {
+      if (kinds.includes(prompt.kind)) this.settle(key, 'withdrawn');
     }
   }
 
@@ -111,22 +126,22 @@ export class OperatorPromptBoard {
     return this.backfill;
   }
 
-  /** Apply a backfill: `listed` is what the gateway still has pending of the `covered` kinds.
-   *  A prompt gone from it settles with an answer sent before, else as withdrawn; one still listed
-   *  was not answered. A backfill superseded by a newer one is dropped. */
-  finishBackfill(backfill: Backfill, listed: readonly OperatorPrompt[], covered: readonly PromptKind[]): void {
+  /** Apply a backfill: `listed` is what the gateway still has pending of the `covered` sources,
+   *  the ones whose list was read. A prompt gone from it settles with an answer sent before, else
+   *  as withdrawn; one still listed was not answered. A backfill superseded by a newer one is dropped. */
+  finishBackfill(backfill: Backfill, listed: readonly OperatorPrompt[], covered: readonly PromptSource[]): void {
     if (this.backfill !== backfill) {
       return;
     }
     this.backfill = null;
-    const listedIds = new Set(listed.map((prompt) => prompt.id));
-    for (const { prompt } of [...this.pending.values()]) {
-      if (!covered.includes(prompt.kind) || backfill.requested.has(prompt.id)) continue;
-      if (listedIds.has(prompt.id)) this.submissions.delete(prompt.id);
-      else this.settle(prompt.id, this.submissions.get(prompt.id) ?? 'withdrawn');
+    const listedKeys = new Set(listed.map(keyOf));
+    for (const { key, prompt } of [...this.pending.values()]) {
+      if (!covered.includes(sourceOf(prompt)) || backfill.requested.has(key)) continue;
+      if (listedKeys.has(key)) this.submissions.delete(key);
+      else this.settle(key, this.submissions.get(key) ?? 'withdrawn');
     }
     for (const prompt of listed) {
-      if (!backfill.resolved.has(prompt.id)) this.add(prompt);
+      if (!backfill.resolved.has(keyOf(prompt))) this.add(prompt);
     }
   }
 
@@ -136,26 +151,26 @@ export class OperatorPromptBoard {
       return;
     }
     this.onOverflow();
-    this.settle(ofKind[0].prompt.id, 'withdrawn');
+    this.settle(ofKind[0].key, 'withdrawn');
   }
 
-  private armExpiry(id: string, expiresAtMs: number): ReturnType<typeof setTimeout> {
+  private armExpiry(key: string, expiresAtMs: number): ReturnType<typeof setTimeout> {
     const delay = Math.min(Math.max(expiresAtMs - this.now(), 0), MAX_TIMER_DELAY_MS);
-    const timer = setTimeout(() => this.expire(id), delay);
+    const timer = setTimeout(() => this.expire(key), delay);
     timer.unref?.();
     return timer;
   }
 
-  private expire(id: string): void {
-    const entry = this.pending.get(id);
+  private expire(key: string): void {
+    const entry = this.pending.get(key);
     if (!entry) {
       return;
     }
     if (entry.expiresAtMs > this.now()) {
-      entry.expiry = this.armExpiry(id, entry.expiresAtMs);
+      entry.expiry = this.armExpiry(key, entry.expiresAtMs);
       return;
     }
-    this.settle(id, 'expired');
+    this.settle(key, 'expired');
   }
 
   private emit(change: PromptChange): void {

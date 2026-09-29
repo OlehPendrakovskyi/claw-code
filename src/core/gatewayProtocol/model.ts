@@ -184,6 +184,9 @@ export type ApprovalDecision = 'allow-once' | 'allow-always' | 'deny';
 /** What an approval guards: a shell command, or a tool action a plugin holds back. */
 export type ApprovalSubject = 'exec' | 'plugin';
 
+/** Where a prompt comes from; its id is unique only among prompts of the same source. */
+export type PromptSource = ApprovalSubject | 'question';
+
 /** A run step that waits until an operator allows or denies it. */
 export type ApprovalPrompt = {
   kind: 'approval';
@@ -277,7 +280,7 @@ export type InboundEvent =
   | { kind: 'sessionsChanged'; sessionKey: string | null }
   /** An approval or question waits for an operator. */
   | { kind: 'promptRequested'; prompt: OperatorPrompt }
-  | { kind: 'promptResolved'; id: string; outcome: PromptOutcome }
+  | { kind: 'promptResolved'; source: PromptSource; id: string; outcome: PromptOutcome }
   | { kind: 'keepalive' }
   | { kind: 'shutdown'; reason: string; restartExpectedMs: number | null }
   /** The pre-connect challenge a device signs; null fields were missing or malformed. */

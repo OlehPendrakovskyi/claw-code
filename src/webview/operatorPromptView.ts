@@ -11,6 +11,8 @@ import type { ApprovalDecision, OperatorPrompt, PromptOutcome, QuestionAnswers, 
 export type PromptRowState = 'pending' | 'submitting' | 'resolved';
 
 export type PromptRow<Gateway> = {
+    /** The board's prompt key: ids repeat across exec approvals, plugin approvals and questions. */
+    key: string;
     prompt: OperatorPrompt;
     /** The client the prompt arrived on, and the only one that can answer it. */
     gateway: Gateway;
@@ -23,8 +25,9 @@ export type PromptRow<Gateway> = {
     error: string | null;
 };
 
-/** A row as the webview renders it. */
-export type PromptView = OperatorPrompt & { expiresAtMs: number; state: PromptRowState; status: string };
+/** A row as the webview renders it. The deadline goes as the time left, since the webview's
+ *  clock may not be the host's (a remote extension host); the webview fixes it on arrival. */
+export type PromptView = OperatorPrompt & { key: string; expiresInMs: number; state: PromptRowState; status: string };
 
 const OUTCOME_LABELS: Record<PromptOutcome, string> = {
     'allow-once': 'Allowed once',
@@ -41,10 +44,18 @@ const ANSWER_OUTCOMES: ReadonlySet<PromptOutcome> = new Set(['allow-once', 'allo
 
 const SUBMITTING_STATUS = 'Sending…';
 
-export const INCOMPLETE_ANSWER_MESSAGE = 'Answer every question: pick an option or type an answer.';
+const INCOMPLETE_ANSWER_MESSAGE = 'Answer every question: pick an option or type an answer.';
 
-export function newPromptRow<Gateway>(prompt: OperatorPrompt, gateway: Gateway, expiresAtMs: number): PromptRow<Gateway> {
-    return { prompt, gateway, expiresAtMs, state: 'pending', outcome: null, submitted: null, error: null };
+/** Longest typed answer sent; a longer one would fail later on the gateway's frame limit. */
+export const MAX_TYPED_ANSWER_CHARS = 8000;
+
+const ANSWER_TOO_LONG_MESSAGE = `Shorten the typed answer to at most ${MAX_TYPED_ANSWER_CHARS} characters.`;
+
+/** Answers ready to send, or why the webview's answers cannot be sent. */
+export type AnswerCheck = { answers: QuestionAnswers } | { error: string };
+
+export function newPromptRow<Gateway>(key: string, prompt: OperatorPrompt, gateway: Gateway, expiresAtMs: number): PromptRow<Gateway> {
+    return { key, prompt, gateway, expiresAtMs, state: 'pending', outcome: null, submitted: null, error: null };
 }
 
 function resolvedStatus(outcome: PromptOutcome, answeredHere: boolean): string {
@@ -58,8 +69,8 @@ function rowStatus<Gateway>(row: PromptRow<Gateway>): string {
     return row.error ?? '';
 }
 
-export function toPromptView<Gateway>(row: PromptRow<Gateway>): PromptView {
-    return { ...row.prompt, expiresAtMs: row.expiresAtMs, state: row.state, status: rowStatus(row) };
+export function toPromptView<Gateway>(row: PromptRow<Gateway>, now = Date.now()): PromptView {
+    return { ...row.prompt, key: row.key, expiresInMs: Math.max(row.expiresAtMs - now, 0), state: row.state, status: rowStatus(row) };
 }
 
 export function isOfferedDecision(prompt: OperatorPrompt, value: unknown): value is ApprovalDecision {
@@ -72,27 +83,30 @@ function typedOrPicked(question: QuestionItem, value: string): string {
     return picked || question.secret ? value : value.trim();
 }
 
+/** A question's values, each once, or null when they do not answer it. */
 function answerValues(question: QuestionItem, raw: unknown): string[] | null {
     if (!Array.isArray(raw) || !raw.every((value): value is string => typeof value === 'string')) {
         return null;
     }
-    const values = raw.map((value) => typedOrPicked(question, value)).filter((value) => value !== '');
+    const values = [...new Set(raw.map((value) => typedOrPicked(question, value)).filter((value) => value !== ''))];
     const known = question.allowsOther || values.every((value) => question.options.some((option) => option.label === value));
     const counted = values.length === 1 || (question.multiSelect && values.length > 1);
     return known && counted ? values : null;
 }
 
-/** Answers from the webview for every question of the prompt, or null when one is missing or not allowed. */
-export function readQuestionAnswers(prompt: QuestionPrompt, raw: unknown): QuestionAnswers | null {
+/** Answers from the webview for every question of the prompt, or why they cannot be sent. */
+export function checkQuestionAnswers(prompt: QuestionPrompt, raw: unknown): AnswerCheck {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
-        return null;
+        return { error: INCOMPLETE_ANSWER_MESSAGE };
     }
     const byId = raw as Record<string, unknown>;
-    const answers: Record<string, string[]> = {};
+    // No prototype, so no question id can reach one.
+    const answers: Record<string, string[]> = Object.create(null);
     for (const question of prompt.questions) {
         const values = Object.prototype.hasOwnProperty.call(byId, question.id) ? answerValues(question, byId[question.id]) : null;
-        if (!values) return null;
+        if (!values) return { error: INCOMPLETE_ANSWER_MESSAGE };
+        if (values.some((value) => value.length > MAX_TYPED_ANSWER_CHARS)) return { error: ANSWER_TOO_LONG_MESSAGE };
         answers[question.id] = values;
     }
-    return answers;
+    return { answers };
 }

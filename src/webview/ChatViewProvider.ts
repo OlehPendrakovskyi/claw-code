@@ -46,10 +46,9 @@ import {
 import type { HistorySnapshot, PromptOutcome, SendAttachment, SessionSummary } from '../core/gatewayProtocol/model';
 import type { PromptChange } from '../core/operatorPrompts';
 import {
-    INCOMPLETE_ANSWER_MESSAGE,
+    checkQuestionAnswers,
     isOfferedDecision,
     newPromptRow,
-    readQuestionAnswers,
     toPromptView,
     type PromptRow,
     type PromptView,
@@ -539,10 +538,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'resolveApproval':
-                    await this.handleResolveApproval(msg.threadId, msg.promptId, msg.decision);
+                    await this.handleResolveApproval(msg.threadId, msg.promptKey, msg.decision);
                     break;
                 case 'answerQuestion':
-                    await this.handleAnswerQuestion(msg.threadId, msg.promptId, msg.answers);
+                    await this.handleAnswerQuestion(msg.threadId, msg.promptKey, msg.answers);
                     break;
             }
         });
@@ -2089,11 +2088,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private applyPromptChange(gateway: GatewayChatService, change: PromptChange): void {
         if (change.type === 'requested') {
-            const row = newPromptRow(change.prompt, gateway, change.expiresAtMs);
-            this.operatorPrompts.set(change.prompt.id, row);
+            const row = newPromptRow(change.key, change.prompt, gateway, change.expiresAtMs);
+            this.operatorPrompts.set(change.key, row);
             this.warnIfShownNowhere(row);
         } else {
-            const row = this.operatorPrompts.get(change.id);
+            const row = this.operatorPrompts.get(change.key);
             if (!row || row.state === 'resolved') {
                 return;
             }
@@ -2107,7 +2106,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private pruneSettledPrompts(): void {
         const settled = [...this.operatorPrompts.values()].filter(row => row.state === 'resolved');
         for (const row of settled.slice(0, Math.max(0, settled.length - SETTLED_PROMPT_LIMIT))) {
-            this.operatorPrompts.delete(row.prompt.id);
+            this.operatorPrompts.delete(row.key);
         }
     }
 
@@ -2137,47 +2136,49 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private promptViewsFor(threadId: string): PromptView[] {
         const thread = this.threads.get(threadId);
-        return thread ? this.promptRowsFor(thread).map(toPromptView) : [];
+        const now = Date.now();
+        return thread ? this.promptRowsFor(thread).map(row => toPromptView(row, now)) : [];
     }
 
     /** A new turn or a clear leaves only the prompts still waiting. */
     private dropSettledPrompts(thread: ChatThreadState): void {
         for (const row of this.promptRowsFor(thread)) {
-            if (row.state === 'resolved') this.operatorPrompts.delete(row.prompt.id);
+            if (row.state === 'resolved') this.operatorPrompts.delete(row.key);
         }
     }
 
     /** A pending row the named thread shows: an answer from a pane counts only for what it displays. */
-    private pendingPromptRow(threadId: unknown, promptId: unknown): PromptRow<GatewayChatService> | undefined {
+    private pendingPromptRow(threadId: unknown, promptKey: unknown): PromptRow<GatewayChatService> | undefined {
         const thread = typeof threadId === 'string' ? this.threads.get(threadId) : undefined;
-        const row = typeof promptId === 'string' ? this.operatorPrompts.get(promptId) : undefined;
+        const row = typeof promptKey === 'string' ? this.operatorPrompts.get(promptKey) : undefined;
         if (!thread || row?.state !== 'pending') {
             return undefined;
         }
         return this.promptRowsFor(thread).includes(row) ? row : undefined;
     }
 
-    private async handleResolveApproval(threadId: unknown, promptId: unknown, decision: unknown): Promise<void> {
-        const row = this.pendingPromptRow(threadId, promptId);
+    private async handleResolveApproval(threadId: unknown, promptKey: unknown, decision: unknown): Promise<void> {
+        const row = this.pendingPromptRow(threadId, promptKey);
         if (!row || !isOfferedDecision(row.prompt, decision)) {
             return;
         }
-        await this.submitPrompt(row, decision, () => row.gateway.resolveApproval(row.prompt.id, decision));
+        await this.submitPrompt(row, decision, () => row.gateway.resolveApproval(row.key, decision));
     }
 
     /** `answers` null declines the question; anything else must answer every question it asks. */
-    private async handleAnswerQuestion(threadId: unknown, promptId: unknown, rawAnswers: unknown): Promise<void> {
-        const row = this.pendingPromptRow(threadId, promptId);
+    private async handleAnswerQuestion(threadId: unknown, promptKey: unknown, rawAnswers: unknown): Promise<void> {
+        const row = this.pendingPromptRow(threadId, promptKey);
         if (row?.prompt.kind !== 'question') {
             return;
         }
-        const answers = rawAnswers === null ? null : readQuestionAnswers(row.prompt, rawAnswers);
-        if (rawAnswers !== null && answers === null) {
-            row.error = INCOMPLETE_ANSWER_MESSAGE;
+        const checked = rawAnswers === null ? null : checkQuestionAnswers(row.prompt, rawAnswers);
+        if (checked && 'error' in checked) {
+            row.error = checked.error;
             this.emitState();
             return;
         }
-        await this.submitPrompt(row, answers ? 'answered' : 'cancelled', () => row.gateway.answerQuestion(row.prompt.id, answers));
+        const answers = checked?.answers ?? null;
+        await this.submitPrompt(row, answers ? 'answered' : 'cancelled', () => row.gateway.answerQuestion(row.key, answers));
     }
 
     /** A failed answer leaves the row pending with the reason, so the user can try again; only one

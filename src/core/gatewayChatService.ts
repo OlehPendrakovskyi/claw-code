@@ -46,7 +46,7 @@ import type { ProtocolRange, ProtocolSetting } from './gatewayProtocol/registry'
 import { handshakeAdapter, isAdapter, negotiatedAdapter, resolveProtocolSetting } from './gatewayProtocol/registry';
 import { applyAborted, applyDelta, applyFinal, BoundedSet, newRunText } from './gatewayRunText';
 import type { RunText, TextUpdate } from './gatewayRunText';
-import { OperatorPromptBoard } from './operatorPrompts';
+import { OperatorPromptBoard, promptKey } from './operatorPrompts';
 import type { PromptListener } from './operatorPrompts';
 import { TruncatedRowCompleter } from './truncatedRows';
 
@@ -697,37 +697,38 @@ export class GatewayChatService {
     return connection ? connection.adapter.promptAccess(connection.accepted, connection.deviceId !== null) : NO_PROMPT_ACCESS;
   }
 
-  /** Answer a pending approval; one settled meanwhile elsewhere is withdrawn instead. */
-  async resolveApproval(id: string, decision: ApprovalDecision): Promise<void> {
-    const prompt = this.prompts.get(id);
+  /** Answer a pending approval by its prompt key; one settled meanwhile elsewhere is withdrawn instead. */
+  async resolveApproval(key: string, decision: ApprovalDecision): Promise<void> {
+    const prompt = this.prompts.get(key);
     if (prompt?.kind !== 'approval' || !prompt.decisions.includes(decision)) {
       throw new Error(PROMPT_GONE_MESSAGE);
     }
-    await this.settlePrompt(id, decision, (adapter) => adapter.approvalResolveRequest({ id, subject: prompt.subject, decision }));
+    await this.settlePrompt(key, decision, (adapter) => adapter.approvalResolveRequest({ id: prompt.id, subject: prompt.subject, decision }));
   }
 
   /** Answer every question of a pending question prompt at once, or decline it with null. */
-  async answerQuestion(id: string, answers: QuestionAnswers | null): Promise<void> {
-    if (this.prompts.get(id)?.kind !== 'question') {
+  async answerQuestion(key: string, answers: QuestionAnswers | null): Promise<void> {
+    const prompt = this.prompts.get(key);
+    if (prompt?.kind !== 'question') {
       throw new Error(PROMPT_GONE_MESSAGE);
     }
-    await this.settlePrompt(id, answers ? 'answered' : 'cancelled', (adapter) => adapter.questionReplyRequest({ id, answers }));
+    await this.settlePrompt(key, answers ? 'answered' : 'cancelled', (adapter) => adapter.questionReplyRequest({ id: prompt.id, answers }));
   }
 
   /** An answer whose reply is lost (drop, timeout) may still have been applied: the next backfill settles it.
    *  One never sent or refused is forgotten, so no later settle reads it as given here. */
-  private async settlePrompt(id: string, outcome: PromptOutcome, build: (adapter: GatewayProtocolAdapter) => WireRequest): Promise<void> {
-    this.prompts.noteSubmission(id, outcome);
+  private async settlePrompt(key: string, outcome: PromptOutcome, build: (adapter: GatewayProtocolAdapter) => WireRequest): Promise<void> {
+    this.prompts.noteSubmission(key, outcome);
     try {
       await this.request(build);
-      this.prompts.settle(id, outcome);
+      this.prompts.settle(key, outcome);
     } catch (err) {
       if (err instanceof RpcRejectedError && (this.connection?.adapter ?? this.offeredAdapter()).isStalePromptFailure(err.failure)) {
-        this.prompts.settle(id, 'withdrawn');
+        this.prompts.settle(key, 'withdrawn');
         return;
       }
       if (err instanceof RpcRejectedError || neverSent(err)) {
-        this.prompts.forgetSubmission(id);
+        this.prompts.forgetSubmission(key);
         throw err;
       }
       throw new PromptAnswerUnconfirmedError(errorMessage(err));
@@ -755,23 +756,23 @@ export class GatewayChatService {
     if (!access.approvals) {
       this.logger.info('approvals are not visible to this connection (operator.approvals and a device identity needed): shown as notices only');
     }
-    const reads = adapter.pendingPromptRequests(access);
+    const reads = adapter.pendingPromptRequests(access, accepted);
     if (reads.length === 0) {
       return;
     }
     const backfill = this.prompts.beginBackfill();
     const lists = reads.map((list) =>
       this.request(() => list.request)
-        .then(({ adapter: answered, payload }) => ({ kind: list.kind, prompts: answered.parsePendingPrompts(list, payload) }))
+        .then(({ adapter: answered, payload }) => ({ source: list.source, prompts: answered.parsePendingPrompts(list, payload) }))
         .catch((err: Error) => {
           this.logger.warn(`${list.request.method} failed ${err.message}`);
-          return { kind: list.kind, prompts: null };
+          return { source: list.source, prompts: null };
         })
     );
+    // Only a source whose list was read settles what it no longer lists; the others keep theirs.
     void Promise.all(lists).then((results) => {
-      const failed = new Set(results.filter((result) => result.prompts === null).map((result) => result.kind));
       const listed = results.flatMap((result) => result.prompts ?? []).map((prompt) => this.locatePrompt(prompt));
-      this.prompts.finishBackfill(backfill, listed, PROMPT_KINDS.filter((kind) => !failed.has(kind) && results.some((result) => result.kind === kind)));
+      this.prompts.finishBackfill(backfill, listed, results.filter((result) => result.prompts !== null).map((result) => result.source));
     });
   }
 
@@ -1954,7 +1955,7 @@ export class GatewayChatService {
         this.prompts.add(this.locatePrompt(event.prompt));
         return;
       case 'promptResolved':
-        this.prompts.settle(event.id, event.outcome);
+        this.prompts.settle(promptKey(event.source, event.id), event.outcome);
         return;
       case 'keepalive':
       case 'challenge':
