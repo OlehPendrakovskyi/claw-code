@@ -19,7 +19,8 @@ export async function readOpenClawConfig(
         }
         return { config: JSON.parse(contents) };
     } catch (error) {
-        if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+        // workspace.fs rejects with a FileSystemError coded 'FileNotFound', not an errno.
+        if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
             return { config: null, error: 'Config file not found.' };
         }
         return { config: null, error: 'Unable to read config file.' };

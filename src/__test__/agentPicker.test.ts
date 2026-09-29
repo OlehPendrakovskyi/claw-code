@@ -97,6 +97,19 @@ describe('agentPicker', () => {
             expect(items.map((item) => item.updatedAt)).toEqual([new Date(T0 + 60_000).toISOString(), null]);
         });
 
+        it('keeps every session when one timestamp is outside the Date range', () => {
+            const items = buildAgentSessionItems(sessionsFromWire([
+                { key: 'agent:huge:main', updatedAt: 1e300 },
+                { key: 'agent:edge:main', updatedAt: 8.64e15 + 1 },
+                { key: 'agent:ok:main', updatedAt: T0 },
+            ]));
+            expect(items.map((item) => [item.sessionKey, item.updatedAt])).toEqual([
+                ['agent:ok:main', new Date(T0).toISOString()],
+                ['agent:huge:main', null],
+                ['agent:edge:main', null],
+            ]);
+        });
+
         it('marks non-materialized placements cold', () => {
             const items = buildAgentSessionItems(sessionsFromWire([
                 { key: 'agent:local:main', placement: { state: 'local' } },

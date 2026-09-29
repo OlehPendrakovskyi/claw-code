@@ -41,13 +41,24 @@ export function isMainAgentSessionKey(key: unknown): key is string {
   return parts.length === 3 && parts[0] === 'agent' && parts[1] !== '' && parts[2] === DEFAULT_MAIN_KEY;
 }
 
+/** ECMAScript Date's range: ±8.64e15 ms around the epoch; beyond it toISOString throws. */
+const MAX_DATE_MS = 8.64e15;
+
+/** An untrusted epoch-ms value as an ISO string, or null when it can't be a Date. */
+function toIsoTimestamp(ms: number | null | undefined): string | null {
+  if (isNil(ms) || !Number.isFinite(ms) || Math.abs(ms) > MAX_DATE_MS) {
+    return null;
+  }
+  return new Date(ms).toISOString();
+}
+
 function toItem(session: SessionSummary): AgentSessionItem {
   return {
     sessionKey: session.key,
     label: session.label ?? session.agentId ?? session.key,
     agentId: session.agentId,
     hasActiveRun: session.hasActiveRun,
-    updatedAt: isNil(session.lastActivityMs) || !isFinite(session.lastActivityMs) ? null : new Date(session.lastActivityMs).toISOString(),
+    updatedAt: toIsoTimestamp(session.lastActivityMs),
     cold: session.cold,
   };
 }

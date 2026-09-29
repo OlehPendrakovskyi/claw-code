@@ -146,10 +146,16 @@ describe('readOpenClawConfig', () => {
     });
 
     it('reports missing config files', async () => {
-        readFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+        readFile.mockRejectedValueOnce(vscode.FileSystemError.FileNotFound('/tmp/openclaw.json'));
         const result = await readOpenClawConfig('/tmp/openclaw.json');
         expect(result.config).toBeNull();
         expect(result.error).toBe('Config file not found.');
+    });
+
+    it('does not report a permission failure as a missing file', async () => {
+        readFile.mockRejectedValueOnce(vscode.FileSystemError.NoPermissions('/tmp/openclaw.json'));
+        const result = await readOpenClawConfig('/tmp/openclaw.json');
+        expect(result.error).toBe('Unable to read config file.');
     });
 
     it('reports other read failures', async () => {
@@ -204,7 +210,7 @@ describe('loadOpenClawConfigRecord', () => {
     });
 
     it('propagates read errors', async () => {
-        readFile.mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+        readFile.mockRejectedValueOnce(vscode.FileSystemError.FileNotFound());
         const result = await loadOpenClawConfigRecord();
         expect(result.config).toBeNull();
         expect(result.error).toBe('Config file not found.');

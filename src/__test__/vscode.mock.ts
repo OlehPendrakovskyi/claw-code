@@ -192,3 +192,18 @@ export class TabInputText {
         this.uri = uri;
     }
 }
+
+/** Mirrors vscode.FileSystemError: `code` is the factory name, e.g. 'FileNotFound'. */
+export class FileSystemError extends Error {
+    readonly code: string;
+    private constructor(message: string, code: string) {
+        super(message);
+        this.code = code;
+    }
+    static FileNotFound(target?: unknown) {
+        return new FileSystemError(`File not found: ${String(target ?? '')}`, 'FileNotFound');
+    }
+    static NoPermissions(target?: unknown) {
+        return new FileSystemError(`No permissions: ${String(target ?? '')}`, 'NoPermissions');
+    }
+}
