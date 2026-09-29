@@ -48,6 +48,11 @@ export function applyFinal(run: RunText, finalText: string | null): TextUpdate {
   return finalText ? advance(run, finalText) : NO_UPDATE;
 }
 
+/** The text the transcript settled a run on, shown whatever was streamed (an empty one clears it). */
+export function applySettled(run: RunText, text: string): TextUpdate {
+  return advance(run, text);
+}
+
 /** An aborted run keeps what was shown; only a clean extension is added. */
 export function applyAborted(run: RunText, text: string | null): TextUpdate {
   return text !== null && text.startsWith(run.rendered) ? advance(run, text) : NO_UPDATE;

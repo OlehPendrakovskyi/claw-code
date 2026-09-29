@@ -44,7 +44,7 @@ import type {
 import { GatewayConnectError } from './gatewayProtocol/model';
 import type { ProtocolRange, ProtocolSetting } from './gatewayProtocol/registry';
 import { handshakeAdapter, isAdapter, negotiatedAdapter, resolveProtocolSetting } from './gatewayProtocol/registry';
-import { applyAborted, applyDelta, applyFinal, BoundedSet, newRunText } from './gatewayRunText';
+import { applyAborted, applyDelta, applyFinal, applySettled, BoundedSet, newRunText } from './gatewayRunText';
 import type { RunText, TextUpdate } from './gatewayRunText';
 import { OperatorPromptBoard, promptKey } from './operatorPrompts';
 import type { PromptListener } from './operatorPrompts';
@@ -200,7 +200,8 @@ type QueuedAbort = {
 type AbortOutcome = 'stopped' | 'refused' | 'lost';
 
 /** A run seen streaming, and the connection it was last heard on. */
-type LiveRun = RunText & { heardOn: number | null };
+/** `streamedLive`: text came from `chat` deltas, which the gateway may never keep (a transcript row is kept text). */
+type LiveRun = RunText & { heardOn: number | null; streamedLive: boolean };
 
 /** What a catch-up read started from. */
 type CatchUpBaseline = { lastSeq: number; runs: ReadonlyMap<string, number> };
@@ -236,6 +237,9 @@ const MAX_OLDER_HISTORY_PAGES = 4;
 const SEND_RETRY_DELAY_MS = 1000;
 /** Longest a handshake waits for SecretStorage before connecting without a device identity. */
 const DEVICE_LOAD_TIMEOUT_MS = 5000;
+
+/** Longest a final without a message waits for the transcript to say what the reply was. */
+const SETTLE_FROM_HISTORY_TIMEOUT_MS = 10_000;
 /** A pending approval is retried at this pace; every attempt keeps the gateway's request alive. */
 const PAIRING_RETRY_DELAY_MS = 5000;
 /** How long an unanswered pairing request is retried before the client stops and says so. */
@@ -1985,16 +1989,72 @@ export class GatewayChatService {
       if (state.unclaimed.length > UNCLAIMED_EVENT_LIMIT) state.unclaimed.shift();
       return;
     }
+    if (event.kind === 'runFinal' && event.text === null && this.supports('history') && (state.rowsInFlight || this.needsSettling(state, event.runId))) {
+      // Queued on arrival, so the session's later events wait until the transcript answered.
+      this.queueRows(state, (state.rowsInFlight ?? Promise.resolve()).then(() => this.finishFromHistory(state, event)));
+      return;
+    }
     this.afterQueuedRows(state, () => {
       if (!state.finishedRuns.has(event.runId)) this.applyRunEvent(state, event);
     });
+  }
+
+  /** A final without a message after streamed text: like OpenClaw's own clients, the transcript says
+   *  what the reply was. Its last assistant row of the run replaces the streamed text; none clears it
+   *  (the partial text was never kept). When the transcript cannot tell, the streamed text stays. */
+  private async finishFromHistory(state: SessionState, event: Extract<RunEvent, { kind: 'runFinal' }>): Promise<void> {
+    const run = state.liveRuns.get(event.runId);
+    if (state.finishedRuns.has(event.runId)) {
+      return;
+    }
+    if (!run || !this.needsSettling(state, event.runId)) {
+      this.applyRunEvent(state, event);
+      return;
+    }
+    const settled = await this.settledRunText(state.key, event.runId);
+    if (state.finishedRuns.has(event.runId)) {
+      return;
+    }
+    if (settled === null) {
+      this.applyRunEvent(state, event);
+      return;
+    }
+    this.deliver(this.runSinks(state, event.runId), [...updateEvent(applySettled(run, settled)), ...usageEvent(event.usage)]);
+    state.streamedRuns.add(event.runId);
+    this.finishRun(state, event.runId);
+  }
+
+  /** Whether the run shows live-streamed text that a final without a message leaves unconfirmed. */
+  private needsSettling(state: SessionState, runId: string): boolean {
+    const run = state.liveRuns.get(runId);
+    return run !== undefined && run.streamedLive && run.rendered !== '';
+  }
+
+  /** The text the transcript holds for a run: its last assistant row with text, '' when it has none;
+   *  null when the transcript could not be read in time. */
+  private async settledRunText(sessionKey: string, runId: string): Promise<string | null> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), SETTLE_FROM_HISTORY_TIMEOUT_MS);
+    });
+    const read = (async (): Promise<string | null> => {
+      const history = await this.readHistory(sessionKey);
+      if (!history || 'reset' in history) return null;
+      const row = [...history.messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId && message.text);
+      return row ? (await this.rowCompleter.complete(sessionKey, row)).text : '';
+    })().catch(() => null);
+    try {
+      return await Promise.race([read, timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** The run's text state; `heardOn` null when no event proved the run live on this socket yet. */
   private liveRun(state: SessionState, runId: string, heardOn: number | null = this.connectionCount): LiveRun {
     let run = state.liveRuns.get(runId);
     if (!run) {
-      run = { ...newRunText(), heardOn };
+      run = { ...newRunText(), heardOn, streamedLive: false };
       state.liveRuns.set(runId, run);
       if (state.liveRuns.size > LIVE_RUN_LIMIT) {
         const [stalest] = state.liveRuns.keys();
@@ -2026,7 +2086,10 @@ export class GatewayChatService {
         return;
       case 'runDelta': {
         const update = applyDelta(run, event);
-        if (update?.text) state.streamedRuns.add(event.runId);
+        if (update?.text) {
+          state.streamedRuns.add(event.runId);
+          run.streamedLive = true;
+        }
         this.deliver(sinks, update ? updateEvent(update) : []);
         return;
       }

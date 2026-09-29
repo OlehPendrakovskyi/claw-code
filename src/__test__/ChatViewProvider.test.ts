@@ -255,6 +255,23 @@ describe('ChatViewProvider', () => {
             await flush();
             expect(assistantRows(sidebar)).toEqual(['before the tool', 'after the tool']);
         });
+
+        it('leaves no reply row when the text is replaced with nothing, streaming or already committed', async () => {
+            const { sidebar } = makeProvider();
+            const run = await runSink(sidebar);
+            run({ type: 'text', text: 'never kept' });
+            run({ type: 'textReplace', text: '' });
+            run({ type: 'done' });
+            await flush();
+            expect(assistantRows(sidebar)).toEqual([]);
+            const next = await runSink(sidebar);
+            next({ type: 'text', text: 'shown' });
+            next({ type: 'done' });
+            await flush();
+            next({ type: 'textReplace', text: '' });
+            await flush();
+            expect(assistantRows(sidebar)).toEqual([]);
+        });
     });
 
     describe('tool calls', () => {

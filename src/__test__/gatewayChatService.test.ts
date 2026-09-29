@@ -1215,6 +1215,69 @@ describe('GatewayChatService', () => {
             ]);
         });
 
+        describe('a final without a message after streamed text', () => {
+            async function streamedThenFinal(h: Harness): Promise<{ run: Send; runId: string }> {
+                const run = send(h);
+                const runId = await accepted(h);
+                receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Partial repl', 'Partial repl'));
+                receive(h, 'chat', payloads.final({ runId, seq: 2 }));
+                await settle();
+                return { run, runId };
+            }
+
+            it('shows the reply the transcript kept, like OpenClaw\'s own clients', async () => {
+                const h = await connected();
+                const { run, runId } = await streamedThenFinal(h);
+                expect(count(run.events, 'done')).toBe(0);
+                h.socket().reply('chat.history', payloads.historyTail([
+                    { role: 'user', text: 'hello', seq: 1, runId },
+                    { role: 'assistant', text: 'Partial reply, kept.', seq: 2, runId },
+                ]));
+                await settle();
+                expect(run.events).toEqual([{ type: 'text', text: 'Partial repl' }, { type: 'text', text: 'y, kept.' }, { type: 'done' }]);
+            });
+
+            it('clears the streamed text when the transcript kept no reply for the run', async () => {
+                const h = await connected();
+                const { run } = await streamedThenFinal(h);
+                h.socket().reply('chat.history', payloads.historyTail([{ role: 'assistant', text: 'an older reply', seq: 1, runId: 'older' }]));
+                await settle();
+                expect(run.events).toEqual([{ type: 'text', text: 'Partial repl' }, { type: 'textReplace', text: '' }, { type: 'done' }]);
+            });
+
+            it('keeps the streamed text when the transcript cannot be read', async () => {
+                const h = await connected();
+                const { run } = await streamedThenFinal(h);
+                h.socket().replyError('chat.history', { code: 'UNAVAILABLE', message: 'busy' });
+                await settle();
+                expect(run.events).toEqual([{ type: 'text', text: 'Partial repl' }, { type: 'done' }]);
+            });
+
+            it('holds the session\'s later events until the transcript answered', async () => {
+                const h = await connected();
+                const seen: ChatEvent[] = [];
+                h.svc.resumeSession(CANONICAL_MAIN, (event) => seen.push(event), { historyRendered: true });
+                await settle();
+                const { runId } = await streamedThenFinal(h);
+                receive(h, 'chat', payloads.delta({ runId: 'next', seq: 1 }, 'NEXT', 'NEXT'));
+                await settle();
+                expect(seen.map((event) => event.type)).toEqual(['text']);
+                h.socket().reply('chat.history', payloads.historyTail([{ role: 'assistant', text: 'Partial reply', seq: 2, runId }]));
+                await settle();
+                expect(seen).toEqual([{ type: 'text', text: 'Partial repl' }, { type: 'text', text: 'y' }, { type: 'done' }, { type: 'text', text: 'NEXT' }]);
+            });
+
+            it('asks nothing when the run showed no live-streamed text', async () => {
+                const h = await connected();
+                const run = send(h);
+                const runId = await accepted(h);
+                const reads = h.socket().requests().filter((request) => request.method === 'chat.history').length;
+                receive(h, 'chat', payloads.final({ runId, seq: 1 }));
+                expect(run.events).toEqual([{ type: 'done' }]);
+                expect(h.socket().requests().filter((request) => request.method === 'chat.history')).toHaveLength(reads);
+            });
+        });
+
         it('keeps only the latest events of unknown runs while a send is unacknowledged', async () => {
             const h = await connected();
             const seen: ChatEvent[] = [];

@@ -1165,6 +1165,12 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
      *  was already committed as the thread's last row, that row is; otherwise it starts anew. */
     private replaceReplyText(thread: ChatThreadState, text: string): void {
         const last = thread.messages[thread.messages.length - 1];
+        if (!thread.pendingAssistantText && last?.role === 'assistant' && !text) {
+            // The gateway kept no reply for the run: the row goes, as OpenClaw's own clients drop it.
+            thread.messages.pop();
+            this.emitState();
+            return;
+        }
         if (!thread.pendingAssistantText && last?.role === 'assistant') {
             last.content = text;
             last.html = undefined;
