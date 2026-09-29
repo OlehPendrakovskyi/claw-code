@@ -242,8 +242,8 @@
         },
         "openclaw.gateway.token": {
           "type": "string",
-          "scope": "language-overridable",
-          "description": "Legacy plaintext gateway auth token (migrated into SecretStorage on activation)",
+          "scope": "application",
+          "description": "Legacy plaintext gateway auth token (migrated into SecretStorage on activation). User settings only: a workspace cannot supply the token.",
           "deprecationMessage": "Legacy plaintext token setting: use the OpenClaw: Connect to Gateway command instead. The extension migrates it into SecretStorage and clears it from settings.json."
         },
         "openclaw.gateway.url": {

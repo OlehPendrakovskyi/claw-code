@@ -186,6 +186,14 @@ describe('GatewayConfigService', () => {
     });
 
     describe('migrateLegacyGatewayToken', () => {
+        beforeEach(() => {
+            (vscode.workspace as { isTrusted?: boolean }).isTrusted = true;
+        });
+
+        afterEach(() => {
+            delete (vscode.workspace as { isTrusted?: boolean }).isTrusted;
+        });
+
         it('returns noop and touches nothing when no legacy value exists', async () => {
             const model = new SettingsModel();
             useSettings(model, [folderA]);
@@ -197,7 +205,7 @@ describe('GatewayConfigService', () => {
             expect(model.updates).toEqual([]);
         });
 
-        it('stores the most specific plain value and clears every level that held one', async () => {
+        it('stores only a user-level value and clears every level that held one', async () => {
             const model = new SettingsModel()
                 .set('global', 'global-token')
                 .set('folder', 'folder-token', { folder: folderA.toString() });
@@ -206,15 +214,57 @@ describe('GatewayConfigService', () => {
 
             await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
 
-            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'folder-token');
+            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'global-token');
             expect(model.has('global')).toBe(false);
             expect(model.has('folder', { folder: folderA.toString() })).toBe(false);
+        });
+
+        it('never adopts a workspace token, removes it once trusted and says how to set one', async () => {
+            const model = new SettingsModel().set('workspace', 'repo-token');
+            useSettings(model);
+            const store = secrets();
+
+            await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
+
+            expect(store.store).not.toHaveBeenCalled();
+            expect(model.has('workspace')).toBe(false);
+            expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining('a workspace cannot supply the token'));
+        });
+
+        it('leaves workspace settings of an untrusted workspace untouched, and still migrates the user one', async () => {
+            (vscode.workspace as { isTrusted?: boolean }).isTrusted = false;
+            const model = new SettingsModel()
+                .set('global', 'user-token')
+                .set('workspace', 'repo-token')
+                .set('folder', 'repo-folder-token', { folder: folderA.toString(), languageId: 'python' });
+            useSettings(model, [folderA]);
+            const store = secrets();
+
+            await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
+
+            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'user-token');
+            expect(model.has('workspace')).toBe(true);
+            expect(model.has('folder', { folder: folderA.toString(), languageId: 'python' })).toBe(true);
+            expect(model.updates.map((update) => update.target)).toEqual([vscode.ConfigurationTarget.Global]);
+        });
+
+        it('is a no-op for an untrusted workspace whose settings alone hold a token', async () => {
+            (vscode.workspace as { isTrusted?: boolean }).isTrusted = false;
+            const model = new SettingsModel().set('workspace', 'repo-token');
+            useSettings(model);
+            const store = secrets();
+
+            await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('noop');
+
+            expect(store.store).not.toHaveBeenCalled();
+            expect(model.updates).toEqual([]);
         });
 
         it('discovers language overrides through inspect().languageIds and prefers them over plain values', async () => {
             // A profile's settings.json lives outside any fixed path; the
             // Configuration API is the only source that sees it.
             const model = new SettingsModel()
+                .set('global', 'profile-token')
                 .set('workspace', 'workspace-token')
                 .set('global', 'profile-language-token', { languageId: 'typescript' });
             useSettings(model);
@@ -224,6 +274,7 @@ describe('GatewayConfigService', () => {
 
             expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'profile-language-token');
             expect(model.has('global', { languageId: 'typescript' })).toBe(false);
+            expect(model.has('global')).toBe(false);
             expect(model.has('workspace')).toBe(false);
             expect(model.updates).toContainEqual({
                 target: vscode.ConfigurationTarget.Global,
@@ -241,7 +292,7 @@ describe('GatewayConfigService', () => {
 
             await expect(migrateLegacyGatewayToken(makeContext(store))).resolves.toBe('completed');
 
-            expect(store.store).toHaveBeenCalledWith('openclaw.gateway.token', 'b-python-token');
+            expect(store.store).not.toHaveBeenCalled();
             expect(model.has('folder', { folder: folderB.toString() })).toBe(false);
             expect(model.has('folder', { folder: folderB.toString(), languageId: 'python' })).toBe(false);
         });
@@ -335,7 +386,7 @@ describe('GatewayConfigService', () => {
         });
 
         it('reports incomplete on a failed update and warns only once per session', async () => {
-            const model = new SettingsModel().set('workspace', 'legacy-token');
+            const model = new SettingsModel().set('global', 'legacy-token');
             model.failUpdates = true;
             // A fresh module instance: the once-per-session flag must not
             // leak in from, or out to, other tests.

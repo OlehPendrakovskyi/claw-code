@@ -82,6 +82,7 @@ export const workspace = {
             .filter(folder => uri.fsPath === folder.uri.fsPath || uri.fsPath.startsWith(`${folder.uri.fsPath}/`))
             .sort((a, b) => b.uri.fsPath.length - a.uri.fsPath.length)[0]),
     onDidChangeConfiguration: jest.fn(() => createDisposable()),
+    onDidGrantWorkspaceTrust: jest.fn(() => createDisposable()),
     fs: {
         readFile: jest.fn(),
         writeFile: jest.fn(),

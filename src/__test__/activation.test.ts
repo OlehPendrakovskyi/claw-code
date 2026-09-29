@@ -192,6 +192,14 @@ describe('extension activation', () => {
             expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
         });
 
+        it('runs again once the workspace is trusted, to remove workspace plaintext it left alone', async () => {
+            const { context } = makeContext();
+            await activate(context);
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
+            for (const [listener] of jest.mocked(vscode.workspace.onDidGrantWorkspaceTrust).mock.calls) (listener as () => void)();
+            expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
+        });
+
         it('keeps activating when the migration rejects', async () => {
             jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
             const { context } = makeContext();

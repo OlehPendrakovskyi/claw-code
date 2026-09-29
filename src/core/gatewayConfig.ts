@@ -215,13 +215,16 @@ export class GatewayConfigService {
   private static async runLegacyTokenMigration(
     context: vscode.ExtensionContext
   ): Promise<LegacyTokenMigrationResult> {
-    const sites = GatewayConfigService.findLegacyTokenSites();
+    const sites = GatewayConfigService.managedLegacyTokenSites();
     if (sites.length === 0) {
       return 'noop';
     }
+    // Workspace settings arrive with the repository, so only a user-level value is ever adopted.
     const legacyToken = sites
-      .map((site) => (typeof site.value === 'string' ? site.value.trim() : ''))
+      .filter((site) => site.level === 'global')
+      .map((site) => legacyTokenValue(site.value))
       .find((value) => value !== '');
+    const ignoredWorkspaceToken = sites.some((site) => site.level !== 'global' && legacyTokenValue(site.value) !== '');
     let storedToken: string;
     try {
       storedToken = await GatewayConfigService.getGatewayToken(context.secrets);
@@ -251,8 +254,13 @@ export class GatewayConfigService {
     // Only a fresh inspection proves the plaintext is gone: a failed update,
     // or a location the Configuration API cannot write (remote user settings,
     // policy), leaves the value in place without throwing.
-    if (GatewayConfigService.findLegacyTokenSites().length === 0) {
-      if (ignoredDifferentToken) {
+    if (GatewayConfigService.managedLegacyTokenSites().length === 0) {
+      if (ignoredWorkspaceToken) {
+        void vscode.window.showInformationMessage(
+          'A gateway token found in workspace settings was removed and not used: a workspace cannot supply the token. ' +
+          'Run "OpenClaw: Connect to Gateway" to set it.'
+        );
+      } else if (ignoredDifferentToken) {
         void vscode.window.showInformationMessage(
           'A gateway token found in settings was removed without replacing the saved one. ' +
           'Run "OpenClaw: Connect to Gateway" to change the token.'
@@ -273,6 +281,12 @@ export class GatewayConfigService {
     }
     GatewayConfigService.cleanupWarningShown = true;
     void vscode.window.showWarningMessage(message);
+  }
+
+  /** The locations migration may touch: user settings always, workspace ones only once the
+   *  workspace is trusted, as writing them edits the repository's files. */
+  private static managedLegacyTokenSites(): LegacyTokenSite[] {
+    return GatewayConfigService.findLegacyTokenSites().filter((site) => site.level === 'global' || vscode.workspace.isTrusted);
   }
 
   /**
@@ -329,6 +343,7 @@ export class GatewayConfigService {
     const languagePart = languageId ? ` [${languageId}]` : '';
     return {
       id: `${level}${folderPart}${languagePart}`,
+      level,
       config,
       target: SETTINGS_LEVEL_TARGET[level],
       overrideInLanguage: languageId !== undefined,
@@ -339,6 +354,10 @@ export class GatewayConfigService {
 }
 
 type SettingsLevel = 'global' | 'workspace' | 'folder';
+
+function legacyTokenValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 const SETTINGS_LEVEL_TARGET: Record<SettingsLevel, vscode.ConfigurationTarget> = {
   global: vscode.ConfigurationTarget.Global,
@@ -361,6 +380,7 @@ const SETTINGS_LEVEL_SPECIFICITY: Record<SettingsLevel, number> = {
 type LegacyTokenSite = {
   /** Location label, unique per location; safe to log (never the value). */
   id: string;
+  level: SettingsLevel;
   config: vscode.WorkspaceConfiguration;
   target: vscode.ConfigurationTarget;
   overrideInLanguage: boolean;

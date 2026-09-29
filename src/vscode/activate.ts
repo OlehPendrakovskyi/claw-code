@@ -93,7 +93,9 @@ export async function activate(context: vscode.ExtensionContext) {
             if (event.affectsConfiguration('openclaw.gateway.token')) {
                 void runTokenMigration();
             }
-        })
+        }),
+        // Workspace plaintext is left alone until trust, then removed (never adopted).
+        vscode.workspace.onDidGrantWorkspaceTrust(() => void runTokenMigration())
     );
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
