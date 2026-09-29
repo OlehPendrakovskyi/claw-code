@@ -3,6 +3,7 @@ import {
   DEVICE_IDENTITY_SECRET_KEY,
   DEVICE_TOKENS_SECRET_KEY,
   SecretDeviceCredentialStore,
+  deviceHostKind,
   getGatewaySettings,
   getGatewayToken,
   isLoopbackGatewayUrl,
@@ -110,6 +111,8 @@ class SettingsModel {
 /** SecretStorage that, like VS Code's, reports every change after it happened. */
 class MemorySecrets implements vscode.SecretStorage {
     readonly values = new Map<string, string>();
+    /** Calls that never answer, once each, like a keyring waiting on an unlock prompt. */
+    readonly hangOnce = new Set<'get' | 'delete'>();
     private readonly listeners = new Set<(event: vscode.SecretStorageChangeEvent) => void>();
 
     readonly onDidChange: vscode.Event<vscode.SecretStorageChangeEvent> = (listener) => {
@@ -121,8 +124,9 @@ class MemorySecrets implements vscode.SecretStorage {
         return [...this.values.keys()];
     }
 
-    async get(key: string): Promise<string | undefined> {
-        return this.values.get(key);
+    get(key: string): Promise<string | undefined> {
+        if (this.hangOnce.delete('get')) return new Promise(() => undefined);
+        return Promise.resolve(this.values.get(key));
     }
 
     async store(key: string, value: string): Promise<void> {
@@ -130,9 +134,11 @@ class MemorySecrets implements vscode.SecretStorage {
         this.changed(key);
     }
 
-    async delete(key: string): Promise<void> {
+    delete(key: string): Promise<void> {
+        if (this.hangOnce.delete('delete')) return new Promise(() => undefined);
         this.values.delete(key);
         this.changed(key);
+        return Promise.resolve();
     }
 
     private changed(key: string): void {
@@ -523,49 +529,83 @@ describe('GatewayConfigService', () => {
         });
     });
     describe('device credentials', () => {
+        const identityKey = (hostKind = deviceHostKind()) => `${DEVICE_IDENTITY_SECRET_KEY}.${hostKind}`;
+        const tokensKey = (hostKind = deviceHostKind()) => `${DEVICE_TOKENS_SECRET_KEY}.${hostKind}`;
         const token = (deviceId: string, value = 'dtok') => ({ deviceId, role: 'operator', token: value, scopes: ['operator.read'] });
+
+        afterEach(() => {
+            jest.useRealTimers();
+            (vscode.env as { remoteName?: string }).remoteName = undefined;
+        });
 
         it('creates the identity once and persists only its private key', async () => {
             const vault = new MemorySecrets();
             const store = new SecretDeviceCredentialStore(vault);
             const [first, second] = await Promise.all([store.loadIdentity(), store.loadIdentity()]);
             expect(second).toBe(first);
-            const persisted = vault.values.get(DEVICE_IDENTITY_SECRET_KEY) ?? '';
+            const persisted = vault.values.get(identityKey()) ?? '';
             expect(persisted).toMatch(/^-----BEGIN PRIVATE KEY-----/);
             expect(importDeviceIdentity(persisted)?.deviceId).toBe(first.deviceId);
             const reopened = await new SecretDeviceCredentialStore(vault).loadIdentity();
             expect(reopened.deviceId).toBe(first.deviceId);
         });
 
+        it('keys the identity by host kind, since remote windows share the local keychain', async () => {
+            expect(deviceHostKind()).toBe(`local-${process.platform}`);
+            (vscode.env as { remoteName?: string }).remoteName = 'wsl';
+            expect(deviceHostKind()).toBe(`wsl-${process.platform}`);
+            const vault = new MemorySecrets();
+            const windows = await new SecretDeviceCredentialStore(vault, 'local-win32').loadIdentity();
+            const wsl = new SecretDeviceCredentialStore(vault, 'wsl-linux');
+            const wslIdentity = await wsl.loadIdentity();
+            expect(wslIdentity.deviceId).not.toBe(windows.deviceId);
+            await wsl.storeToken('ws://a:1', token(wslIdentity.deviceId));
+            expect(await new SecretDeviceCredentialStore(vault, 'local-win32').loadToken('ws://a:1', wslIdentity.deviceId)).toBeNull();
+            await resetDeviceIdentity(vault, 'wsl-linux');
+            expect(vault.values.has(identityKey('local-win32'))).toBe(true);
+            expect(vault.values.has(identityKey('wsl-linux'))).toBe(false);
+        });
+
         it('replaces a stored key it cannot read', async () => {
             const vault = new MemorySecrets();
-            vault.values.set(DEVICE_IDENTITY_SECRET_KEY, 'garbage');
+            vault.values.set(identityKey(), 'garbage');
             const identity = await new SecretDeviceCredentialStore(vault).loadIdentity();
-            expect(importDeviceIdentity(vault.values.get(DEVICE_IDENTITY_SECRET_KEY) ?? '')?.deviceId).toBe(identity.deviceId);
+            expect(importDeviceIdentity(vault.values.get(identityKey()) ?? '')?.deviceId).toBe(identity.deviceId);
         });
 
         it('keeps one token per gateway origin and device, and clears only its own', async () => {
             const vault = new MemorySecrets();
             const store = new SecretDeviceCredentialStore(vault);
-            await Promise.all([store.storeToken('ws://a:1', token('d1', 'ta')), store.storeToken('wss://b', token('d1', 'tb'))]);
-            expect(await store.loadToken('ws://a:1', 'd1')).toEqual(token('d1', 'ta'));
-            expect(await store.loadToken('ws://a:1', 'd2')).toBeNull();
-            expect(await store.loadToken('ws://other:1', 'd1')).toBeNull();
-            await store.clearToken('wss://b', 'd2');
-            expect(await store.loadToken('wss://b', 'd1')).toEqual(token('d1', 'tb'));
-            await store.clearToken('wss://b', 'd1');
-            expect(await store.loadToken('wss://b', 'd1')).toBeNull();
-            expect(await store.loadToken('ws://a:1', 'd1')).toEqual(token('d1', 'ta'));
+            const { deviceId } = await store.loadIdentity();
+            await Promise.all([store.storeToken('ws://a:1', token(deviceId, 'ta')), store.storeToken('wss://b', token(deviceId, 'tb'))]);
+            expect(await store.loadToken('ws://a:1', deviceId)).toEqual(token(deviceId, 'ta'));
+            expect(await store.loadToken('ws://a:1', 'other')).toBeNull();
+            expect(await store.loadToken('ws://other:1', deviceId)).toBeNull();
+            await store.clearToken('wss://b', 'other');
+            expect(await store.loadToken('wss://b', deviceId)).toEqual(token(deviceId, 'tb'));
+            await store.clearToken('wss://b', deviceId);
+            expect(await store.loadToken('wss://b', deviceId)).toBeNull();
+            expect(await store.loadToken('ws://a:1', deviceId)).toEqual(token(deviceId, 'ta'));
         });
 
         it('ignores malformed token records', async () => {
             const vault = new MemorySecrets();
-            vault.values.set(DEVICE_TOKENS_SECRET_KEY, JSON.stringify({ 'ws://a:1': { deviceId: 'd1', token: 7 }, 'ws://b:1': token('d1') }));
+            vault.values.set(tokensKey(), JSON.stringify({ 'ws://a:1': { deviceId: 'd1', token: 7 }, 'ws://b:1': token('d1') }));
             const store = new SecretDeviceCredentialStore(vault);
             expect(await store.loadToken('ws://a:1', 'd1')).toBeNull();
             expect(await store.loadToken('ws://b:1', 'd1')).toEqual(token('d1'));
-            vault.values.set(DEVICE_TOKENS_SECRET_KEY, '{not json');
+            vault.values.set(tokensKey(), '{not json');
             expect(await store.loadToken('ws://b:1', 'd1')).toBeNull();
+        });
+
+        it('drops a token issued to the device a reset just replaced', async () => {
+            const vault = new MemorySecrets();
+            const store = new SecretDeviceCredentialStore(vault);
+            const old = await store.loadIdentity();
+            const reset = resetDeviceIdentity(vault);
+            await store.storeToken('wss://gw.example', token(old.deviceId, 'dtok-old-device'));
+            await reset;
+            expect(vault.values.get(tokensKey()) ?? '').not.toContain('dtok-old-device');
         });
 
         it('reports an identity reset made elsewhere, not its own writes, and then pairs a new identity', async () => {
@@ -586,6 +626,57 @@ describe('GatewayConfigService', () => {
             await drain();
             expect(changes).toHaveBeenCalledTimes(1);
             store.dispose();
+        });
+
+        it('settles every window on one new identity after a reset', async () => {
+            const vault = new MemorySecrets();
+            const windows = [0, 1, 2].map(() => {
+                let isolated: typeof import('../core/gatewayConfig') | undefined;
+                jest.isolateModules(() => {
+                    isolated = jest.requireActual('../core/gatewayConfig');
+                });
+                if (!isolated) throw new Error('module did not load');
+                return { module: isolated, store: new isolated.SecretDeviceCredentialStore(vault) };
+            });
+            const proved: string[][] = windows.map(() => []);
+            windows.forEach(({ store }, index) => {
+                store.onDidChangeIdentity(() => void store.loadIdentity().then((identity) => proved[index].push(identity.deviceId)));
+            });
+            const before = await windows[0].store.loadIdentity();
+            await Promise.all(windows.map(({ store }) => store.loadIdentity()));
+            await windows[0].module.resetDeviceIdentity(vault);
+            await new Promise((resolve) => setTimeout(resolve, 800));
+            await drain();
+            const current = importDeviceIdentity(vault.values.get(identityKey()) ?? '')?.deviceId;
+            expect(current).toBeDefined();
+            expect(current).not.toBe(before.deviceId);
+            // No window proved a key of its own in between: that would leave an orphan pairing request.
+            expect(new Set(proved.flat())).toEqual(new Set([current]));
+            for (const { store } of windows) expect((await store.loadIdentity()).deviceId).toBe(current);
+        });
+
+        it('fails a SecretStorage call that never answers instead of wedging later ones', async () => {
+            jest.useFakeTimers();
+            const vault = new MemorySecrets();
+            const store = new SecretDeviceCredentialStore(vault);
+            vault.hangOnce.add('get');
+            const hung = store.loadIdentity();
+            const hungFailed = expect(hung).rejects.toThrow(/did not answer/);
+            await jest.advanceTimersByTimeAsync(5000);
+            await hungFailed;
+            const loading = store.loadIdentity();
+            await jest.advanceTimersByTimeAsync(300);
+            const identity = await loading;
+            await expect(store.loadToken('ws://a:1', identity.deviceId)).resolves.toBeNull();
+            vault.hangOnce.add('delete');
+            const reset = resetDeviceIdentity(vault);
+            const resetFailed = expect(reset).rejects.toThrow(/did not answer/);
+            await jest.advanceTimersByTimeAsync(5000);
+            await resetFailed;
+            const storing = store.storeToken('ws://a:1', token(identity.deviceId));
+            await jest.advanceTimersByTimeAsync(0);
+            await storing;
+            expect(await store.loadToken('ws://a:1', identity.deviceId)).toEqual(token(identity.deviceId));
         });
 
         it('trusts only loopback endpoints with a stored device token', () => {

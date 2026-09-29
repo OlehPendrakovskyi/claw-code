@@ -19,11 +19,17 @@ import { isProtocolSetting } from './gatewayProtocol/registry';
 /** SecretStorage key under which the gateway token is stored. */
 export const GATEWAY_TOKEN_SECRET_KEY = 'openclaw.gateway.token';
 
-/** SecretStorage key of the device's Ed25519 private key (PKCS#8 PEM). */
+/** SecretStorage key prefix of the device's Ed25519 private key (PKCS#8 PEM), one per host kind. */
 export const DEVICE_IDENTITY_SECRET_KEY = 'openclaw.gateway.deviceIdentity';
 
-/** SecretStorage key of the device tokens gateways issued, as JSON keyed by gateway origin. */
+/** SecretStorage key prefix of the device tokens gateways issued, as JSON keyed by gateway origin. */
 export const DEVICE_TOKENS_SECRET_KEY = 'openclaw.gateway.deviceTokens';
+
+/** Longest one SecretStorage call may take before it counts as failed: a hung keyring must not wedge the queue. */
+const SECRET_CALL_TIMEOUT_MS = 5000;
+
+/** Before minting a key into an empty slot, wait up to this long: another window reacting to the same reset may mint first. */
+const IDENTITY_CREATE_JITTER_MS = 250;
 
 /** Legacy plaintext configuration key migrated into SecretStorage once.
  *  Relative to the `openclaw` configuration section (full setting id is
@@ -177,11 +183,22 @@ export class GatewayConfigService {
     return true;
   }
 
-  /** Forget the device identity and every device token, so the next connect pairs a new device. */
-  static resetDeviceIdentity(secrets: vscode.SecretStorage): Promise<void> {
+  /**
+   * Remote extension hosts keep secrets in the local window's keychain (the extension host proxies
+   * SecretStorage to MainThreadSecretState), so a local Windows window and a WSL window share one
+   * store. Each claims its own `client.platform`, which the gateway pins per device, so each host
+   * kind gets its own identity.
+   */
+  static deviceHostKind(): string {
+    return `${vscode.env.remoteName ?? 'local'}-${process.platform}`;
+  }
+
+  /** Forget this host kind's device identity and tokens, so its next connect pairs a new device. */
+  static resetDeviceIdentity(secrets: vscode.SecretStorage, hostKind = GatewayConfigService.deviceHostKind()): Promise<void> {
+    const keys = deviceSecretKeys(hostKind);
     return serializeDeviceSecrets(async () => {
-      await secrets.delete(DEVICE_TOKENS_SECRET_KEY);
-      await secrets.delete(DEVICE_IDENTITY_SECRET_KEY);
+      await secretCall(secrets.delete(keys.tokens));
+      await secretCall(secrets.delete(keys.identity));
     });
   }
 
@@ -353,6 +370,24 @@ type LegacyTokenSite = {
 
 let deviceSecretQueue: Promise<unknown> = Promise.resolve();
 
+function deviceSecretKeys(hostKind: string): { identity: string; tokens: string } {
+  return { identity: `${DEVICE_IDENTITY_SECRET_KEY}.${hostKind}`, tokens: `${DEVICE_TOKENS_SECRET_KEY}.${hostKind}` };
+}
+
+function secretCall<T>(call: Thenable<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('SecretStorage did not answer')), SECRET_CALL_TIMEOUT_MS);
+  });
+  return Promise.race([Promise.resolve(call), timeout]).finally(() => clearTimeout(timer));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+type PersistedIdentity = { pem: string; identity: DeviceIdentity };
+
 /** Device secrets are read-modify-written by every connect; one queue keeps the writes whole. */
 function serializeDeviceSecrets<T>(task: () => Promise<T>): Promise<T> {
   const run = deviceSecretQueue.then(task);
@@ -380,10 +415,11 @@ function parseDeviceTokens(json: string | undefined): DeviceTokenMap {
 }
 
 /**
- * The device identity and its tokens in SecretStorage. The identity is
- * created on first use and cached; a change made elsewhere (the reset
- * command, another window) is reported to `onDidChangeIdentity` listeners,
- * a write made here is not.
+ * One host kind's device identity and its tokens in SecretStorage. The
+ * identity is created on first use and cached; a change made elsewhere (the
+ * reset command, another window) is reported to `onDidChangeIdentity`
+ * listeners, a write made here is not. Every call is time-bounded, and only
+ * writes are queued.
  */
 export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscode.Disposable {
   private identity: Promise<DeviceIdentity> | null = null;
@@ -391,10 +427,15 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
   private knownIdentity: string | undefined;
   private readonly identityListeners = new Set<() => void>();
   private readonly subscription: vscode.Disposable;
+  private readonly keys: { identity: string; tokens: string };
 
-  constructor(private readonly secrets: vscode.SecretStorage) {
+  constructor(
+    private readonly secrets: vscode.SecretStorage,
+    hostKind = GatewayConfigService.deviceHostKind()
+  ) {
+    this.keys = deviceSecretKeys(hostKind);
     this.subscription = secrets.onDidChange((event) => {
-      if (event.key !== DEVICE_IDENTITY_SECRET_KEY) return;
+      if (event.key !== this.keys.identity) return;
       this.noticeIdentityChange().catch((err: unknown) => {
         log.warn(`reading the gateway device identity failed: ${err instanceof Error ? err.message : String(err)}`);
       });
@@ -403,8 +444,8 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
 
   loadIdentity(): Promise<DeviceIdentity> {
     if (!this.identity) {
-      const loading = serializeDeviceSecrets(() => this.readOrCreateIdentity());
-      // A failed read is retried by the next connect.
+      const loading = this.readOrCreateIdentity();
+      // A failed or timed-out read is retried by the next connect.
       loading.catch(() => {
         if (this.identity === loading) this.identity = null;
       });
@@ -419,17 +460,27 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
   }
 
   async loadToken(gateway: string, deviceId: string): Promise<StoredDeviceToken | null> {
-    const token = parseDeviceTokens(await this.secrets.get(DEVICE_TOKENS_SECRET_KEY))[gateway];
+    const token = parseDeviceTokens(await secretCall(this.secrets.get(this.keys.tokens)))[gateway];
     return token?.deviceId === deviceId ? token : null;
   }
 
+  /** A token issued to a device that is no longer the stored one (reset meanwhile) is dropped. */
   storeToken(gateway: string, token: StoredDeviceToken): Promise<void> {
-    return this.updateTokens((tokens) => ({ ...tokens, [gateway]: token }));
+    return serializeDeviceSecrets(async () => {
+      const current = await this.readIdentity();
+      if (current?.identity.deviceId !== token.deviceId) {
+        log.info('dropping a gateway device token issued to a device identity that was replaced');
+        return;
+      }
+      await this.writeTokens((tokens) => ({ ...tokens, [gateway]: token }));
+    });
   }
 
   clearToken(gateway: string, deviceId: string): Promise<void> {
-    return this.updateTokens((tokens) =>
-      tokens[gateway]?.deviceId === deviceId ? Object.fromEntries(Object.entries(tokens).filter(([key]) => key !== gateway)) : tokens
+    return serializeDeviceSecrets(() =>
+      this.writeTokens((tokens) =>
+        tokens[gateway]?.deviceId === deviceId ? Object.fromEntries(Object.entries(tokens).filter(([key]) => key !== gateway)) : tokens
+      )
     );
   }
 
@@ -438,23 +489,43 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
     this.identityListeners.clear();
   }
 
+  private async readIdentity(): Promise<PersistedIdentity | null> {
+    const pem = await secretCall(this.secrets.get(this.keys.identity));
+    const identity = pem ? importDeviceIdentity(pem) : null;
+    return pem && identity ? { pem, identity } : null;
+  }
+
   private async readOrCreateIdentity(): Promise<DeviceIdentity> {
-    const stored = await this.secrets.get(DEVICE_IDENTITY_SECRET_KEY);
-    const identity = stored ? importDeviceIdentity(stored) : null;
-    if (identity) {
-      this.knownIdentity = stored;
-      return identity;
+    const stored = await this.readIdentity();
+    if (stored) {
+      return this.adopt(stored);
     }
-    if (stored) log.warn('the stored gateway device identity is unreadable; creating a new one');
+    return serializeDeviceSecrets(() => this.createIdentity());
+  }
+
+  /** Mint a key only if the slot is still empty after a short random wait, then adopt whatever is
+   *  stored: of windows racing to fill the slot, the last write wins for all of them. */
+  private async createIdentity(): Promise<DeviceIdentity> {
+    await delay(Math.random() * IDENTITY_CREATE_JITTER_MS);
+    const raced = await this.readIdentity();
+    if (raced) {
+      return this.adopt(raced);
+    }
     const created = generateDeviceIdentity();
     const pem = exportDeviceIdentity(created);
     this.knownIdentity = pem;
-    await this.secrets.store(DEVICE_IDENTITY_SECRET_KEY, pem);
-    return created;
+    await secretCall(this.secrets.store(this.keys.identity, pem));
+    return this.adopt((await this.readIdentity()) ?? { pem, identity: created });
   }
 
+  private adopt({ pem, identity }: PersistedIdentity): DeviceIdentity {
+    this.knownIdentity = pem;
+    return identity;
+  }
+
+  /** Reads the slot as it is now, so windows hearing a burst of changes all settle on the last write. */
   private async noticeIdentityChange(): Promise<void> {
-    const current = await this.secrets.get(DEVICE_IDENTITY_SECRET_KEY);
+    const current = await secretCall(this.secrets.get(this.keys.identity));
     if (current === this.knownIdentity) {
       return;
     }
@@ -463,11 +534,9 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
     for (const listener of [...this.identityListeners]) listener();
   }
 
-  private updateTokens(update: (tokens: DeviceTokenMap) => DeviceTokenMap): Promise<void> {
-    return serializeDeviceSecrets(async () => {
-      const tokens = update(parseDeviceTokens(await this.secrets.get(DEVICE_TOKENS_SECRET_KEY)));
-      await this.secrets.store(DEVICE_TOKENS_SECRET_KEY, JSON.stringify(tokens));
-    });
+  private async writeTokens(update: (tokens: DeviceTokenMap) => DeviceTokenMap): Promise<void> {
+    const tokens = update(parseDeviceTokens(await secretCall(this.secrets.get(this.keys.tokens))));
+    await secretCall(this.secrets.store(this.keys.tokens, JSON.stringify(tokens)));
   }
 }
 
@@ -477,6 +546,7 @@ export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
 export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
 export const isLoopbackGatewayUrl = GatewayConfigService.isLoopbackGatewayUrl;
 export const resetDeviceIdentity = GatewayConfigService.resetDeviceIdentity;
+export const deviceHostKind = GatewayConfigService.deviceHostKind;
 export const getGatewayToken = GatewayConfigService.getGatewayToken;
 export const setGatewayToken = GatewayConfigService.setGatewayToken;
 export const migrateLegacyGatewayToken = GatewayConfigService.migrateLegacyGatewayToken;

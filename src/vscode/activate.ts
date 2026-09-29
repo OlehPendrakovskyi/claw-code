@@ -195,7 +195,7 @@ const RESET_DEVICE_IDENTITY = 'Reset Identity';
 /** The chat client notices the deleted identity and reconnects as a new device. */
 async function confirmDeviceIdentityReset(context: vscode.ExtensionContext): Promise<void> {
     const choice = await vscode.window.showWarningMessage(
-        'Reset the gateway device identity? Claw Code forgets its device key and device tokens, and every gateway that requires pairing must approve it again.',
+        'Reset the gateway device identity of this window\'s host? Claw Code forgets that device key and its device tokens, and every gateway that requires pairing must approve it again.',
         { modal: true },
         RESET_DEVICE_IDENTITY
     );
