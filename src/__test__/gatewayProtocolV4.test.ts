@@ -245,6 +245,12 @@ describe('gateway protocol v4', () => {
             expect(decodedEvent(eventFrame('session.message', { ...payload, message }))).toMatchObject({ message: { runId: 'run-7' } });
         });
 
+        it('takes the run of an assistant row the gateway wrote itself from its `:assistant` idempotency key', () => {
+            const payload = payloads.sessionMessage({ role: 'assistant', text: 'x', seq: 1 });
+            const message = { ...(payload.message as object), __openclaw: { seq: 1, idempotencyKey: 'run-7:assistant' } };
+            expect(decodedEvent(eventFrame('session.message', { ...payload, message }))).toMatchObject({ message: { runId: 'run-7' } });
+        });
+
         it('strips the truncation marker and flags the row', () => {
             const frame = eventFrame('session.message', payloads.sessionMessage({ role: 'assistant', text: 'start\n...(truncated)...', seq: 1 }));
             expect(decodedEvent(frame)).toMatchObject({ message: { text: 'start', truncated: true } });

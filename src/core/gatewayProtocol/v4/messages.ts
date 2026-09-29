@@ -19,8 +19,9 @@ import {
 /** Metadata envelope of a display message (DisplayMessage.__openclaw). */
 const OPENCLAW_META_FIELD = '__openclaw';
 
-/** User rows carry `<runId>:user` as their idempotency key. */
-const USER_TURN_SUFFIX = ':user';
+/** Idempotency-key suffixes after the run id: `:user` on the user turn, `:assistant` on an
+ *  assistant row the gateway writes itself (an abort's partial reply). */
+const ROLE_SUFFIXES = [':user', ':assistant'];
 
 /** Placement states of a materialized session. */
 const WARM_PLACEMENT_STATES: ReadonlySet<string> = new Set(['local', 'active']);
@@ -66,9 +67,10 @@ export function readUsage(value: unknown): TokenUsage | null {
   return promptTokens || completionTokens || totalTokens ? { promptTokens, completionTokens, totalTokens } : null;
 }
 
-/** Rows carry their run's idempotency key: bare on assistant rows, `<runId>:user` on the user turn. */
+/** Rows carry their run's idempotency key, bare or with a role suffix. */
 function runIdOfIdempotencyKey(idempotencyKey: string | null): string | null {
-  return idempotencyKey?.endsWith(USER_TURN_SUFFIX) ? readString(idempotencyKey.slice(0, -USER_TURN_SUFFIX.length)) : idempotencyKey;
+  const suffix = ROLE_SUFFIXES.find((candidate) => idempotencyKey?.endsWith(candidate));
+  return suffix && idempotencyKey ? readString(idempotencyKey.slice(0, -suffix.length)) : idempotencyKey;
 }
 
 /** A display message (chat.history tail row) as a transcript message. */
