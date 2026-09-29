@@ -95,8 +95,9 @@ export function resolveCliLaunch(
     return node === undefined ? { missing: 'node' } : { command: node, args: [entry.script] };
 }
 
-/** A configured command as the extension may spawn it: an absolute path as given, a bare name
- *  as {@link resolveCliLaunch} finds it; never a relative path, which resolves against the cwd. */
+/** A configured command as the extension may spawn it: an absolute path as given (a Windows
+ *  shim through its JS entry), a bare name as {@link resolveCliLaunch} finds it; never a relative
+ *  path, which resolves against the cwd. */
 export function resolveCommandLaunch(
     command: string,
     platform: NodeJS.Platform = process.platform,
@@ -104,12 +105,30 @@ export function resolveCommandLaunch(
     host: LauncherHost = nodeHost
 ): CliLaunch | CliLaunchFailure {
     if (isFullyQualified(platform, command)) {
-        return { command, args: [] };
+        return platform === 'win32' && isShimPath(command) ? resolveShimAt(command, env, host) : { command, args: [] };
     }
     if (command.includes('/') || (platform === 'win32' && command.includes('\\'))) {
         return { missing: command };
     }
     return resolveCliLaunch(command, platform, env, host);
+}
+
+/** A `.cmd`, `.bat` or `.ps1` file, which spawn cannot run without a shell. */
+function isShimPath(command: string): boolean {
+    const ext = path.win32.extname(command).toLowerCase();
+    return ext !== '' && SHIM_EXTENSIONS.includes(ext);
+}
+
+/** An absolute shim, run as its JS entry under the Node beside it or on the absolute PATH entries. */
+function resolveShimAt(shimPath: string, env: Env, host: LauncherHost): CliLaunch | CliLaunchFailure {
+    const shimDir = path.win32.dirname(shimPath);
+    const name = path.win32.basename(shimPath, path.win32.extname(shimPath));
+    const script = host.isFile(shimPath) ? (packageBinScript(name, shimDir, host) ?? shimScript(name, shimDir, host)) : undefined;
+    if (!script) {
+        return { missing: shimPath };
+    }
+    const node = findNode(shimDir, absolutePathEntries('win32', env[pathKey('win32', env)] ?? ''), host);
+    return node === undefined ? { missing: 'node' } : { command: node, args: [script] };
 }
 
 /** Only fully qualified PATH entries count, so the cache key is cwd-independent. */

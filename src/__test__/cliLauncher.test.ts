@@ -267,6 +267,13 @@ describe('cliLauncher', () => {
             expect(resolveCommandLaunch('openclaw.exe', 'win32', { Path: NODEJS }, host)).toEqual({ missing: 'openclaw.exe' });
         });
 
+        it('runs an absolute npm shim as its JS entry, as spawn cannot run a .cmd without a shell', () => {
+            const host = fakeHost({ ...openclawInstall, ...NODE_ON_PATH });
+            expect(resolveCommandLaunch(`${NPM}\\openclaw.cmd`, 'win32', { Path: NODEJS }, host)).toEqual({ command: NODE_EXE, args: [OPENCLAW_SCRIPT] });
+            expect(resolveCommandLaunch(`${NPM}\\openclaw.cmd`, 'win32', { Path: '.' }, host)).toEqual({ missing: 'node' });
+            expect(resolveCommandLaunch(`${NPM}\\gone.cmd`, 'win32', { Path: NODEJS }, host)).toEqual({ missing: `${NPM}\\gone.cmd` });
+        });
+
         it('keeps an absolute command, and refuses a relative one, which resolves against the cwd', () => {
             expect(resolveCommandLaunch('/opt/openclaw/bin/openclaw', 'linux', {}, fakeHost({}))).toEqual({ command: '/opt/openclaw/bin/openclaw', args: [] });
             expect(resolveCommandLaunch('C:\\Tools\\openclaw.exe', 'win32', {}, fakeHost({}))).toEqual({ command: 'C:\\Tools\\openclaw.exe', args: [] });
