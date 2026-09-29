@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { StringDecoder } from 'string_decoder';
-import { resolveAcpxLaunch, AcpxLaunch } from './acpxLauncher';
+import { resolveCliLaunch, type CliLaunch } from '../core/cliLauncher';
 import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
@@ -534,7 +534,7 @@ type PromptBlock = { type: 'text'; text: string } | { type: 'image'; mimeType: s
 
 /** Everything one acpx launch needs besides its prompt. */
 type RunRequest = {
-    launch: AcpxLaunch;
+    launch: CliLaunch;
     args: string[];
     cwd: string;
     onEvent: (event: ChatEvent) => void;
@@ -682,7 +682,7 @@ export class ChatService {
                 `Prompt is too large for acpx (${size}). Remove attachments or shorten the message.`);
             return;
         }
-        const launch = resolveAcpxLaunch();
+        const launch = resolveCliLaunch('acpx');
         if ('missing' in launch) {
             completeWithoutProcess(onEvent, onRunComplete, launch.missing === 'node' ? NODE_NOT_FOUND_MESSAGE : ACPX_NOT_FOUND_MESSAGE);
             return;

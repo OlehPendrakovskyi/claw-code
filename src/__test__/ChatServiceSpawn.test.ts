@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { Writable } from 'stream';
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
-import * as acpxLauncher from '../chat/acpxLauncher';
+import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 import type { ConversationTurn } from '../webview/slashCommands';
@@ -107,7 +107,7 @@ describe('ChatService.sendMessage', () => {
         spawnMock.mockReset();
         useSettings({});
         killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-        launchSpy = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({ command: 'acpx', args: [] });
+        launchSpy = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ command: 'acpx', args: [] });
         projectConfigSpy = jest.spyOn(acpxProjectConfig, 'checkProjectConfig').mockReturnValue({ status: 'trusted' });
     });
 
@@ -229,7 +229,7 @@ describe('ChatService.sendMessage', () => {
         });
 
         it('runs the resolved Node launch on Windows, not the acpx shim', () => {
-            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({
+            const resolve = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({
                 command: 'C:\\nodejs\\node.exe',
                 args: ['C:\\npm\\node_modules\\acpx\\dist\\cli.js'],
             });
@@ -249,7 +249,7 @@ describe('ChatService.sendMessage', () => {
             ['acpx', 'acpx not found'],
             ['node', 'Node.js not found'],
         ] as const)('explains a missing %s without spawning', (missing, message) => {
-            const resolve = jest.spyOn(acpxLauncher, 'resolveAcpxLaunch').mockReturnValue({ missing });
+            const resolve = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ missing });
             try {
                 const { events, onRunComplete } = send('hi');
                 expect(spawnMock).not.toHaveBeenCalled();
