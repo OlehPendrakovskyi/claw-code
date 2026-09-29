@@ -329,7 +329,7 @@ export const OPERATOR_PROMPTS_JS = `
                 card.setAttribute('data-prompt-key', prompt.key);
                 var head = promptNode('div', 'prompt-heading', heading);
                 if (prompt.state !== 'resolved') {
-                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(promptDeadlines[prompt.key])));
+                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(promptDeadlines[prompt.key].at)));
                 }
                 card.appendChild(head);
                 return card;
@@ -465,17 +465,19 @@ export const OPERATOR_PROMPTS_JS = `
                 return prompt.kind === 'approval' ? 'Approval needed: ' + prompt.title : 'The agent asks: ' + ((prompt.questions || [])[0] || {}).text;
             }
 
-            /** What changed since the last render: new prompts, and statuses that moved on. */
+            /** What changed since the last render: new prompts (a settled one waiting again among them),
+             *  and statuses that moved on. */
             function promptAnnouncement(previous, prompts) {
                 return prompts.map(function(prompt) {
-                    if (!(prompt.key in previous)) { return describeArrival(prompt); }
-                    return previous[prompt.key] !== prompt.status && prompt.status ? prompt.status : '';
+                    var before = previous[prompt.key];
+                    if (!before || (before.state === 'resolved' && prompt.state !== 'resolved')) { return describeArrival(prompt); }
+                    return before.status !== prompt.status && prompt.status ? prompt.status : '';
                 }).filter(Boolean).join('. ');
             }
 
             function statusByKey(prompts) {
                 var byKey = Object.create(null);
-                prompts.forEach(function(prompt) { byKey[prompt.key] = prompt.status || ''; });
+                prompts.forEach(function(prompt) { byKey[prompt.key] = { state: prompt.state, status: prompt.status || '' }; });
                 return byKey;
             }
 
@@ -527,15 +529,19 @@ export const OPERATOR_PROMPTS_JS = `
                 region.focus();
             }
 
-            /** Local deadlines by prompt key, fixed from the time left when a prompt first arrived:
-             *  the host's clock may not be this one's (a remote extension host). */
+            /** Local deadlines by prompt key, fixed from the time left when a prompt arrives: the host's
+             *  clock may not be this one's (a remote extension host). A settled prompt that waits again
+             *  (a backfill lists it anew) has arrived again, with a new deadline. */
             var promptDeadlines = Object.create(null);
 
             function fixPromptDeadlines(threads) {
                 var shown = Object.create(null);
                 threads.forEach(function(thread) {
                     (thread.prompts || []).forEach(function(prompt) {
-                        if (!(prompt.key in promptDeadlines)) { promptDeadlines[prompt.key] = Date.now() + Number(prompt.expiresInMs); }
+                        var known = promptDeadlines[prompt.key];
+                        var arrived = !known || (known.resolved && prompt.state !== 'resolved');
+                        var at = arrived ? Date.now() + Number(prompt.expiresInMs) : known.at;
+                        promptDeadlines[prompt.key] = { at: at, resolved: prompt.state === 'resolved' };
                         shown[prompt.key] = true;
                     });
                 });

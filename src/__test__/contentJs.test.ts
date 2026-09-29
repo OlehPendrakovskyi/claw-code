@@ -1114,6 +1114,18 @@ describe('content-js', () => {
             expect(postedOfType(webview, 'resolveApproval')).toEqual([{ type: 'resolveApproval', threadId: 't1', promptKey: 'exec:a1', decision: 'deny' }]);
         });
 
+        it('gives a settled prompt that waits again a new deadline and announces it again', () => {
+            const webview = loadWebview();
+            const expiry = () => card(webview, 'exec:a1').querySelector('.prompt-expiry')?.textContent;
+            const announced = () => paneOf(webview, 't1').querySelector('.pane-prompt-announcer')?.textContent;
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, expiresInMs: 60_000 }] })]);
+            const first = expiry();
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'No longer pending' }] })]);
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, expiresInMs: 6 * 3_600_000 }] })]);
+            expect(expiry()).not.toBe(first);
+            expect(announced()).toBe(`Approval needed: ${XSS}`);
+        });
+
         it('keeps cards of different sources apart when their prompts share an id', () => {
             const webview = loadWebview();
             const plugin = { ...approval, subject: 'plugin', key: 'plugin:a1', title: 'Write' };
