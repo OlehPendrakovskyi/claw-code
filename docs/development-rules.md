@@ -104,18 +104,21 @@ Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~
 ## Test coverage
 
 34. **Maximum unit-test coverage is a mandatory standard.** Every block of code written (logic, branches, guards, parsers, error handlers) gets unit tests; coverage aims for maximum, not "covered the happy path". Test: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them.
+
 ## Recurring classes from earlier PRs (retrospective pass, 2026-09-29)
 
 35. **Credentials are redacted on every egress surface, not only in logs.** UI labels, tree descriptions, reports, error messages, and prompt wrappers pass a sanitizer (URL forms: userinfo and `?key=***`; plaintext: `key=…`, `OPENAI_API_KEY=…`, `"token":"…"`, `Bearer …`); a child process's `stderr` is sanitized too; never echo the raw value of a workspace setting back in an error. (Recurring class: 30 findings across PRs #1, #8, #11.)
 
 36. **Workspace-configurable values are untrusted command/URL input.** Never interpolate a workspace setting into a shell; only `execFile` with an argv vector and a quote-aware parser. Actions driven from workspace settings (autoConnect, hardening command, dashboard URL) are gated on `workspace.isTrusted`; URLs are validated against an allow-list of schemes before `openExternal`. (PR #1 findings; §31 covers only `.acpxrc.json`.)
 
-37. **Foreign-payload mapping is alias-tolerant, complete, and numerically validated.** One canonical mapper per direction — do not duplicate it (mapping drift); read documented aliases (`prompt_tokens`/`promptTokens`, `input_tokens`/`output_tokens`) and keep every variant (including `totalTokens`-only); validate numbers with `Number.isFinite(v) && v >= 0`, never `Number(x) || fallback`. (PR #1: snake_case + duplicate mapper; PR #11: usage; PR #12: NaN.)
+37. **Foreign-payload mapping is alias-tolerant, complete, and numerically validated.** One canonical mapper per direction — do not duplicate it (mapping drift); read each semantic alias group completely (`input`, `inputTokens`, `promptTokens`, `input_tokens`, `prompt_tokens` for prompt tokens; `output`, `outputTokens`, `completionTokens`, `output_tokens`, `completion_tokens` for completion tokens) — complementary counters are never aliases of each other — and keep every variant (including `totalTokens`-only); validate numbers with `Number.isFinite(v) && v >= 0`, never `Number(x) || fallback`. (PR #1: snake_case + duplicate mapper; PR #11: usage; PR #12: NaN.)
 
 38. **Terminal/streaming event mapping preserves identity and metadata end-to-end.** A tool-call/assistant row carries `id` + `arguments`/`result`/`details` through every lifecycle update; empty `messageId`/`delta`/`role` mean missing; a delta never shadows the final row with the same id. (Latent in PR #1, ~6 findings in PR #11.)
 
 39. **Structural validators distinguish absent from malformed.** An array arriving where a record is expected, `null` where a field is optional, and a truncated object are distinct failure modes with distinct handling — a shape check that lumps them together either drops valid data or accepts garbage. (PR #1, #8.)
 
 ### Notes on coverage gaps this pass exposed
+
 - Teardown/leak rules (1, 11, 16, 17, 23) still produced the largest finding count in PR #11: when retiring a resource, retire exactly the owner's own registration, never the whole session-set — worth re-reading the five rules together on any teardown change.
 - Secret-redaction (rule 10) covers logs only; egress surfaces (rule 35) are a separate mandatory surface.
+
