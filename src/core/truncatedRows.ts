@@ -16,7 +16,9 @@ export type EntryReader = (sessionKey: string, entryId: string) => Promise<Trans
 /** Rows of one session waiting for their read; more are rendered as they came. */
 const MAX_QUEUED_PER_SESSION = 8;
 
-/** The session's later rows and run events wait behind a read, so a slow one gives up early. */
+/** The session's later rows and run events wait behind a read, so a row whose read is slow is
+ *  rendered as it came early; the read itself keeps the session's turn until it settles (the
+ *  gateway request has its own timeout), so a slow gateway never serves two reads of one session at once. */
 const READ_TIMEOUT_MS = 10_000;
 
 /** Completed entries remembered across sessions, so a row delivered again (live racing catch-up) is not read again. */
@@ -57,9 +59,13 @@ export class TruncatedRowCompleter {
       return Promise.resolve(row);
     }
     queue.queued += 1;
-    const read = queue.tail.then(() => this.read(sessionKey, row, entryId)).finally(() => this.release(sessionKey, queue, entryId));
+    const epoch = this.epoch;
+    const entryRead = queue.tail.then(() => this.readCompleted(sessionKey, row, entryId, epoch));
+    const settled = entryRead.finally(() => this.release(sessionKey, queue, entryId));
+    // Timed from arrival, so a row waits at most READ_TIMEOUT_MS even behind a slow read of another entry.
+    const read = withTimeout(entryRead).then((text) => (text ? { ...row, ...text } : row));
     queue.reads.set(entryId, read);
-    queue.tail = read;
+    queue.tail = settled;
     return read;
   }
 
@@ -79,24 +85,18 @@ export class TruncatedRowCompleter {
     return queue;
   }
 
-  private async read(sessionKey: string, row: TranscriptMessage, entryId: string): Promise<TranscriptMessage> {
-    const epoch = this.epoch;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), READ_TIMEOUT_MS);
-    });
+  /** The entry's full text, remembered for later rows even when it arrives after the timeout; null when not served. */
+  private async readCompleted(sessionKey: string, row: TranscriptMessage, entryId: string, epoch: number): Promise<CompletedText | null> {
     try {
-      const full = await Promise.race([this.readEntry(sessionKey, entryId), timeout]);
+      const full = await this.readEntry(sessionKey, entryId);
       if (!full || full.text.length < row.text.length) {
-        return row;
+        return null;
       }
       const text: CompletedText = { text: full.text, truncated: full.truncated };
       if (epoch === this.epoch) this.remember(completedKey(sessionKey, entryId), text);
-      return { ...row, ...text };
+      return text;
     } catch {
-      return row;
-    } finally {
-      clearTimeout(timer);
+      return null;
     }
   }
 
@@ -111,6 +111,19 @@ export class TruncatedRowCompleter {
     queue.queued -= 1;
     queue.reads.delete(entryId);
     if (queue.queued === 0 && this.queues.get(sessionKey) === queue) this.queues.delete(sessionKey);
+  }
+}
+
+/** `read`'s result, or null once the render can no longer wait for it. */
+async function withTimeout(read: Promise<CompletedText | null>): Promise<CompletedText | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), READ_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
