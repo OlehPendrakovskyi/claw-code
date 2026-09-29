@@ -1,97 +1,106 @@
-# Правила разработки (выведены из ретроспективы claw-code, 2026-09-27)
+# Development Rules (derived from the claw-code retrospective, 2026-09-27)
 
-Основа: PR #8/#10 (Sprint 1-2), PR #11 MVP (28 раундов Copilot, ~90 находок, ~25 фикс-коммитов, сутки на исправления).
+Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~25 fix commits, a day of fixes).
 
-## Общие правила (любой проект)
+## General rules (any project)
 
-1. **Владение ресурсом проектируется до кода.** Для каждого изменяемого ресурса (сокет, колбэк, буфер, run) — один владелец, явный lifecycle (register/retire/replace) и документированная семантика. Несколько карт с разными ключами на один ресурс = будущие гонки.
+1. **Resource ownership is designed before code.** For every mutable resource (socket, callback, buffer, run) — a single owner, explicit lifecycle (register/retire/replace), and documented semantics. Multiple maps with different keys pointing at one resource = future races.
 
-2. **Каждый `await` — граница перехода состояния.** После каждого await — ревалидация предусловий (сущность ещё активна, поколение не сменилось, владение сохранено). Идентификаторы поколения/эпохи захватывать ДО await, сравнивать ПОСЛЕ.
+2. **Every `await` is a state-transition boundary.** After each await — revalidate preconditions (entity still active, generation unchanged, ownership retained). Capture generation/epoch identifiers BEFORE the await, compare AFTER.
 
-3. **Монотонные epoch/generation для всей async-инвалидации.** Бамп ДО деструктивных операций (abort/close), проверка ПЕРЕД применением результата. Терминальные события (done/close) идемпотентны.
+3. **Monotonic epoch/generation for all async invalidation.** Bump BEFORE destructive operations (abort/close), check BEFORE applying results. Terminal events (done/close) are idempotent.
 
-4. **Promise никогда не проверяется как boolean.** Async-валидация — только через await. Непроверенный Promise всегда truthy.
+4. **A Promise is never checked as a boolean.** Async validation only via await. An unchecked Promise is always truthy.
 
-5. **Недоверенный ввод валидируется на каждой границе доверия** — семантически (не только shape), и повторно после каждого await, если данные контролируемы извне.
+5. **Untrusted input is validated at every trust boundary** — semantically (not just shape), and re-validated after each await when the data is externally controllable.
 
-6. **Файловая система — чеклист:** realpath при ingestion → проверка containment → open с O_NOFOLLOW (+O_NONBLOCK для возможно-специальных файлов) → fstat-vs-lstat (dev/ino) + isFile() → ревалидация после await. Check-then-use по умолчанию гонка. Остаточные окна честно документировать с указанием ответственного компонента.
+6. **Filesystem checklist:** realpath at ingestion → containment check → open with O_NOFOLLOW (+O_NONBLOCK for potentially special files) → fstat-vs-lstat (dev/ino) + isFile() → revalidate after await. Check-then-use is a race by default. Residual windows must be documented honestly, naming the responsible component.
 
-7. **Тесты проверяют интерливинги, а не happy path:** send во время abort, rebind во время send, reconnect во время run, дубликаты кадров. Каждый исправленный race получает регресс-тест, падающий без фикса. Тест, кодифицирующий неверное поведение — баг; при смене семантики перечитывать тестовые контракты.
+7. **Tests exercise interleavings, not the happy path:** send during abort, rebind during send, reconnect during a run, duplicate frames. Every fixed race gets a regression test that fails without the fix. A test that codifies wrong behavior is a bug; when semantics change, re-read test contracts.
 
-8. **Цикл «пуш → N находок» — симптом дизайна, не кода.** Если раунд ревью находит проблемы в свежем фиксе — остановиться и пересмотреть архитектуру, а не латать. Само-ревью с adversarial-оптикой ДО пуша дешевле суток фикс-циклов.
+8. **A "push → N findings" loop is a design symptom, not a code one.** If a review round finds problems in a fresh fix — stop and rethink the architecture instead of patching. Adversarial self-review BEFORE pushing is cheaper than day-long fix cycles.
 
-9. **Мелкие сфокусированные PR.** Большой PR (12 коммитов, concurrency-ядро) = часы ревью и churn. Ядро конкурентности — отдельным PR с собственным дизайном.
+9. **Small focused PRs.** A large PR (12 commits, concurrency core) = hours of review and churn. Ship the concurrency core as a separate PR with its own design.
 
-10. **Гигиена логов:** никогда не логировать секреты/промпты/содержимое файлов; только счётчики, ключи, id.
+10. **Log hygiene:** never log secrets/prompts/file contents; only counters, keys, ids.
 
-11. **Инфраструктура фоновых процессов:** интервал ≥ максимальной длительности прогона (наложения недопустимы); durable-маркеры прогресса; single-flight.
+11. **Background process infrastructure:** interval ≥ maximum run duration (no overlaps); durable progress markers; single-flight.
 
-## Специфика claw-code (VS Code extension + OpenClaw gateway)
+## claw-code specifics (VS Code extension + OpenClaw gateway)
 
-1. **Модель владения session/thread:** run sink vs transcript sink vs persistent callback; ключ колбэков — thread id (треды делят сессии). abort/clear/reset только при `status==='running'` и локальном владении (`hasOwnedRun`); никогда не абортить за idle-подписчиков.
+1. **Session/thread ownership model:** run sink vs transcript sink vs persistent callback; callback key is the thread id (threads share sessions). abort/clear/reset only when `status==='running'` with local ownership (`hasOwnedRun`); never abort behind idle subscribers.
 
-2. **Инварианты стриминга:** кадры могут omit messageId; delta vs text vs mixed (cumulative/divergent); дедуп complete-кадров claim-before-dispatch; seen-set хранит только complete assistant rows; catch-up гейтится на cursor + `allowUnscopedCatchUp` только для no-history путей; pre-ack буфер атрибутируется конкретному send; `chat.send` только после ack подписки; `done` идемпотентен.
+2. **Streaming invariants:** frames may omit messageId; delta vs text vs mixed (cumulative/divergent); dedupe complete frames claim-before-dispatch; the seen-set holds only complete assistant rows; catch-up is gated on cursor + `allowUnscopedCatchUp` only for no-history paths; pre-ack buffers are attributed to a specific send; `chat.send` only after subscription ack; `done` is idempotent.
 
-3. **Config/SecretStorage:** токен только в SecretStorage; миграция перебирает ВСЕ targets (user/workspace/folder × normal/language × Code/Code-OSS/VSCodium/Insiders + .code-workspace nested); per-folder update в multi-root; scope из @types/vscode — `{languageId, uri?}` (поля folderUri нет); tri-state результат миграции, ретрай incomplete, не кэшировать неудачу; deprecated-настройки регистрировать в package.json.
+3. **Config/SecretStorage:** token only in SecretStorage; migration iterates ALL targets (user/workspace/folder × normal/language × Code/Code-OSS/VSCodium/Insiders + nested .code-workspace); per-folder updates in multi-root; scope comes from @types/vscode — `{languageId, uri?}` (there is no folderUri field); tri-state migration result, retry incomplete, never cache failure; deprecated settings registered in package.json.
 
-4. **Webview:** только createElement/textContent (никакого innerHTML с данными); интерактивные строки — button (a11y); ключи сессий из webview валидировать против sessions.list allowlist (awaited); emitState после каждого await, меняющего рендер.
+4. **Webview:** only createElement/textContent (no innerHTML with data); interactive rows are buttons (a11y); session keys from the webview are validated against the sessions.list allowlist (awaited); emitState after every await that changes rendering.
 
-5. **Пути/вложения:** containment на resolve И на read; O_NOFOLLOW + O_NONBLOCK + isFile + dev/ino + recheck после await; slash-команды используют те же guard'ы, что handleSend.
+5. **Paths/attachments:** containment on resolve AND on read; O_NOFOLLOW + O_NONBLOCK + isFile + dev/ino + recheck after await; slash commands use the same guards as handleSend.
 
-6. **Процесс репо:** явный fetch ветки (refspec-гигиена, `git remote prune`), rebase на remote tip перед пушем (проверка ls-remote), Conventional Commits, гейты перед каждым коммитом, `jest --forceExit`; Copilot-протокол: верифицировать каждую находку по HEAD (снапшоты часто устаревшие), отвечать в каждый тред, резолвить треды, стоп-правило при раунде без коммитов, проверять секции Open/Previously missed в телах обзор-ревью.
+6. **Repo process:** explicit branch fetch (refspec hygiene, `git remote prune`), rebase onto the remote tip before pushing (verify with ls-remote), Conventional Commits, gates before every commit, run tests via the canonical `npm test` script (`"test": "jest"`) and diagnose hangs explicitly rather than force-terminating runs with `--forceExit`; Copilot protocol: verify every finding against HEAD (snapshots are often stale), reply in every thread, resolve threads, stop-rule for a round without commits, check the Open/Previously missed sections in overview review bodies.
 
-## Классы багов PR #11 (для будущих ревью-чеклистов)
+## PR #11 bug classes (for future review checklists)
 
-- Stale continuation после await (generation не захвачен/не проверен) — ~15 находок
-- Дублированная доставка (live + catch-up + pre-ack buffer без атрибуции) — ~10
-- Over/under-aggressive teardown (ретайр всех sink'ов vs утечка колбэков) — ~8
-- Path traversal / symlink TOCTOU / спец-файлы / case-сравнения — ~8
-- Смешанные кадры delta+text (потеря/дублирование текста, отравление seen-set) — ~6
-- Миграция токена (scope-семантика, multi-root, language-override, дистро-пути) — ~8
-- Async-валидация без await (allowlist обход) — ~3
-- Фиксы, вводящие новые баги (settled-first, union-ретайр) — ~4
-## Уроки PR #11 (раунды 7–12, 2026-09-27) — классы ошибок и превентивные правила
+- Stale continuation after await (generation not captured/not checked) — ~15 findings
+- Duplicated delivery (live + catch-up + pre-ack buffer without attribution) — ~10
+- Over/under-aggressive teardown (retiring all sinks vs leaking callbacks) — ~8
+- Path traversal / symlink TOCTOU / special files / case comparisons — ~8
+- Mixed delta+text frames (lost/duplicated text, poisoning the seen-set) — ~6
+- Token migration (scope semantics, multi-root, language-override, distro paths) — ~8
+- Async validation without await (allowlist bypass) — ~3
+- Fixes introducing new bugs (settled-first, union retry) — ~4
 
-12. **Платформозависимый setup тестов — только внутри guarded-хука.** `mkfifo`/POSIX-only операции в `beforeEach` выполняются до `it.skip`, тест падает на Windows. Правило: fixture setup/teardown guard'ить тем же `process.platform`-условием, что и сам тест.
+## PR #11 lessons (rounds 7–12, 2026-09-27) — error classes and preventive rules
 
-13. **`Number(x) || fallback` — не валидация.** `NaN || x` пропускает fallback только для falsy; NaN проходит. Правило: численные значения из недоверенного ввода — через `Number.isFinite(v) && v >= 0`-хелпер (toFinite*), а не `||`.
+12. **Platform-dependent test setup goes inside a guarded hook.** `mkfifo`/POSIX-only operations in `beforeEach` run before `it.skip`, so the test fails on Windows. Rule: guard fixture setup/teardown with the same `process.platform` condition as the test itself.
 
-14. **«Rendered» пути без курсора — ранняя граница, не skip.** Если catch-up гейтится на cursor, а история отрендерена без него — не скипать catch-up целиком: seeded rows образуют границу, replay после неё доставлять, seeded tail дедуплицировать ordered fingerprints (keyless rows не покрываются messageId seen-set).
+13. **`Number(x) || fallback` is not validation.** `NaN` is falsy, so `NaN || fallback` selects the fallback rather than letting `NaN` pass. The real failure modes are the opposite: a valid `0` also selects the fallback, while truthy invalid values such as `Infinity` and negative numbers pass unchecked. Rule: validate numeric values from untrusted input with a `Number.isFinite(v) && v >= 0`-style helper (toFinite*), not `||`.
 
-15. **Парсинг чужих конфигов по спецификации продукта, не по догадкам.** Discovery/migration для chained language-override ключей (`[ts][js]`) должен опираться на реальную семантику продукта (VS Code `overrideIdentifiersFromKey` — индексация под каждым идентификатором), иначе guard не матчит валидные данные.
+14. **"Rendered" paths without a cursor are an early boundary, not a skip.** If catch-up is gated on a cursor and history was rendered without one — do not skip catch-up entirely: seeded rows form a boundary, deliver replay after it, and dedupe the seeded tail with ordered fingerprints (keyless rows are not covered by the messageId seen-set).
 
-16. **Suspend ≠ dispose: lifecycle-инварианты транспорта.** Остановка транспорта (fallback/switch) должна: закрывать сокет и reconnect-loop, гасить run-синки с `done`, НО сохранять persistent transcript/resume-синки и резетаблить их переподпиской; чистить pre-ack буферы вместе с их ключами; retired send сбрасывает streaming-статус треда синхронно (emitState), иначе UI зависает в running.
+15. **Parse foreign configs per the product's specification, not guesswork.** Discovery/migration for chained language-override keys (`[ts][js]`) must rely on the product's actual semantics (VS Code `overrideIdentifiersFromKey` — indexing under each identifier), otherwise the guard misses valid data.
 
-17. **Аборты глотают late-события полностью.** `session_end` при активном abort скипается так же, как late `session.message`; терминальный flow доставляет `done`.
+16. **Suspend ≠ dispose: transport lifecycle invariants.** Stopping a transport (fallback/switch) must: close the socket and reconnect loop, retire run sinks with `done`, BUT preserve persistent transcript/resume sinks and make them re-subscribable; purge pre-ack buffers together with their keys; a retired send resets the thread's streaming status synchronously (emitState), otherwise the UI hangs in "running".
 
-18. **Пустая строка ≠ отсутствующее значение.** На всех границах протокола пустые `messageId`/`delta`/`role:''` трактуются как missing (asNonEmptyString), иначе пустые ключи портят дедуп/seen-set.
+17. **Aborts swallow late events entirely.** `session_end` during an active abort is skipped just like a late `session.message`; the terminal flow delivers `done`.
 
-19. **Каждый раунд ревью — класс багов, не строка.** После находки грепать весь diff (и затем базу) на тот же класс; похожие валидные места чинить тем же коммитом. Пост-PR: отдельный прогон по всей кодовой базе с PR, следующим непосредственно за текущим.
+18. **Empty string ≠ missing value.** At all protocol boundaries, empty `messageId`/`delta`/`role:''` are treated as missing (asNonEmptyString), otherwise empty keys corrupt dedupe/seen-sets.
 
-20. **Правила — живой документ.** Каждый технический PR после ревью-цикла пополняет development-rules.md констатирующим правилом (не «мы чинили X», а «делай Y всегда»). Дистиллируется в wiki how-to для переносимости между проектами.
+19. **Every review round is a bug class, not a line.** After a finding, grep the whole diff (and then the codebase) for the same class; fix similar valid spots in the same commit. Post-PR: a separate codebase-wide pass with a PR immediately following the current one.
 
-21. **Язык GitHub — английский.** Вся коммуникация на GitHub (комментарии в коде, JSDoc, названия PR, описания, треды, сводные комментарии, body ревью) — только на английском, для любого проекта по решению владельца (2026-09-29: для claw-code — безусловно, независимо от статуса комьюнити-проекта). Не распространяется на внутренние чаты/память. Применяется только к новому контенту; существующие русские комментарии не переписывать.
+20. **Rules are a living document.** Every technical PR, after its review cycle, adds a declarative rule to development-rules.md (not "we fixed X", but "always do Y"). Distilled into a wiki how-to for portability across projects.
 
-22. **Delta-строки не затеняют финальные.** На любом пути восстановления/дедупликации по id строка с непустым `delta` (частичный текст) обязана пропускаться в пользу финальной строки с тем же id, иначе восстановленный транскрипт обрезается до дельты.
+21. **GitHub language is English.** All communication on GitHub (code comments, JSDoc, PR titles, descriptions, threads, summary comments, review bodies) is English-only, for any project, by owner decision (2026-09-29: for claw-code — unconditionally, regardless of community-project status). Does not apply to internal chats/memory. Applies to new content only; existing Russian comments are not rewritten. Repository documentation is included: every new repository document must be written in English.
 
-23. **Pre-ack фреймы чужих ключей — буферизация с широкой атрибуцией.** Ключевой фрейм (`session.message`/`session.end`), чей ключ ещё не имеет sink'а, при незакрытой pre-ack отправке буферизуется со всеми in-flight send'ами (владелец неизвестен до settlement — remap даёт resolved-ключ, а preAck-набор хранит requested); drain коррелирует по settled requested→resolved и дропает неоднозначные. Финализировать по такому ключу раньше — no-op с потерянным терминальным событием и «вечным стримингом» после ack.
+22. **Delta rows do not shadow final rows.** On any recovery/dedup path keyed by id, a row with a non-empty `delta` (partial text) must be skipped in favor of a final row with the same id, otherwise the recovered transcript is truncated to the delta.
 
-## Уроки переработки протокола (раунды владельца, 2026-09-28/29)
+23. **Pre-ack frames for foreign keys are buffered with wide attribution.** A key frame (`session.message`/`session.end`) whose key has no sink yet, while a pre-ack send is in flight, is buffered attributed to all in-flight sends (the owner is unknown until settlement — remap yields the resolved key, and the preAck set stores requested); drain correlates on settled requested→resolved and drops ambiguous ones. Finalizing on such a key earlier is a no-op that loses the terminal event and leaves "eternal streaming" after the ack.
 
-24. **!ОЧЕНЬ ВАЖНО! Никогда не изобретать протоколы, wire-форматы, API, CLI-семантику и поведение библиотек.** Внешние контракты (gateway-протокол, JSON-RPC, handshake, сторонние утилиты) писать ТОЛЬКО по документации или реальному исходному коду. Нет под рукой — запросить у владельца доку/исходники/ссылку. Только после явного «такого нет» допустим эмпирический подбор. Применимо к ЛЮБОЙ разработке, не только к claw-code. Прецедент: предположенный контракт OpenClaw gateway (`sessions.messages.subscribe {sessionKeys}`, `chat.send {text, queueMode}`, `session_end`, `deltaCursor`) реальный гейтвей отверг — протокол переписан целиком.
-25. **Wire-кадры тестируются против реальных схем продукта.** Каждый outgoing-кадр валидируется JSON Schema, экспортированной из TypeBox-схем реального гейтвея (fixtures, регенерируемые `scripts/sync-openclaw-protocol.mjs`), плюс кадры, захваченные с живого гейтвея; реализация верифицируется end-to-end против реального инстанса на loopback.
-26. **Версионирование протокола — через adapter + negotiation.** Version-neutral модель, `GatewayProtocolAdapter`, v4-адаптер, регистрация negotiate'ит версию из настройки (`openclaw.gateway.protocolVersion: auto | 4`); неподдерживаемая версия — ясная перманентная ошибка; negotiated-версия видна в статус-бейдже и логах.
-27. **Handshake по закрытым enum'ам сервера.** client id/mode — только из допустимых значений гейтвея (например `gateway-client/backend`); отказы классифицируются по `error.details.code` как их шлёт сервер (`AUTH_*`, `DEVICE_AUTH_*`, `PAIRING_REQUIRED`, `PROTOCOL_MISMATCH`); credential/protocol-фэйлы останавливают reconnect с понятным сообщением, rate-limit/unavailability бэкоффятся с уважением `retryAfterMs`; `hello-ok.policy` парсится и ограничивает лимиты клиента.
-28. **Runs коррелируются по runId из ack, а не по общему мутируемому состоянию.** Seq-dedupe/replace событий; retry отправки с потерянным ack — тем же idempotency key; отвергнута только явная `ok:false`; `chat.abort` шлётся только с того соединения, что запустило ран; нек_stop-able ран продолжает стримить с уведомлением; canonical session key выучивается из hello-ok/subscribe; catch-up по курсору с reset.
-29. **Сторонние CLI-агенты описываются их реальным поведением, не догадками.** Для acpx: реальный формат вывода (ACP JSON-RPC от `--format json`), stdin `exec --file -` (prompt одним явным ACP text-блоком — leading `[` парсится как content blocks), exit 5 = denied permission после ответа (нормальное завершение с notice), JSON-RPC id атрибутируются по направлению (agent-side error ≠ провал промпта), образы — ACP image blocks, а не temp-файлы.
-30. **Запуск внешних команд — только из абсолютных путей.** PATH-энтрии без абсолютного пути (относительные, repo-planted) игнорируются (защита от подмены node.exe/cli.js); npm/pnpm shim'ы на Windows резолвятся к JS entry и запускаются через node без shell; детям никогда не отдаётся пустой PATH; PATH читается case-sensitively на POSIX.
-31. **Конфиденциальные настройки — user-scope only.** Legacy-токен никогда не принимается из workspace settings; устройства идентифицируются per-host device identity (pairing), секреты — в robust credential storage; workspace `.acpxrc.json` (может переопределить команду агента) исполняется только после явного approve конкретного файла (per folder + content hash).
-32. **Лимиты измеряются в той форме, которую реально читает транспорт.** Бюджет промпта считается по JSON-escaped payload (не по сырому тексту), per-file/per-image/frame лимиты — из `hello-ok.policy` гейтвея, а не выдуманные константы; Windows argv-бюджет — worst-case quoting, NUL → one-byte substitute.
+## Protocol rework lessons (owner rounds, 2026-09-28/29)
 
-## Процессные уроки раундов владельца (2026-09-28/29)
+24. **!VERY IMPORTANT! Never invent protocols, wire formats, APIs, CLI semantics, or library behavior.** External contracts (gateway protocol, JSON-RPC, handshake, third-party tools) must be written ONLY from documentation or actual source code. If none is at hand — ask the owner for docs/sources/a link. Only after an explicit "none exists" is empirical probing permitted. Applies to ALL development, not just claw-code. Precedent: the assumed OpenClaw gateway contract (`sessions.messages.subscribe {sessionKeys}`, `chat.send {text, queueMode}`, `session_end`, `deltaCursor`) was rejected by the real gateway — the protocol had to be rewritten entirely.
 
-33. **Проверка фактов по реальному окружению важнее внутренних моделей.** Ревью/фиксы, сделанные против воображаемого контракта, не имеют ценности — верификация против живого гейтвея/реальных схем обязательна до утверждения корректности кода (см. правило №24).
+25. **Wire frames are tested against the product's real schemas.** Every outgoing frame is validated against JSON Schema exported from the real gateway's TypeBox schemas (fixtures, regenerable via `scripts/sync-openclaw-protocol.mjs`), plus frames captured from a live gateway; the implementation is verified end-to-end against a real instance on loopback.
 
-## Покрытие тестированием
+26. **Protocol versioning goes through an adapter + negotiation.** Version-neutral model, `GatewayProtocolAdapter`, a v4 adapter, registration negotiates the version from a setting (`openclaw.gateway.protocolVersion: auto | 4`); an unsupported version yields a clear permanent error; the negotiated version is visible in the status badge and logs.
 
-34. **Максимальное покрытие unit-тестами — обязательный стандарт.** Каждый написанный блок кода (логика, ветки, guard'ы, парсеры, обработчики ошибок) покрывается unit-тестами; охват стремится к максимуму, а не к «покрыл happy path». Тестируются: все ветки условий, error-пути и edge-кейсы (пустые/нулевые/NaN/отсутствующие значения), интерливинги и гонки, деструктивные lifecycle-переходы (register/retire/replace), границы лимитов и бюджетов. Новый код без тестов — незавершённая работа; фиксы вносятся вместе с регресс-тестом, падающим без фикса. Интеграционные/E2E тесты дополняют unit, но не заменяют их.
+27. **Handshake uses the server's closed enums.** Client id/mode only from the gateway's permitted values (e.g. `gateway-client/backend`); failures are classified by `error.details.code` exactly as the server sends them (`AUTH_*`, `DEVICE_AUTH_*`, `PAIRING_REQUIRED`, `PROTOCOL_MISMATCH`); credential/protocol failures stop reconnecting with a clear message, rate-limit/unavailability is backed off while respecting `retryAfterMs`; `hello-ok.policy` is parsed and clamps client limits.
+
+28. **Runs are correlated by the runId from the ack, not by shared mutable state.** Seq-dedupe/replace of events; retrying a send whose ack was lost reuses the same idempotency key; only an explicit `ok:false` is a rejection; `chat.abort` is sent only over the connection that started the run; a non-stoppable run keeps streaming with a notification; the canonical session key is learned from hello-ok/subscribe; catch-up by cursor with reset.
+
+29. **Third-party CLI agents are described by their real behavior, not guesses.** For acpx: the real output format (ACP JSON-RPC from `--format json`), stdin `exec --file -` (the prompt as one explicit ACP text block — a leading `[` is parsed as content blocks), exit 5 = denied permission after a response (a normal completion with a notice), JSON-RPC ids are attributed by direction (an agent-side error ≠ a failed prompt), images are ACP image blocks, not temp files.
+
+30. **External commands run only from absolute paths.** PATH entries without an absolute path (relative, repo-planted) are ignored (protection against planted node.exe/cli.js); npm/pnpm shims on Windows resolve to the JS entry and run through node without a shell; children never receive an empty PATH; PATH is read case-sensitively on POSIX.
+
+31. **Sensitive settings are user-scope only.** A legacy token is never accepted from workspace settings; devices are identified per-host via device identity (pairing), secrets live in robust credential storage; a workspace `.acpxrc.json` (which can override the agent command) executes only after explicit approval of that exact file (per folder + content hash).
+
+32. **Limits are measured in the form the transport actually reads.** The prompt budget is computed over the JSON-escaped payload (not raw text), per-file/per-image/frame limits come from the gateway's `hello-ok.policy`, not invented constants; the Windows argv budget uses worst-case quoting, NUL → one-byte substitute.
+
+## Process lessons from the owner rounds (2026-09-28/29)
+
+33. **Fact-checking against the real environment beats internal models.** Reviews/fixes made against an imagined contract have no value — verification against the live gateway/real schemas is mandatory before approving code correctness (see rule #24).
+
+## Test coverage
+
+34. **Maximum unit-test coverage is a mandatory standard.** Every block of code written (logic, branches, guards, parsers, error handlers) gets unit tests; coverage aims for maximum, not "covered the happy path". Test: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them.
