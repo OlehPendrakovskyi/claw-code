@@ -138,11 +138,12 @@ export const CONTEXT_CODE_MAX_BYTES = 32 * 1024;
 export const CONTEXT_DIAGNOSTICS_MAX_BYTES = 8 * 1024;
 
 /** Escape for a double- or single-quoted attribute value. Control characters
- *  (newlines included) are encoded too, so an untrusted value such as a POSIX
- *  filename cannot break out onto a line of its own in the prompt. */
+ *  (newlines, C1 controls such as NEL) and the Unicode line and paragraph
+ *  separators are encoded too, so an untrusted value such as a POSIX filename
+ *  cannot break out onto a line of its own in the prompt. */
 export function escapeXmlAttr(str: string): string {
     // eslint-disable-next-line no-control-regex
-    return str.replace(/[&<>"'\u0000-\u001f\u007f]/g, (ch) => `&#${ch.charCodeAt(0)};`);
+    return str.replace(/[&<>"'\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
 /** Frame `body` in an element whose name carries a fresh random id. The body

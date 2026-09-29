@@ -72,13 +72,14 @@ export class OperatorPromptBoard {
     return this.pending.get(key)?.prompt;
   }
 
-  /** A prompt is announced once; a repeat (live event and backfill row) is ignored. */
+  /** A prompt is announced once; a repeat (live event and backfill row) is ignored. A request
+   *  during a backfill is noted even then: it proves the prompt pending, whatever an older list says. */
   add(prompt: OperatorPrompt): void {
     const key = keyOf(prompt);
+    this.backfill?.requested.add(key);
     if (this.pending.has(key)) {
       return;
     }
-    this.backfill?.requested.add(key);
     this.makeRoomFor(prompt.kind);
     const expiresAtMs = this.now() + prompt.lifetimeMs;
     const entry: PendingPrompt = { key, prompt, expiresAtMs, expiry: this.armExpiry(key, expiresAtMs) };

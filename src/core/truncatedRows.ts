@@ -51,9 +51,10 @@ export class TruncatedRowCompleter {
       return Promise.resolve({ ...row, ...remembered });
     }
     const queue = this.queueFor(sessionKey);
+    // Only the text is shared: this row keeps its own seq, run and usage.
     const existing = queue.reads.get(entryId);
     if (existing) {
-      return existing;
+      return existing.then(({ text, truncated }) => ({ ...row, text, truncated }));
     }
     if (queue.queued >= MAX_QUEUED_PER_SESSION) {
       return Promise.resolve(row);

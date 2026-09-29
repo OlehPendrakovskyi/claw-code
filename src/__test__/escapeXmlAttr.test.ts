@@ -11,6 +11,7 @@ describe('escapeXmlAttr', () => {
 
     it('encodes control characters so a value cannot start a new prompt line', () => {
         expect(escapeXmlAttr('a\nb\r\tc\u0000\u007f')).toBe('a&#10;b&#13;&#9;c&#0;&#127;');
+        expect(escapeXmlAttr('a\u0085b\u009fc\u2028d\u2029e')).toBe('a&#133;b&#159;c&#8232;d&#8233;e');
     });
 
     it('escapes a mixed path without breaking attribute syntax', () => {

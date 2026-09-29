@@ -121,6 +121,16 @@ describe('OperatorPromptBoard', () => {
             expect(resolvedOf(changes)).toEqual([['exec:a1', 'allow-once'], ['exec:a2', 'withdrawn']]);
         });
 
+        it('keeps a prompt announced again live while the list was read, though the list omits it', () => {
+            const { board: prompts, changes } = board();
+            prompts.add(approval('a1'));
+            const backfill = prompts.beginBackfill();
+            prompts.add(approval('a1'));
+            prompts.finishBackfill(backfill, [], ['exec']);
+            expect(resolvedOf(changes)).toEqual([]);
+            expect(prompts.get('exec:a1')).toBeDefined();
+        });
+
         it('settles only the sources whose list was read', () => {
             const { board: prompts, changes } = board();
             prompts.add(approval('a1'));

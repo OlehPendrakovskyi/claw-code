@@ -17,6 +17,19 @@ describe('TruncatedRowCompleter', () => {
             expect(again).toMatchObject({ text: 'cut and the rest', truncated: false, seq: 2 });
         });
 
+        it('shares only the text with a row of the same entry delivered while the read runs', async () => {
+            let finishRead: (row: TranscriptMessage) => void = () => undefined;
+            const readEntry = jest.fn(() => new Promise<TranscriptMessage>((resolve) => (finishRead = resolve)));
+            const completer = new TruncatedRowCompleter(readEntry);
+            const first = completer.complete('main', cutRow('e1'));
+            const again = completer.complete('main', { ...cutRow('e1'), seq: 2, runId: 'r2' });
+            await Promise.resolve();
+            finishRead({ ...cutRow('e1', 'cut and the rest'), truncated: false });
+            await expect(first).resolves.toMatchObject({ text: 'cut and the rest', seq: 1, runId: 'r1' });
+            await expect(again).resolves.toMatchObject({ text: 'cut and the rest', truncated: false, seq: 2, runId: 'r2' });
+            expect(readEntry).toHaveBeenCalledTimes(1);
+        });
+
         it('reads the entry again after a failed read', async () => {
             const readEntry = jest.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce({ ...cutRow('e1', 'cut and the rest'), truncated: false });
             const completer = new TruncatedRowCompleter(readEntry);
