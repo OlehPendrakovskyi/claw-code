@@ -121,4 +121,3 @@ Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~
 
 - Teardown/leak rules (1, 11, 16, 17, 23) still produced the largest finding count in PR #11: when retiring a resource, retire exactly the owner's own registration, never the whole session-set — worth re-reading the five rules together on any teardown change.
 - Secret-redaction (rule 10) covers logs only; egress surfaces (rule 35) are a separate mandatory surface.
-
