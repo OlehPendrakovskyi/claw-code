@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { findGitOnPath, resolveGitExecutable } from '../webview/gitExecutable';
 
@@ -46,7 +47,8 @@ describe('gitExecutable', () => {
                 getExtension: () => ({ isActive: true, exports: { getAPI: () => ({ git: { path: 'git' } }) } }),
             };
             const resolved = await resolveGitExecutable();
-            expect(resolved === undefined || resolved.startsWith('/')).toBe(true);
+            // Whatever git this machine has, it is found by an absolute path (`C:\\...` on Windows).
+            expect(resolved === undefined || path.isAbsolute(resolved)).toBe(true);
         });
     });
 });

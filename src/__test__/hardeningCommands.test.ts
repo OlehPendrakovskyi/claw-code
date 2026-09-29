@@ -15,6 +15,8 @@ import { getHardeningCommandPrefix } from '../core/configIO';
 import { execFileAsync } from '../vscode/commands/shared';
 import { showHardeningAccessSummary } from '../vscode/commands/hardening';
 
+const posixOnly = process.platform === 'win32' ? it.skip : it;
+
 describe('hardening commands', () => {
     describe('showHardeningAccessSummary', () => {
         beforeEach(() => {
@@ -35,7 +37,7 @@ describe('hardening commands', () => {
         }
 
         // `sh` stands in for the CLI: /bin/sh exists on every POSIX machine, so the lookup needs no fixture files.
-        it('runs the status check by absolute path, with only the absolute PATH entries', async () => {
+        posixOnly('runs the status check by absolute path, with only the absolute PATH entries', async () => {
             jest.mocked(getHardeningCommandPrefix).mockReturnValue('sh');
             await summarizeWith({ PATH: '.:node_modules/.bin:/bin', HOME: '/home/u' });
             expect(execFileAsync).toHaveBeenCalledWith('/bin/sh', ['status', '--all'], expect.objectContaining({ env: { PATH: '/bin', HOME: '/home/u' } }));
