@@ -234,6 +234,15 @@ describe('ChatViewProvider prompts', () => {
             expect(promptsOf(sidebar)[0]).toMatchObject({ state: 'pending', status: expect.stringContaining('Shorten the typed answer') });
         });
 
+        it('sends an offered option however long, as only typed text is capped', async () => {
+            const sidebar = await boundTo(MAIN);
+            const label = 'x'.repeat(MAX_TYPED_ANSWER_CHARS + 1);
+            const long: QuestionPrompt = { ...QUESTION, questions: [{ ...QUESTION.questions[0], options: [{ label, description: null }] }] };
+            gateway.emitPrompt(requestedChange(long));
+            await sidebar.send({ type: 'answerQuestion', threadId: 'thread-1', promptKey: 'question:q1', answers: { color: [label] } });
+            expect(gateway.answerQuestion).toHaveBeenLastCalledWith('question:q1', { color: [label] });
+        });
+
         it('keeps a picked option exactly as offered, trimming only typed text', async () => {
             const sidebar = await boundTo(MAIN);
             const padded: QuestionPrompt = { ...QUESTION, questions: [{ ...QUESTION.questions[0], options: [{ label: 'Yes ', description: null }] }] };

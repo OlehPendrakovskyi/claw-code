@@ -77,10 +77,13 @@ export function isOfferedDecision(prompt: OperatorPrompt, value: unknown): value
     return prompt.kind === 'approval' && typeof value === 'string' && (prompt.decisions as readonly string[]).includes(value);
 }
 
+function isOffered(question: QuestionItem, value: string): boolean {
+    return question.options.some((option) => option.label === value);
+}
+
 /** An option label is kept exactly as offered; typed text is trimmed, except a secret's. */
 function typedOrPicked(question: QuestionItem, value: string): string {
-    const picked = question.options.some((option) => option.label === value);
-    return picked || question.secret ? value : value.trim();
+    return isOffered(question, value) || question.secret ? value : value.trim();
 }
 
 /** A question's values, each once, or null when they do not answer it. */
@@ -89,7 +92,7 @@ function answerValues(question: QuestionItem, raw: unknown): string[] | null {
         return null;
     }
     const values = [...new Set(raw.map((value) => typedOrPicked(question, value)).filter((value) => value !== ''))];
-    const known = question.allowsOther || values.every((value) => question.options.some((option) => option.label === value));
+    const known = question.allowsOther || values.every((value) => isOffered(question, value));
     const counted = values.length === 1 || (question.multiSelect && values.length > 1);
     return known && counted ? values : null;
 }
@@ -105,7 +108,9 @@ export function checkQuestionAnswers(prompt: QuestionPrompt, raw: unknown): Answ
     for (const question of prompt.questions) {
         const values = Object.prototype.hasOwnProperty.call(byId, question.id) ? answerValues(question, byId[question.id]) : null;
         if (!values) return { error: INCOMPLETE_ANSWER_MESSAGE };
-        if (values.some((value) => value.length > MAX_TYPED_ANSWER_CHARS)) return { error: ANSWER_TOO_LONG_MESSAGE };
+        // Only typed text is capped: an offered option, however long, is the gateway's own.
+        const typedTooLong = values.some((value) => value.length > MAX_TYPED_ANSWER_CHARS && !isOffered(question, value));
+        if (typedTooLong) return { error: ANSWER_TOO_LONG_MESSAGE };
         answers[question.id] = values;
     }
     return { answers };
