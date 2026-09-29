@@ -30,7 +30,8 @@ describe('gateway protocol v4 message readers', () => {
             ['snake_case', { input_tokens: 2, output_tokens: 3, total_tokens: 5 }, { promptTokens: 2, completionTokens: 3, totalTokens: 5 }],
             ['legacy snake', { prompt_tokens: 7, completion_tokens: 8 }, { promptTokens: 7, completionTokens: 8, totalTokens: 15 }],
             ['total only', { totalTokens: 9 }, { promptTokens: 0, completionTokens: 0, totalTokens: 9 }],
-            ['total_tokens alias', { total: 9 }, { promptTokens: 0, completionTokens: 0, totalTokens: 9 }],
+            ['total alias', { total: 9 }, { promptTokens: 0, completionTokens: 0, totalTokens: 9 }],
+            ['total_tokens alias', { total_tokens: 9 }, { promptTokens: 0, completionTokens: 0, totalTokens: 9 }],
         ])('reads the %s spelling', (_label, value, expected) => {
             expect(readUsage(value)).toEqual(expected);
         });
