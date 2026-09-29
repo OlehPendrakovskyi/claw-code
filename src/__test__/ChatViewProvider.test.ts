@@ -219,6 +219,44 @@ describe('ChatViewProvider', () => {
         });
     });
 
+    describe('reply replacement', () => {
+        async function runSink(sidebar: FakeWebview): Promise<(event: ChatEvent) => void> {
+            await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
+            await flush();
+            const calls = jest.mocked(gateway.sendMessage).mock.calls;
+            return calls[calls.length - 1][0].onEvent;
+        }
+
+        function assistantRows(sidebar: FakeWebview): unknown[] {
+            return threadOf(sidebar, 'thread-1').messages.filter(m => m.role === 'assistant').map(m => m.content);
+        }
+
+        it('replaces the streaming text in place, and the webview gets the replacement', async () => {
+            const { sidebar } = makeProvider();
+            const run = await runSink(sidebar);
+            run({ type: 'text', text: 'draft' });
+            run({ type: 'text', text: ' more' });
+            run({ type: 'textReplace', text: 'final answer' });
+            await flush();
+            expect(sidebar.posted.filter(m => m.type === 'textUpdate').pop()).toMatchObject({ threadId: 'thread-1', text: 'final answer' });
+            run({ type: 'done' });
+            await flush();
+            expect(assistantRows(sidebar)).toEqual(['final answer']);
+        });
+
+        it('replaces the reply already committed as the last row, and starts anew after a tool row', async () => {
+            const { sidebar } = makeProvider();
+            const run = await runSink(sidebar);
+            run({ type: 'text', text: 'before the tool' });
+            run({ type: 'toolCall', title: 'read', status: 'running', details: '' });
+            run({ type: 'textReplace', text: 'after the tool' });
+            await flush();
+            run({ type: 'done' });
+            await flush();
+            expect(assistantRows(sidebar)).toEqual(['before the tool', 'after the tool']);
+        });
+    });
+
     describe('tool calls', () => {
         async function openWithRunningTool(sidebar: FakeWebview): Promise<(event: ChatEvent) => void> {
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });

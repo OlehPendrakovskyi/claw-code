@@ -487,8 +487,27 @@ export const CONTENT_CSS = `
             overflow-y: auto;
         }
 
-        .prompt-details {
+        .prompt-details,
+        .prompt-warnings {
             padding-left: 16px;
+        }
+
+        .prompt-warnings {
+            color: var(--vscode-editorWarning-foreground, #cca700);
+        }
+
+        .pane-prompt-badge {
+            border-color: var(--vscode-inputValidation-warningBorder, #b89500);
+            color: var(--vscode-editorWarning-foreground, #cca700);
+        }
+
+        .pane-prompt-announcer {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
         }
 
         .prompt-question {

@@ -16,6 +16,9 @@ export type EntryReader = (sessionKey: string, entryId: string) => Promise<Trans
 /** Rows of one session waiting for their read; more are rendered as they came. */
 const MAX_QUEUED_PER_SESSION = 8;
 
+/** The session's later rows and run events wait behind a read, so a slow one gives up early. */
+const READ_TIMEOUT_MS = 10_000;
+
 type SessionQueue = { tail: Promise<unknown>; queued: number; reads: Map<string, Promise<TranscriptMessage>> };
 
 export class TruncatedRowCompleter {
@@ -64,11 +67,17 @@ export class TruncatedRowCompleter {
   }
 
   private async read(sessionKey: string, row: TranscriptMessage, entryId: string): Promise<TranscriptMessage> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), READ_TIMEOUT_MS);
+    });
     try {
-      const full = await this.readEntry(sessionKey, entryId);
+      const full = await Promise.race([this.readEntry(sessionKey, entryId), timeout]);
       return full && full.text.length >= row.text.length ? { ...row, text: full.text, truncated: full.truncated } : row;
     } catch {
       return row;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

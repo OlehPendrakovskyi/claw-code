@@ -189,11 +189,12 @@ type PromptRef = { id: string; sessionKey?: string | null; runId?: string | null
 
 type WireQuestion = { questionId: string; question: string; header?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean; isOther?: boolean; isSecret?: boolean };
 
-/** Far enough ahead that no spec's clock reaches it unless it means to. */
+/** The gateway-clock stamps of prompt fixtures; their span is the lifetime a client times from receipt. */
+export const PROMPT_CREATED_AT_MS = 1_790_606_196_000;
 export const PROMPT_EXPIRES_AT_MS = 4_102_444_800_000;
 
 function promptEnvelope({ id, expiresAtMs = PROMPT_EXPIRES_AT_MS }: PromptRef, request: JsonObject): JsonObject {
-    return { id, request, createdAtMs: 1_790_606_196_000, expiresAtMs };
+    return { id, request, createdAtMs: PROMPT_CREATED_AT_MS, expiresAtMs };
 }
 
 function promptSession({ sessionKey = CANONICAL_MAIN, runId = null }: PromptRef): JsonObject {
@@ -287,7 +288,7 @@ export const payloads = {
         agentId: 'dev',
         ...(ref.sessionKey === null ? {} : { sessionKey: ref.sessionKey ?? CANONICAL_MAIN }),
         ...(ref.runId ? { runId: ref.runId } : {}),
-        createdAtMs: 1_790_606_196_000,
+        createdAtMs: PROMPT_CREATED_AT_MS,
         expiresAtMs: ref.expiresAtMs ?? PROMPT_EXPIRES_AT_MS,
         status: 'pending',
     }),

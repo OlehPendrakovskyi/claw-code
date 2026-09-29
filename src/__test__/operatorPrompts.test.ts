@@ -1,21 +1,25 @@
 import type { OperatorPrompt } from '../core/gatewayProtocol/model';
-import { OperatorPromptBoard, type PromptChange } from '../core/operatorPrompts';
+import { MAX_PENDING_PER_KIND, OperatorPromptBoard, type PromptChange } from '../core/operatorPrompts';
 
 const NOW = 1_790_000_000_000;
 
-function approval(id: string, expiresAtMs = NOW + 60_000): OperatorPrompt {
-    return { kind: 'approval', id, subject: 'exec', title: 'ls', details: [], decisions: ['allow-once', 'deny'], sessionKey: 'agent:dev:main', runId: null, expiresAtMs };
+function approval(id: string, lifetimeMs = 60_000): OperatorPrompt {
+    return { kind: 'approval', id, subject: 'exec', title: 'ls', details: [], decisions: ['allow-once', 'deny'], sessionKey: 'agent:dev:main', runId: null, lifetimeMs };
 }
 
 function question(id: string): OperatorPrompt {
-    return { kind: 'question', id, questions: [], sessionKey: 'agent:dev:main', runId: null, expiresAtMs: NOW + 60_000 };
+    return { kind: 'question', id, questions: [], sessionKey: 'agent:dev:main', runId: null, lifetimeMs: 60_000 };
 }
 
-function board(): { board: OperatorPromptBoard; changes: PromptChange[] } {
+function board(onOverflow = jest.fn()): { board: OperatorPromptBoard; changes: PromptChange[] } {
     const changes: PromptChange[] = [];
-    const prompts = new OperatorPromptBoard(() => Date.now());
+    const prompts = new OperatorPromptBoard({ now: () => Date.now(), onOverflow });
     prompts.subscribe((change) => changes.push(change));
     return { board: prompts, changes };
+}
+
+function resolvedOf(changes: PromptChange[]): Array<[string, string]> {
+    return changes.flatMap((change): Array<[string, string]> => (change.type === 'resolved' ? [[change.id, change.outcome]] : []));
 }
 
 describe('OperatorPromptBoard', () => {
@@ -33,23 +37,34 @@ describe('OperatorPromptBoard', () => {
             prompts.add(approval('a1'));
             prompts.settle('a1', 'deny');
             prompts.settle('a1', 'allow-once');
-            expect(changes).toEqual([{ type: 'requested', prompt: approval('a1') }, { type: 'resolved', id: 'a1', outcome: 'deny' }]);
+            expect(changes).toEqual([{ type: 'requested', prompt: approval('a1'), expiresAtMs: NOW + 60_000 }, { type: 'resolved', id: 'a1', outcome: 'deny' }]);
         });
 
-        it('ignores a prompt already past its deadline', () => {
+        it('times a prompt from its receipt for the lifetime the gateway gave it', () => {
             const { board: prompts, changes } = board();
-            prompts.add(approval('a1', NOW));
-            expect(changes).toEqual([]);
+            prompts.add(approval('a1', 5000));
+            jest.advanceTimersByTime(4999);
+            expect(resolvedOf(changes)).toEqual([]);
+            jest.advanceTimersByTime(1);
+            expect(resolvedOf(changes)).toEqual([['a1', 'expired']]);
         });
 
         it('expires a prompt whose deadline lies beyond one timer period', () => {
             const { board: prompts, changes } = board();
-            const farDeadline = NOW + 2 ** 31 + 10_000;
-            prompts.add(approval('a1', farDeadline));
+            prompts.add(approval('a1', 2 ** 31 + 10_000));
             jest.advanceTimersByTime(2 ** 31 - 1);
             expect(changes).toHaveLength(1);
             jest.advanceTimersByTime(20_000);
             expect(changes[1]).toEqual({ type: 'resolved', id: 'a1', outcome: 'expired' });
+        });
+
+        it('withdraws the oldest prompt of a kind once it holds as many as it keeps, and says so', () => {
+            const onOverflow = jest.fn();
+            const { board: prompts, changes } = board(onOverflow);
+            for (let i = 0; i <= MAX_PENDING_PER_KIND; i++) prompts.add(approval(`a${i}`));
+            prompts.add(question('q1'));
+            expect(resolvedOf(changes)).toEqual([['a0', 'withdrawn']]);
+            expect(onOverflow).toHaveBeenCalledTimes(1);
         });
 
         it('withdraws only the kinds asked for', () => {
@@ -77,6 +92,18 @@ describe('OperatorPromptBoard', () => {
             prompts.add(question('q1'));
             prompts.finishBackfill(prompts.beginBackfill(), [], ['approval']);
             expect(prompts.get('q1')).toBeDefined();
+        });
+
+        it('settles a prompt answered before its reply was lost with that answer, once the list no longer has it', () => {
+            const { board: prompts, changes } = board();
+            prompts.add(approval('a1'));
+            prompts.add(approval('a2'));
+            prompts.noteSubmission('a1', 'allow-once');
+            prompts.noteSubmission('a2', 'deny');
+            prompts.finishBackfill(prompts.beginBackfill(), [approval('a2')], ['approval']);
+            expect(resolvedOf(changes)).toEqual([['a1', 'allow-once']]);
+            prompts.finishBackfill(prompts.beginBackfill(), [], ['approval']);
+            expect(resolvedOf(changes)).toEqual([['a1', 'allow-once'], ['a2', 'withdrawn']]);
         });
 
         it('drops a backfill a newer one superseded', () => {

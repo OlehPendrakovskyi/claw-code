@@ -81,6 +81,8 @@ export type UsageInfo = {
 
 export type ChatEvent =
     | { type: 'text'; text: string }
+    /** The reply being streamed now reads `text`, superseding what was shown of it. */
+    | { type: 'textReplace'; text: string }
     | { type: 'toolCall'; title: string; status: string; details: string; id?: string }
     /** One turn's token counts, for the per-turn usage readout. */
     | { type: 'usage'; usage: UsageInfo }

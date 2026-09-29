@@ -43,7 +43,7 @@ import {
     mapHistoryMessages,
     type AgentSessionItem,
 } from '../core/agentPicker';
-import type { HistorySnapshot, SendAttachment, SessionSummary } from '../core/gatewayProtocol/model';
+import type { HistorySnapshot, PromptOutcome, SendAttachment, SessionSummary } from '../core/gatewayProtocol/model';
 import type { PromptChange } from '../core/operatorPrompts';
 import {
     INCOMPLETE_ANSWER_MESSAGE,
@@ -158,6 +158,9 @@ const SEND_DURING_OPEN_MESSAGE = 'A session is being opened in this thread. Send
 
 /** Settled approval and question rows kept for display, oldest dropped first. */
 const SETTLED_PROMPT_LIMIT = 50;
+
+const PROMPT_SHOWN_NOWHERE_MESSAGE =
+    'An OpenClaw run is waiting for an approval or an answer that no chat thread here shows. Answer it in the OpenClaw Control UI, or open its session in a thread.';
 
 export class ChatViewProvider implements vscode.WebviewViewProvider {
     public static readonly viewType = 'openclaw.chat';
@@ -536,10 +539,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     }
                     break;
                 case 'resolveApproval':
-                    await this.handleResolveApproval(msg.promptId, msg.decision);
+                    await this.handleResolveApproval(msg.threadId, msg.promptId, msg.decision);
                     break;
                 case 'answerQuestion':
-                    await this.handleAnswerQuestion(msg.promptId, msg.answers);
+                    await this.handleAnswerQuestion(msg.threadId, msg.promptId, msg.answers);
                     break;
             }
         });
@@ -1158,6 +1161,37 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         );
     }
 
+    /** The reply being streamed now reads `text`: the streaming text is replaced, or, when that
+     *  was already committed as the thread's last row, that row is; otherwise it starts anew. */
+    private replaceReplyText(thread: ChatThreadState, text: string): void {
+        const last = thread.messages[thread.messages.length - 1];
+        if (!thread.pendingAssistantText && last?.role === 'assistant') {
+            last.content = text;
+            last.html = undefined;
+            void renderMarkdown(text).then(
+                html => { if (last.content === text) { last.html = html; this.emitState(); } },
+                (err: unknown) => log.warn('rendering a reply failed', err)
+            );
+            this.emitState();
+            return;
+        }
+        this.showReplyText(thread, text);
+    }
+
+    /** The streaming reply now reads `text`; the webviews get it without a full re-render. */
+    private showReplyText(thread: ChatThreadState, text: string): void {
+        thread.pendingAssistantText = text;
+        // The webview queues a send only for a thread it knows is streaming.
+        if (!thread.isStreaming) {
+            thread.isStreaming = true;
+            thread.status = 'running';
+            this.emitState();
+            return;
+        }
+        thread.status = 'running';
+        postToAll(this.allWebviews(), { type: 'textUpdate', threadId: thread.id, text });
+    }
+
     /** Settles the webview's pending send by its clientId: accepted once dispatched, else rejected so the draft comes back. */
     private postSendOutcome(webview: vscode.Webview, msg: InboundMessage, dispatched: boolean): void {
         void webview.postMessage({
@@ -1759,20 +1793,10 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
         switch (event.type) {
             case 'text':
-                thread.pendingAssistantText += event.text;
-                // The webview queues a send only for a thread it knows is streaming.
-                if (!thread.isStreaming) {
-                    thread.isStreaming = true;
-                    thread.status = 'running';
-                    this.emitState();
-                    break;
-                }
-                thread.status = 'running';
-                postToAll(this.allWebviews(), {
-                    type: 'textUpdate',
-                    threadId: thread.id,
-                    text: thread.pendingAssistantText,
-                });
+                this.showReplyText(thread, thread.pendingAssistantText + event.text);
+                break;
+            case 'textReplace':
+                this.replaceReplyText(thread, event.text);
                 break;
             case 'toolCall':
                 // Text before a tool call stays its own row above the tool group.
@@ -2065,13 +2089,14 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private applyPromptChange(gateway: GatewayChatService, change: PromptChange): void {
         if (change.type === 'requested') {
-            this.operatorPrompts.set(change.prompt.id, newPromptRow(change.prompt, gateway));
+            const row = newPromptRow(change.prompt, gateway, change.expiresAtMs);
+            this.operatorPrompts.set(change.prompt.id, row);
+            this.warnIfShownNowhere(row);
         } else {
             const row = this.operatorPrompts.get(change.id);
             if (!row || row.state === 'resolved') {
                 return;
             }
-            row.answeredHere = row.state === 'submitting';
             row.state = 'resolved';
             row.outcome = change.outcome;
             this.pruneSettledPrompts();
@@ -2086,11 +2111,28 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    /** Rows of the session a thread is bound to on the gateway that raised them. */
+    /** Rows of the session a thread is bound to on the gateway that raised them; a row no
+     *  session claims shows in the fallback thread of its gateway. */
     private promptRowsFor(thread: ChatThreadState): Array<PromptRow<GatewayChatService>> {
-        return [...this.operatorPrompts.values()].filter(row =>
-            row.prompt.sessionKey !== null && this.backendFor(thread) === row.gateway &&
-            this.boundToGatewaySession(thread, row.prompt.sessionKey));
+        return [...this.operatorPrompts.values()].filter(row => {
+            const sessionKey = row.prompt.sessionKey;
+            if (sessionKey === null) return this.fallbackPromptThread(row.gateway) === thread;
+            return this.backendFor(thread) === row.gateway && this.boundToGatewaySession(thread, sessionKey);
+        });
+    }
+
+    /** The active thread when it is bound to the gateway, else the first thread that is. */
+    private fallbackPromptThread(gateway: GatewayChatService): ChatThreadState | undefined {
+        const boundHere = (thread: ChatThreadState | undefined): boolean => thread?.sessionKey !== undefined && this.backendFor(thread) === gateway;
+        const active = this.getActiveThread();
+        return boundHere(active) ? active : [...this.threads.values()].find(boundHere);
+    }
+
+    /** A prompt no session claims and no gateway thread can show still waits: say where to answer it. */
+    private warnIfShownNowhere(row: PromptRow<GatewayChatService>): void {
+        if (row.prompt.sessionKey === null && !this.fallbackPromptThread(row.gateway)) {
+            void vscode.window.showWarningMessage(PROMPT_SHOWN_NOWHERE_MESSAGE);
+        }
     }
 
     private promptViewsFor(threadId: string): PromptView[] {
@@ -2105,22 +2147,27 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private pendingPromptRow(promptId: unknown): PromptRow<GatewayChatService> | undefined {
+    /** A pending row the named thread shows: an answer from a pane counts only for what it displays. */
+    private pendingPromptRow(threadId: unknown, promptId: unknown): PromptRow<GatewayChatService> | undefined {
+        const thread = typeof threadId === 'string' ? this.threads.get(threadId) : undefined;
         const row = typeof promptId === 'string' ? this.operatorPrompts.get(promptId) : undefined;
-        return row?.state === 'pending' ? row : undefined;
+        if (!thread || row?.state !== 'pending') {
+            return undefined;
+        }
+        return this.promptRowsFor(thread).includes(row) ? row : undefined;
     }
 
-    private async handleResolveApproval(promptId: unknown, decision: unknown): Promise<void> {
-        const row = this.pendingPromptRow(promptId);
+    private async handleResolveApproval(threadId: unknown, promptId: unknown, decision: unknown): Promise<void> {
+        const row = this.pendingPromptRow(threadId, promptId);
         if (!row || !isOfferedDecision(row.prompt, decision)) {
             return;
         }
-        await this.submitPrompt(row, () => row.gateway.resolveApproval(row.prompt.id, decision));
+        await this.submitPrompt(row, decision, () => row.gateway.resolveApproval(row.prompt.id, decision));
     }
 
     /** `answers` null declines the question; anything else must answer every question it asks. */
-    private async handleAnswerQuestion(promptId: unknown, rawAnswers: unknown): Promise<void> {
-        const row = this.pendingPromptRow(promptId);
+    private async handleAnswerQuestion(threadId: unknown, promptId: unknown, rawAnswers: unknown): Promise<void> {
+        const row = this.pendingPromptRow(threadId, promptId);
         if (row?.prompt.kind !== 'question') {
             return;
         }
@@ -2130,12 +2177,13 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             this.emitState();
             return;
         }
-        await this.submitPrompt(row, () => row.gateway.answerQuestion(row.prompt.id, answers));
+        await this.submitPrompt(row, answers ? 'answered' : 'cancelled', () => row.gateway.answerQuestion(row.prompt.id, answers));
     }
 
     /** A failed answer leaves the row pending with the reason, so the user can try again. */
-    private async submitPrompt(row: PromptRow<GatewayChatService>, submit: () => Promise<void>): Promise<void> {
+    private async submitPrompt(row: PromptRow<GatewayChatService>, outcome: PromptOutcome, submit: () => Promise<void>): Promise<void> {
         row.state = 'submitting';
+        row.submitted = outcome;
         row.error = null;
         this.emitState();
         try {

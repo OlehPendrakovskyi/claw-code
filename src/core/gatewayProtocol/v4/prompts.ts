@@ -108,8 +108,8 @@ function readApproval(subject: ApprovalSubject, payload: unknown): ApprovalPromp
   const request = readRecord(fields.request);
   const id = readString(fields.id);
   const title = subject === 'exec' ? readTrimmedString(request.command) : readTrimmedString(request.title);
-  const expiresAtMs = readNonNegativeInteger(fields.expiresAtMs);
-  if (!id || !title || expiresAtMs === null) {
+  const lifetimeMs = readLifetime(fields);
+  if (!id || !title || lifetimeMs === null) {
     return null;
   }
   return {
@@ -121,8 +121,15 @@ function readApproval(subject: ApprovalSubject, payload: unknown): ApprovalPromp
     decisions: readDecisions(request.allowedDecisions),
     sessionKey: readString(request.sessionKey),
     runId: readString(request.runId),
-    expiresAtMs,
+    lifetimeMs,
   };
+}
+
+/** The gateway's created→expires span: both stamps are on its clock, so no local clock enters. */
+function readLifetime(fields: Readonly<Record<string, unknown>>): number | null {
+  const createdAtMs = readNonNegativeInteger(fields.createdAtMs);
+  const expiresAtMs = readNonNegativeInteger(fields.expiresAtMs);
+  return createdAtMs === null || expiresAtMs === null ? null : Math.max(expiresAtMs - createdAtMs, 0);
 }
 
 function readOption(value: unknown): QuestionOption | null {
@@ -155,13 +162,13 @@ function readQuestionItem(value: unknown): QuestionItem | null {
 function readQuestion(payload: unknown): QuestionPrompt | null {
   const fields = readRecord(payload);
   const id = readString(fields.id);
-  const expiresAtMs = readNonNegativeInteger(fields.expiresAtMs);
+  const lifetimeMs = readLifetime(fields);
   const questions = readArray(fields.questions).flatMap((question) => readQuestionItem(question) ?? []);
   const complete = questions.length > 0 && questions.length === readArray(fields.questions).length;
-  if (!id || expiresAtMs === null || fields.status !== 'pending' || !complete) {
+  if (!id || lifetimeMs === null || fields.status !== 'pending' || !complete) {
     return null;
   }
-  return { kind: 'question', id, questions, sessionKey: readString(fields.sessionKey), runId: readString(fields.runId), expiresAtMs };
+  return { kind: 'question', id, questions, sessionKey: readString(fields.sessionKey), runId: readString(fields.runId), lifetimeMs };
 }
 
 function requested(prompt: OperatorPrompt | null): InboundEvent | null {

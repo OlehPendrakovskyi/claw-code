@@ -196,7 +196,8 @@ export type ApprovalPrompt = {
   decisions: readonly ApprovalDecision[];
   sessionKey: string | null;
   runId: string | null;
-  expiresAtMs: number;
+  /** The span the gateway gave it (created to expires, on its clock); timed from receipt, never against the local clock. */
+  lifetimeMs: number;
 };
 
 export type QuestionOption = { label: string; description: string | null };
@@ -219,7 +220,8 @@ export type QuestionPrompt = {
   questions: readonly QuestionItem[];
   sessionKey: string | null;
   runId: string | null;
-  expiresAtMs: number;
+  /** The span the gateway gave it (created to expires, on its clock); timed from receipt, never against the local clock. */
+  lifetimeMs: number;
 };
 
 export type OperatorPrompt = ApprovalPrompt | QuestionPrompt;

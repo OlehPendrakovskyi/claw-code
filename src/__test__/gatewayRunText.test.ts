@@ -1,5 +1,5 @@
 /**
- * The append-only reducer of streamed gateway run text.
+ * The reducer of streamed gateway run text into append and replace updates.
  */
 
 import { applyAborted, applyDelta, applyFinal, BoundedSet, newRunText } from '../core/gatewayRunText';
@@ -10,18 +10,21 @@ function delta(seq: number, deltaText: string, opts: Partial<RunDelta> = {}): Ru
 }
 
 describe('gatewayRunText', () => {
+    const append = (text: string) => ({ kind: 'append', text });
+    const replace = (text: string) => ({ kind: 'replace', text });
+
     describe('applyDelta', () => {
         it('appends suffix deltas', () => {
             const run = newRunText();
-            expect(applyDelta(run, delta(1, 'Echo:'))).toBe('Echo:');
-            expect(applyDelta(run, delta(2, '  Activ'))).toBe('  Activ');
+            expect(applyDelta(run, delta(1, 'Echo:'))).toEqual(append('Echo:'));
+            expect(applyDelta(run, delta(2, '  Activ'))).toEqual(append('  Activ'));
             expect(run.rendered).toBe('Echo:  Activ');
         });
 
         it('prefers the cumulative snapshot, recovering a dropped delta', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'Echo:', { snapshotText: 'Echo:' }));
-            expect(applyDelta(run, delta(3, 'ive', { snapshotText: 'Echo:  Active' }))).toBe('  Active');
+            expect(applyDelta(run, delta(3, 'ive', { snapshotText: 'Echo:  Active' }))).toEqual(append('  Active'));
         });
 
         it('drops stale and repeated sequences', () => {
@@ -32,47 +35,38 @@ describe('gatewayRunText', () => {
             expect(run.rendered).toBe('a');
         });
 
-        it('emits the rest of a replacement that extends the shown text', () => {
+        it('appends the rest of a replacement that extends the shown text', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'hel'));
-            expect(applyDelta(run, delta(2, 'hello', { replace: true }))).toBe('lo');
-            expect(run.held).toBeNull();
+            expect(applyDelta(run, delta(2, 'hello', { replace: true }))).toEqual(append('lo'));
         });
 
-        it('holds a replacement that diverges, and builds later deltas on it', () => {
+        it('replaces the shown text with a replacement that diverges, and appends later deltas to it', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'hello'));
-            expect(applyDelta(run, delta(2, 'goodbye', { replace: true }))).toBe('');
-            expect(run.held).toBe('goodbye');
-            expect(applyDelta(run, delta(3, ' now'))).toBe('');
-            expect(run).toMatchObject({ rendered: 'hello', held: 'goodbye now' });
+            expect(applyDelta(run, delta(2, 'goodbye', { replace: true }))).toEqual(replace('goodbye'));
+            expect(applyDelta(run, delta(3, ' now'))).toEqual(append(' now'));
+            expect(run.rendered).toBe('goodbye now');
         });
     });
 
     describe('applyFinal', () => {
-        it('emits the unrendered rest of the final text', () => {
+        it('appends the unrendered rest of the final text', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'Echo:'));
-            expect(applyFinal(run, 'Echo: done')).toBe(' done');
+            expect(applyFinal(run, 'Echo: done')).toEqual(append(' done'));
         });
 
-        it('emits a diverging final text in full after a separator', () => {
+        it('replaces the shown text with a diverging final text, once', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'draft'));
-            expect(applyFinal(run, 'final answer')).toBe('\n\nfinal answer');
+            expect(applyFinal(run, 'final answer')).toEqual(replace('final answer'));
             expect(run.rendered).toBe('final answer');
         });
 
-        it('settles held text when the final carries no message', () => {
-            const run = newRunText();
-            applyDelta(run, delta(1, 'hello'));
-            applyDelta(run, delta(2, 'goodbye', { replace: true }));
-            expect(applyFinal(run, null)).toBe('\n\ngoodbye');
-        });
-
-        it('emits nothing without any text', () => {
-            expect(applyFinal(newRunText(), null)).toBe('');
-            expect(applyFinal(newRunText(), '')).toBe('');
+        it('changes nothing without any text', () => {
+            expect(applyFinal(newRunText(), null)).toEqual(append(''));
+            expect(applyFinal(newRunText(), '')).toEqual(append(''));
         });
     });
 
@@ -80,9 +74,9 @@ describe('gatewayRunText', () => {
         it('adds only a clean extension of the shown text', () => {
             const run = newRunText();
             applyDelta(run, delta(1, 'part'));
-            expect(applyAborted(run, 'partial')).toBe('ial');
-            expect(applyAborted(run, 'other')).toBe('');
-            expect(applyAborted(run, null)).toBe('');
+            expect(applyAborted(run, 'partial')).toEqual(append('ial'));
+            expect(applyAborted(run, 'other')).toEqual(append(''));
+            expect(applyAborted(run, null)).toEqual(append(''));
             expect(run.rendered).toBe('partial');
         });
     });

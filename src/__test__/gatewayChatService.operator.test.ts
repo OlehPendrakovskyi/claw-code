@@ -13,6 +13,7 @@ import type { PromptChange } from '../core/operatorPrompts';
 import type { ChatEvent } from '../chat/ChatService';
 import {
     CANONICAL_MAIN,
+    PROMPT_CREATED_AT_MS,
     createMockSocket,
     eventFrame,
     payloads,
@@ -169,7 +170,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
                 decisions: ['allow-once', 'allow-always', 'deny'],
                 sessionKey: CANONICAL_MAIN,
                 runId: 'r1',
-                expiresAtMs: expect.any(Number),
+                lifetimeMs: expect.any(Number),
             }]);
             const resolving = h.svc.resolveApproval('a1', 'allow-once');
             expect(h.socket().lastRequest('exec.approval.resolve').params).toEqual({ id: 'a1', decision: 'allow-once' });
@@ -211,10 +212,12 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             expect(outcomes(h.changes)).toEqual([]);
         });
 
-        it('expires an approval at the deadline the gateway set, which broadcasts nothing', async () => {
+        it('expires an approval after the lifetime the gateway gave it, whatever the local clock says', async () => {
             jest.useFakeTimers();
             const h = await connected();
-            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1', expiresAtMs: Date.now() + 5000 }, 'ls'));
+            // The gateway's clock is years apart from the local one; only its created→expires span counts.
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1', expiresAtMs: PROMPT_CREATED_AT_MS + 5000 }, 'ls'));
+            expect(requested(h.changes).map((prompt) => prompt.id)).toEqual(['a1']);
             jest.advanceTimersByTime(4999);
             expect(outcomes(h.changes)).toEqual([]);
             jest.advanceTimersByTime(1);
@@ -235,6 +238,30 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             const late: PromptChange[] = [];
             h.svc.onApprovalRequest((change) => late.push(change));
             expect(requested(late).map((prompt) => prompt.id)).toEqual(['a1']);
+        });
+
+        it('settles an answer the gateway applied although its reply was lost to a reconnect', async () => {
+            jest.useFakeTimers();
+            const h = await connected();
+            receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
+            const resolving = h.svc.resolveApproval('a1', 'allow-once');
+            h.socket().emit('close', 1006, Buffer.alloc(0));
+            await expect(resolving).rejects.toThrow();
+            jest.advanceTimersByTime(1000);
+            await handshake(h);
+            answerBackfill(h, {});
+            await settle();
+            expect(outcomes(h.changes)).toEqual([['a1', 'allow-once']]);
+        });
+
+        it('re-reads the pending prompts when the event sequence skips, as prompt events are dropped for slow clients', async () => {
+            const h = await connected();
+            h.socket().receive(eventFrame('tick', { ts: 1 }, 1));
+            h.socket().receive(eventFrame('tick', { ts: 2 }, 3));
+            await settle();
+            answerBackfill(h, { exec: [{ approvalKind: 'exec', ...payloads.execApproval({ id: 'missed' }, 'ls') }] });
+            await settle();
+            expect(requested(h.changes).map((prompt) => prompt.id)).toEqual(['missed']);
         });
 
         it('withdraws every prompt when the endpoint changes', async () => {
@@ -318,7 +345,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
                 id: 'q1',
                 sessionKey: CANONICAL_MAIN,
                 runId: 'r1',
-                expiresAtMs: expect.any(Number),
+                lifetimeMs: expect.any(Number),
                 questions: [
                     { id: 'color', header: 'Color', text: 'Which color?', options: [{ label: 'Red', description: null }, { label: 'Blue', description: 'calm' }], multiSelect: false, allowsOther: true, secret: false },
                     { id: 'token', header: '', text: 'API token?', options: [], multiSelect: false, allowsOther: true, secret: true },
@@ -391,6 +418,58 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             h.socket().reply('chat.history', fullRead(`B${LONG_REPLY}`, 'e2', 'r2', 5));
             await settle();
             expect(texts(seen)).toBe(`A${LONG_REPLY}B${LONG_REPLY}C short`);
+        });
+
+        it('holds the run end behind its cut row, so the whole reply shows before done', async () => {
+            const h = await connected();
+            const seen = observe(h);
+            await settle();
+            receive(h, 'session.message', cutRow('e1', 'r1', 3));
+            await settle();
+            receive(h, 'chat', payloads.final({ runId: 'r1', seq: 4 }));
+            await settle();
+            expect(seen).toEqual([]);
+            h.socket().reply('chat.history', fullRead());
+            await settle();
+            expect(seen).toEqual([{ type: 'text', text: LONG_REPLY }, { type: 'done' }]);
+        });
+
+        it('holds a later run behind an earlier cut row still being read', async () => {
+            const h = await connected();
+            const seen = observe(h);
+            await settle();
+            receive(h, 'session.message', cutRow('e1', 'r1', 3, `A${LONG_REPLY}`));
+            await settle();
+            receive(h, 'chat', payloads.delta({ runId: 'r2', seq: 1 }, 'SECOND', 'SECOND'));
+            receive(h, 'chat', payloads.final({ runId: 'r2', seq: 2 }, 'SECOND'));
+            await settle();
+            h.socket().reply('chat.history', fullRead(`A${LONG_REPLY}`));
+            await settle();
+            expect(seen).toEqual([{ type: 'text', text: `A${LONG_REPLY}` }, { type: 'text', text: 'SECOND' }, { type: 'done' }]);
+        });
+
+        it('replaces a completed cut row once, never repeating it, when the run ends on a text that differs', async () => {
+            const h = await connected();
+            const seen = observe(h);
+            await settle();
+            receive(h, 'session.message', cutRow('e1', 'r1', 3));
+            await settle();
+            receive(h, 'chat', payloads.final({ runId: 'r1', seq: 4 }, `X${LONG_REPLY}`));
+            h.socket().reply('chat.history', fullRead());
+            await settle();
+            expect(seen).toEqual([{ type: 'text', text: LONG_REPLY }, { type: 'textReplace', text: `X${LONG_REPLY}` }, { type: 'done' }]);
+        });
+
+        it('upgrades a cut row shown as it came with a replacement, not a second copy', async () => {
+            const h = await connected();
+            const seen = observe(h);
+            await settle();
+            receive(h, 'session.message', cutRow('e1', 'r1', 3));
+            await settle();
+            h.socket().replyError('chat.history', { code: 'UNAVAILABLE', message: 'busy' });
+            await settle();
+            receive(h, 'chat', payloads.final({ runId: 'r1', seq: 4 }, `Reworded: ${LONG_REPLY}`));
+            expect(seen).toEqual([{ type: 'text', text: LONG_REPLY.slice(0, 8000) }, { type: 'textReplace', text: `Reworded: ${LONG_REPLY}` }, { type: 'done' }]);
         });
 
         it('renders a cut row as it came when the full read fails', async () => {

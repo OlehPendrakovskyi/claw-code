@@ -352,16 +352,28 @@ describe('GatewayChatService', () => {
             expect(run.events).toEqual([{ type: 'error', message: 'No route-compatible authentication source is configured for openai.' }, { type: 'done' }]);
         });
 
-        it('drops stale deltas and holds a diverging replacement for the final text', async () => {
+        it('drops stale deltas and replaces the shown text with a diverging replacement, mid-stream', async () => {
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             receive(h, 'chat', payloads.delta({ runId, seq: 2 }, 'Hello', 'Hello'));
             receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'He', 'He'));
             receive(h, 'chat', payloads.delta({ runId, seq: 3 }, 'Goodbye', 'Goodbye', true));
-            expect(texts(run.events)).toBe('Hello');
             receive(h, 'chat', payloads.final({ runId, seq: 4 }, 'Goodbye all'));
-            expect(texts(run.events)).toBe('Hello\n\nGoodbye all');
+            expect(run.events.filter((event) => event.type === 'text' || event.type === 'textReplace')).toEqual([
+                { type: 'text', text: 'Hello' },
+                { type: 'textReplace', text: 'Goodbye' },
+                { type: 'text', text: ' all' },
+            ]);
+        });
+
+        it('replaces the streamed text once with a final text that diverges from it', async () => {
+            const h = await connected();
+            const run = send(h);
+            const runId = await accepted(h);
+            receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'draft', 'draft'));
+            receive(h, 'chat', payloads.final({ runId, seq: 2 }, 'final answer'));
+            expect(run.events).toEqual([{ type: 'text', text: 'draft' }, { type: 'textReplace', text: 'final answer' }, { type: 'done' }]);
         });
 
         it('never delivers another session\'s run', async () => {
@@ -1891,6 +1903,47 @@ describe('GatewayChatService', () => {
             h.socket().replyError('connect', pairingRequired('req-1'));
             await settle();
             expect(states[states.length - 1]).toMatchObject({ status: 'pending' });
+        });
+
+        it('stops a wait_then_retry pairing wait at the limit instead of restarting it on every reconnect', async () => {
+            jest.useFakeTimers();
+            const h = harness({ device: new MemoryDeviceStore() });
+            const states = pairingStates(h);
+            const waiting = { code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED', reason: 'not-paired', requestId: 'req-1', recommendedNextStep: 'wait_then_retry', pauseReconnect: false } };
+            h.svc.connect().catch(() => undefined);
+            for (let attempt = 0; attempt < 1200 && states.every((state) => state.status === 'pending'); attempt++) {
+                await answerChallenge(h);
+                h.socket().replyError('connect', waiting);
+                await settle();
+                jest.advanceTimersByTime(1000);
+            }
+            expect(states[states.length - 1]).toMatchObject({ status: 'expired' });
+            const attempts = h.sockets.length;
+            jest.advanceTimersByTime(60_000);
+            expect(h.sockets).toHaveLength(attempts);
+            expect(states.filter((state) => state.status === 'expired')).toHaveLength(1);
+        });
+
+        it('ignores the late rejection of a handshake retired by new settings', async () => {
+            jest.useFakeTimers();
+            const store = new MemoryDeviceStore();
+            store.tokens.set('ws://127.0.0.1:18789', { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-local', scopes: [] });
+            store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-remote', scopes: [] });
+            const h = harness({ device: store, trustsDeviceTokenRetry: true });
+            h.svc.connect().catch(() => undefined);
+            await answerChallenge(h);
+            const retired = h.socket();
+            // A real socket reports its close later; the old gateway's answer is still in flight.
+            retired.close = (code?: number) => {
+                retired.closed.push(code);
+            };
+            h.svc.updateConnection('ws://127.0.0.1:18789', TOKEN);
+            retired.replyError('connect', tokenMismatch);
+            await settle();
+            jest.advanceTimersByTime(2000);
+            await answerChallenge(h);
+            expect(h.sockets).toHaveLength(2);
+            expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN });
         });
 
         it('retries a refused shared token once with the stored device token, and forgets a refused one', async () => {

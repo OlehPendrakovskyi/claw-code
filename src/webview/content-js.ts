@@ -241,9 +241,19 @@ export const SESSIONS_PANEL_JS = `
 /** Approval and question rows: built from DOM nodes (text is never parsed as markup), answered with
  *  native buttons and fields, their typed drafts kept across re-renders. Uses CONTENT_JS's `vscode`. */
 export const OPERATOR_PROMPTS_JS = `
+            /** Typed answers by thread, prompt and question: each pane answers only what it shows. */
             var promptDrafts = Object.create(null);
 
             var DECISION_LABELS = { 'allow-once': 'Approve once', 'allow-always': 'Always allow', 'deny': 'Deny' };
+
+            /** Code points that reorder or hide text, so a shown command could differ from the one that runs. */
+            var DECEPTIVE_CHARS = /[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff]/g;
+
+            /** Blank lines that could push the rest of a command out of sight. */
+            var BLANK_RUN = /\\n(?:[ \\t]*\\n){2,}/g;
+
+            /** A command longer than this many lines scrolls in its box; the card says so. */
+            var COMMAND_VISIBLE_LINES = 8;
 
             function promptNode(tag, className, text) {
                 var node = document.createElement(tag);
@@ -252,9 +262,14 @@ export const OPERATOR_PROMPTS_JS = `
                 return node;
             }
 
-            function promptDraft(promptId, questionId) {
-                var byQuestion = promptDrafts[promptId] || (promptDrafts[promptId] = Object.create(null));
+            function promptDraft(threadId, promptId, questionId) {
+                var byPrompt = promptDrafts[threadId] || (promptDrafts[threadId] = Object.create(null));
+                var byQuestion = byPrompt[promptId] || (byPrompt[promptId] = Object.create(null));
                 return byQuestion[questionId] || (byQuestion[questionId] = { selected: [], other: '' });
+            }
+
+            function pendingPromptCount(thread) {
+                return (thread.prompts || []).filter(function(prompt) { return prompt.state !== 'resolved'; }).length;
             }
 
             function markPromptControl(control, prompt, threadId, focusKey) {
@@ -284,6 +299,29 @@ export const OPERATOR_PROMPTS_JS = `
                 return isNaN(at.getTime()) ? '' : 'Expires at ' + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             }
 
+            function codePointLabel(char) {
+                return '\\u2039U+' + char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + '\\u203A';
+            }
+
+            /** The command as it will run, with hidden and reordering characters and blank-line padding made visible. */
+            function revealCommand(command) {
+                var deceptive = false;
+                var padded = false;
+                var text = String(command || '').replace(DECEPTIVE_CHARS, function(char) {
+                    deceptive = true;
+                    return codePointLabel(char);
+                }).replace(BLANK_RUN, function(run) {
+                    padded = true;
+                    return '\\n\\u2039' + (run.split('\\n').length - 2) + ' blank lines\\u203A\\n';
+                });
+                var warnings = [];
+                if (deceptive) { warnings.push('Contains hidden or direction-changing characters, shown as \\u2039U+\\u2026\\u203A.'); }
+                if (padded) { warnings.push('Contains runs of blank lines, shown collapsed.'); }
+                var lines = text.split('\\n').length;
+                if (lines > COMMAND_VISIBLE_LINES) { warnings.push('The command has ' + lines + ' lines: scroll the box to read all of it.'); }
+                return { text: text, warnings: warnings };
+            }
+
             function promptCard(prompt, heading) {
                 var card = promptNode('div', 'prompt-card prompt-' + prompt.kind + (prompt.state === 'resolved' ? ' prompt-resolved' : ''));
                 card.setAttribute('role', 'group');
@@ -298,9 +336,7 @@ export const OPERATOR_PROMPTS_JS = `
             }
 
             function promptStatus(prompt) {
-                var status = promptNode('div', 'prompt-status', prompt.status || '');
-                status.setAttribute('role', 'status');
-                return status;
+                return promptNode('div', 'prompt-status', prompt.status || '');
             }
 
             function promptActions(buttons) {
@@ -309,13 +345,32 @@ export const OPERATOR_PROMPTS_JS = `
                 return actions;
             }
 
+            function promptLines(className, lines) {
+                var list = promptNode('ul', className);
+                lines.forEach(function(line) { list.appendChild(promptNode('li', '', line)); });
+                return list;
+            }
+
+            function renderApprovalTitle(card, prompt) {
+                if (prompt.subject !== 'exec') {
+                    card.appendChild(promptNode('div', 'prompt-title', prompt.title));
+                    return;
+                }
+                var command = revealCommand(prompt.title);
+                var box = promptNode('pre', 'prompt-title prompt-command', command.text);
+                box.tabIndex = 0;
+                box.setAttribute('aria-label', 'Command');
+                card.appendChild(box);
+                if (command.warnings.length) {
+                    card.appendChild(promptLines('prompt-warnings', command.warnings));
+                }
+            }
+
             function renderApprovalCard(prompt, threadId) {
                 var card = promptCard(prompt, prompt.subject === 'exec' ? 'Run this command?' : 'Allow this action?');
-                card.appendChild(promptNode(prompt.subject === 'exec' ? 'pre' : 'div', 'prompt-title', prompt.title));
+                renderApprovalTitle(card, prompt);
                 if ((prompt.details || []).length) {
-                    var details = promptNode('ul', 'prompt-details');
-                    prompt.details.forEach(function(line) { details.appendChild(promptNode('li', '', line)); });
-                    card.appendChild(details);
+                    card.appendChild(promptLines('prompt-details', prompt.details));
                 }
                 if (prompt.state !== 'resolved') {
                     card.appendChild(promptActions((prompt.decisions || []).map(function(decision) {
@@ -330,10 +385,10 @@ export const OPERATOR_PROMPTS_JS = `
                 var label = promptNode('label', 'prompt-option');
                 var input = document.createElement('input');
                 input.type = question.multiSelect ? 'checkbox' : 'radio';
-                input.name = 'prompt|' + prompt.id + '|' + question.id;
+                input.name = 'prompt|' + threadId + '|' + prompt.id + '|' + question.id;
                 input.value = option.label;
                 input.className = 'prompt-field prompt-choice';
-                input.checked = promptDraft(prompt.id, question.id).selected.indexOf(option.label) !== -1;
+                input.checked = promptDraft(threadId, prompt.id, question.id).selected.indexOf(option.label) !== -1;
                 input.setAttribute('data-question-id', question.id);
                 label.appendChild(markPromptControl(input, prompt, threadId, question.id + '|' + index));
                 label.appendChild(promptNode('span', 'prompt-option-label', option.label));
@@ -348,7 +403,7 @@ export const OPERATOR_PROMPTS_JS = `
                 var caption = question.options.length ? 'Other answer' : 'Your answer';
                 input.type = question.secret ? 'password' : 'text';
                 input.className = 'prompt-field prompt-other';
-                input.value = promptDraft(prompt.id, question.id).other;
+                input.value = promptDraft(threadId, prompt.id, question.id).other;
                 input.placeholder = caption;
                 input.autocomplete = 'off';
                 input.setAttribute('aria-label', caption);
@@ -386,7 +441,7 @@ export const OPERATOR_PROMPTS_JS = `
             function renderPanePrompts(thread) {
                 var region = promptNode('div', 'pane-prompts');
                 region.setAttribute('data-thread-id', thread.id);
-                region.setAttribute('aria-live', 'polite');
+                region.setAttribute('role', 'region');
                 region.setAttribute('aria-label', 'Requests waiting for you');
                 region.tabIndex = -1;
                 (thread.prompts || []).forEach(function(prompt) {
@@ -395,19 +450,53 @@ export const OPERATOR_PROMPTS_JS = `
                 return region;
             }
 
-            /** Rebuilds the rows only when they changed, handing focus back to the control that had it. */
+            /** One live region per pane, kept across re-renders so screen readers hear each change once. */
+            function promptAnnouncer(pane) {
+                var announcer = childWithClass(pane, 'pane-prompt-announcer');
+                if (!announcer) {
+                    announcer = promptNode('div', 'pane-prompt-announcer');
+                    announcer.setAttribute('aria-live', 'polite');
+                    pane.appendChild(announcer);
+                }
+                return announcer;
+            }
+
+            function describeArrival(prompt) {
+                return prompt.kind === 'approval' ? 'Approval needed: ' + prompt.title : 'The agent asks: ' + ((prompt.questions || [])[0] || {}).text;
+            }
+
+            /** What changed since the last render: new prompts, and statuses that moved on. */
+            function promptAnnouncement(previous, prompts) {
+                return prompts.map(function(prompt) {
+                    if (!(prompt.id in previous)) { return describeArrival(prompt); }
+                    return previous[prompt.id] !== prompt.status && prompt.status ? prompt.status : '';
+                }).filter(Boolean).join('. ');
+            }
+
+            function statusById(prompts) {
+                var byId = Object.create(null);
+                prompts.forEach(function(prompt) { byId[prompt.id] = prompt.status || ''; });
+                return byId;
+            }
+
+            /** Rebuilds the rows only when they changed, handing focus back to the control that had it,
+             *  or to the composer once the last row is gone. */
             function syncPanePrompts(pane, cache, thread) {
                 var prompts = thread.prompts || [];
                 var json = JSON.stringify(prompts);
                 var live = childWithClass(pane, 'pane-prompts');
-                if (live && cache.prompts === json) {
+                if ((live || !prompts.length) && cache.prompts === json) {
                     return;
                 }
+                var announcement = promptAnnouncement(cache.promptStatuses || Object.create(null), prompts);
                 cache.prompts = json;
+                cache.promptStatuses = statusById(prompts);
+                if (announcement) { promptAnnouncer(pane).textContent = announcement; }
                 var hadFocus = Boolean(live) && live.contains(document.activeElement);
                 var focusKey = hadFocus ? document.activeElement.getAttribute('data-focus-key') : null;
                 if (!prompts.length) {
                     if (live) { live.remove(); }
+                    if (hadFocus) { focusComposerOf(pane); }
                     return;
                 }
                 var fresh = renderPanePrompts(thread);
@@ -421,6 +510,11 @@ export const OPERATOR_PROMPTS_JS = `
                 }
             }
 
+            function focusComposerOf(pane) {
+                var composerField = pane.querySelector('.composer-input');
+                if (composerField) { composerField.focus(); }
+            }
+
             function restorePromptFocus(region, focusKey) {
                 var controls = region.querySelectorAll('[data-focus-key]');
                 for (var i = 0; i < controls.length; i++) {
@@ -432,14 +526,17 @@ export const OPERATOR_PROMPTS_JS = `
                 region.focus();
             }
 
-            /** Drafts of prompts no pane shows any more are dropped. */
+            /** Drafts of prompts a pane no longer shows are dropped. */
             function prunePromptDrafts(threads) {
                 var shown = Object.create(null);
                 threads.forEach(function(thread) {
-                    (thread.prompts || []).forEach(function(prompt) { shown[prompt.id] = true; });
+                    shown[thread.id] = Object.create(null);
+                    (thread.prompts || []).forEach(function(prompt) { shown[thread.id][prompt.id] = true; });
                 });
-                Object.keys(promptDrafts).forEach(function(promptId) {
-                    if (!shown[promptId]) { delete promptDrafts[promptId]; }
+                Object.keys(promptDrafts).forEach(function(threadId) {
+                    Object.keys(promptDrafts[threadId]).forEach(function(promptId) {
+                        if (!shown[threadId] || !shown[threadId][promptId]) { delete promptDrafts[threadId][promptId]; }
+                    });
                 });
             }
 
@@ -454,11 +551,11 @@ export const OPERATOR_PROMPTS_JS = `
 
             /** A typed answer replaces the chosen option of a single-choice question, and the other way round. */
             function updatePromptDraft(field) {
+                var threadId = field.getAttribute('data-thread-id');
                 var promptId = field.getAttribute('data-prompt-id');
                 var questionId = field.getAttribute('data-question-id');
-                var prompt = findThreadPrompt(field.getAttribute('data-thread-id'), promptId);
-                if (!prompt || !questionId) { return; }
-                var draft = promptDraft(promptId, questionId);
+                if (!findThreadPrompt(threadId, promptId) || !questionId) { return; }
+                var draft = promptDraft(threadId, promptId, questionId);
                 var fieldset = field.closest('.prompt-question');
                 var single = field.type === 'radio' || (fieldset && fieldset.querySelector('input[type="radio"]'));
                 if (field.classList.contains('prompt-other')) {
@@ -479,10 +576,10 @@ export const OPERATOR_PROMPTS_JS = `
                 }
             }
 
-            function collectPromptAnswers(prompt) {
+            function collectPromptAnswers(threadId, prompt) {
                 var answers = {};
                 (prompt.questions || []).forEach(function(question) {
-                    var draft = promptDraft(prompt.id, question.id);
+                    var draft = promptDraft(threadId, prompt.id, question.id);
                     var other = question.secret ? draft.other : draft.other.trim();
                     var values = question.multiSelect ? draft.selected.slice() : draft.selected.slice(0, 1);
                     if (other) {
@@ -504,7 +601,7 @@ export const OPERATOR_PROMPTS_JS = `
                 if (action === 'prompt-answer') {
                     var prompt = findThreadPrompt(threadId, promptId);
                     if (prompt) {
-                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: collectPromptAnswers(prompt) });
+                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptId: promptId, answers: collectPromptAnswers(threadId, prompt) });
                     }
                     return true;
                 }
@@ -1278,6 +1375,10 @@ ${TOOL_STATUS_JS}
                 if (thread.id in collapseOverrides) {
                     return collapseOverrides[thread.id];
                 }
+                // A request waiting for the user stays in sight
+                if (pendingPromptCount(thread) > 0) {
+                    return false;
+                }
                 // Active thread is never auto-collapsed
                 if (thread.id === state.activeThreadId) {
                     return false;
@@ -1332,6 +1433,7 @@ ${TOOL_STATUS_JS}
                                 '<span class="pane-pill pane-status ' + escapeAttr(statusClass) + '">' +
                                     escapeHtml(getThreadStatusLabel(thread)) +
                                 '</span>' +
+                                renderPendingPromptBadge(thread) +
                             '</div>' +
                         '</div>' +
                         '<div class="pane-actions">' +
@@ -1346,6 +1448,11 @@ ${TOOL_STATUS_JS}
                                 : '') +
                         '</div>' +
                     '</div>';
+            }
+
+            function renderPendingPromptBadge(thread) {
+                var pending = pendingPromptCount(thread);
+                return pending ? '<span class="pane-pill pane-prompt-badge">' + pending + ' waiting for you</span>' : '';
             }
 
             function isHiddenToolGroup(message) {

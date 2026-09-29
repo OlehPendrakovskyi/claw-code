@@ -1116,7 +1116,7 @@ describe('content-js', () => {
             const webview = loadWebview();
             hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'Allowed once elsewhere' }, { ...question, state: 'submitting', status: 'Sending…' }] })]);
             expect(card(webview, 'a1').querySelectorAll('button')).toHaveLength(0);
-            expect(card(webview, 'a1').querySelector('[role="status"]')?.textContent).toBe('Allowed once elsewhere');
+            expect(card(webview, 'a1').querySelector('.prompt-status')?.textContent).toBe('Allowed once elsewhere');
             expect(Array.from(card(webview, 'q1').querySelectorAll('button'), button => button.disabled)).toEqual([true, true]);
         });
 
@@ -1147,6 +1147,66 @@ describe('content-js', () => {
             expect(field(webview, 'q1', '.prompt-other[type="text"]').value).toBe('Te');
             hostState(webview, [thread('t1', { prompts: [] })]);
             expect(webview.document.querySelector('.pane-prompts')).toBeNull();
+            expect(webview.document.activeElement).toBe(composer(webview, 't1'));
+        });
+
+        it('shows hidden and direction-changing characters and blank-line padding in a command, and warns', () => {
+            const webview = loadWebview();
+            const command = 'ls \u202Eexe.txt\u200B' + '\n'.repeat(40) + 'rm -rf ~';
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, title: command, details: [] }] })]);
+            const shown = card(webview, 'a1').querySelector('.prompt-command')?.textContent ?? '';
+            expect(shown).toContain('‹U+202E›');
+            expect(shown).toContain('‹U+200B›');
+            expect(shown).toContain('‹39 blank lines›');
+            expect(shown).toContain('rm -rf ~');
+            expect(Array.from(card(webview, 'a1').querySelectorAll('.prompt-warnings li'), li => li.textContent)).toEqual([
+                'Contains hidden or direction-changing characters, shown as ‹U+…›.',
+                'Contains runs of blank lines, shown collapsed.',
+            ]);
+        });
+
+        it('keeps the answers of two panes showing one question apart', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { prompts: [question] }), thread('t2', { prompts: [question] })], { dimension: '2x2' });
+            const [first, second] = Array.from(webview.document.querySelectorAll<HTMLElement>('.prompt-card'));
+            click(webview, first.querySelectorAll<HTMLInputElement>('.prompt-choice')[1]);
+            expect(second.querySelectorAll<HTMLInputElement>('.prompt-choice')[1].checked).toBe(false);
+            click(webview, Array.from(second.querySelectorAll('button')).find(button => button.textContent === 'Send answer')!);
+            expect(postedOfType(webview, 'answerQuestion').pop()).toMatchObject({ threadId: 't2', answers: { color: [], token: [] } });
+        });
+
+        it('never auto-collapses a pane with a waiting request, and badges it in the header', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1'), thread('t2', { prompts: [approval] })]);
+            expect(paneOf(webview, 't2').classList.contains('collapsed')).toBe(false);
+            expect(paneOf(webview, 't2').querySelector('.pane-prompt-badge')?.textContent).toBe('1 waiting for you');
+        });
+
+        it('announces a new request and a changed status once, in a live region that stays in place', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1')]);
+            const announcer = () => paneOf(webview, 't1').querySelector('.pane-prompt-announcer');
+            hostState(webview, [thread('t1', { prompts: [approval] })]);
+            const region = announcer();
+            expect(region?.getAttribute('aria-live')).toBe('polite');
+            expect(region?.textContent).toBe(`Approval needed: ${XSS}`);
+            hostState(webview, [thread('t1', { prompts: [{ ...approval, state: 'resolved', status: 'Denied' }] })]);
+            expect(announcer()).toBe(region);
+            expect(region?.textContent).toBe('Denied');
+            expect(card(webview, 'a1').querySelector('[role="status"]')).toBeNull();
+        });
+    });
+
+    describe('streaming replacement', () => {
+        it('replaces the streaming bubble with a shorter text, leaving the composer draft alone', () => {
+            const webview = loadWebview();
+            hostState(webview, [thread('t1', { isStreaming: true, status: 'running', pendingAssistantText: 'draft' })]);
+            typeInto(webview, () => composer(webview, 't1'), 'my draft');
+            webview.host({ type: 'textUpdate', threadId: 't1', text: 'a much longer draft reply' });
+            webview.host({ type: 'textUpdate', threadId: 't1', text: 'final' });
+            expect(byThread(webview, '.message-pending', 't1').textContent).toBe('final');
+            expect(composer(webview, 't1').value).toBe('my draft');
+            expect(webview.document.activeElement).toBe(composer(webview, 't1'));
         });
     });
 });
