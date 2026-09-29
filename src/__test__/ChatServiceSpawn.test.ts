@@ -195,14 +195,14 @@ describe('ChatService.sendMessage', () => {
         });
 
         it.each([
-            ['linux', 'PATH', '/usr/bin::.:bin:/opt/node/bin:', '/usr/bin:/opt/node/bin'],
-            ['win32', 'Path', 'C:\\Windows;.;node_modules\\.bin;C:tools;D:\\node', 'C:\\Windows;D:\\node'],
+            ['linux', 'PATH', '/usr/bin::.:bin:/opt/node/bin:', '/usr/bin:/opt/node/bin', {}],
+            ['win32', 'Path', 'C:\\Windows;.;node_modules\\.bin;C:tools;D:\\node', 'C:\\Windows;D:\\node', { NoDefaultCurrentDirectoryInExePath: '1' }],
         ] as const)('gives acpx on %s a PATH of absolute entries only, so its node and agents never come from the workspace',
-            (platform, key, searchPath, expected) => {
+            (platform, key, searchPath, expected, guard) => {
                 const env = jest.replaceProperty(process, 'env', { [key]: searchPath, HOME: '/home/u' });
                 try {
                     withPlatform(platform, () => start());
-                    expect(spawnMock.mock.calls[0][2]?.env).toEqual({ [key]: expected, HOME: '/home/u' });
+                    expect(spawnMock.mock.calls[0][2]?.env).toEqual({ [key]: expected, HOME: '/home/u', ...guard });
                 } finally {
                     env.restore();
                 }

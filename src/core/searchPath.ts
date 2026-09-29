@@ -14,18 +14,28 @@ export type Env = Record<string, string | undefined>;
 /** A drive-absolute (`C:\x`) or UNC (`\\host\share`) path; a root-relative `\x` resolves against the cwd's drive. */
 const WINDOWS_FULLY_QUALIFIED = /^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/])/;
 
+/** Set in a Windows env, any value, this stops a bare name being looked up in the cwd first: it is
+ *  honoured by CreateProcess and SearchPath, cmd.exe, and libuv since 1.48 (so Node children too). */
+const NO_CWD_EXE_LOOKUP = 'NoDefaultCurrentDirectoryInExePath';
+
 /** `env` with PATH reduced to its absolute entries, so neither the child nor what it runs comes from the workspace.
- *  With none left PATH is dropped, as an empty POSIX PATH means the cwd; the system default applies instead. */
+ *  With none left PATH is dropped, as an empty POSIX PATH means the cwd; the system default applies instead.
+ *  On Windows the implicit cwd lookup of every descendant is switched off as well. */
 export function envWithAbsolutePath(platform: NodeJS.Platform = process.platform, env: Env = process.env): Env {
     const key = pathKey(platform, env);
     const value = env[key];
-    if (value === undefined) {
-        return { ...env };
-    }
     // Windows reads any spelling (`PATH`, `Path`), so every one goes and only the filtered value returns.
-    const rest = Object.fromEntries(Object.entries(env).filter(([name]) => !isPathKey(platform, name)));
+    const rest = Object.fromEntries(Object.entries(env).filter(([name]) => !isPathKey(platform, name) && !isNoCwdLookupKey(platform, name)));
+    const guarded = platform === 'win32' ? { ...rest, [NO_CWD_EXE_LOOKUP]: '1' } : rest;
+    if (value === undefined) {
+        return platform === 'win32' ? guarded : { ...env };
+    }
     const entries = absolutePathEntries(platform, value);
-    return entries.length === 0 ? rest : { ...rest, [key]: entries.join(platform === 'win32' ? ';' : ':') };
+    return entries.length === 0 ? guarded : { ...guarded, [key]: entries.join(platform === 'win32' ? ';' : ':') };
+}
+
+function isNoCwdLookupKey(platform: NodeJS.Platform, name: string): boolean {
+    return platform === 'win32' && name.toUpperCase() === NO_CWD_EXE_LOOKUP.toUpperCase();
 }
 
 export function isExecutableFile(filePath: string): boolean {
