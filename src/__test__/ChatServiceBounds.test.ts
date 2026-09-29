@@ -106,7 +106,7 @@ describe('ChatService buffer and abort bounds', () => {
 
         it('reports the overage in whole MiB against the 30 MiB limit', () => {
             const { events } = send('x'.repeat(PROMPT_MAX_BYTES + 7 * 1024 * 1024));
-            expect((events[0] as { message: string }).message).toContain('limit 30 MiB');
+            expect((events[0] as { message: string }).message).toContain('38 MiB, limit 30 MiB');
         });
     });
 
