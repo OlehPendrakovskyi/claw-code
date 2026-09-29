@@ -30,7 +30,7 @@ Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~
 
 1. **Session/thread ownership model:** run sink vs transcript sink vs persistent callback; callback key is the thread id (threads share sessions). abort/clear/reset only when `status==='running'` with local ownership (`hasOwnedRun`); never abort behind idle subscribers.
 
-2. **Streaming invariants:** frames may omit messageId; delta vs text vs mixed (cumulative/divergent); dedupe complete frames claim-before-dispatch; the seen-set holds only complete assistant rows; catch-up is gated on cursor + `allowUnscopedCatchUp` only for no-history paths; pre-ack buffers are attributed to a specific send; `chat.send` only after subscription ack; `done` is idempotent.
+2. **Streaming invariants:** frames may omit messageId; delta vs text vs mixed (cumulative/divergent); dedupe complete frames claim-before-dispatch; the seen-set holds only complete assistant rows; catch-up is gated on cursor + `allowUnscopedCatchUp` only for no-history paths; pre-ack buffers are provisionally associated with every in-flight send (ownership is unknown until settlement — see 23); `chat.send` only after subscription ack; `done` is idempotent.
 
 3. **Config/SecretStorage:** token only in SecretStorage; migration iterates ALL targets (user/workspace/folder × normal/language × Code/Code-OSS/VSCodium/Insiders + nested .code-workspace); per-folder updates in multi-root; scope comes from @types/vscode — `{languageId, uri?}` (there is no folderUri field); tri-state migration result, retry incomplete, never cache failure; deprecated settings registered in package.json.
 
@@ -63,7 +63,7 @@ Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~
 
 16. **Suspend ≠ dispose: transport lifecycle invariants.** Stopping a transport (fallback/switch) must: close the socket and reconnect loop, retire run sinks with `done`, BUT preserve persistent transcript/resume sinks and make them re-subscribable; purge pre-ack buffers together with their keys; a retired send resets the thread's streaming status synchronously (emitState), otherwise the UI hangs in "running".
 
-17. **Aborts swallow late events entirely.** `session_end` during an active abort is skipped just like a late `session.message`; the terminal flow delivers `done`.
+17. **Aborts swallow late events entirely.** Late `chat`/`session.message` frames for an aborted run are skipped just like other late events; the terminal flow delivers `done` from the run's own terminal `chat` frame (`state: final`/`aborted`/`error` in protocol v4).
 
 18. **Empty string ≠ missing value.** At all protocol boundaries, empty `messageId`/`delta`/`role:''` are treated as missing (asNonEmptyString), otherwise empty keys corrupt dedupe/seen-sets.
 
@@ -75,7 +75,7 @@ Basis: PR #8/#10 (Sprints 1–2), PR #11 MVP (28 Copilot rounds, ~90 findings, ~
 
 22. **Delta rows do not shadow final rows.** On any recovery/dedup path keyed by id, a row with a non-empty `delta` (partial text) must be skipped in favor of a final row with the same id, otherwise the recovered transcript is truncated to the delta.
 
-23. **Pre-ack frames for foreign keys are buffered with wide attribution.** A key frame (`session.message`/`session.end`) whose key has no sink yet, while a pre-ack send is in flight, is buffered attributed to all in-flight sends (the owner is unknown until settlement — remap yields the resolved key, and the preAck set stores requested); drain correlates on settled requested→resolved and drops ambiguous ones. Finalizing on such a key earlier is a no-op that loses the terminal event and leaves "eternal streaming" after the ack.
+23. **Pre-ack frames for foreign keys are buffered with wide attribution.** A key frame (a `session.message` row, or a terminal `chat` frame with `state: final`/`aborted`/`error`) whose key has no sink yet, while a pre-ack send is in flight, is buffered attributed to all in-flight sends (the owner is unknown until settlement — remap yields the resolved key, and the preAck set stores requested); drain correlates on settled requested→resolved and drops ambiguous ones. Finalizing on such a key earlier is a no-op that loses the terminal event and leaves "eternal streaming" after the ack.
 
 ## Protocol rework lessons (owner rounds, 2026-09-28/29)
 
