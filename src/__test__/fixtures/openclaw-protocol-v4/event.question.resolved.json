@@ -1,0 +1,82 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QuestionResolvedEventSchema",
+  "anyOf": [
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "status",
+        "answers"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "const": "answered"
+        },
+        "answers": {
+          "type": "object",
+          "required": [
+            "answers"
+          ],
+          "properties": {
+            "answers": {
+              "type": "object",
+              "patternProperties": {
+                "^[a-z][a-z0-9_]*$": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "const": "cancelled"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "id",
+        "status"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "const": "expired"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
+  "x-openclaw-since": "2026.7"
+}

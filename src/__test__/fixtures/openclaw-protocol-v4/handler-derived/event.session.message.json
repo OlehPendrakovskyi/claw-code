@@ -1,0 +1,17 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "session.message event",
+  "x-source": "src/gateway/session-transcript-message.ts projectSessionMessagePayload (openclaw 2026.9.6)",
+  "type": "object",
+  "required": ["sessionKey", "message"],
+  "properties": {
+    "sessionKey": { "type": "string", "minLength": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "message": { "$ref": "display-message.json" },
+    "messageId": { "type": "string", "minLength": 1 },
+    "messageSeq": { "type": "integer", "minimum": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "senderIsOwner": { "type": "boolean" },
+    "session": { "type": "object" }
+  }
+}

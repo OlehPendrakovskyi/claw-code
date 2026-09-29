@@ -1,0 +1,85 @@
+/** One @-mention extracted from a chat draft. */
+export interface FileMention {
+    /** Path as typed in the mention (may be relative to the workspace). */
+    path: string;
+    /** 1-based start line when the mention carries a #L range. */
+    lineStart?: number;
+    /** 1-based end line when the mention carries a #L range. */
+    lineEnd?: number;
+}
+
+/**
+ * Parse `@path` / `@path#L5` / `@path#L5-10` mentions from a draft text.
+ * Mentions start after whitespace (or at the start of the text) and stop at
+ * whitespace; paths containing whitespace must be double-quoted (`@"my file.ts"`),
+ * matching the encoding produced by buildMention; embedded double quotes are
+ * doubled (`""`) inside the quoted form so any POSIX path round-trips. The
+ * quoted alternative allows only non-quote characters or doubled quotes, so
+ * the closing quote is unambiguous and adjacent quoted mentions in one text
+ * cannot be merged into a single path.
+ */
+export function parseFileMentions(text: string): FileMention[] {
+    if (!text) {
+        return [];
+    }
+
+    // `(?=(…))\3` makes the unquoted path atomic: it never gives characters
+    // back, so the trailing punctuation class cannot compete with it and a
+    // failed match costs linear time (the path's own trailing punctuation is
+    // stripped below).
+    const mentionRegex = /(?:^|\s)@("((?:[^"]|"")*)"|(?=([^#\s@]+))\3)(?:#L(\d+)(?:-(\d+))?)?[.,:;)}\]]*(?=\s|$)/g;
+    const mentions: FileMention[] = [];
+    const seen = new Set<string>();
+
+    let match: RegExpExecArray | null;
+    while ((match = mentionRegex.exec(text)) !== null) {
+        // Trailing sentence punctuation belongs to prose, not the path.
+        const path = match[2] !== undefined ? match[2].replace(/""/g, '"') : match[1].replace(/[.,:;)}\]]+$/, '');
+        if (!path) {
+            continue;
+        }
+        const lineStart = match[4] != null ? Math.max(1, parseInt(match[4], 10)) : undefined;
+        const lineEndRaw = match[5] != null ? Math.max(1, parseInt(match[5], 10)) : undefined;
+        const lineEnd =
+            lineEndRaw != null && lineStart != null ? Math.max(lineStart, lineEndRaw) : lineStart;
+        // Dedupe on path + range so the same file with different ranges is kept.
+        const key = `${path}#${lineStart ?? ''}-${lineEnd ?? ''}`;
+        if (seen.has(key)) {
+            continue;
+        }
+        seen.add(key);
+        mentions.push({
+            path,
+            ...(lineStart !== undefined ? { lineStart, lineEnd } : {})
+        });
+    }
+
+    return mentions;
+}
+
+/** Build the mention string for an editor context (path plus optional line range).
+ *  Non-positive starts clamp to line 1; reversed ranges collapse to the start line. */
+export function buildMention(filePath: string, lineStart?: number, lineEnd?: number): string {
+    // Quote any path containing whitespace or parser delimiters: the raw
+    // (unquoted) form cannot express `#` or `@` in a filename.
+    // POSIX filenames may legally contain double quotes (e.g. `my "file.ts`),
+    // so a path carrying one is quoted too and embedded quotes are doubled
+    // (`""`) inside the quoted form; parseFileMentions un-doubles them, so
+    // every such path round-trips through a mention.
+    const pathPart =
+      /[\s#@"]/.test(filePath) || /[.,:;)}\]]$/.test(filePath)
+        ? `@"${filePath.replace(/"/g, '""')}"`
+        : `@${filePath}`;
+    if (lineStart != null && lineEnd != null) {
+        const start = Math.max(1, lineStart);
+        const end = Math.max(start, lineEnd);
+        if (end > start) {
+            return `${pathPart}#L${start}-${end}`;
+        }
+        return `${pathPart}#L${start}`;
+    }
+    if (lineStart != null) {
+        return `${pathPart}#L${Math.max(1, lineStart)}`;
+    }
+    return pathPart;
+}

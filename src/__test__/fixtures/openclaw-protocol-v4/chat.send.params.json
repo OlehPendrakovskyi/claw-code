@@ -1,0 +1,362 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ChatSendParamsSchema",
+  "type": "object",
+  "required": [
+    "sessionKey",
+    "message",
+    "idempotencyKey"
+  ],
+  "properties": {
+    "sessionKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "message": {
+      "type": "string"
+    },
+    "mentions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "profileId",
+          "start",
+          "end"
+        ],
+        "properties": {
+          "profileId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "additionalProperties": false
+      },
+      "maxItems": 10
+    },
+    "workContext": {
+      "type": "object",
+      "required": [
+        "page"
+      ],
+      "properties": {
+        "page": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "title": {
+          "type": "string",
+          "maxLength": 96
+        },
+        "sessionKey": {
+          "type": "string",
+          "maxLength": 192
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "agentId": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "workspace": {
+          "type": "string",
+          "maxLength": 224
+        },
+        "file": {
+          "type": "string",
+          "maxLength": 224
+        },
+        "selection": {
+          "type": "string",
+          "maxLength": 640
+        }
+      },
+      "additionalProperties": false
+    },
+    "intent": {
+      "type": "object",
+      "required": [
+        "kind",
+        "version",
+        "issuedAtMs"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "session-goal-start"
+        },
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "issuedAtMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "thinking": {
+      "type": "string"
+    },
+    "fastMode": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
+    "fastAutoOnSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "queueMode": {
+      "type": "string",
+      "enum": [
+        "steer",
+        "followup",
+        "collect",
+        "interrupt"
+      ]
+    },
+    "deliver": {
+      "type": "boolean"
+    },
+    "originatingChannel": {
+      "type": "string"
+    },
+    "originatingTo": {
+      "type": "string"
+    },
+    "originatingAccountId": {
+      "type": "string"
+    },
+    "originatingThreadId": {
+      "type": "string"
+    },
+    "replyToId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string"
+          },
+          "mimeType": {
+            "type": "string"
+          },
+          "fileName": {
+            "type": "string"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "type": "string",
+                "const": "paste"
+              },
+              {
+                "type": "string",
+                "const": "file"
+              }
+            ]
+          },
+          "content": {},
+          "sizeBytes": {
+            "type": "number"
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "width": {
+            "type": "number"
+          },
+          "height": {
+            "type": "number"
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "toolBindings": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {}
+      },
+      "maxProperties": 16
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "systemInputProvenance": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "external_user",
+            "inter_session",
+            "internal_system"
+          ]
+        },
+        "originSessionId": {
+          "type": "string"
+        },
+        "sourceSessionKey": {
+          "type": "string"
+        },
+        "sourceChannel": {
+          "type": "string"
+        },
+        "sourceTool": {
+          "type": "string"
+        },
+        "sourceRole": {
+          "type": "string",
+          "const": "subagent"
+        },
+        "sourcePromptPrefix": {
+          "type": "string"
+        },
+        "jobId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "systemProvenanceReceipt": {
+      "type": "string"
+    },
+    "suppressCommandInterpretation": {
+      "type": "boolean"
+    },
+    "expectedLeafEntryId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expectedSessionRoutingContract": {
+      "type": "string",
+      "minLength": 1
+    },
+    "expectedPermissionMode": {
+      "anyOf": [
+        {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "read-only"
+            },
+            {
+              "type": "string",
+              "const": "guarded"
+            },
+            {
+              "type": "string",
+              "const": "workspace"
+            },
+            {
+              "type": "string",
+              "const": "full"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expectedToolOverrides": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "mcpServers": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "mcpToolsDeny": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "skills": {
+              "type": "object",
+              "patternProperties": {
+                "^.*$": {
+                  "type": "boolean"
+                }
+              }
+            },
+            "webSearch": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

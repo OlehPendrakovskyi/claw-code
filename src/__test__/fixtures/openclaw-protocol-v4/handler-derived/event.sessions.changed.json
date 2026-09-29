@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sessions.changed event",
+  "x-source": "src/gateway/server-session-events.ts (openclaw 2026.9.6); keyless payloads invalidate every list",
+  "type": "object",
+  "properties": {
+    "sessionKey": { "type": "string", "minLength": 1 },
+    "agentId": { "type": "string", "minLength": 1 },
+    "reason": { "type": "string" },
+    "phase": { "type": "string" },
+    "ts": { "type": "number" },
+    "session": { "type": "object" }
+  }
+}

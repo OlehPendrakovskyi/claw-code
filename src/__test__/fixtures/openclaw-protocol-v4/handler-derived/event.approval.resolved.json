@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "exec.approval.resolved / plugin.approval.resolved event",
+  "x-source": "src/gateway/server-methods/approval-shared.ts handleApprovalResolve resolvedEvent (openclaw 2026.9.6); an approval that expires broadcasts nothing",
+  "type": "object",
+  "required": ["id", "decision", "ts"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "decision": { "enum": ["allow-once", "allow-always", "deny"] },
+    "resolvedBy": { "type": ["string", "null"] },
+    "ts": { "type": "number" },
+    "request": { "type": "object" }
+  },
+  "additionalProperties": false
+}

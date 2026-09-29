@@ -1,13 +1,663 @@
 import { SLASH_COMMANDS } from './slashCommands';
-// Mechanical extraction of the <script> block from the original getWebviewContent template.
-// Content is verbatim; no refactoring.
+
+// Webview script sources. The exported fragments are spliced into CONTENT_JS;
+// SESSIONS_PANEL_JS also uses the `vscode` API handle CONTENT_JS declares; specs inject it.
+
+/** Tool-call status helpers: a group is running while any entry is non-terminal. */
+export const TOOL_STATUS_JS = `
+            var TERMINAL_STATUSES = ['done', 'error', 'failed', 'cancelled'];
+
+            function isFailedStatus(status) {
+                return status === 'error' || status === 'failed';
+            }
+
+            function getToolGroupStatus(entries) {
+                if (entries.some(function(entry) { return TERMINAL_STATUSES.indexOf(entry.status) === -1; })) {
+                    return 'running';
+                }
+                if (entries.some(function(entry) { return isFailedStatus(entry.status); })) {
+                    return 'error';
+                }
+                if (entries.some(function(entry) { return entry.status === 'cancelled'; })) {
+                    return 'cancelled';
+                }
+                return 'done';
+            }
+
+            function shouldOpenToolGroup(groupStatus) {
+                return groupStatus === 'running' || groupStatus === 'error';
+            }
+
+            function getToolStatusSymbol(status) {
+                if (status === 'done') { return '\u2713'; }
+                if (isFailedStatus(status)) { return '\u2717'; }
+                if (status === 'cancelled') { return '\u2298'; }
+                return '\u27F3';
+            }
+
+            function getToolStatusClass(status) {
+                if (status === 'done') { return ' tool-ok'; }
+                if (isFailedStatus(status)) { return ' tool-fail'; }
+                if (status === 'cancelled') { return ' tool-cancel'; }
+                return ' tool-run';
+            }
+`;
+
+/** Sessions menu: opened per pane, keyboard-navigable, replies carry the pane's threadId. */
+export const SESSIONS_PANEL_JS = `
+            var sessionsPanelDismiss = null;
+            var sessionsPanelPendingTimer = null;
+            var sessionsPanelThreadId = '';
+            var sessionsRequestThreadId = '';
+            var sessionsPanelRows = [];
+            var sessionsRefreshTimer = null;
+
+            /** Coalesces a burst of session index changes into one reload of an open panel. */
+            var SESSIONS_REFRESH_DELAY_MS = 300;
+
+            var SESSIONS_ROW_STYLE = 'cursor:pointer;padding:3px 6px;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block;width:100%;text-align:left;background:none;border:none;color:inherit;font:inherit';
+
+            function requestSessionsPanel(threadId) {
+                sessionsPanelThreadId = threadId || '';
+                sessionsRequestThreadId = sessionsPanelThreadId;
+                vscode.postMessage({ type: 'requestSessions', threadId: sessionsPanelThreadId });
+            }
+
+            /** The user moved on before the list arrived: a late reply must not open over their work. */
+            function cancelSessionsRequest() {
+                sessionsRequestThreadId = '';
+            }
+
+            function isAwaitedListing(listing) {
+                return Boolean(sessionsRequestThreadId) && (!listing.threadId || listing.threadId === sessionsRequestThreadId);
+            }
+
+            function describeSessionRow(session) {
+                var label = session.label || session.sessionKey || '';
+                if (session.hasActiveRun) { label = '\\u25CF ' + label; }
+                if (session.cold) { label = '\\u2744 ' + label; }
+                return label;
+            }
+
+            function getSessionsPanelNotice(listing) {
+                if (listing.error) { return String(listing.error); }
+                return (listing.sessions || []).length === 0 ? 'No sessions' : '';
+            }
+
+            function createSessionsRow(text) {
+                var row = document.createElement('button');
+                row.setAttribute('role', 'menuitem');
+                row.setAttribute('tabindex', '-1');
+                row.style.cssText = SESSIONS_ROW_STYLE;
+                row.textContent = text;
+                return row;
+            }
+
+            function createSessionRow(session, threadId) {
+                var row = createSessionsRow(describeSessionRow(session));
+                row.title = session.sessionKey || '';
+                row.setAttribute('data-session-key', session.sessionKey || '');
+                // The panel lives on document.body, outside the pane click delegation.
+                row.addEventListener('click', function(ev) {
+                    ev.stopPropagation();
+                    vscode.postMessage({ type: 'openSession', sessionKey: session.sessionKey || '', threadId: threadId });
+                    dismissSessionsPanel();
+                });
+                return row;
+            }
+
+            function createNoticeRow(text) {
+                var row = createSessionsRow(text);
+                row.setAttribute('aria-disabled', 'true');
+                row.style.cssText = SESSIONS_ROW_STYLE + ';cursor:default;opacity:0.7';
+                return row;
+            }
+
+            function moveSessionsFocus(step) {
+                var current = sessionsPanelRows.indexOf(document.activeElement);
+                var next = (current + step + sessionsPanelRows.length) % sessionsPanelRows.length;
+                sessionsPanelRows[next].focus();
+            }
+
+            function handleSessionsPanelKeydown(ev) {
+                if (ev.key === 'Escape') {
+                    ev.preventDefault();
+                    dismissSessionsPanel({ restoreFocus: true });
+                } else if (ev.key === 'ArrowDown') {
+                    ev.preventDefault();
+                    moveSessionsFocus(1);
+                } else if (ev.key === 'ArrowUp') {
+                    ev.preventDefault();
+                    moveSessionsFocus(-1);
+                }
+            }
+
+            function renderSessionsPanel(listing) {
+                if (!isAwaitedListing(listing)) {
+                    return;
+                }
+                var threadId = sessionsRequestThreadId;
+                var opener = findSessionsButton(threadId);
+                var focusWasOnOpener = document.activeElement === opener || document.activeElement === document.body || !document.activeElement;
+                var focusedSessionKey = focusedSessionRowKey();
+                dismissSessionsPanel();
+                sessionsPanelThreadId = threadId;
+                var panel = document.createElement('div');
+                panel.id = 'claw-sessions-panel';
+                panel.setAttribute('role', 'menu');
+                panel.setAttribute('aria-label', 'Sessions');
+                panel.style.cssText = 'position:fixed;top:32px;right:8px;max-height:60vh;overflow:auto;background:var(--vscode-editorWidget-background, #252526);border:1px solid var(--vscode-editorWidget-border, #454545);color:var(--vscode-editor-foreground, inherit);padding:6px;z-index:60;min-width:220px;font-size:12px';
+                var title = document.createElement('div');
+                title.setAttribute('aria-hidden', 'true');
+                title.textContent = 'Sessions';
+                title.style.cssText = 'opacity:0.7;margin-bottom:4px';
+                panel.appendChild(title);
+                var notice = getSessionsPanelNotice(listing);
+                sessionsPanelRows = notice
+                    ? [createNoticeRow(notice)]
+                    : listing.sessions.map(function(session) { return createSessionRow(session, threadId); });
+                sessionsPanelRows.forEach(function(row) { panel.appendChild(row); });
+                panel.addEventListener('keydown', handleSessionsPanelKeydown);
+                document.body.appendChild(panel);
+                if (focusedSessionKey !== null) {
+                    (findSessionRow(focusedSessionKey) || sessionsPanelRows[0]).focus();
+                } else if (focusWasOnOpener) {
+                    sessionsPanelRows[0].focus();
+                }
+                // Deferred so the click that opened the panel does not dismiss it.
+                sessionsPanelPendingTimer = setTimeout(function() {
+                    sessionsPanelPendingTimer = null;
+                    sessionsPanelDismiss = function(ev) {
+                        if (!(ev.target instanceof Node) || !panel.contains(ev.target)) {
+                            dismissSessionsPanel();
+                        }
+                    };
+                    document.addEventListener('click', sessionsPanelDismiss);
+                }, 0);
+            }
+
+            /** The session key of the focused row of an open panel, '' for a notice row, null when focus is elsewhere. */
+            function focusedSessionRowKey() {
+                var panel = document.getElementById('claw-sessions-panel');
+                var active = document.activeElement;
+                return panel && active && panel.contains(active) ? (active.getAttribute('data-session-key') || '') : null;
+            }
+
+            function findSessionRow(sessionKey) {
+                for (var i = 0; i < sessionsPanelRows.length; i++) {
+                    if (sessionsPanelRows[i].getAttribute('data-session-key') === sessionKey) { return sessionsPanelRows[i]; }
+                }
+                return null;
+            }
+
+            /** The gateway's session index changed: an open panel reloads its list, keeping the focused row. */
+            function refreshSessionsPanel() {
+                if (!document.getElementById('claw-sessions-panel') || sessionsRefreshTimer !== null) {
+                    return;
+                }
+                sessionsRefreshTimer = setTimeout(function() {
+                    sessionsRefreshTimer = null;
+                    if (document.getElementById('claw-sessions-panel')) {
+                        requestSessionsPanel(sessionsPanelThreadId);
+                    }
+                }, SESSIONS_REFRESH_DELAY_MS);
+            }
+
+            function dismissSessionsPanel(options) {
+                cancelSessionsRequest();
+                if (sessionsPanelPendingTimer !== null) {
+                    clearTimeout(sessionsPanelPendingTimer);
+                    sessionsPanelPendingTimer = null;
+                }
+                if (sessionsPanelDismiss) {
+                    document.removeEventListener('click', sessionsPanelDismiss);
+                    sessionsPanelDismiss = null;
+                }
+                sessionsPanelRows = [];
+                var panel = document.getElementById('claw-sessions-panel');
+                if (!panel) { return; }
+                panel.remove();
+                if (options && options.restoreFocus) {
+                    var button = findSessionsButton(sessionsPanelThreadId);
+                    if (button) { button.focus(); }
+                }
+            }
+
+            document.addEventListener('click', function(ev) {
+                if (!(ev.target instanceof Element) || !ev.target.closest('.pane-btn[data-action="sessions"]')) {
+                    cancelSessionsRequest();
+                }
+            });
+
+            function findSessionsButton(threadId) {
+                var buttons = document.querySelectorAll('.pane-btn[data-action="sessions"]');
+                for (var i = 0; i < buttons.length; i++) {
+                    if (buttons[i].getAttribute('data-thread-id') === threadId) { return buttons[i]; }
+                }
+                return null;
+            }
+`;
+
+/** Approval and question rows: built from DOM nodes (text is never parsed as markup), answered with
+ *  native buttons and fields, their typed drafts kept across re-renders. Uses CONTENT_JS's `vscode`. */
+export const OPERATOR_PROMPTS_JS = `
+            /** Typed answers by thread, prompt and question: each pane answers only what it shows. */
+            var promptDrafts = Object.create(null);
+
+            var DECISION_LABELS = { 'allow-once': 'Approve once', 'allow-always': 'Always allow', 'deny': 'Deny' };
+
+            /** Code points that reorder or hide text, so a shown command could differ from the one that runs. */
+            var DECEPTIVE_CHARS = /[\\u0000-\\u0008\\u000b-\\u001f\\u007f\\u061c\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2064\\u2066-\\u2069\\ufeff]/g;
+
+            /** Blank lines that could push the rest of a command out of sight. */
+            var BLANK_RUN = /\\n(?:[ \\t]*\\n){2,}/g;
+
+            /** A command longer than this many lines scrolls in its box; the card says so. */
+            var COMMAND_VISIBLE_LINES = 8;
+
+            function promptNode(tag, className, text) {
+                var node = document.createElement(tag);
+                if (className) { node.className = className; }
+                if (text) { node.textContent = text; }
+                return node;
+            }
+
+            function promptDraft(threadId, promptKey, questionId) {
+                var byPrompt = promptDrafts[threadId] || (promptDrafts[threadId] = Object.create(null));
+                var byQuestion = byPrompt[promptKey] || (byPrompt[promptKey] = Object.create(null));
+                return byQuestion[questionId] || (byQuestion[questionId] = { selected: [], other: '' });
+            }
+
+            function pendingPromptCount(thread) {
+                return (thread.prompts || []).filter(function(prompt) { return prompt.state !== 'resolved'; }).length;
+            }
+
+            function markPromptControl(control, prompt, threadId, focusKey) {
+                control.setAttribute('data-prompt-key', prompt.key);
+                control.setAttribute('data-thread-id', threadId);
+                control.setAttribute('data-focus-key', prompt.key + '|' + focusKey);
+                control.disabled = prompt.state !== 'pending';
+                return control;
+            }
+
+            function promptButton(prompt, threadId, action, label, primary) {
+                var button = promptNode('button', 'prompt-btn' + (primary ? ' prompt-btn-primary' : ''), label);
+                button.type = 'button';
+                button.setAttribute('data-action', action);
+                return markPromptControl(button, prompt, threadId, action);
+            }
+
+            function decisionButton(prompt, threadId, decision) {
+                var button = promptButton(prompt, threadId, 'prompt-decision', DECISION_LABELS[decision] || decision, decision !== 'deny');
+                button.setAttribute('data-decision', decision);
+                button.setAttribute('data-focus-key', prompt.key + '|prompt-decision|' + decision);
+                return button;
+            }
+
+            function formatPromptExpiry(expiresAtMs) {
+                var at = new Date(Number(expiresAtMs));
+                return isNaN(at.getTime()) ? '' : 'Expires at ' + at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            }
+
+            function codePointLabel(char) {
+                return '\\u2039U+' + char.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0') + '\\u203A';
+            }
+
+            /** The command as it will run, with hidden and reordering characters and blank-line padding made visible. */
+            function revealCommand(command) {
+                var deceptive = false;
+                var padded = false;
+                var text = String(command || '').replace(DECEPTIVE_CHARS, function(char) {
+                    deceptive = true;
+                    return codePointLabel(char);
+                }).replace(BLANK_RUN, function(run) {
+                    padded = true;
+                    return '\\n\\u2039' + (run.split('\\n').length - 2) + ' blank lines\\u203A\\n';
+                });
+                var warnings = [];
+                if (deceptive) { warnings.push('Contains hidden or direction-changing characters, shown as \\u2039U+\\u2026\\u203A.'); }
+                if (padded) { warnings.push('Contains runs of blank lines, shown collapsed.'); }
+                var lines = text.split('\\n').length;
+                if (lines > COMMAND_VISIBLE_LINES) { warnings.push('The command has ' + lines + ' lines: scroll the box to read all of it.'); }
+                return { text: text, warnings: warnings };
+            }
+
+            function promptCard(prompt, heading) {
+                var card = promptNode('div', 'prompt-card prompt-' + prompt.kind + (prompt.state === 'resolved' ? ' prompt-resolved' : ''));
+                card.setAttribute('role', 'group');
+                card.setAttribute('aria-label', heading);
+                card.setAttribute('data-prompt-key', prompt.key);
+                var head = promptNode('div', 'prompt-heading', heading);
+                if (prompt.state !== 'resolved') {
+                    head.appendChild(promptNode('span', 'prompt-expiry', formatPromptExpiry(promptDeadlines[prompt.key].at)));
+                }
+                card.appendChild(head);
+                return card;
+            }
+
+            function promptStatus(prompt) {
+                return promptNode('div', 'prompt-status', prompt.status || '');
+            }
+
+            function promptActions(buttons) {
+                var actions = promptNode('div', 'prompt-actions');
+                buttons.forEach(function(button) { actions.appendChild(button); });
+                return actions;
+            }
+
+            function promptLines(className, lines) {
+                var list = promptNode('ul', className);
+                lines.forEach(function(line) { list.appendChild(promptNode('li', '', line)); });
+                return list;
+            }
+
+            function renderApprovalTitle(card, prompt) {
+                if (prompt.subject !== 'exec') {
+                    card.appendChild(promptNode('div', 'prompt-title', prompt.title));
+                    return;
+                }
+                var command = revealCommand(prompt.title);
+                var box = promptNode('pre', 'prompt-title prompt-command', command.text);
+                box.tabIndex = 0;
+                box.setAttribute('aria-label', 'Command');
+                card.appendChild(box);
+                if (command.warnings.length) {
+                    card.appendChild(promptLines('prompt-warnings', command.warnings));
+                }
+            }
+
+            function renderApprovalCard(prompt, threadId) {
+                var card = promptCard(prompt, prompt.subject === 'exec' ? 'Run this command?' : 'Allow this action?');
+                renderApprovalTitle(card, prompt);
+                if ((prompt.details || []).length) {
+                    card.appendChild(promptLines('prompt-details', prompt.details));
+                }
+                if (prompt.state !== 'resolved') {
+                    card.appendChild(promptActions((prompt.decisions || []).map(function(decision) {
+                        return decisionButton(prompt, threadId, decision);
+                    })));
+                }
+                card.appendChild(promptStatus(prompt));
+                return card;
+            }
+
+            function renderQuestionOption(prompt, question, option, index, threadId) {
+                var label = promptNode('label', 'prompt-option');
+                var input = document.createElement('input');
+                input.type = question.multiSelect ? 'checkbox' : 'radio';
+                input.name = 'prompt|' + threadId + '|' + prompt.key + '|' + question.id;
+                input.value = option.label;
+                input.className = 'prompt-field prompt-choice';
+                input.checked = promptDraft(threadId, prompt.key, question.id).selected.indexOf(option.label) !== -1;
+                input.setAttribute('data-question-id', question.id);
+                label.appendChild(markPromptControl(input, prompt, threadId, question.id + '|' + index));
+                label.appendChild(promptNode('span', 'prompt-option-label', option.label));
+                if (option.description) {
+                    label.appendChild(promptNode('span', 'prompt-option-description', option.description));
+                }
+                return label;
+            }
+
+            function renderQuestionOther(prompt, question, threadId) {
+                var input = document.createElement('input');
+                var caption = question.options.length ? 'Other answer' : 'Your answer';
+                input.type = question.secret ? 'password' : 'text';
+                input.className = 'prompt-field prompt-other';
+                input.value = promptDraft(threadId, prompt.key, question.id).other;
+                input.placeholder = caption;
+                input.autocomplete = 'off';
+                input.setAttribute('aria-label', caption);
+                input.setAttribute('data-question-id', question.id);
+                return markPromptControl(input, prompt, threadId, question.id + '|other');
+            }
+
+            function renderQuestionItem(prompt, question, threadId) {
+                var fieldset = promptNode('fieldset', 'prompt-question');
+                fieldset.appendChild(promptNode('legend', 'prompt-question-text', question.header ? question.header + ': ' + question.text : question.text));
+                question.options.forEach(function(option, index) {
+                    fieldset.appendChild(renderQuestionOption(prompt, question, option, index, threadId));
+                });
+                if (question.allowsOther) {
+                    fieldset.appendChild(renderQuestionOther(prompt, question, threadId));
+                }
+                return fieldset;
+            }
+
+            function renderQuestionCard(prompt, threadId) {
+                var card = promptCard(prompt, 'The agent asks');
+                (prompt.questions || []).forEach(function(question) {
+                    card.appendChild(renderQuestionItem(prompt, question, threadId));
+                });
+                if (prompt.state !== 'resolved') {
+                    card.appendChild(promptActions([
+                        promptButton(prompt, threadId, 'prompt-answer', 'Send answer', true),
+                        promptButton(prompt, threadId, 'prompt-skip', 'Skip', false),
+                    ]));
+                }
+                card.appendChild(promptStatus(prompt));
+                return card;
+            }
+
+            function renderPanePrompts(thread) {
+                var region = promptNode('div', 'pane-prompts');
+                region.setAttribute('data-thread-id', thread.id);
+                region.setAttribute('role', 'region');
+                region.setAttribute('aria-label', 'Requests waiting for you');
+                region.tabIndex = -1;
+                (thread.prompts || []).forEach(function(prompt) {
+                    region.appendChild(prompt.kind === 'approval' ? renderApprovalCard(prompt, thread.id) : renderQuestionCard(prompt, thread.id));
+                });
+                return region;
+            }
+
+            /** One live region per pane, kept across re-renders so screen readers hear each change once. */
+            function promptAnnouncer(pane) {
+                var announcer = childWithClass(pane, 'pane-prompt-announcer');
+                if (!announcer) {
+                    announcer = promptNode('div', 'pane-prompt-announcer');
+                    announcer.setAttribute('aria-live', 'polite');
+                    pane.appendChild(announcer);
+                }
+                return announcer;
+            }
+
+            function describeArrival(prompt) {
+                return prompt.kind === 'approval' ? 'Approval needed: ' + prompt.title : 'The agent asks: ' + ((prompt.questions || [])[0] || {}).text;
+            }
+
+            /** What changed since the last render: new prompts (a settled one waiting again among them),
+             *  and statuses that moved on. */
+            function promptAnnouncement(previous, prompts) {
+                return prompts.map(function(prompt) {
+                    var before = previous[prompt.key];
+                    if (!before || (before.state === 'resolved' && prompt.state !== 'resolved')) { return describeArrival(prompt); }
+                    return before.status !== prompt.status && prompt.status ? prompt.status : '';
+                }).filter(Boolean).join('. ');
+            }
+
+            function statusByKey(prompts) {
+                var byKey = Object.create(null);
+                prompts.forEach(function(prompt) { byKey[prompt.key] = { state: prompt.state, status: prompt.status || '' }; });
+                return byKey;
+            }
+
+            /** Rebuilds the rows only when they changed, handing focus back to the control that had it,
+             *  or to the composer once the last row is gone. */
+            function syncPanePrompts(pane, cache, thread) {
+                var prompts = thread.prompts || [];
+                // The time left shrinks with every state; the deadline it fixed does not, so it is no change.
+                var json = JSON.stringify(prompts, function(name, value) { return name === 'expiresInMs' ? undefined : value; });
+                var live = childWithClass(pane, 'pane-prompts');
+                if ((live || !prompts.length) && cache.prompts === json) {
+                    return;
+                }
+                var announcement = promptAnnouncement(cache.promptStatuses || Object.create(null), prompts);
+                cache.prompts = json;
+                cache.promptStatuses = statusByKey(prompts);
+                if (announcement) { promptAnnouncer(pane).textContent = announcement; }
+                var hadFocus = Boolean(live) && live.contains(document.activeElement);
+                var focusKey = hadFocus ? document.activeElement.getAttribute('data-focus-key') : null;
+                if (!prompts.length) {
+                    if (live) { live.remove(); }
+                    if (hadFocus) { focusComposerOf(pane); }
+                    return;
+                }
+                var fresh = renderPanePrompts(thread);
+                if (live) {
+                    live.replaceWith(fresh);
+                } else {
+                    pane.insertBefore(fresh, childWithClass(pane, 'composer-shell'));
+                }
+                if (hadFocus) {
+                    restorePromptFocus(fresh, focusKey);
+                }
+            }
+
+            function focusComposerOf(pane) {
+                var composerField = pane.querySelector('.composer-input');
+                if (composerField) { composerField.focus(); }
+            }
+
+            function restorePromptFocus(region, focusKey) {
+                var controls = region.querySelectorAll('[data-focus-key]');
+                for (var i = 0; i < controls.length; i++) {
+                    if (controls[i].getAttribute('data-focus-key') === focusKey && !controls[i].disabled) {
+                        controls[i].focus();
+                        return;
+                    }
+                }
+                region.focus();
+            }
+
+            /** Local deadlines by prompt key, fixed from the time left when a prompt arrives: the host's
+             *  clock may not be this one's (a remote extension host). A settled prompt that waits again
+             *  (a backfill lists it anew) has arrived again, with a new deadline. */
+            var promptDeadlines = Object.create(null);
+
+            function fixPromptDeadlines(threads) {
+                var shown = Object.create(null);
+                threads.forEach(function(thread) {
+                    (thread.prompts || []).forEach(function(prompt) {
+                        var known = promptDeadlines[prompt.key];
+                        var arrived = !known || (known.resolved && prompt.state !== 'resolved');
+                        var at = arrived ? Date.now() + Number(prompt.expiresInMs) : known.at;
+                        promptDeadlines[prompt.key] = { at: at, resolved: prompt.state === 'resolved' };
+                        shown[prompt.key] = true;
+                    });
+                });
+                Object.keys(promptDeadlines).forEach(function(key) {
+                    if (!shown[key]) { delete promptDeadlines[key]; }
+                });
+            }
+
+            /** Drafts of prompts a pane no longer shows are dropped. */
+            function prunePromptDrafts(threads) {
+                var shown = Object.create(null);
+                threads.forEach(function(thread) {
+                    shown[thread.id] = Object.create(null);
+                    (thread.prompts || []).forEach(function(prompt) { shown[thread.id][prompt.key] = true; });
+                });
+                Object.keys(promptDrafts).forEach(function(threadId) {
+                    Object.keys(promptDrafts[threadId]).forEach(function(promptKey) {
+                        if (!shown[threadId] || !shown[threadId][promptKey]) { delete promptDrafts[threadId][promptKey]; }
+                    });
+                });
+            }
+
+            function findThreadPrompt(threadId, promptKey) {
+                var thread = getThreadById(threadId);
+                var prompts = (thread && thread.prompts) || [];
+                for (var i = 0; i < prompts.length; i++) {
+                    if (prompts[i].key === promptKey) { return prompts[i]; }
+                }
+                return null;
+            }
+
+            /** A typed answer replaces the chosen option of a single-choice question, and the other way round. */
+            function updatePromptDraft(field) {
+                var threadId = field.getAttribute('data-thread-id');
+                var promptKey = field.getAttribute('data-prompt-key');
+                var questionId = field.getAttribute('data-question-id');
+                if (!findThreadPrompt(threadId, promptKey) || !questionId) { return; }
+                var draft = promptDraft(threadId, promptKey, questionId);
+                var fieldset = field.closest('.prompt-question');
+                var single = field.type === 'radio' || (fieldset && fieldset.querySelector('input[type="radio"]'));
+                if (field.classList.contains('prompt-other')) {
+                    draft.other = field.value;
+                    if (single && field.value) {
+                        draft.selected = [];
+                        fieldset.querySelectorAll('.prompt-choice').forEach(function(choice) { choice.checked = false; });
+                    }
+                    return;
+                }
+                draft.selected = Array.from(fieldset.querySelectorAll('.prompt-choice'))
+                    .filter(function(choice) { return choice.checked; })
+                    .map(function(choice) { return choice.value; });
+                var other = single && fieldset.querySelector('.prompt-other');
+                if (other) {
+                    draft.other = '';
+                    other.value = '';
+                }
+            }
+
+            function collectPromptAnswers(threadId, prompt) {
+                var answers = {};
+                (prompt.questions || []).forEach(function(question) {
+                    var draft = promptDraft(threadId, prompt.key, question.id);
+                    var other = question.secret ? draft.other : draft.other.trim();
+                    var values = question.multiSelect ? draft.selected.slice() : draft.selected.slice(0, 1);
+                    if (other) {
+                        values = question.multiSelect ? values.concat([other]) : [other];
+                    }
+                    answers[question.id] = values;
+                });
+                return answers;
+            }
+
+            /** Handles a prompt button; false for every other action. */
+            function handlePromptAction(action, actionEl) {
+                var promptKey = actionEl.getAttribute('data-prompt-key');
+                var threadId = actionEl.getAttribute('data-thread-id');
+                if (action === 'prompt-decision') {
+                    vscode.postMessage({ type: 'resolveApproval', threadId: threadId, promptKey: promptKey, decision: actionEl.getAttribute('data-decision') });
+                    return true;
+                }
+                if (action === 'prompt-answer') {
+                    var prompt = findThreadPrompt(threadId, promptKey);
+                    if (prompt) {
+                        vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptKey: promptKey, answers: collectPromptAnswers(threadId, prompt) });
+                    }
+                    return true;
+                }
+                if (action === 'prompt-skip') {
+                    vscode.postMessage({ type: 'answerQuestion', threadId: threadId, promptKey: promptKey, answers: null });
+                    return true;
+                }
+                return false;
+            }
+
+            /** Enter in a typed answer sends the question's answers. */
+            function handlePromptKeydown(event) {
+                var field = event.target.closest('.prompt-other');
+                if (!field || event.key !== 'Enter' || event.isComposing) {
+                    return;
+                }
+                event.preventDefault();
+                var card = field.closest('.prompt-card');
+                var submit = card && card.querySelector('[data-action="prompt-answer"]');
+                if (submit && !submit.disabled) {
+                    submit.click();
+                }
+            }
+`;
+
+/** Grid layouts the host accepts for `setDimension`, mirroring the `openclaw.chat.dimension` enum. */
+export const GRID_DIMENSIONS = ['1x1', '2x2', '2x3', '3x3', '4x4'];
+
 export const CONTENT_JS = `
         (function() {
-            var _crashLog = [];
-
             function _showCrash(label, err) {
                 var msg = (err && err.stack) ? err.stack : String(err);
-                _crashLog.push({ label: label, msg: msg, ts: new Date().toISOString() });
                 console.error('[OpenClaw] ' + label + ':', err);
                 var target = document.getElementById('paneGrid') || document.body;
                 var box = document.createElement('details');
@@ -15,11 +665,12 @@ export const CONTENT_JS = `
                 box.open = true;
                 box.innerHTML =
                     '<summary>' + escapeHtml(label) + '</summary>' +
-                    '<pre>' + linkifyFilePaths(escapeHtml(msg)) + '</pre>' +
-                    '<div style="margin-top:6px;opacity:0.6;font-size:11px">' +
+                    '<pre></pre>' +
+                    '<div class="openclaw-crash-state">' +
                         'State: threads=' + (typeof state !== 'undefined' ? (state.threads || []).length : '?') +
                         ', dim=' + (typeof currentDimension !== 'undefined' ? currentDimension : '?') +
                     '</div>';
+                setLinkifiedText(box.querySelector('pre'), msg);
                 target.appendChild(box);
             }
 
@@ -35,7 +686,6 @@ export const CONTENT_JS = `
             var paneGrid = document.getElementById('paneGrid');
             var dimensionSelect = document.getElementById('dimensionSelect');
             var btnNew = document.getElementById('btn-new');
-            var btnFlip = document.getElementById('btn-flip');
             var btnSplit = document.getElementById('btn-split');
             var btnPopout = document.getElementById('btn-popout');
 
@@ -45,10 +695,17 @@ export const CONTENT_JS = `
                 icon: c.icon,
                 placeholder: c.placeholder,
             })))};
+            var gridDimensions = ${JSON.stringify(GRID_DIMENSIONS)};
             var availableModels = [];
             var recommendations = [];
             var drafts = Object.create(null);
             var messageQueue = Object.create(null);
+            var toolGroupOpen = Object.create(null);
+            var paneCache = Object.create(null);
+            var composing = false;
+            var renderDeferred = false;
+            var unconfirmedSends = Object.create(null);
+            var sendCounter = 0;
             var currentDimension = '1x1';
 
             var chatTypes = [
@@ -65,26 +722,24 @@ export const CONTENT_JS = `
                 activeFileIndex: 0,
                 atMentionThreadId: '',
                 atMentionStart: -1,
+                fileSearchQuery: '',
                 fileSearchDebounce: null,
                 fileResults: [],
                 modelQuery: '',
-                dragThreadId: '',
-                settingsThinking: 'medium',
-                settingsTemp: 0.7,
-                settingsMaxTokens: 0
+                dragThreadId: ''
             };
 
             var state = {
                 activeThreadId: '',
-                visibleThreadIds: [],
                 threads: []
             };
 
             var collapseCompleted = true;
+            var hideToolActivity = false;
             var collapseOverrides = Object.create(null); // threadId -> true/false manual override
 
             function isValidDimension(value) {
-                return /^\\d+x\\d+$/.test(value || '');
+                return gridDimensions.indexOf(value) !== -1;
             }
 
             function getThreadById(threadId) {
@@ -118,81 +773,135 @@ export const CONTENT_JS = `
                 return escapeHtml(text).replace(/"/g, '&quot;');
             }
 
-            function linkifyFilePaths(html) {
-                if (!html || (html.indexOf('/') === -1 && html.indexOf('\\\\') === -1)) {
-                    return html || '';
+            /** A non-negative finite number from host data, 0 otherwise: counts are spliced into markup. */
+            function toCount(value) {
+                var n = Number(value);
+                return isFinite(n) && n > 0 ? n : 0;
+            }
+
+            /** Compares attributes instead of building a selector, so no id can break or widen the query. */
+            function findThreadElement(selector, threadId) {
+                var matches = paneGrid.querySelectorAll(selector);
+                for (var i = 0; i < matches.length; i++) {
+                    if (matches[i].getAttribute('data-thread-id') === threadId) {
+                        return matches[i];
+                    }
                 }
+                return null;
+            }
 
-                var template = document.createElement('template');
-                template.innerHTML = html;
+            function findPaneBody(threadId) {
+                var pane = findThreadElement('.pane', threadId);
+                return pane ? pane.querySelector('.pane-body') : null;
+            }
 
-                var filePathRegex = /((?:[a-zA-Z]:[\\\\/]|\\/|\\.{1,2}[\\\\/])?(?:[\\w .@()-]+[\\\\/])+[\\w .@()-]+\\.[a-zA-Z0-9]{1,10}(?::(\\d+)(?::\\d+)?)?)/g;
-                var walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+            var SAFE_LINK_HREF = /^(https?:|mailto:)/i;
+
+            function removeUnsafeLinks(container) {
+                var links = container.querySelectorAll('a[href]');
+                for (var i = 0; i < links.length; i++) {
+                    if (!SAFE_LINK_HREF.test((links[i].getAttribute('href') || '').trim())) {
+                        links[i].removeAttribute('href');
+                    }
+                }
+            }
+
+            function createFileLink(filePath, line, text) {
+                var link = document.createElement('span');
+                link.className = 'file-link';
+                link.setAttribute('data-file-path', filePath);
+                if (line) {
+                    link.setAttribute('data-line', line);
+                }
+                link.setAttribute('role', 'link');
+                link.setAttribute('tabindex', '0');
+                link.textContent = text;
+                return link;
+            }
+
+            // Longer text nodes stay plain: linking is a convenience, never worth a stalled webview.
+            var MAX_LINKIFY_TEXT_LENGTH = 20000;
+            var PATH_SEGMENT = /^[\\w.@()-]+$/;
+
+            /** A token as { path, line } when it names a file, else null. Every step is linear in the token. */
+            function parseFileReference(token) {
+                if (token.indexOf('://') !== -1) {
+                    return null;
+                }
+                var lineMatch = /:(\\d+)(?::\\d+)?$/.exec(token);
+                var path = lineMatch ? token.slice(0, lineMatch.index) : token;
+                var drive = /^[a-zA-Z]:[\\\\/]/.test(path) ? path.slice(0, 3) : '';
+                var rest = path.slice(drive.length);
+                if (rest.indexOf(':') !== -1) {
+                    return null;
+                }
+                var segments = rest.split(/[\\\\/]/);
+                var isRooted = !drive && segments[0] === '';
+                var named = isRooted ? segments.slice(1) : segments;
+                if (segments.length < 2 || !named.every(function(segment) { return PATH_SEGMENT.test(segment); })) {
+                    return null;
+                }
+                if (!/.\\.[a-zA-Z0-9]{1,10}$/.test(named[named.length - 1])) {
+                    return null;
+                }
+                return { path: path, line: lineMatch ? lineMatch[1] : '' };
+            }
+
+            function linkifyTextNode(textNode) {
+                var text = textNode.nodeValue || '';
+                if (text.length > MAX_LINKIFY_TEXT_LENGTH) {
+                    return;
+                }
+                var frag = document.createDocumentFragment();
+                var lastIndex = 0;
+                // One flat character class: runs never overlap, so the scan is linear.
+                var tokenPattern = /[\\w.@()\\/\\\\:-]+/g;
+                var match;
+                while ((match = tokenPattern.exec(text))) {
+                    // Sentence punctuation and wrapping parentheses stay prose; trimmed by index, not by regex.
+                    var start = match.index;
+                    var end = start + match[0].length;
+                    while (end > start && '.:)'.indexOf(text.charAt(end - 1)) !== -1) {
+                        end -= 1;
+                    }
+                    while (start < end && text.charAt(start) === '(') {
+                        start += 1;
+                    }
+                    var token = text.slice(start, end);
+                    var reference = token && parseFileReference(token);
+                    if (!reference) {
+                        continue;
+                    }
+                    frag.appendChild(document.createTextNode(text.slice(lastIndex, start)));
+                    frag.appendChild(createFileLink(reference.path, reference.line, token));
+                    lastIndex = end;
+                }
+                if (lastIndex === 0) {
+                    return;
+                }
+                frag.appendChild(document.createTextNode(text.slice(lastIndex)));
+                textNode.parentNode.replaceChild(frag, textNode);
+            }
+
+            /** Plain text as linked DOM, never through markup: no escaping or HTML parse on large bodies. */
+            function setLinkifiedText(container, text) {
+                var node = document.createTextNode(String(text || ''));
+                container.textContent = '';
+                container.appendChild(node);
+                linkifyTextNode(node);
+            }
+
+            /** Links the paths in an element's own text, in place, leaving anchors and existing links alone. */
+            function linkifyElement(container) {
+                var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
                 var textNodes = [];
-
                 while (walker.nextNode()) {
-                    var textNode = walker.currentNode;
-                    var parent = textNode.parentElement;
-                    var value = textNode.nodeValue || '';
-                    if (!parent || !value) {
-                        continue;
+                    var parent = walker.currentNode.parentElement;
+                    if (!parent || !parent.closest('a, .file-link, script, style')) {
+                        textNodes.push(walker.currentNode);
                     }
-                    if (parent.closest('a, .file-link, script, style')) {
-                        continue;
-                    }
-                    if (value.indexOf('/') === -1 && value.indexOf('\\\\') === -1) {
-                        continue;
-                    }
-                    textNodes.push(textNode);
                 }
-
-                textNodes.forEach(function(textNode) {
-                    var text = textNode.nodeValue || '';
-                    filePathRegex.lastIndex = 0;
-                    if (!filePathRegex.test(text)) {
-                        return;
-                    }
-
-                    var frag = document.createDocumentFragment();
-                    var lastIndex = 0;
-                    var match;
-                    filePathRegex.lastIndex = 0;
-
-                    while ((match = filePathRegex.exec(text))) {
-                        var fullText = match[1];
-                        var lineNum = match[2] || '';
-                        var filePath = lineNum
-                            ? fullText.slice(0, fullText.lastIndexOf(':' + lineNum))
-                            : fullText;
-
-                        if (match.index > lastIndex) {
-                            frag.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-                        }
-
-                        var link = document.createElement('span');
-                        link.className = 'file-link';
-                        link.setAttribute('data-file-path', filePath);
-                        if (lineNum) {
-                            link.setAttribute('data-line', lineNum);
-                        }
-                        link.setAttribute('role', 'link');
-                        link.setAttribute('tabindex', '0');
-                        link.textContent = fullText;
-                        frag.appendChild(link);
-
-                        lastIndex = match.index + fullText.length;
-                    }
-
-                    if (lastIndex < text.length) {
-                        frag.appendChild(document.createTextNode(text.slice(lastIndex)));
-                    }
-
-                    if (textNode.parentNode) {
-                        textNode.parentNode.replaceChild(frag, textNode);
-                    }
-                });
-
-                return template.innerHTML;
+                textNodes.forEach(linkifyTextNode);
             }
 
             function autoResizeTextarea(textarea) {
@@ -234,7 +943,7 @@ export const CONTENT_JS = `
             function getThreadStatusDetail(thread) {
                 switch (thread.status) {
                     case 'running':
-                        return 'Generating response';
+                        return 'Generating response \u00b7 Esc stops';
                     case 'complete':
                         return 'Response complete';
                     case 'error':
@@ -253,6 +962,8 @@ export const CONTENT_JS = `
             }
 
             function formatContextGauge(used, max) {
+                used = toCount(used);
+                max = toCount(max);
                 var pct = max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
                 var level = pct >= 90 ? 'critical' : pct >= 70 ? 'warn' : '';
                 return {
@@ -262,9 +973,26 @@ export const CONTENT_JS = `
                 };
             }
 
+            function getContextMax(thread) {
+                return toCount(thread.contextMax) || 128000;
+            }
+
             function estimateTokens(text) {
                 if (!text) { return 0; }
                 return Math.ceil(text.length / 4);
+            }
+
+            /** Usage status line: tokens of the last run plus rough context fill percent. */
+            function renderUsageIndicator(thread) {
+                var totalTokens = toCount(thread.lastUsage && thread.lastUsage.totalTokens);
+                if (!totalTokens) {
+                    return '';
+                }
+                var max = getContextMax(thread);
+                var pct = Math.min(100, Math.round((totalTokens / max) * 100));
+                return '<span class="usage-indicator" title="Last run: ' + totalTokens + ' tokens (~' +
+                    pct + '% of context)">' +
+                    formatTokenCount(totalTokens) + ' tok · ' + pct + '%</span>';
             }
 
             function getThreadSpaceUsage(thread) {
@@ -279,11 +1007,11 @@ export const CONTENT_JS = `
                     if (!message || message.role === 'tool') {
                         continue;
                     }
-                    estimatedTokens += estimateTokens(message.content || '');
+                    estimatedTokens += estimateTokens(String(message.content || ''));
                 }
 
-                estimatedTokens += estimateTokens(thread.pendingAssistantText || '');
-                return Math.max(thread.contextTokens || 0, estimatedTokens);
+                estimatedTokens += estimateTokens(String(thread.pendingAssistantText || ''));
+                return Math.max(toCount(thread.contextTokens), estimatedTokens);
             }
 
             function updatePaneContextUsage(paneEl, thread) {
@@ -291,7 +1019,7 @@ export const CONTENT_JS = `
                     return;
                 }
 
-                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), thread.contextMax || 128000);
+                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), getContextMax(thread));
                 var fill = paneEl.querySelector('.context-bar-fill');
                 if (fill) {
                     fill.className = 'context-bar-fill' + (ctxInfo.level ? ' ' + ctxInfo.level : '');
@@ -309,30 +1037,67 @@ export const CONTENT_JS = `
                 }
             }
 
-            function getToolGroupStatus(entries) {
-                return entries.some(function(entry) {
-                    return entry.status !== 'done';
-                }) ? 'running' : 'done';
+${TOOL_STATUS_JS}
+            function getToolGroupKey(entries, messageIndex) {
+                var first = entries[0] || {};
+                return messageIndex + ':' + String(first.id || first.title || '');
             }
 
-            function renderToolMessage(message) {
+            /** A user's expand/collapse survives re-renders until the group's default catches up with it. */
+            function rememberToolGroupOpen(threadId, key, isOpen, defaultOpen) {
+                var overrides = toolGroupOpen[threadId] || (toolGroupOpen[threadId] = Object.create(null));
+                if (isOpen === defaultOpen) {
+                    delete overrides[key];
+                } else {
+                    overrides[key] = isOpen;
+                }
+            }
+
+            function renderToolMessage(message, threadId, messageIndex) {
                 var node = document.createElement('details');
                 var entries = Array.isArray(message.entries) ? message.entries : [];
                 var status = getToolGroupStatus(entries);
+                var key = getToolGroupKey(entries, messageIndex);
+                var overrides = toolGroupOpen[threadId] || {};
+                var defaultOpen = shouldOpenToolGroup(status);
                 node.className = 'message-tool';
-                if (status === 'running') {
-                    node.open = true;
-                }
+                node.setAttribute('data-tool-key', key);
+                node.setAttribute('data-default-open', String(defaultOpen));
+                node.open = key in overrides ? overrides[key] : defaultOpen;
 
                 var summary = document.createElement('summary');
-                summary.innerHTML =
-                    '<span class="message-tool-summary">' +
-                        '<svg class="message-tool-chevron" viewBox="0 0 16 16" fill="currentColor"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>' +
-                        '<span class="message-tool-icon">&#9881;</span>' +
-                        '<span class="message-tool-label">Tools</span>' +
-                        '<span class="message-tool-count">(' + entries.length + ')</span>' +
-                    '</span>' +
-                    '<span class="message-tool-status">' + escapeHtml(status) + '</span>';
+                var summaryLine = document.createElement('span');
+                summaryLine.className = 'message-tool-summary';
+                var chevron = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+                chevron.setAttribute('class', 'message-tool-chevron');
+                chevron.setAttribute('viewBox', '0 0 16 16');
+                chevron.setAttribute('fill', 'currentColor');
+                var chevronPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                chevronPath.setAttribute('d', 'M6 4l4 4-4 4');
+                chevronPath.setAttribute('stroke', 'currentColor');
+                chevronPath.setAttribute('stroke-width', '1.5');
+                chevronPath.setAttribute('fill', 'none');
+                chevronPath.setAttribute('stroke-linecap', 'round');
+                chevronPath.setAttribute('stroke-linejoin', 'round');
+                chevron.appendChild(chevronPath);
+                var icon = document.createElement('span');
+                icon.className = 'message-tool-icon';
+                icon.innerHTML = '&#9881;';
+                var label = document.createElement('span');
+                label.className = 'message-tool-label';
+                label.textContent = 'Tools';
+                var count = document.createElement('span');
+                count.className = 'message-tool-count';
+                count.textContent = '(' + entries.length + ')';
+                summaryLine.appendChild(chevron);
+                summaryLine.appendChild(icon);
+                summaryLine.appendChild(label);
+                summaryLine.appendChild(count);
+                var statusEl = document.createElement('span');
+                statusEl.className = 'message-tool-status' + getToolStatusClass(status);
+                statusEl.textContent = getToolStatusSymbol(status) + ' ' + status;
+                summary.appendChild(summaryLine);
+                summary.appendChild(statusEl);
                 node.appendChild(summary);
 
                 var toolBody = document.createElement('div');
@@ -341,12 +1106,21 @@ export const CONTENT_JS = `
                 entries.forEach(function(entry) {
                     var item = document.createElement('div');
                     item.className = 'message-tool-entry';
-                    item.innerHTML =
-                        '<div class="message-tool-entry-header">' +
-                            '<span class="message-tool-entry-title">' + escapeHtml(entry.title || 'tool') + '</span>' +
-                            '<span class="message-tool-entry-status">' + escapeHtml(entry.status || '') + '</span>' +
-                        '</div>' +
-                        '<pre class="message-tool-details">' + linkifyFilePaths(escapeHtml(entry.details || '')) + '</pre>';
+                    var header = document.createElement('div');
+                    header.className = 'message-tool-entry-header';
+                    var title = document.createElement('span');
+                    title.className = 'message-tool-entry-title';
+                    title.textContent = entry.title || 'tool';
+                    var entryStatus = document.createElement('span');
+                    entryStatus.className = 'message-tool-entry-status' + getToolStatusClass(entry.status || '');
+                    entryStatus.textContent = getToolStatusSymbol(entry.status || '') + ' ' + (entry.status || '');
+                    header.appendChild(title);
+                    header.appendChild(entryStatus);
+                    var details = document.createElement('pre');
+                    details.className = 'message-tool-details';
+                    setLinkifiedText(details, entry.details);
+                    item.appendChild(header);
+                    item.appendChild(details);
                     toolBody.appendChild(item);
                 });
 
@@ -386,7 +1160,7 @@ export const CONTENT_JS = `
             function renderSlashHint(threadId) {
                 var commands = getActiveSlashCommands(threadId);
                 if (!commands.length) {
-                    return '';
+                    return '<div class="slash-hint"></div>';
                 }
                 var activeIndex = Math.max(0, Math.min(composerUi.activeSlashIndex, commands.length - 1));
                 var command = commands[activeIndex];
@@ -395,12 +1169,13 @@ export const CONTENT_JS = `
             }
 
             function renderSlashDropdown(threadId) {
+                var threadAttr = escapeAttr(threadId);
                 var commands = getActiveSlashCommands(threadId);
                 var visible = commands.length > 0;
                 var activeIndex = Math.max(0, Math.min(composerUi.activeSlashIndex, commands.length - 1));
                 var html = commands.map(function(command, index) {
                     return '<div class="slash-item' + (index === activeIndex ? ' active' : '') + '"' +
-                        ' data-action="pick-slash" data-thread-id="' + threadId + '"' +
+                        ' data-action="pick-slash" data-thread-id="' + threadAttr + '"' +
                         ' data-command="' + escapeAttr(command.name) + '">' +
                         '<div>' + escapeHtml(command.icon) + '</div>' +
                         '<div class="slash-info">' +
@@ -413,13 +1188,14 @@ export const CONTENT_JS = `
             }
 
             function renderFileDropdown(threadId) {
+                var threadAttr = escapeAttr(threadId);
                 var visible = composerUi.threadId === threadId &&
                     composerUi.dropdown === 'file' &&
                     composerUi.fileResults.length > 0;
                 var activeIndex = Math.max(0, Math.min(composerUi.activeFileIndex, composerUi.fileResults.length - 1));
                 var html = composerUi.fileResults.map(function(file, index) {
                     return '<div class="file-item' + (index === activeIndex ? ' active' : '') + '"' +
-                        ' data-action="pick-file" data-thread-id="' + threadId + '"' +
+                        ' data-action="pick-file" data-thread-id="' + threadAttr + '"' +
                         ' data-path="' + escapeAttr(file.path) + '">' +
                         '<span class="file-item-name">' + escapeHtml(file.name) + '</span>' +
                         '<span class="file-item-path">' + escapeHtml(file.relativePath) + '</span>' +
@@ -433,20 +1209,23 @@ export const CONTENT_JS = `
             }
 
             function renderChatTypeDropdown(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'chatType';
                 var html = chatTypes.map(function(chatType) {
-                    return '<div class="selector-item' +
-                        (chatType.id === thread.currentChatType ? ' selected' : '') + '"' +
-                        ' data-action="select-chat-type" data-thread-id="' + thread.id + '"' +
+                    var selected = chatType.id === thread.currentChatType;
+                    return '<div class="selector-item' + (selected ? ' selected' : '') + '"' +
+                        ' role="option" tabindex="-1" aria-selected="' + selected + '"' +
+                        ' data-action="select-chat-type" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(chatType.id) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(chatType.label) + '</span>' +
                         '<span class="selector-item-check">&#x2713;</span>' +
                     '</div>';
                 }).join('');
-                return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '">' + html + '</div>';
+                return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '" role="listbox" aria-label="Chat type">' + html + '</div>';
             }
 
             function renderModelDropdown(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'model';
                 var models = availableModels.slice();
                 if (composerUi.modelQuery) {
@@ -455,64 +1234,25 @@ export const CONTENT_JS = `
                     });
                 }
                 var items = models.map(function(model) {
-                    return '<div class="selector-item' + (model === thread.currentModel ? ' selected' : '') + '"' +
-                        ' data-action="select-model" data-thread-id="' + thread.id + '"' +
+                    var selected = model === thread.currentModel;
+                    return '<div class="selector-item' + (selected ? ' selected' : '') + '"' +
+                        ' role="option" tabindex="-1" aria-selected="' + selected + '"' +
+                        ' data-action="select-model" data-thread-id="' + threadAttr + '"' +
                         ' data-value="' + escapeAttr(model) + '">' +
                         '<span class="selector-item-label">' + escapeHtml(formatModelLabel(model)) + '</span>' +
                         '<span class="selector-item-check">&#x2713;</span>' +
                     '</div>';
                 }).join('');
                 return '<div class="selector-dropdown' + (visible ? ' visible' : '') + '">' +
-                    '<input class="selector-search" data-thread-id="' + thread.id + '"' +
-                        ' placeholder="Search models" value="' + escapeAttr(composerUi.modelQuery) + '">' +
-                    items +
-                '</div>';
-            }
-
-            function renderSettingsDropdown(thread) {
-                var visible = composerUi.threadId === thread.id && composerUi.dropdown === 'settings';
-                var thinkingLevels = ['none', 'low', 'medium', 'high'];
-                var thinkingOptions = thinkingLevels.map(function(level) {
-                    return '<option value="' + level + '"' +
-                        (composerUi.settingsThinking === level ? ' selected' : '') + '>' +
-                        level.charAt(0).toUpperCase() + level.slice(1) + '</option>';
-                }).join('');
-
-                return '<div class="settings-dropdown' + (visible ? ' visible' : '') + '">' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Thinking</span>' +
-                        '<div class="settings-control">' +
-                            '<select data-setting="thinking" data-thread-id="' + thread.id + '">' +
-                                thinkingOptions +
-                            '</select>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Temperature</span>' +
-                        '<div class="settings-control" style="display:flex;align-items:center;gap:6px">' +
-                            '<input type="range" min="0" max="2" step="0.1"' +
-                                ' value="' + composerUi.settingsTemp + '"' +
-                                ' data-setting="temperature" data-thread-id="' + thread.id + '">' +
-                            '<span class="settings-value">' + composerUi.settingsTemp.toFixed(1) + '</span>' +
-                        '</div>' +
-                    '</div>' +
-                    '<div class="settings-row">' +
-                        '<span class="settings-label">Max Tokens</span>' +
-                        '<div class="settings-control" style="display:flex;align-items:center;gap:6px">' +
-                            '<input type="range" min="0" max="16384" step="256"' +
-                                ' value="' + composerUi.settingsMaxTokens + '"' +
-                                ' data-setting="maxTokens" data-thread-id="' + thread.id + '">' +
-                            '<span class="settings-value">' +
-                                (composerUi.settingsMaxTokens > 0 ? formatTokenCount(composerUi.settingsMaxTokens) : 'auto') +
-                            '</span>' +
-                        '</div>' +
-                    '</div>' +
+                    '<input class="selector-search" data-thread-id="' + threadAttr + '"' +
+                        ' aria-label="Search models" placeholder="Search models" value="' + escapeAttr(composerUi.modelQuery) + '">' +
+                    '<div role="listbox" aria-label="Model">' + items + '</div>' +
                 '</div>';
             }
 
             function getFileIcon(name, type) {
                 if (type === 'image') { return '\u{1F5BC}\uFE0F'; }
-                var ext = (name.split('.').pop() || '').toLowerCase();
+                var ext = (String(name || '').split('.').pop() || '').toLowerCase();
                 switch (ext) {
                     case 'ts': case 'tsx': return '\u{1F4D8}';
                     case 'js': case 'jsx': case 'mjs': case 'cjs': return '\u{1F4D2}';
@@ -530,6 +1270,7 @@ export const CONTENT_JS = `
             }
 
             function renderAttachments(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var atts = thread.pendingAttachments || [];
                 if (!atts.length) { return ''; }
                 var pills = atts.map(function(file, index) {
@@ -543,7 +1284,8 @@ export const CONTENT_JS = `
                             escapeHtml(file.name) +
                         '</span>' +
                         '<button class="att-pill-remove" data-action="remove-attachment"' +
-                            ' data-thread-id="' + thread.id + '" data-index="' + index + '">&#x00d7;</button>' +
+                            ' aria-label="Remove ' + escapeAttr(file.name) + '" title="Remove ' + escapeAttr(file.name) + '"' +
+                            ' data-thread-id="' + threadAttr + '" data-index="' + index + '">&#x00d7;</button>' +
                     '</span>';
                 }).join('');
                 var imageCount = atts.filter(function(a) { return a.type === 'image'; }).length;
@@ -558,27 +1300,26 @@ export const CONTENT_JS = `
 
             var recOpen = Object.create(null);
 
-            function renderComposerRecommendations(thread) {
-                var showRecommendations = Boolean(
-                    thread &&
-                    recommendations.length > 0 &&
-                    (thread.messages || []).length === 0 &&
-                    !thread.pendingAssistantText
-                );
+            function showsRecommendations(thread) {
+                return Boolean(thread && recommendations.length > 0 &&
+                    (thread.messages || []).length === 0 && !thread.pendingAssistantText);
+            }
 
-                if (!showRecommendations) {
+            function renderComposerRecommendations(thread) {
+                if (!showsRecommendations(thread)) {
                     return '<div class="composer-recommendations hidden"></div>';
                 }
 
                 var isOpen = !!recOpen[thread.id];
+                var threadAttr = escapeAttr(thread.id);
                 return '<div class="composer-recommendations">' +
-                    '<button class="rec-toggle' + (isOpen ? ' open' : '') + '" data-action="toggle-recs" data-thread-id="' + thread.id + '">' +
+                    '<button class="rec-toggle' + (isOpen ? ' open' : '') + '" data-action="toggle-recs" data-thread-id="' + threadAttr + '">' +
                         '<span class="rec-caret">&#x25B6;</span> suggestions' +
                     '</button>' +
                     '<div class="recommendations' + (isOpen ? ' open' : '') + '">' +
                         recommendations.map(function(rec) {
                             return '<button class="rec-chip" data-action="use-recommendation"' +
-                                ' data-thread-id="' + thread.id + '" data-command="' + escapeAttr(rec.command) + '">' +
+                                ' data-thread-id="' + threadAttr + '" data-command="' + escapeAttr(rec.command) + '">' +
                                 escapeHtml(rec.icon + ' ' + rec.label) +
                             '</button>';
                         }).join('') +
@@ -587,17 +1328,17 @@ export const CONTENT_JS = `
             }
 
             function renderComposer(thread) {
+                var threadAttr = escapeAttr(thread.id);
                 var chatType = chatTypes.find(function(item) { return item.id === thread.currentChatType; });
                 var draft = getDraft(thread.id);
                 var placeholder = 'Ask this thread anything...  / commands  @ files';
 
-                return '<div class="composer-shell" data-thread-id="' + thread.id + '">' +
+                return '<div class="composer-shell" data-thread-id="' + threadAttr + '">' +
                     renderFileDropdown(thread.id) +
                     renderSlashDropdown(thread.id) +
                     renderChatTypeDropdown(thread) +
                     renderModelDropdown(thread) +
-                    renderSettingsDropdown(thread) +
-                    '<div class="composer-card' + (composerUi.dragThreadId === thread.id ? ' drag-active' : '') + '" data-thread-id="' + thread.id + '">' +
+                    '<div class="composer-card' + (composerUi.dragThreadId === thread.id ? ' drag-active' : '') + '" data-thread-id="' + threadAttr + '">' +
                         '<div class="drop-overlay' + (composerUi.dragThreadId === thread.id ? ' visible' : '') + '">' +
                             '<span class="drop-overlay-icon">\u{1F4CE}</span>' +
                             '<span class="drop-overlay-label">Drop files or images to attach</span>' +
@@ -605,46 +1346,42 @@ export const CONTENT_JS = `
                         '<div class="composer-top">' +
                             '<div class="composer-target"><span>Thread</span><strong>' +
                                 escapeHtml(thread.title) +
-                            '</strong><span>#' + thread.index + '</span></div>' +
+                            '</strong><span>#' + escapeHtml(String(thread.index)) + '</span></div>' +
                             '<div class="composer-top-spacer"></div>' +
                             '<button class="dropdown-trigger" data-action="toggle-chat-type" data-thread-id="' +
-                                thread.id + '" title="Chat type">' +
+                                threadAttr + '" title="Chat type" aria-haspopup="listbox"' +
+                                ' aria-expanded="' + (composerUi.threadId === thread.id && composerUi.dropdown === 'chatType') + '">' +
                                 '<span>' + escapeHtml(chatType ? chatType.label : 'Chat') + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
                             '<button class="dropdown-trigger" data-action="toggle-model" data-thread-id="' +
-                                thread.id + '" title="Model">' +
+                                threadAttr + '" title="Model" aria-haspopup="listbox"' +
+                                ' aria-expanded="' + (composerUi.threadId === thread.id && composerUi.dropdown === 'model') + '">' +
                                 '<span>' + escapeHtml(formatModelLabel(thread.currentModel)) + '</span>' +
                                 '<span>&#x25BE;</span>' +
                             '</button>' +
-                            '<button class="dropdown-trigger" data-action="toggle-settings" data-thread-id="' +
-                                thread.id + '" title="Settings">' +
-                                '<span>&#x2699;</span>' +
-                            '</button>' +
                         '</div>' +
-                        '<textarea class="composer-input" data-thread-id="' + thread.id + '"' +
-                            ' rows="1" placeholder="' + escapeAttr(placeholder) + '">' +
-                            escapeHtml(draft) +
-                        '</textarea>' +
+                        '<textarea class="composer-input" data-thread-id="' + threadAttr + '"' +
+                            ' rows="1" placeholder="' + escapeAttr(placeholder) + '"></textarea>' +
                         renderSlashHint(thread.id) +
                         '<div class="attachments">' + renderAttachments(thread) + '</div>' +
                         renderComposerRecommendations(thread) +
                         '<div class="composer-footer">' +
-                            '<button class="btn-attach" data-action="attach" data-thread-id="' + thread.id +
+                            '<button class="btn-attach" data-action="attach" data-thread-id="' + threadAttr +
                                 '" title="Attach file">+</button>' +
                             '<span class="composer-status">' + escapeHtml(getThreadStatusDetail(thread)) + '</span>' +
                             (function() {
                                 var est = estimateTokens(draft);
                                 var hasVal = est > 0;
-                                return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') +
-                                    '" data-token-est="' + thread.id + '">' +
+                                return '<span class="composer-token-est' + (hasVal ? ' has-value' : '') + '">' +
                                     (hasVal ? '~' + formatTokenCount(est) + ' tokens' : '') +
-                                '</span>';
+                                '</span>' +
+                                renderUsageIndicator(thread);
                             })() +
-                            (messageQueue[thread.id] ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
+                            (getQueue(thread.id).length ? '<span class="queued-indicator" title="Message queued">queued</span>' : '') +
                             '<button class="btn-send' + (thread.isStreaming ? ' streaming' : '') + '"' +
                                 ' data-action="' + (thread.isStreaming ? 'cancel' : 'send') + '"' +
-                                ' data-thread-id="' + thread.id + '"' +
+                                ' data-thread-id="' + threadAttr + '"' +
                                 ' title="' + (thread.isStreaming ? 'Stop' : 'Send') + '">' +
                                 (thread.isStreaming ? '&#x25A0;' : '&#x2191;') +
                             '</button>' +
@@ -661,6 +1398,10 @@ export const CONTENT_JS = `
                 // Manual override takes precedence
                 if (thread.id in collapseOverrides) {
                     return collapseOverrides[thread.id];
+                }
+                // A request waiting for the user stays in sight
+                if (pendingPromptCount(thread) > 0) {
+                    return false;
                 }
                 // Active thread is never auto-collapsed
                 if (thread.id === state.activeThreadId) {
@@ -692,24 +1433,16 @@ export const CONTENT_JS = `
                 return expandedThreads.concat(collapsedThreads);
             }
 
-            function renderPane(thread) {
-                var pane = document.createElement('section');
-                var statusClass = (thread.status || 'idle').toLowerCase();
-                var isCollapsed = shouldCollapseThread(thread);
-                pane.className = 'pane' +
-                    (thread.id === state.activeThreadId ? ' active' : '') +
-                    (isCollapsed ? ' collapsed' : '');
-                pane.dataset.threadId = thread.id;
-
-                var sourceClass = (thread.source || 'API').toLowerCase().replace(/[^a-z]/g, '');
-                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), thread.contextMax || 128000);
-
-                pane.innerHTML =
-                    '<div class="pane-header">' +
+            function renderPaneHeader(thread, isCollapsed) {
+                var threadAttr = escapeAttr(thread.id);
+                var statusClass = String(thread.status || 'idle').toLowerCase();
+                var sourceClass = String(thread.source || 'API').toLowerCase().replace(/[^a-z]/g, '');
+                var ctxInfo = formatContextGauge(getThreadSpaceUsage(thread), getContextMax(thread));
+                return '<div class="pane-header">' +
                         '<div class="pane-header-main">' +
                             '<div class="pane-title">' + escapeHtml(thread.title) + '</div>' +
                             '<div class="pane-meta">' +
-                                '<span class="pane-pill">#' + thread.index + '</span>' +
+                                '<span class="pane-pill">#' + escapeHtml(String(thread.index)) + '</span>' +
                                 '<span class="pane-pill pane-source ' + sourceClass + '">' +
                                     escapeHtml(thread.source || 'API') +
                                 '</span>' +
@@ -717,166 +1450,297 @@ export const CONTENT_JS = `
                                 '<span class="pane-pill">' + escapeHtml(thread.currentChatType || 'chat') + '</span>' +
                                 '<span class="pane-pill pane-context" title="Context: ' + ctxInfo.label + '">' +
                                     '<span class="context-bar">' +
-                                        '<span class="context-bar-fill ' + ctxInfo.level + '"' +
-                                            ' style="width:' + ctxInfo.pct + '%"></span>' +
+                                        '<span class="context-bar-fill ' + ctxInfo.level + '"></span>' +
                                     '</span>' +
                                     '<span class="context-label">' + ctxInfo.label + '</span>' +
                                 '</span>' +
-                                '<span class="pane-pill pane-status ' + escapeHtml(statusClass) + '">' +
+                                '<span class="pane-pill pane-status ' + escapeAttr(statusClass) + '">' +
                                     escapeHtml(getThreadStatusLabel(thread)) +
                                 '</span>' +
+                                renderPendingPromptBadge(thread) +
                             '</div>' +
                         '</div>' +
                         '<div class="pane-actions">' +
                             (currentDimension === '1x1' && state.threads.length > 1
-                                ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + thread.id + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
+                                ? '<button class="pane-collapse-btn" data-action="toggleCollapse" data-thread-id="' + threadAttr + '" title="' + (isCollapsed ? 'Expand' : 'Collapse') + '">' + (isCollapsed ? '&#x25B6;' : '&#x25BC;') + '</button>'
                                 : '') +
-                            '<button class="pane-btn" data-action="export" data-thread-id="' + thread.id + '">Export</button>' +
-                            '<button class="pane-btn" data-action="clear" data-thread-id="' + thread.id + '">Clear</button>' +
+                            '<button class="pane-btn" data-action="sessions" data-thread-id="' + threadAttr + '">Sessions</button>' +
+                            '<button class="pane-btn" data-action="export" data-thread-id="' + threadAttr + '">Export</button>' +
+                            '<button class="pane-btn" data-action="clear" data-thread-id="' + threadAttr + '">Clear</button>' +
                             (state.threads.length > 1
-                                ? '<button class="pane-btn" data-action="close" data-thread-id="' + thread.id + '">Close</button>'
+                                ? '<button class="pane-btn" data-action="close" data-thread-id="' + threadAttr + '">Close</button>'
                                 : '') +
                         '</div>' +
                     '</div>';
+            }
 
+            function renderPendingPromptBadge(thread) {
+                var pending = pendingPromptCount(thread);
+                return pending ? '<span class="pane-pill pane-prompt-badge">' + pending + ' waiting for you</span>' : '';
+            }
+
+            function isHiddenToolGroup(message) {
+                if (message.role !== 'tool' || !hideToolActivity) {
+                    return false;
+                }
+                var status = getToolGroupStatus(Array.isArray(message.entries) ? message.entries : []);
+                return status === 'done' || status === 'cancelled';
+            }
+
+            function renderMessage(message, threadId, messageIndex) {
+                if (message.role === 'tool') {
+                    return renderToolMessage(message, threadId, messageIndex);
+                }
+                var node = document.createElement('div');
+                if (message.role === 'assistant') {
+                    node.className = 'message message-assistant';
+                    if (typeof message.html === 'string' && message.html) {
+                        node.innerHTML = message.html;
+                        removeUnsafeLinks(node);
+                        linkifyElement(node);
+                    } else {
+                        setLinkifiedText(node, message.content);
+                    }
+                } else if (message.role === 'error') {
+                    node.className = 'message message-error';
+                    setLinkifiedText(node, message.content);
+                } else {
+                    node.className = 'message message-user';
+                    node.textContent = message.content || '';
+                }
+                return node;
+            }
+
+            function renderPaneBody(thread) {
                 var body = document.createElement('div');
                 body.className = 'pane-body';
-
                 var messages = thread.messages || [];
                 if (messages.length === 0 && !thread.pendingAssistantText) {
                     var empty = document.createElement('div');
                     empty.className = 'pane-empty';
                     empty.innerHTML =
                         '<div class="empty-detail">' +
-                            '<div>Empty thread. Start from the composer in this panel.</div>' +
+                            '<div>' + escapeHtml(thread.notice || 'Empty thread. Start from the composer in this panel.') + '</div>' +
                         '</div>';
                     body.appendChild(empty);
                 } else {
-                    messages.forEach(function(message) {
-                        var node = document.createElement('div');
-                        if (message.role === 'tool') {
-                            node = renderToolMessage(message);
-                        } else if (message.role === 'assistant') {
-                            node.className = 'message message-assistant';
-                            node.innerHTML = linkifyFilePaths(message.html || escapeHtml(message.content || ''));
-                        } else if (message.role === 'error') {
-                            node.className = 'message message-error';
-                            node.innerHTML = linkifyFilePaths(escapeHtml(message.content || ''));
-                        } else {
-                            node.className = 'message message-user';
-                            node.textContent = message.content || '';
+                    messages.forEach(function(message, messageIndex) {
+                        if (!isHiddenToolGroup(message)) {
+                            body.appendChild(renderMessage(message, thread.id, messageIndex));
                         }
-                        body.appendChild(node);
                     });
-
                     if (thread.pendingAssistantText) {
                         var pending = document.createElement('div');
                         pending.className = 'message message-assistant message-pending';
                         pending.setAttribute('data-thread-id', thread.id);
-                        pending.innerHTML = linkifyFilePaths(escapeHtml(thread.pendingAssistantText));
+                        // Streaming text is linkified once it lands as a message, not on every chunk.
+                        pending.textContent = thread.pendingAssistantText;
                         body.appendChild(pending);
                     }
-                }
-
-                (function(tid) {
-                    body.addEventListener('scroll', function() {
-                        userScrolledUp[tid] = !isNearBottom(body);
+                    (thread.runNotices || []).forEach(function(text) {
+                        var notice = document.createElement('div');
+                        notice.className = 'message message-notice';
+                        notice.setAttribute('role', 'status');
+                        notice.textContent = text;
+                        body.appendChild(notice);
                     });
-                })(thread.id);
-
-                pane.appendChild(body);
-
-                var composerWrap = document.createElement('div');
-                composerWrap.innerHTML = renderComposer(thread);
-                pane.appendChild(composerWrap.firstChild);
-
-                setTimeout(function() {
-                    scrollPaneToBottom(body, thread.id);
-                    autoResizeTextarea(pane.querySelector('.composer-input'));
-                }, 0);
-
-                return pane;
+                }
+                body.addEventListener('scroll', function() {
+                    userScrolledUp[thread.id] = !isNearBottom(body);
+                });
+                return body;
             }
 
-            function cleanupDrafts() {
-                var valid = Object.create(null);
-                state.threads.forEach(function(thread) {
-                    valid[thread.id] = true;
-                    if (typeof drafts[thread.id] !== 'string') {
-                        drafts[thread.id] = '';
+            function htmlToElement(html) {
+                var template = document.createElement('template');
+                template.innerHTML = html;
+                return template.content.firstElementChild;
+            }
+
+            function childWithClass(parent, className) {
+                for (var i = 0; i < parent.children.length; i++) {
+                    if (parent.children[i].classList.contains(className)) {
+                        return parent.children[i];
                     }
-                });
-                Object.keys(drafts).forEach(function(threadId) {
-                    if (!valid[threadId]) {
-                        delete drafts[threadId];
+                }
+                return null;
+            }
+
+            function replaceIfChanged(live, fresh) {
+                if (live.outerHTML !== fresh.outerHTML) {
+                    live.replaceWith(fresh);
+                }
+            }
+
+            /** Swaps only the composer parts whose markup changed; the textarea itself is never replaced. */
+            function patchComposerShell(liveShell, freshShell) {
+                var liveParts = Array.from(liveShell.children);
+                Array.from(freshShell.children).forEach(function(freshPart, index) {
+                    var livePart = liveParts[index];
+                    if (!freshPart.classList.contains('composer-card')) {
+                        replaceIfChanged(livePart, freshPart);
+                        return;
                     }
+                    livePart.className = freshPart.className;
+                    var liveCardParts = Array.from(livePart.children);
+                    Array.from(freshPart.children).forEach(function(freshCardPart, cardIndex) {
+                        if (!freshCardPart.classList.contains('composer-input')) {
+                            replaceIfChanged(liveCardParts[cardIndex], freshCardPart);
+                        }
+                    });
                 });
-                Object.keys(collapseOverrides).forEach(function(threadId) {
-                    if (!valid[threadId]) {
-                        delete collapseOverrides[threadId];
+            }
+
+            /** Host snapshots carry new arrays; a reference hit skips the serialisation on local re-renders. */
+            function isBodyCurrent(cache, thread) {
+                if (cache.pending !== (thread.pendingAssistantText || '') || cache.notice !== (thread.notice || '') ||
+                    cache.runNotices !== JSON.stringify(thread.runNotices || []) || cache.hideToolActivity !== hideToolActivity) {
+                    return false;
+                }
+                if (cache.messagesRef === thread.messages) {
+                    return true;
+                }
+                var json = JSON.stringify(thread.messages || []);
+                cache.messagesRef = thread.messages;
+                return json === cache.messagesJson;
+            }
+
+            function rememberBody(cache, thread) {
+                cache.pending = thread.pendingAssistantText || '';
+                cache.notice = thread.notice || '';
+                cache.runNotices = JSON.stringify(thread.runNotices || []);
+                cache.hideToolActivity = hideToolActivity;
+                cache.messagesRef = thread.messages;
+                cache.messagesJson = JSON.stringify(thread.messages || []);
+            }
+
+            function syncPaneBody(pane, cache, thread) {
+                var liveBody = childWithClass(pane, 'pane-body');
+                if (liveBody && isBodyCurrent(cache, thread)) {
+                    return;
+                }
+                var body = renderPaneBody(thread);
+                var savedScroll = liveBody ? liveBody.scrollTop : null;
+                if (liveBody) {
+                    liveBody.replaceWith(body);
+                } else {
+                    pane.appendChild(body);
+                }
+                rememberBody(cache, thread);
+                if (userScrolledUp[thread.id] && savedScroll !== null) {
+                    body.scrollTop = savedScroll;
+                } else {
+                    setTimeout(function() { scrollPaneToBottom(body, thread.id); }, 0);
+                }
+            }
+
+            function syncComposer(pane, thread) {
+                var freshShell = htmlToElement(renderComposer(thread));
+                var liveShell = childWithClass(pane, 'composer-shell');
+                if (liveShell) {
+                    patchComposerShell(liveShell, freshShell);
+                } else {
+                    pane.appendChild(freshShell);
+                    liveShell = freshShell;
+                }
+                // Set as a property: markup would drop a leading newline, and rewriting an equal value would cost native undo.
+                var textarea = liveShell.querySelector('.composer-input');
+                var draft = getDraft(thread.id);
+                if (textarea.value !== draft) {
+                    textarea.value = draft;
+                }
+                setTimeout(function() { autoResizeTextarea(textarea); }, 0);
+            }
+
+            /** Updates a pane in place, rebuilding only the header, transcript or composer parts whose data changed. */
+            function syncPane(pane, thread) {
+                var cache = paneCache[thread.id] || (paneCache[thread.id] = {});
+                var isCollapsed = shouldCollapseThread(thread);
+                pane.className = 'pane' +
+                    (thread.id === state.activeThreadId ? ' active' : '') +
+                    (isCollapsed ? ' collapsed' : '');
+                var headerHtml = renderPaneHeader(thread, isCollapsed);
+                var liveHeader = childWithClass(pane, 'pane-header');
+                if (!liveHeader || cache.header !== headerHtml) {
+                    var header = htmlToElement(headerHtml);
+                    if (liveHeader) {
+                        liveHeader.replaceWith(header);
+                    } else {
+                        pane.insertBefore(header, pane.firstChild);
+                    }
+                    cache.header = headerHtml;
+                }
+                syncPaneBody(pane, cache, thread);
+                syncPanePrompts(pane, cache, thread);
+                // CSP drops style attributes parsed from markup; CSSOM writes still apply.
+                updatePaneContextUsage(pane, thread);
+                syncComposer(pane, thread);
+            }
+
+            function pruneClosedThreadState() {
+                var open = Object.create(null);
+                state.threads.forEach(function(thread) { open[thread.id] = true; });
+                [drafts, collapseOverrides, messageQueue, recOpen, userScrolledUp, toolGroupOpen, unconfirmedSends, paneCache].forEach(function(byThread) {
+                    Object.keys(byThread).forEach(function(threadId) {
+                        if (!open[threadId]) {
+                            delete byThread[threadId];
+                        }
+                    });
+                });
+                prunePromptDrafts(state.threads);
+            }
+
+            function removeStalePanes() {
+                Array.from(paneGrid.children).forEach(function(child) {
+                    var isLivePane = child.classList.contains('pane') && getThreadById(child.getAttribute('data-thread-id'));
+                    if (!isLivePane && !child.classList.contains('openclaw-crash')) {
+                        child.remove();
                     }
                 });
             }
 
             function renderState(preserve) {
-                try {
-                    cleanupDrafts();
-                } catch (e) {
-                    console.warn('[OpenClaw] cleanupDrafts failed:', e);
+                // Touching the DOM mid-composition aborts the IME; compositionend flushes.
+                if (composing) {
+                    renderDeferred = true;
+                    return;
                 }
-
-                var savedScrolls = Object.create(null);
-                try {
-                    var oldBodies = paneGrid.querySelectorAll('.pane-body');
-                    for (var i = 0; i < oldBodies.length; i++) {
-                        var paneEl = oldBodies[i].closest('.pane');
-                        if (paneEl && paneEl.dataset.threadId) {
-                            savedScrolls[paneEl.dataset.threadId] = oldBodies[i].scrollTop;
-                        }
-                    }
-                } catch (e) {
-                    console.warn('[OpenClaw] scroll save failed:', e);
-                }
-
+                pruneClosedThreadState();
                 var orderedThreads = getOrderedThreads();
-                paneGrid.innerHTML = '';
-
                 if (orderedThreads.length === 0) {
                     paneGrid.innerHTML = '<div class="pane-empty"><div class="empty-detail">No threads available.</div></div>';
                     return;
                 }
+                removeStalePanes();
 
-                orderedThreads.forEach(function(thread) {
+                orderedThreads.forEach(function(thread, index) {
                     try {
-                        paneGrid.appendChild(renderPane(thread));
-                    } catch (e) {
-                        _showCrash('Render failed for thread #' + (thread.index || '?') + ' (' + thread.id + ')', e);
-                    }
-                });
-
-                orderedThreads.forEach(function(thread) {
-                    try {
-                        if (userScrolledUp[thread.id] && savedScrolls[thread.id] != null) {
-                            var paneEl = paneGrid.querySelector('.pane[data-thread-id="' + thread.id + '"] .pane-body');
-                            if (paneEl) {
-                                paneEl.scrollTop = savedScrolls[thread.id];
-                            }
+                        var pane = findThreadElement('.pane', thread.id);
+                        if (!pane) {
+                            pane = document.createElement('section');
+                            pane.dataset.threadId = thread.id;
+                        }
+                        syncPane(pane, thread);
+                        if (paneGrid.children[index] !== pane) {
+                            paneGrid.insertBefore(pane, paneGrid.children[index] || null);
                         }
                     } catch (e) {
-                        console.warn('[OpenClaw] scroll restore failed:', e);
+                        _showCrash('Render failed for thread #' + (thread.index || '?') + ' (' + thread.id + ')', e);
                     }
                 });
 
                 var restore = preserve || {};
                 if (restore.threadId) {
                     try {
-                        var textarea = paneGrid.querySelector('.composer-input[data-thread-id="' + restore.threadId + '"]');
-                        if (textarea) {
-                            textarea.focus();
-                            if (typeof restore.selectionStart === 'number' && typeof restore.selectionEnd === 'number') {
-                                textarea.setSelectionRange(restore.selectionStart, restore.selectionEnd);
+                        var field = findThreadElement(restore.selector || '.composer-input', restore.threadId);
+                        if (field) {
+                            if (document.activeElement !== field) {
+                                field.focus();
                             }
-                            autoResizeTextarea(textarea);
+                            if (typeof restore.selectionStart === 'number' && typeof restore.selectionEnd === 'number' &&
+                                (field.selectionStart !== restore.selectionStart || field.selectionEnd !== restore.selectionEnd)) {
+                                field.setSelectionRange(restore.selectionStart, restore.selectionEnd);
+                            }
                         }
                     } catch (e) {
                         console.warn('[OpenClaw] focus restore failed:', e);
@@ -895,7 +1759,7 @@ export const CONTENT_JS = `
                     return;
                 }
 
-                var shell = paneGrid.querySelector('.composer-shell[data-thread-id="' + composerUi.threadId + '"]');
+                var shell = findThreadElement('.composer-shell', composerUi.threadId);
                 if (!shell) {
                     return;
                 }
@@ -919,12 +1783,20 @@ export const CONTENT_JS = `
                 }
             }
 
+            var COMPOSER_FIELDS = ['.composer-input', '.selector-search'];
+
+            /** The focused composer text field, so a re-render can hand focus and caret back to its replacement. */
             function captureComposerFocus() {
                 var active = document.activeElement;
-                if (!active || !active.classList || !active.classList.contains('composer-input')) {
+                if (!active || typeof active.matches !== 'function') {
+                    return null;
+                }
+                var selector = COMPOSER_FIELDS.find(function(candidate) { return active.matches(candidate); });
+                if (!selector) {
                     return null;
                 }
                 return {
+                    selector: selector,
                     threadId: active.getAttribute('data-thread-id'),
                     selectionStart: active.selectionStart,
                     selectionEnd: active.selectionEnd
@@ -966,6 +1838,11 @@ export const CONTENT_JS = `
                 if (composerUi.fileSearchDebounce) {
                     clearTimeout(composerUi.fileSearchDebounce);
                 }
+                // Results for the previous query must not stay selectable while this one debounces.
+                if (composerUi.fileSearchQuery !== query) {
+                    composerUi.fileResults = [];
+                }
+                composerUi.fileSearchQuery = query;
                 composerUi.fileSearchDebounce = setTimeout(function() {
                     vscode.postMessage({ type: 'fileSearch', query: query, threadId: threadId });
                 }, 120);
@@ -1051,6 +1928,63 @@ export const CONTENT_JS = `
                 });
             }
 
+            /** Held per send until the host accepts or rejects it by clientId, so a rejection can give the text back. */
+            function rememberUnconfirmedSend(threadId, text) {
+                sendCounter += 1;
+                var clientId = 'send-' + sendCounter;
+                (unconfirmedSends[threadId] = unconfirmedSends[threadId] || []).push({ clientId: clientId, text: text });
+                return clientId;
+            }
+
+            function takeUnconfirmedSend(threadId, clientId) {
+                var pending = unconfirmedSends[threadId] || [];
+                var index = pending.findIndex(function(entry) { return entry.clientId === clientId; });
+                return index < 0 ? null : pending.splice(index, 1)[0];
+            }
+
+            /** Put text back in front of the draft, e.g. a rejected send or a queued message the user stopped. */
+            function restoreToDraft(threadId, text) {
+                var current = getDraft(threadId);
+                setDraft(threadId, current ? text + '\\n\\n' + current : text);
+            }
+
+            function restoreRejectedSend(threadId, clientId) {
+                var pending = takeUnconfirmedSend(threadId, clientId);
+                if (!pending || !getThreadById(threadId)) {
+                    return;
+                }
+                restoreToDraft(threadId, pending.text);
+                renderState(captureComposerFocus());
+            }
+
+            function getQueue(threadId) {
+                return messageQueue[threadId] || [];
+            }
+
+            /** Stop and Clear must not send the queued drafts once the thread goes idle: they return to the composer. */
+            function restoreQueuedMessage(threadId) {
+                var queued = getQueue(threadId);
+                if (!queued.length) {
+                    return;
+                }
+                delete messageQueue[threadId];
+                restoreToDraft(threadId, queued.join('\\n\\n'));
+                renderState(captureComposerFocus());
+            }
+
+            function dispatchText(thread, text) {
+                var clientId = rememberUnconfirmedSend(thread.id, text);
+                var match = text.match(/^\\/([a-zA-Z]+)\\s*([\\s\\S]*)/);
+                var command = match && slashCommands.find(function(item) { return item.name === match[1].toLowerCase(); });
+                if (command) {
+                    vscode.postMessage({ type: 'slashCommand', threadId: thread.id, command: command.name, text: match[2], clientId: clientId });
+                } else {
+                    vscode.postMessage({ type: 'send', threadId: thread.id, text: text, clientId: clientId });
+                }
+                userScrolledUp[thread.id] = false;
+            }
+
+            /** Sends the draft, or queues it behind the running reply; each queued draft goes out as its own turn. */
             function sendThread(threadId) {
                 var thread = getThreadById(threadId);
                 var raw = getDraft(threadId).trim();
@@ -1058,40 +1992,29 @@ export const CONTENT_JS = `
                     return;
                 }
                 if (thread.isStreaming) {
-                    messageQueue[threadId] = raw;
-                    setDraft(threadId, '');
-                    clearAtMention();
-                    closeComposerDropdowns();
-                    renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
-                    return;
+                    (messageQueue[threadId] = getQueue(threadId)).push(raw);
+                } else {
+                    dispatchText(thread, raw);
                 }
-
-                var match = raw.match(/^\\/([a-zA-Z]+)\\s*(.*)/);
-                if (match) {
-                    var commandName = match[1].toLowerCase();
-                    var userText = match[2] || '';
-                    var command = slashCommands.find(function(item) { return item.name === commandName; });
-                    if (command) {
-                        vscode.postMessage({
-                            type: 'slashCommand',
-                            threadId: thread.id,
-                            command: commandName,
-                            text: userText
-                        });
-                        setDraft(threadId, '');
-                        clearAtMention();
-                        closeComposerDropdowns();
-                        renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
-                        return;
-                    }
-                }
-
-                vscode.postMessage({ type: 'send', threadId: thread.id, text: raw });
-                userScrolledUp[thread.id] = false;
                 setDraft(threadId, '');
                 clearAtMention();
                 closeComposerDropdowns();
                 renderState({ threadId: threadId, selectionStart: 0, selectionEnd: 0 });
+            }
+
+            /** One queued draft per idle turn, and only once the host has settled the previous send. */
+            function drainQueuedMessages() {
+                state.threads.forEach(function(thread) {
+                    var queued = getQueue(thread.id);
+                    if (thread.isStreaming || !queued.length || (unconfirmedSends[thread.id] || []).length) {
+                        return;
+                    }
+                    var next = queued.shift();
+                    if (!queued.length) {
+                        delete messageQueue[thread.id];
+                    }
+                    dispatchText(thread, next);
+                });
             }
 
             function toggleDropdown(threadId, kind) {
@@ -1105,6 +2028,51 @@ export const CONTENT_JS = `
                     composerUi.activeFileIndex = 0;
                 }
                 renderState();
+                focusOpenedSelector(threadId, kind);
+            }
+
+            /** Keyboard users land in the menu they opened: the model search, or the chosen chat type. */
+            function focusOpenedSelector(threadId, kind) {
+                if (composerUi.threadId !== threadId || composerUi.dropdown !== kind) {
+                    return;
+                }
+                var shell = findThreadElement('.composer-shell', threadId);
+                var dropdown = shell && shell.querySelector('.selector-dropdown.visible');
+                if (!dropdown) {
+                    return;
+                }
+                var target = dropdown.querySelector('.selector-search') ||
+                    dropdown.querySelector('.selector-item.selected') || dropdown.querySelector('.selector-item');
+                if (target) {
+                    target.focus();
+                }
+            }
+
+            /** Arrows walk a selector's options, Enter or Space picks; Enter in the search picks the first match. */
+            function handleSelectorKeydown(event) {
+                var dropdown = event.target.closest('.selector-dropdown');
+                if (!dropdown) {
+                    return false;
+                }
+                var options = Array.from(dropdown.querySelectorAll('.selector-item'));
+                var option = event.target.closest('.selector-item');
+                if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    if (options.length) {
+                        var step = event.key === 'ArrowDown' ? 1 : -1;
+                        var current = options.indexOf(option);
+                        var next = current === -1 ? (step > 0 ? 0 : options.length - 1) : (current + step + options.length) % options.length;
+                        options[next].focus();
+                    }
+                    return true;
+                }
+                var picksOption = event.key === 'Enter' || (event.key === ' ' && option);
+                if (picksOption && (option || options[0])) {
+                    event.preventDefault();
+                    (option || options[0]).click();
+                    return true;
+                }
+                return false;
             }
 
             btnNew.addEventListener('click', function() {
@@ -1121,42 +2089,15 @@ export const CONTENT_JS = `
                 });
             }
 
-            function rebuildDimensionOptions(threadCount, preferredDimension) {
-                var current = isValidDimension(preferredDimension)
-                    ? preferredDimension
-                    : (isValidDimension(dimensionSelect.value) ? dimensionSelect.value : currentDimension);
-                var count = Math.max(1, threadCount || 1);
-                var seen = Object.create(null);
-                var options = [];
-
-                function addOption(value) {
-                    if (!isValidDimension(value) || seen[value]) {
-                        return;
-                    }
-                    seen[value] = true;
-                    options.push(value);
-                }
-
-                addOption('1x1');
-                addOption(current);
-                for (var c = 1; c <= count; c++) {
-                    if (count % c === 0) {
-                        addOption(c + 'x' + (count / c));
-                    }
-                }
-
+            function renderDimensionOptions() {
                 dimensionSelect.innerHTML = '';
-                for (var i = 0; i < options.length; i++) {
-                    var opt = document.createElement('option');
-                    opt.value = options[i];
-                    opt.textContent = options[i];
-                    dimensionSelect.appendChild(opt);
-                }
-                if (isValidDimension(current) && dimensionSelect.querySelector('option[value="' + current + '"]')) {
-                    dimensionSelect.value = current;
-                } else {
-                    dimensionSelect.value = '1x1';
-                }
+                gridDimensions.forEach(function(dimension) {
+                    var option = document.createElement('option');
+                    option.value = dimension;
+                    option.textContent = dimension;
+                    dimensionSelect.appendChild(option);
+                });
+                dimensionSelect.value = currentDimension;
             }
 
             function updateGridDimension(dimension) {
@@ -1171,17 +2112,8 @@ export const CONTENT_JS = `
                 currentDimension = dimensionSelect.value;
                 updateGridDimension(currentDimension);
                 vscode.postMessage({ type: 'setDimension', dimension: currentDimension });
-            });
-
-            btnFlip.addEventListener('click', function() {
-                var parts = currentDimension.split('x');
-                var flipped = parts[1] + 'x' + parts[0];
-                if (dimensionSelect.querySelector('option[value="' + flipped + '"]')) {
-                    dimensionSelect.value = flipped;
-                    currentDimension = flipped;
-                    updateGridDimension(currentDimension);
-                    vscode.postMessage({ type: 'setDimension', dimension: currentDimension });
-                }
+                // Collapsing and its toggle exist only in 1x1.
+                renderState(captureComposerFocus());
             });
 
             function openFileFromLink(fileLink) {
@@ -1236,17 +2168,26 @@ export const CONTENT_JS = `
 
                 var action = actionEl.getAttribute('data-action');
                 var threadId = actionEl.getAttribute('data-thread-id');
+                // Read before activating: the active thread is never auto-collapsed.
+                var wasCollapsed = action === 'toggleCollapse' && shouldCollapseThread(getThreadById(threadId) || {});
                 if (threadId) {
                     setActiveThread(threadId);
                 }
+                if (handlePromptAction(action, actionEl)) {
+                    return;
+                }
 
                 if (action === 'toggleCollapse') {
-                    var wasCollapsed = shouldCollapseThread(getThreadById(threadId) || {});
                     collapseOverrides[threadId] = !wasCollapsed;
                     renderState(captureComposerFocus());
                     return;
                 }
+                if (action === 'sessions') {
+                    requestSessionsPanel(threadId);
+                    return;
+                }
                 if (action === 'clear') {
+                    restoreQueuedMessage(threadId);
                     vscode.postMessage({ type: 'clearThread', threadId: threadId });
                     return;
                 }
@@ -1267,6 +2208,7 @@ export const CONTENT_JS = `
                     return;
                 }
                 if (action === 'cancel') {
+                    restoreQueuedMessage(threadId);
                     vscode.postMessage({ type: 'cancel', threadId: threadId });
                     return;
                 }
@@ -1286,10 +2228,6 @@ export const CONTENT_JS = `
                     toggleDropdown(threadId, 'model');
                     return;
                 }
-                if (action === 'toggle-settings') {
-                    toggleDropdown(threadId, 'settings');
-                    return;
-                }
                 if (action === 'select-chat-type') {
                     closeComposerDropdowns();
                     vscode.postMessage({
@@ -1297,6 +2235,7 @@ export const CONTENT_JS = `
                         threadId: threadId,
                         chatType: actionEl.getAttribute('data-value')
                     });
+                    renderState({ threadId: threadId });
                     return;
                 }
                 if (action === 'select-model') {
@@ -1306,6 +2245,7 @@ export const CONTENT_JS = `
                         threadId: threadId,
                         model: actionEl.getAttribute('data-value')
                     });
+                    renderState({ threadId: threadId });
                     return;
                 }
                 if (action === 'pick-slash') {
@@ -1313,19 +2253,13 @@ export const CONTENT_JS = `
                     return;
                 }
                 if (action === 'pick-file') {
-                    var textarea = paneGrid.querySelector('.composer-input[data-thread-id="' + threadId + '"]');
+                    var textarea = findThreadElement('.composer-input', threadId);
                     selectFileFromDropdown(threadId, actionEl.getAttribute('data-path'), textarea);
                     return;
                 }
                 if (action === 'toggle-recs') {
                     recOpen[threadId] = !recOpen[threadId];
-                    var wrap = actionEl.closest('.composer-recommendations');
-                    if (wrap) {
-                        var list = wrap.querySelector('.recommendations');
-                        var togBtn = wrap.querySelector('.rec-toggle');
-                        if (list) { list.classList.toggle('open', !!recOpen[threadId]); }
-                        if (togBtn) { togBtn.classList.toggle('open', !!recOpen[threadId]); }
-                    }
+                    renderState(captureComposerFocus());
                     return;
                 }
                 if (action === 'use-recommendation') {
@@ -1341,19 +2275,47 @@ export const CONTENT_JS = `
                 }
             });
 
+            function renderKeepingCaret(threadId, textarea) {
+                renderState({
+                    threadId: threadId,
+                    selectionStart: textarea.selectionStart,
+                    selectionEnd: textarea.selectionEnd
+                });
+            }
+
+            function handleComposerInput(textarea) {
+                var threadId = textarea.getAttribute('data-thread-id');
+                setDraft(threadId, textarea.value);
+                composerUi.threadId = threadId;
+                updateSlashState(threadId);
+                checkAtMention(threadId, textarea);
+                renderKeepingCaret(threadId, textarea);
+            }
+
+            paneGrid.addEventListener('change', function(event) {
+                var choice = event.target.closest('.prompt-choice');
+                if (choice) {
+                    updatePromptDraft(choice);
+                }
+            });
+
+            paneGrid.addEventListener('keydown', handlePromptKeydown);
+
             paneGrid.addEventListener('input', function(event) {
+                var promptField = event.target.closest('.prompt-other');
+                if (promptField) {
+                    updatePromptDraft(promptField);
+                    return;
+                }
                 var textarea = event.target.closest('.composer-input');
                 if (textarea) {
-                    var threadId = textarea.getAttribute('data-thread-id');
-                    setDraft(threadId, textarea.value);
-                    composerUi.threadId = threadId;
-                    updateSlashState(threadId);
-                    checkAtMention(threadId, textarea);
-                    renderState({
-                        threadId: threadId,
-                        selectionStart: textarea.selectionStart,
-                        selectionEnd: textarea.selectionEnd
-                    });
+                    cancelSessionsRequest();
+                    // Replacing the textarea mid-composition would abort the IME; compositionend catches up.
+                    if (event.isComposing || composing) {
+                        setDraft(textarea.getAttribute('data-thread-id'), textarea.value);
+                        return;
+                    }
+                    handleComposerInput(textarea);
                     return;
                 }
 
@@ -1363,6 +2325,7 @@ export const CONTENT_JS = `
                     composerUi.dropdown = 'model';
                     composerUi.modelQuery = search.value;
                     renderState({
+                        selector: '.selector-search',
                         threadId: composerUi.threadId,
                         selectionStart: search.selectionStart,
                         selectionEnd: search.selectionEnd
@@ -1370,28 +2333,47 @@ export const CONTENT_JS = `
                 }
             });
 
-            paneGrid.addEventListener('change', function(event) {
-                var el = event.target;
-                var setting = el.getAttribute('data-setting');
-                if (!setting) { return; }
-                if (setting === 'thinking') {
-                    composerUi.settingsThinking = el.value;
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.thinkingLevel', value: el.value });
+            paneGrid.addEventListener('compositionstart', function() {
+                composing = true;
+            });
+
+            function endComposition(textarea) {
+                composing = false;
+                renderDeferred = false;
+                if (textarea) {
+                    handleComposerInput(textarea);
+                } else {
                     renderState(captureComposerFocus());
-                } else if (setting === 'temperature') {
-                    composerUi.settingsTemp = parseFloat(el.value);
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.temperature', value: parseFloat(el.value) });
-                    renderState(captureComposerFocus());
-                } else if (setting === 'maxTokens') {
-                    composerUi.settingsMaxTokens = parseInt(el.value, 10);
-                    vscode.postMessage({ type: 'setSetting', key: 'chat.maxTokens', value: parseInt(el.value, 10) });
-                    renderState(captureComposerFocus());
+                }
+            }
+
+            paneGrid.addEventListener('compositionend', function(event) {
+                endComposition(event.target.closest('.composer-input'));
+            });
+
+            // A composition abandoned by a focus change fires no compositionend in every engine.
+            paneGrid.addEventListener('focusout', function() {
+                if (composing) {
+                    endComposition(null);
                 }
             });
 
             paneGrid.addEventListener('keydown', function(event) {
+                if (handleSelectorKeydown(event)) {
+                    return;
+                }
+                if (event.key === 'Escape' && composerUi.dropdown && event.target.closest('.composer-shell')) {
+                    event.preventDefault();
+                    var focus = captureComposerFocus();
+                    var restore = focus && focus.selector === '.composer-input' ? focus : { threadId: composerUi.threadId };
+                    clearAtMention();
+                    closeComposerDropdowns();
+                    renderState(restore);
+                    return;
+                }
+
                 var textarea = event.target.closest('.composer-input');
-                if (!textarea) {
+                if (!textarea || event.isComposing) {
                     return;
                 }
 
@@ -1401,36 +2383,18 @@ export const CONTENT_JS = `
                     if (event.key === 'ArrowDown') {
                         event.preventDefault();
                         composerUi.activeFileIndex = Math.min(composerUi.activeFileIndex + 1, composerUi.fileResults.length - 1);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
                     if (event.key === 'ArrowUp') {
                         event.preventDefault();
                         composerUi.activeFileIndex = Math.max(composerUi.activeFileIndex - 1, 0);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
-                    if ((event.key === 'Enter' || event.key === 'Tab') && composerUi.fileResults.length) {
+                    if (event.key === 'Enter' || event.key === 'Tab') {
                         event.preventDefault();
                         selectFileFromDropdown(threadId, composerUi.fileResults[composerUi.activeFileIndex].path, textarea);
-                        return;
-                    }
-                    if (event.key === 'Escape') {
-                        event.preventDefault();
-                        clearAtMention();
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
                         return;
                     }
                 }
@@ -1440,59 +2404,32 @@ export const CONTENT_JS = `
                     if (event.key === 'ArrowDown') {
                         event.preventDefault();
                         composerUi.activeSlashIndex = Math.min(composerUi.activeSlashIndex + 1, slashCommandsForThread.length - 1);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
                     if (event.key === 'ArrowUp') {
                         event.preventDefault();
                         composerUi.activeSlashIndex = Math.max(composerUi.activeSlashIndex - 1, 0);
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
+                        renderKeepingCaret(threadId, textarea);
                         return;
                     }
-                    if ((event.key === 'Enter' || event.key === 'Tab') && slashCommandsForThread.length) {
+                    if (event.key === 'Enter' || event.key === 'Tab') {
                         event.preventDefault();
                         selectSlashCommand(threadId, slashCommandsForThread[composerUi.activeSlashIndex].name);
-                        return;
-                    }
-                    if (event.key === 'Escape') {
-                        event.preventDefault();
-                        closeComposerDropdowns();
-                        renderState({
-                            threadId: threadId,
-                            selectionStart: textarea.selectionStart,
-                            selectionEnd: textarea.selectionEnd
-                        });
                         return;
                     }
                 }
 
                 if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey) {
-                    if (composerUi.dropdown === 'file' && composerUi.fileResults.length) {
-                        event.preventDefault();
-                        selectFileFromDropdown(threadId, composerUi.fileResults[composerUi.activeFileIndex].path, textarea);
-                        return;
-                    }
-                    if (composerUi.dropdown === 'slash' && slashCommandsForThread.length) {
-                        event.preventDefault();
-                        selectSlashCommand(threadId, slashCommandsForThread[composerUi.activeSlashIndex].name);
-                        return;
-                    }
                     event.preventDefault();
-                    var thread = getThreadById(threadId);
-                    if (thread && thread.isStreaming) {
-                        vscode.postMessage({ type: 'cancel', threadId: threadId });
-                    } else {
-                        sendThread(threadId);
-                    }
+                    sendThread(threadId);
                     return;
+                }
+                var thread = getThreadById(threadId);
+                if (event.key === 'Escape' && thread && thread.isStreaming) {
+                    event.preventDefault();
+                    restoreQueuedMessage(threadId);
+                    vscode.postMessage({ type: 'cancel', threadId: threadId });
                 }
             });
 
@@ -1509,8 +2446,12 @@ export const CONTENT_JS = `
                     return;
                 }
                 event.preventDefault();
-                composerUi.dragThreadId = shell.getAttribute('data-thread-id');
-                renderState();
+                var tid = shell.getAttribute('data-thread-id');
+                // A re-render swaps the nodes under the pointer and fires another dragenter.
+                if (composerUi.dragThreadId !== tid) {
+                    composerUi.dragThreadId = tid;
+                    renderState();
+                }
             });
 
             paneGrid.addEventListener('dragover', function(event) {
@@ -1559,36 +2500,34 @@ export const CONTENT_JS = `
                 renderState();
             });
 
-            paneGrid.addEventListener('paste', function(event) {
-                var textarea = event.target.closest('.composer-input');
-                if (!textarea || !event.clipboardData) { return; }
-                var threadId = textarea.getAttribute('data-thread-id');
-                var items = event.clipboardData.items;
-                var filePaths = [];
-                for (var pi = 0; pi < items.length; pi++) {
-                    if (items[pi].kind === 'file') {
-                        var file = items[pi].getAsFile();
-                        if (file && file.path) {
-                            filePaths.push(file.path);
-                        }
-                    }
+            paneGrid.addEventListener('toggle', function(event) {
+                var group = event.target;
+                var pane = group.classList.contains('message-tool') ? group.closest('.pane') : null;
+                if (pane) {
+                    rememberToolGroupOpen(
+                        pane.getAttribute('data-thread-id'),
+                        group.getAttribute('data-tool-key'),
+                        group.open,
+                        group.getAttribute('data-default-open') === 'true'
+                    );
                 }
-                if (filePaths.length > 0) {
-                    event.preventDefault();
-                    vscode.postMessage({
-                        type: 'attachFiles',
-                        threadId: threadId,
-                        filePaths: filePaths
-                    });
-                }
-            });
+            }, true);
+
+            // Only when something is open: a needless re-render would drop the user's text selection.
+            // The dispatch path, not target.closest: a re-render may already have detached the clicked node.
+            function isInsideComposer(event) {
+                return event.composedPath().some(function(node) {
+                    return node.classList && node.classList.contains('composer-shell');
+                });
+            }
 
             document.addEventListener('click', function(event) {
-                if (!event.target.closest('.composer-shell')) {
-                    closeComposerDropdowns();
-                    clearAtMention();
-                    renderState(captureComposerFocus());
+                if (isInsideComposer(event) || (!composerUi.dropdown && !composerUi.atMentionThreadId)) {
+                    return;
                 }
+                closeComposerDropdowns();
+                clearAtMention();
+                renderState(captureComposerFocus());
             });
 
             window.addEventListener('dragend', function() {
@@ -1609,110 +2548,165 @@ export const CONTENT_JS = `
                 }
             });
 
+            /** Streams a reply chunk into its pane without a full re-render. */
+            function applyTextUpdate(threadId, text) {
+                var thread = getThreadById(threadId);
+                if (!thread) {
+                    return;
+                }
+                thread.pendingAssistantText = text;
+                thread.isStreaming = true;
+                thread.status = 'running';
+
+                var pane = findThreadElement('.pane', threadId);
+                if (!pane) {
+                    return;
+                }
+                var paneBody = pane.querySelector('.pane-body');
+                var pending = pane.querySelector('.message-pending');
+                if (!pending && paneBody) {
+                    var empty = paneBody.querySelector('.pane-empty');
+                    if (empty) { empty.remove(); }
+                    pending = document.createElement('div');
+                    pending.className = 'message message-assistant message-pending';
+                    pending.setAttribute('data-thread-id', threadId);
+                    paneBody.appendChild(pending);
+                }
+                if (pending) {
+                    pending.textContent = text;
+                }
+                scrollPaneToBottom(paneBody, threadId);
+
+                var statusPill = pane.querySelector('.pane-status');
+                if (statusPill) {
+                    statusPill.className = 'pane-pill pane-status running';
+                    statusPill.textContent = getThreadStatusLabel(thread);
+                }
+                var sendBtn = pane.querySelector('.btn-send');
+                if (sendBtn) {
+                    sendBtn.classList.add('streaming');
+                    sendBtn.setAttribute('data-action', 'cancel');
+                    sendBtn.setAttribute('title', 'Stop');
+                    sendBtn.textContent = '\u25A0';
+                }
+                var statusDetail = pane.querySelector('.composer-status');
+                if (statusDetail) { statusDetail.textContent = getThreadStatusDetail(thread); }
+                updatePaneContextUsage(pane, thread);
+            }
+
             function _handleMessage(message) {
                 if (message.type === 'slashCommands') {
-                    slashCommands = message.commands || [];
+                    slashCommands = Array.isArray(message.commands) ? message.commands : [];
                     return;
                 }
                 if (message.type === 'recommendations') {
-                    recommendations = message.items || [];
-                    renderState(captureComposerFocus());
+                    // Pushed on every selection and diagnostics change: re-render only when a pane shows a difference.
+                    var nextRecommendations = Array.isArray(message.items) ? message.items : [];
+                    var changed = JSON.stringify(nextRecommendations) !== JSON.stringify(recommendations);
+                    var wasShown = state.threads.some(showsRecommendations);
+                    recommendations = nextRecommendations;
+                    if (changed && (wasShown || state.threads.some(showsRecommendations))) {
+                        renderState(captureComposerFocus());
+                    }
                     return;
                 }
                 if (message.type === 'fileSearchResults') {
-                    composerUi.fileResults = message.files || [];
+                    // A reply that lands after the mention closed, for another pane or for an
+                    // older query must not revive the menu or feed Enter.
+                    if (!composerUi.atMentionThreadId || message.threadId !== composerUi.atMentionThreadId ||
+                        message.query !== composerUi.fileSearchQuery) {
+                        return;
+                    }
+                    composerUi.fileResults = Array.isArray(message.files) ? message.files : [];
+                    composerUi.activeFileIndex = 0;
                     renderState(captureComposerFocus());
                     return;
                 }
-                if (message.type === 'onboardingDone') {
+                if (message.type === 'insertMention') {
+                    var mention = String(message.mention || '');
+                    var target = getActiveThread();
+                    if (mention && target) {
+                        var draft = getDraft(target.id);
+                        var nextDraft = !draft || /\\s$/.test(draft) ? draft + mention : draft + ' ' + mention;
+                        setDraft(target.id, nextDraft);
+                        renderState({
+                            threadId: target.id,
+                            selectionStart: nextDraft.length,
+                            selectionEnd: nextDraft.length
+                        });
+                    }
+                    return;
+                }
+                if (message.type === 'sessionsList') {
+                    renderSessionsPanel({
+                        sessions: Array.isArray(message.sessions) ? message.sessions : [],
+                        error: message.error,
+                        threadId: message.threadId
+                    });
+                    return;
+                }
+                if (message.type === 'agentSelected') {
+                    dismissSessionsPanel();
+                    return;
+                }
+                if (message.type === 'sessionsChanged') {
+                    refreshSessionsPanel();
+                    return;
+                }
+                if (message.type === 'transportStatus') {
+                    var badge = document.getElementById('claw-transport-status');
+                    if (!badge) {
+                        badge = document.createElement('div');
+                        badge.id = 'claw-transport-status';
+                        badge.style.cssText = 'position:fixed;top:4px;right:8px;font-size:10px;opacity:0.6;z-index:50;pointer-events:none';
+                        document.body.appendChild(badge);
+                    }
+                    badge.textContent = String(message.label || '');
+                    return;
+                }
+                if (message.type === 'sendRejected') {
+                    // Later queued drafts would meet the same refusal: they return to the composer too.
+                    restoreRejectedSend(String(message.threadId || ''), message.clientId);
+                    restoreQueuedMessage(String(message.threadId || ''));
+                    return;
+                }
+                if (message.type === 'sendAccepted') {
+                    takeUnconfirmedSend(String(message.threadId || ''), message.clientId);
+                    // The idle snapshot may have landed before this acknowledgement and held the queue back.
+                    if (getQueue(String(message.threadId || '')).length) {
+                        drainQueuedMessages();
+                        renderState(captureComposerFocus());
+                    }
                     return;
                 }
                 if (message.type === 'textUpdate') {
-                    // Lightweight incremental update — only touch the pending element
-                    var tid = message.threadId;
-                    var liveThread = null;
-                    var pendingEl = paneGrid.querySelector('.message-pending[data-thread-id="' + tid + '"]');
-                    if (pendingEl) {
-                        pendingEl.innerHTML = linkifyFilePaths(escapeHtml(message.text));
-                    } else {
-                        // First chunk — create the pending element inside the body
-                        var paneBody = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"] .pane-body');
-                        if (paneBody) {
-                            // Remove empty placeholder if present
-                            var emptyEl = paneBody.querySelector('.pane-empty');
-                            if (emptyEl) { emptyEl.remove(); }
-                            var newPending = document.createElement('div');
-                            newPending.className = 'message message-assistant message-pending';
-                            newPending.setAttribute('data-thread-id', tid);
-                            newPending.innerHTML = linkifyFilePaths(escapeHtml(message.text));
-                            paneBody.appendChild(newPending);
-                        }
-                    }
-                    // Update the thread state in memory so full renders stay in sync
-                    for (var si = 0; si < state.threads.length; si++) {
-                        if (state.threads[si].id === tid) {
-                            state.threads[si].pendingAssistantText = message.text;
-                            state.threads[si].isStreaming = true;
-                            state.threads[si].status = 'running';
-                            liveThread = state.threads[si];
-                            break;
-                        }
-                    }
-                    // Auto-scroll if user hasn't scrolled up
-                    var scrollBody = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"] .pane-body');
-                    if (scrollBody) { scrollPaneToBottom(scrollBody, tid); }
-                    // Update status pill and send button without full rebuild
-                    var paneEl = paneGrid.querySelector('.pane[data-thread-id="' + tid + '"]');
-                    if (paneEl) {
-                        var statusPill = paneEl.querySelector('.pane-status');
-                        if (statusPill && !statusPill.classList.contains('running')) {
-                            statusPill.className = 'pane-pill pane-status running';
-                            statusPill.textContent = 'Running';
-                        }
-                        var sendBtn = paneEl.querySelector('.btn-send');
-                        if (sendBtn && !sendBtn.classList.contains('streaming')) {
-                            sendBtn.classList.add('streaming');
-                            sendBtn.setAttribute('data-action', 'cancel');
-                            sendBtn.setAttribute('title', 'Stop');
-                            sendBtn.innerHTML = '&#x25A0;';
-                        }
-                        var statusSpan = paneEl.querySelector('.composer-status');
-                        if (statusSpan) { statusSpan.textContent = 'Generating response'; }
-                        updatePaneContextUsage(paneEl, liveThread);
-                    }
+                    applyTextUpdate(message.threadId, String(message.text || ''));
                     return;
                 }
                 if (message.type === 'state') {
                     var focus = captureComposerFocus();
                     state.activeThreadId = message.activeThreadId || '';
-                    state.visibleThreadIds = message.visibleThreadIds || [];
-                    state.threads = message.threads || [];
-                    availableModels = message.models || [];
+                    state.threads = Array.isArray(message.threads) ? message.threads : [];
+                    fixPromptDeadlines(state.threads);
+                    availableModels = Array.isArray(message.models) ? message.models.map(String) : [];
                     if (typeof message.collapseCompleted === 'boolean') {
                         collapseCompleted = message.collapseCompleted;
+                    }
+                    if (typeof message.hideToolActivity === 'boolean') {
+                        hideToolActivity = message.hideToolActivity;
                     }
                     if (isValidDimension(message.dimension)) {
                         currentDimension = message.dimension;
                     }
-                    rebuildDimensionOptions(state.threads.length || 1, currentDimension);
                     dimensionSelect.value = currentDimension;
-                    currentDimension = dimensionSelect.value || '1x1';
                     updateGridDimension(currentDimension);
+                    drainQueuedMessages();
                     renderState(focus);
-
-                    // Drain queued messages for threads that finished streaming
-                    for (var qi = 0; qi < state.threads.length; qi++) {
-                        var t = state.threads[qi];
-                        if (!t.isStreaming && messageQueue[t.id]) {
-                            var queued = messageQueue[t.id];
-                            delete messageQueue[t.id];
-                            setDraft(t.id, queued);
-                            sendThread(t.id);
-                        }
-                    }
                 }
             }
 
+${SESSIONS_PANEL_JS}
+${OPERATOR_PROMPTS_JS}
             function hasFileDrag(dataTransfer) {
                 if (!dataTransfer || !dataTransfer.types) {
                     return false;
@@ -1724,68 +2718,45 @@ export const CONTENT_JS = `
                 return hasType('Files') || hasType('text/uri-list');
             }
 
+            function fileUriToPath(uri) {
+                var decoded = decodeURIComponent(uri.slice('file://'.length));
+                if (/^\\/[A-Za-z]:/.test(decoded)) {
+                    return decoded.substring(1);
+                }
+                // file://server/share/x carries the host as authority: a UNC path.
+                return decoded.charAt(0) === '/' ? decoded : '//' + decoded;
+            }
+
+            /** Local paths from a text/uri-list drag (VS Code explorer); webview File objects carry no path. */
             function extractDroppedPaths(dataTransfer) {
                 var paths = [];
-
-                function pushUnique(p) {
-                    if (p && paths.indexOf(p) === -1) {
-                        paths.push(p);
-                    }
-                }
-
-                // 1. Parse text/uri-list (VS Code explorer drags provide file:// URIs here)
+                var uriList = '';
                 try {
-                    var uriList = dataTransfer.getData('text/uri-list');
-                    if (uriList) {
-                        var lines = uriList.split(/\\r?\\n/);
-                        for (var u = 0; u < lines.length; u++) {
-                            var line = lines[u].trim();
-                            if (!line || line.charAt(0) === '#') { continue; }
-                            if (line.indexOf('file://') === 0) {
-                                // Decode the file URI to a local path
-                                var decoded = decodeURIComponent(line.replace(/^file:\\/\\//, ''));
-                                // On Windows, strip leading slash from /C:/...
-                                if (/^\\/[A-Za-z]:/.test(decoded)) {
-                                    decoded = decoded.substring(1);
-                                }
-                                pushUnique(decoded);
-                            }
-                        }
-                    }
+                    uriList = dataTransfer.getData('text/uri-list') || '';
                 } catch (e) {
                     console.warn('[OpenClaw DnD] Could not read text/uri-list:', e);
                 }
-
-                // 2. Try File objects (File.path works in Electron but is empty in webview sandbox)
-                if (!paths.length && dataTransfer.items) {
-                    for (var i = 0; i < dataTransfer.items.length; i++) {
-                        var item = dataTransfer.items[i];
-                        if (item.kind === 'file') {
-                            var file = item.getAsFile();
-                            if (file && file.path) {
-                                pushUnique(file.path);
-                            }
-                        }
+                uriList.split(/\\r?\\n/).forEach(function(rawLine) {
+                    var line = rawLine.trim();
+                    if (line.indexOf('file://') !== 0) {
+                        return;
                     }
-                }
-
-                if (!paths.length && dataTransfer.files) {
-                    for (var j = 0; j < dataTransfer.files.length; j++) {
-                        var f = dataTransfer.files[j];
-                        if (f && f.path) {
-                            pushUnique(f.path);
+                    try {
+                        var filePath = fileUriToPath(line);
+                        if (paths.indexOf(filePath) === -1) {
+                            paths.push(filePath);
                         }
+                    } catch (e) {
+                        console.warn('[OpenClaw DnD] Skipping malformed file URI:', line);
                     }
-                }
-
+                });
                 if (!paths.length) {
                     console.warn('[OpenClaw DnD] Could not extract file paths from drop. dataTransfer.types:', Array.from(dataTransfer.types));
                 }
-
                 return paths;
             }
 
-            rebuildDimensionOptions(1, currentDimension);
+            renderDimensionOptions();
             updateGridDimension(currentDimension);
             try {
                 renderState();

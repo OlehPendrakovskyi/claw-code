@@ -156,6 +156,7 @@ export const CONTENT_CSS = `
         }
 
         .pane.collapsed .pane-body,
+        .pane.collapsed .pane-prompts,
         .pane.collapsed .composer-shell {
             display: none;
         }
@@ -427,6 +428,152 @@ export const CONTENT_CSS = `
             font-size: 12px;
         }
 
+        .message-notice {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            font-size: 12px;
+            font-style: italic;
+        }
+
+        .pane-prompts {
+            max-height: 45vh;
+            overflow-y: auto;
+            padding: 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+
+        .pane-prompts:focus {
+            outline: none;
+        }
+
+        .prompt-card {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            padding: 8px 10px;
+            border-radius: 8px;
+            border: 1px solid var(--vscode-inputValidation-warningBorder, #b89500);
+            background: var(--vscode-inputValidation-warningBackground, rgba(184, 149, 0, 0.1));
+            font-size: 12px;
+        }
+
+        .prompt-card.prompt-resolved {
+            border-color: var(--openclaw-surface-border);
+            background: var(--openclaw-surface-raised);
+            opacity: 0.8;
+        }
+
+        .prompt-heading {
+            display: flex;
+            justify-content: space-between;
+            gap: 8px;
+            font-weight: 600;
+        }
+
+        .prompt-expiry,
+        .prompt-option-description,
+        .prompt-details {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            font-weight: normal;
+        }
+
+        .prompt-title {
+            font-family: var(--vscode-editor-font-family, monospace);
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 160px;
+            overflow-y: auto;
+        }
+
+        .prompt-details,
+        .prompt-warnings {
+            padding-left: 16px;
+        }
+
+        .prompt-warnings {
+            color: var(--vscode-editorWarning-foreground, #cca700);
+        }
+
+        .pane-prompt-badge {
+            border-color: var(--vscode-inputValidation-warningBorder, #b89500);
+            color: var(--vscode-editorWarning-foreground, #cca700);
+        }
+
+        .pane-prompt-announcer {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip: rect(0 0 0 0);
+            white-space: nowrap;
+        }
+
+        .prompt-question {
+            border: none;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .prompt-question-text {
+            margin-bottom: 2px;
+        }
+
+        .prompt-option {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            cursor: pointer;
+        }
+
+        .prompt-other {
+            padding: 4px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--vscode-input-border, rgba(255, 255, 255, 0.16));
+            background: var(--vscode-input-background, transparent);
+            color: var(--vscode-input-foreground, inherit);
+            font: inherit;
+        }
+
+        .prompt-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        .prompt-btn {
+            border: 1px solid var(--openclaw-neutral-border-strong);
+            background: var(--vscode-button-secondaryBackground, rgba(255, 255, 255, 0.06));
+            color: var(--vscode-button-secondaryForeground, inherit);
+            border-radius: 6px;
+            padding: 3px 10px;
+            font: inherit;
+            cursor: pointer;
+        }
+
+        .prompt-btn-primary {
+            border-color: transparent;
+            background: var(--vscode-button-background, #0e639c);
+            color: var(--vscode-button-foreground, #fff);
+        }
+
+        .prompt-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .prompt-btn:focus-visible,
+        .prompt-field:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, #007fd4);
+            outline-offset: 1px;
+        }
+
+        .prompt-status:empty {
+            display: none;
+        }
+
         .message-tool {
             align-self: stretch;
             border-radius: 8px;
@@ -495,6 +642,30 @@ export const CONTENT_CSS = `
             opacity: 0.5;
             text-transform: lowercase;
             font-size: 10px;
+        }
+
+        .message-tool-status.tool-ok,
+        .message-tool-entry-status.tool-ok {
+            color: var(--vscode-testing-iconPassed, #73c991);
+            opacity: 0.9;
+        }
+
+        .message-tool-status.tool-fail,
+        .message-tool-entry-status.tool-fail {
+            color: var(--vscode-errorForeground, #f48771);
+            opacity: 0.9;
+        }
+
+        .message-tool-status.tool-run,
+        .message-tool-entry-status.tool-run {
+            color: var(--vscode-charts-yellow, #cca700);
+            opacity: 0.9;
+        }
+
+        .message-tool-status.tool-cancel,
+        .message-tool-entry-status.tool-cancel {
+            color: var(--vscode-descriptionForeground, #9d9d9d);
+            opacity: 0.9;
         }
 
         .message-tool-body {
@@ -841,6 +1012,12 @@ export const CONTENT_CSS = `
             padding: 0 8px 8px;
         }
 
+        .usage-indicator {
+            font-size: 10px;
+            opacity: 0.6;
+            white-space: nowrap;
+        }
+
         .composer-status {
             font-size: 11px;
             opacity: 0.58;
@@ -935,6 +1112,11 @@ export const CONTENT_CSS = `
             flex: 1;
         }
 
+        .selector-item:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder, #007fd4);
+            outline-offset: -1px;
+        }
+
         .selector-item-check {
             opacity: 0;
             font-size: 11px;
@@ -961,70 +1143,6 @@ export const CONTENT_CSS = `
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-        }
-
-        .settings-dropdown {
-            position: absolute;
-            left: 10px;
-            right: 10px;
-            bottom: calc(100% - 2px);
-            display: none;
-            max-height: 320px;
-            overflow: auto;
-            border-radius: 12px;
-            border: 1px solid var(--vscode-editorWidget-border, rgba(255, 255, 255, 0.08));
-            background: var(--vscode-editorWidget-background, var(--vscode-dropdown-background, #252526));
-            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.32);
-            padding: 10px;
-            z-index: 10;
-        }
-
-        .settings-dropdown.visible {
-            display: block;
-        }
-
-        .settings-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 10px;
-            padding: 6px 4px;
-        }
-
-        .settings-row + .settings-row {
-            border-top: 1px solid rgba(255, 255, 255, 0.06);
-        }
-
-        .settings-label {
-            font-size: 11px;
-            font-weight: 600;
-            opacity: 0.85;
-            white-space: nowrap;
-        }
-
-        .settings-control select,
-        .settings-control input[type="range"] {
-            font: inherit;
-            font-size: 11px;
-            height: 24px;
-            border-radius: 6px;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            background: rgba(255, 255, 255, 0.06);
-            color: inherit;
-            cursor: pointer;
-            padding: 0 6px;
-        }
-
-        .settings-control input[type="range"] {
-            width: 80px;
-            padding: 0;
-        }
-
-        .settings-value {
-            font-size: 10px;
-            opacity: 0.6;
-            min-width: 28px;
-            text-align: right;
         }
 
         .recommendations {
@@ -1084,6 +1202,12 @@ export const CONTENT_CSS = `
 
         .openclaw-crash summary::before {
             content: '\\26A0';
+        }
+
+        .openclaw-crash-state {
+            margin-top: 6px;
+            opacity: 0.6;
+            font-size: 11px;
         }
 
         .openclaw-crash pre {

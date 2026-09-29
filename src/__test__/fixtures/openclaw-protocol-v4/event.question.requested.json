@@ -1,0 +1,209 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "QuestionRequestedEventSchema",
+  "type": "object",
+  "required": [
+    "id",
+    "questions",
+    "createdAtMs",
+    "expiresAtMs",
+    "status"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "questions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "questionId",
+          "header",
+          "question",
+          "options"
+        ],
+        "properties": {
+          "questionId": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "header": {
+            "type": "string",
+            "maxLength": 12
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "x-openclaw-since": "2026.8"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "label"
+              ],
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            },
+            "maxItems": 4
+          },
+          "multiSelect": {
+            "type": "boolean"
+          },
+          "isOther": {
+            "type": "boolean"
+          },
+          "isSecret": {
+            "type": "boolean"
+          },
+          "secretStore": {
+            "type": "object",
+            "required": [
+              "name",
+              "kind"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Z][A-Z0-9_]{0,127}$"
+              },
+              "kind": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "secret"
+                  },
+                  {
+                    "type": "string",
+                    "const": "env"
+                  }
+                ]
+              },
+              "allowedHosts": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 253
+                },
+                "maxItems": 128,
+                "uniqueItems": true
+              },
+              "reason": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "additionalProperties": false,
+            "x-openclaw-since": "2026.8"
+          },
+          "secretStoreExisting": {
+            "type": "object",
+            "required": [
+              "updatedAtMs"
+            ],
+            "properties": {
+              "updatedAtMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "updatedBy": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false,
+            "x-openclaw-since": "2026.8"
+          }
+        },
+        "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 3
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "createdAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expiresAtMs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "type": "string",
+          "const": "answered"
+        },
+        {
+          "type": "string",
+          "const": "cancelled"
+        },
+        {
+          "type": "string",
+          "const": "expired"
+        }
+      ]
+    },
+    "answers": {
+      "type": "object",
+      "required": [
+        "answers"
+      ],
+      "properties": {
+        "answers": {
+          "type": "object",
+          "patternProperties": {
+            "^[a-z][a-z0-9_]*$": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "resolvedBy": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "x-openclaw-since": "2026.7"
+}

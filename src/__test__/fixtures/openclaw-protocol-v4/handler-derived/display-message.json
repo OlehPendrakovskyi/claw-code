@@ -1,0 +1,78 @@
+{
+  "$id": "display-message.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "display message",
+  "x-source": "src/gateway/chat-display-projection.core.ts projectChatDisplayMessage (openclaw 2026.9.6)",
+  "type": "object",
+  "required": [
+    "role"
+  ],
+  "properties": {
+    "role": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "text": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "cost": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": {
+        "type": [
+          "number",
+          "object"
+        ]
+      }
+    },
+    "timestamp": {
+      "type": "number"
+    },
+    "__openclaw": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

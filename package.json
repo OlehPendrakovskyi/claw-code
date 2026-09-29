@@ -72,8 +72,32 @@
         "title": "OpenClaw: New Chat Session"
       },
       {
+        "command": "openclaw.chat.pickAgent",
+        "title": "OpenClaw: Pick Agent Session"
+      },
+      {
+        "command": "openclaw.chat.insertSelection",
+        "title": "OpenClaw: Insert Selection Mention"
+      },
+      {
         "command": "openclaw.chat.debug",
         "title": "OpenClaw: Debug Chat Panel"
+      },
+      {
+        "command": "openclaw.chat.connectGateway",
+        "title": "OpenClaw: Connect to Gateway"
+      },
+      {
+        "command": "openclaw.gateway.resetDeviceIdentity",
+        "title": "OpenClaw: Reset Gateway Device Identity"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "openclaw.chat.insertSelection",
+        "key": "alt+k",
+        "mac": "cmd+alt+k",
+        "when": "editorTextFocus"
       }
     ],
     "viewsContainers": {
@@ -104,12 +128,14 @@
         "openclaw.autoConnect": {
           "type": "boolean",
           "default": false,
-          "description": "Automatically connect to OpenClaw on startup"
+          "scope": "application",
+          "description": "Automatically connect to OpenClaw on startup, which runs the connect command. User settings only: a workspace cannot make opening it run a command."
         },
         "openclaw.command": {
           "type": "string",
           "default": "openclaw status",
-          "description": "Command to run when connecting (e.g. 'openclaw status' or 'wsl openclaw status')"
+          "scope": "application",
+          "description": "Command to run when connecting (e.g. 'openclaw status' or 'wsl openclaw status'). User settings only: it runs in a terminal, so a workspace cannot choose it."
         },
         "openclaw.hardening.mode": {
           "type": "string",
@@ -119,17 +145,20 @@
             "auditFix"
           ],
           "default": "full",
-          "description": "Hardening workflow to run: audit only, audit + fix, or full (audit, fix, deep)"
+          "scope": "application",
+          "description": "Hardening workflow to run: audit only, audit + fix, or full (audit, fix, deep). User settings only: fix and deep change the OpenClaw configuration, so a workspace cannot choose them."
         },
         "openclaw.hardening.command": {
           "type": "string",
           "default": "openclaw",
-          "description": "Command prefix to run OpenClaw hardening (e.g. 'openclaw' or 'wsl openclaw')"
+          "scope": "application",
+          "description": "Command prefix to run OpenClaw hardening (e.g. 'openclaw' or 'wsl openclaw'). User settings only: it names the executable to run, so a workspace cannot choose it."
         },
         "openclaw.chat.agent": {
           "type": "string",
           "default": "codex",
-          "description": "Agent to use for chat sessions (e.g. 'codex', 'gemini', 'opencode')"
+          "scope": "application",
+          "description": "Agent to use for chat sessions (e.g. 'codex', 'gemini', 'opencode'). User settings only: it selects the agent acpx runs, so a workspace cannot choose it."
         },
         "openclaw.chat.permissions": {
           "type": "string",
@@ -139,7 +168,8 @@
             "deny-all"
           ],
           "default": "approve-reads",
-          "description": "Permission mode for chat agent: approve-reads (default), approve-all, or deny-all"
+          "scope": "application",
+          "description": "Permission mode for chat agent: approve-reads (default), approve-all, or deny-all. User settings only: a workspace cannot auto-approve the agent's actions."
         },
         "openclaw.chat.models": {
           "type": "array",
@@ -151,36 +181,25 @@
             "claude",
             "opencode"
           ],
-          "description": "Available models shown in the chat model picker"
-        },
-        "openclaw.chat.thinkingLevel": {
-          "type": "string",
-          "enum": [
-            "none",
-            "low",
-            "medium",
-            "high"
-          ],
-          "default": "medium",
-          "description": "Thinking/reasoning depth for the AI model (none, low, medium, high)"
-        },
-        "openclaw.chat.temperature": {
-          "type": "number",
-          "default": 0.7,
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Temperature for response generation (0 = deterministic, 2 = very creative)"
-        },
-        "openclaw.chat.maxTokens": {
-          "type": "number",
-          "default": 0,
-          "minimum": 0,
-          "description": "Maximum response tokens (0 = model default)"
+          "scope": "application",
+          "description": "Available models shown in the chat model picker. User settings only: a picked model becomes the agent acpx runs, so a workspace cannot offer its own."
         },
         "openclaw.chat.systemPrompt": {
           "type": "string",
           "default": "",
-          "description": "Custom system prompt prepended to all chat messages (leave empty for default)"
+          "scope": "application",
+          "description": "Custom system prompt prepended to all chat messages (leave empty for default). User settings only: a workspace cannot instruct the agent behind your back."
+        },
+        "openclaw.chat.contextMax": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "description": "Context window size in tokens for the usage gauge (0 = derive from the model name)"
+        },
+        "openclaw.chat.source": {
+          "type": "string",
+          "default": "",
+          "description": "Source label shown on every chat pane (leave empty to derive it from the model name)"
         },
         "openclaw.chat.dynamicSubject": {
           "type": "boolean",
@@ -191,6 +210,17 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically collapse completed chats in 1x1 multichat view. Collapsed threads show only their header and can be expanded by clicking."
+        },
+        "openclaw.chat.attachOpenFile": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Automatically attach the active editor file as context when sending a message. User settings only: a workspace cannot make every send carry file contents."
+        },
+        "openclaw.chat.hideToolActivity": {
+          "type": "boolean",
+          "default": false,
+          "description": "Hide finished tool-call groups (done or cancelled) in chat; running and failed groups stay visible"
         },
         "openclaw.chat.dimension": {
           "type": "string",
@@ -207,7 +237,50 @@
         "openclaw.dashboardUrl": {
           "type": "string",
           "default": "http://127.0.0.1:18789/",
-          "description": "OpenClaw gateway dashboard URL to open (default: local gateway address)"
+          "scope": "application",
+          "description": "OpenClaw gateway dashboard URL to open (default: local gateway address). User settings only: a workspace cannot send you to another site."
+        },
+        "openclaw.gateway.token": {
+          "type": "string",
+          "scope": "application",
+          "description": "Legacy plaintext gateway auth token (migrated into SecretStorage on activation). User settings only: a workspace cannot supply the token.",
+          "deprecationMessage": "Legacy plaintext token setting: use the OpenClaw: Connect to Gateway command instead. The extension migrates it into SecretStorage and clears it from settings.json."
+        },
+        "openclaw.gateway.url": {
+          "type": "string",
+          "scope": "application",
+          "default": "ws://127.0.0.1:18789",
+          "description": "OpenClaw Gateway WebSocket URL (ws:// or wss://) for the chat transport. User settings only: the gateway token is sent to this URL, so a workspace cannot redirect it."
+        },
+        "openclaw.gateway.transport": {
+          "type": "string",
+          "enum": [
+            "gateway",
+            "acpx",
+            "auto"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Always use the OpenClaw Gateway WebSocket transport",
+            "Always use the local acpx CLI transport",
+            "Use the Gateway when reachable, fall back to acpx"
+          ],
+          "scope": "application",
+          "description": "Chat transport backend. User settings only: a workspace cannot force the local acpx CLI path."
+        },
+        "openclaw.gateway.protocolVersion": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "4"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Offer every Gateway protocol version this extension supports (currently 4) and use the one the Gateway picks",
+            "Speak only Gateway protocol v4 (OpenClaw 2026.9.x)"
+          ],
+          "scope": "application",
+          "description": "OpenClaw Gateway WebSocket protocol version offered in the handshake. Keep 'auto' unless a Gateway rejects the connection with a protocol mismatch; changing it reconnects. User settings only: a workspace cannot change the handshake."
         }
       }
     }
@@ -228,12 +301,16 @@
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",
+    "@types/jsdom": "^21.1.7",
     "@types/lodash-es": "^4.17.12",
     "@types/node": "^26.6.2",
     "@types/vscode": "~1.138.0",
     "@types/ws": "^8.18.1",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "esbuild": "^0.28.2",
     "jest": "^30.5.2",
+    "jsdom": "^26.1.0",
     "license-checker-rseidelsohn": "^5.0.1",
     "lodash": "^4.18.1",
     "oxlint": "^1.85.0",

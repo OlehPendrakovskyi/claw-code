@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agent event",
+  "type": "object",
+  "required": [
+    "runId",
+    "seq",
+    "stream",
+    "ts",
+    "data"
+  ],
+  "properties": {
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stream": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ts": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "spawnedBy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "isHeartbeat": {
+      "type": "boolean"
+    },
+    "data": {
+      "type": "object",
+      "patternProperties": {
+        "^.*$": {}
+      }
+    }
+  },
+  "additionalProperties": true,
+  "x-claw-note": "AgentEventSchema opened for the broadcast session snapshot"
+}

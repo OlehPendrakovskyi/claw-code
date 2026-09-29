@@ -1,0 +1,19 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SessionsMessagesUnsubscribeParamsSchema",
+  "type": "object",
+  "required": [
+    "key"
+  ],
+  "properties": {
+    "key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,11 +1,11 @@
 /**
  * Claw Code — hardening command parsing.
  *
- * The `openclaw.hardening.command` setting is workspace-configurable (a repo
- * can ship it via .vscode/settings.json), so it must never be interpolated
- * into a shell. We parse it into an executable + argument vector and reject
- * shell metacharacters outright: the setting is meant to name one executable
- * with plain arguments, and anything else is treated as invalid.
+ * The `openclaw.hardening.command` setting is user-level only (application
+ * scope), yet it is still never interpolated into a shell: it is parsed into
+ * an executable + argument vector and shell metacharacters are rejected
+ * outright. The setting is meant to name one executable with plain
+ * arguments, and anything else is treated as invalid.
  */
 
 export type ParsedCommand = {

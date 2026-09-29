@@ -23,6 +23,8 @@ import {
 } from '../../core/configIO';
 import { computeToolToggle, readEntryAtPath, type ToolEntry } from '../../core/tools';
 import { splitHardeningCommand } from '../../core/hardeningCommand';
+import { resolveCommandLaunch } from '../../core/cliLauncher';
+import { envWithAbsolutePath } from '../../core/searchPath';
 import { openHardeningSettings, getDashboardUrl } from '../config';
 import { execFileAsync } from './shared';
 import { getHardeningTerminal, getOverviewProvider } from './terminals';
@@ -111,17 +113,25 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
     return { short, markdown, generatedAt: new Date() };
 }
 
-/** Run the hardening command's `status --all` via execFile (no shell); returned error text is credential-redacted since execFile embeds child stderr. */
+/** Run the hardening command's `status --all` via execFile (no shell); returned error text is credential-redacted since execFile embeds child stderr.
+ *  The extension runs it itself, so it is spawned by an absolute path, and it and what it starts see only absolute PATH entries. */
 async function runStatusAll(prefix: string): Promise<{ output?: string; error?: string }> {
     try {
         const parsed = splitHardeningCommand(prefix);
         if (!parsed) {
             return { error: 'Hardening command is invalid (shell metacharacters or unbalanced quotes are not allowed).' };
         }
+        // An npm `openclaw.cmd` runs as its JS entry under Node, as a .cmd cannot be spawned without a shell.
+        const launch = resolveCommandLaunch(parsed.executable);
+        if ('missing' in launch) {
+            return { error: launch.missing === 'node'
+                ? `Hardening command ${parsed.executable} needs Node.js, found on no absolute PATH entry.`
+                : `Hardening command not found: ${parsed.executable} is on no absolute PATH entry.` };
+        }
         const { stdout, stderr } = await execFileAsync(
-            parsed.executable,
-            [...parsed.args, 'status', '--all'],
-            { maxBuffer: 1024 * 1024 }
+            launch.command,
+            [...launch.args, ...parsed.args, 'status', '--all'],
+            { maxBuffer: 1024 * 1024, env: envWithAbsolutePath() }
         );
         const output = [stdout, stderr].filter(Boolean).join('\n').trim();
         return { output: output.length > 0 ? output : undefined };

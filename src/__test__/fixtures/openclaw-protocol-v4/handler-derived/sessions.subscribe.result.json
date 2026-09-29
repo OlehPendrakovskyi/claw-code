@@ -1,0 +1,12 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sessions.subscribe result",
+  "x-source": "src/gateway/server-methods/sessions-subscriptions.ts (openclaw 2026.9.6); `list` only with non-empty params",
+  "type": "object",
+  "required": ["subscribed"],
+  "properties": {
+    "subscribed": { "type": "boolean" },
+    "list": { "type": "object" }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,176 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SessionsListParamsSchema",
+  "type": "object",
+  "properties": {
+    "limit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "offset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeMinutes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "activeOnly": {
+      "type": "boolean"
+    },
+    "requireLastInteraction": {
+      "type": "boolean"
+    },
+    "sortBy": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "updatedAt"
+        },
+        {
+          "type": "string",
+          "const": "lastInteractionAt"
+        },
+        {
+          "type": "string",
+          "const": "activity"
+        }
+      ]
+    },
+    "includeGlobal": {
+      "type": "boolean"
+    },
+    "includeUnknown": {
+      "type": "boolean"
+    },
+    "excludeSubagents": {
+      "type": "boolean"
+    },
+    "excludeCron": {
+      "type": "boolean"
+    },
+    "excludeSystem": {
+      "type": "boolean"
+    },
+    "configuredAgentsOnly": {
+      "type": "boolean"
+    },
+    "includeDerivedTitles": {
+      "type": "boolean"
+    },
+    "includeLastMessage": {
+      "type": "boolean"
+    },
+    "includeActivitySummary": {
+      "type": "boolean"
+    },
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "projectId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspaceDir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "group": {
+      "type": "string"
+    },
+    "pinned": {
+      "type": "boolean"
+    },
+    "boardFace": {
+      "anyOf": [
+        {
+          "type": "string",
+          "const": "chat"
+        },
+        {
+          "type": "string",
+          "const": "dashboard"
+        }
+      ]
+    },
+    "hasBoard": {
+      "type": "boolean"
+    },
+    "creatorId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownerId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "ownerFirst": {
+      "type": "boolean"
+    },
+    "involvingMe": {
+      "type": "boolean"
+    },
+    "profileRelation": {
+      "type": "object",
+      "required": [
+        "profileId",
+        "relationship"
+      ],
+      "properties": {
+        "profileId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "relationship": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "owned"
+            },
+            {
+              "type": "string",
+              "const": "created"
+            },
+            {
+              "type": "string",
+              "const": "involving"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "involvingProfileId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "includePeople": {
+      "type": "boolean"
+    },
+    "spawnedBy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "search": {
+      "type": "string"
+    },
+    "archived": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "string",
+          "const": "all"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

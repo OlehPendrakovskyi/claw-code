@@ -1,0 +1,60 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "chat.history tail result",
+  "x-source": "src/gateway/server-methods/chat-history-handler.ts tail respond (openclaw 2026.9.6)",
+  "type": "object",
+  "required": [
+    "sessionKey",
+    "messages"
+  ],
+  "properties": {
+    "sessionKey": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messages": {
+      "type": "array",
+      "items": {
+        "$ref": "display-message.json"
+      }
+    },
+    "deltaCursor": {
+      "type": "string"
+    },
+    "hasMore": {
+      "type": "boolean"
+    },
+    "nextOffset": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "sessionInfo": {
+      "type": "object"
+    },
+    "inFlightRun": {
+      "type": "object",
+      "required": [
+        "runId",
+        "text"
+      ],
+      "properties": {
+        "runId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "kind"
+    ]
+  }
+}

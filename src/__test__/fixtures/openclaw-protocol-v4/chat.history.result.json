@@ -1,0 +1,350 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "chat.history result",
+  "anyOf": [
+    {
+      "x-source": "src/gateway/server-methods/chat-history-handler.ts tail respond (openclaw 2026.9.6)",
+      "type": "object",
+      "required": [
+        "sessionKey",
+        "messages"
+      ],
+      "properties": {
+        "sessionKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "display-message.json"
+          }
+        },
+        "deltaCursor": {
+          "type": "string"
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sessionInfo": {
+          "type": "object"
+        },
+        "inFlightRun": {
+          "type": "object",
+          "required": [
+            "runId",
+            "text"
+          ],
+          "properties": {
+            "runId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "not": {
+        "required": [
+          "kind"
+        ]
+      }
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind",
+        "messages",
+        "deltaCursor",
+        "sessionInfo"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "delta"
+        },
+        "messages": {
+          "type": "array",
+          "items": {}
+        },
+        "activity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "messageId",
+              "items"
+            ],
+            "properties": {
+              "messageId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "itemId",
+                    "phase",
+                    "kind",
+                    "title"
+                  ],
+                  "properties": {
+                    "itemId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "phase": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "start"
+                        },
+                        {
+                          "type": "string",
+                          "const": "update"
+                        },
+                        {
+                          "type": "string",
+                          "const": "end"
+                        }
+                      ]
+                    },
+                    "kind": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "running"
+                        },
+                        {
+                          "type": "string",
+                          "const": "completed"
+                        },
+                        {
+                          "type": "string",
+                          "const": "failed"
+                        },
+                        {
+                          "type": "string",
+                          "const": "blocked"
+                        }
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "meta": {
+                      "type": "string"
+                    },
+                    "commandBearing": {
+                      "type": "boolean"
+                    },
+                    "toolCallId": {
+                      "type": "string"
+                    },
+                    "startedAt": {
+                      "type": "number"
+                    },
+                    "endedAt": {
+                      "type": "number"
+                    },
+                    "error": {
+                      "type": "string"
+                    },
+                    "summary": {
+                      "type": "string"
+                    },
+                    "progressText": {
+                      "type": "string"
+                    },
+                    "suppressChannelProgress": {
+                      "type": "boolean"
+                    },
+                    "hideFromChannelProgress": {
+                      "type": "boolean"
+                    },
+                    "approvalId": {
+                      "type": "string"
+                    },
+                    "approvalSlug": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "deltaCursor": {
+          "type": "string"
+        },
+        "sessionInfo": {},
+        "agentsList": {},
+        "inFlightRun": {},
+        "metadata": {},
+        "pendingInputs": {
+          "type": "object",
+          "required": [
+            "items",
+            "total"
+          ],
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "message",
+                  "acceptedAt",
+                  "state"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "message": {},
+                  "acceptedAt": {
+                    "type": "number"
+                  },
+                  "state": {
+                    "type": "string",
+                    "enum": [
+                      "queued",
+                      "cancelled",
+                      "interrupted"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "maxItems": 20
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "nextBefore": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "inputReceipts": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "runId",
+                  "state"
+                ],
+                "properties": {
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "pending"
+                  }
+                },
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "required": [
+                  "runId",
+                  "state",
+                  "consumedByEventId"
+                ],
+                "properties": {
+                  "runId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "state": {
+                    "type": "string",
+                    "const": "consumed"
+                  },
+                  "consumedByEventId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "additionalProperties": false
+              }
+            ]
+          },
+          "maxItems": 50
+        },
+        "inputConsumptions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "runId",
+              "consumedByEventId"
+            ],
+            "properties": {
+              "runId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "consumedByEventId": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "additionalProperties": false
+          },
+          "maxItems": 50
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "reset"
+        }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

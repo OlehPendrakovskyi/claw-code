@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "EventFrameSchema",
+  "type": "object",
+  "required": [
+    "type",
+    "event"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "event"
+    },
+    "event": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {},
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "stateVersion": {
+      "type": "object",
+      "required": [
+        "presence",
+        "health"
+      ],
+      "properties": {
+        "presence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "health": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "recipientProfileId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  },
+  "additionalProperties": false
+}

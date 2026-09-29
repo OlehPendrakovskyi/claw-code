@@ -63,12 +63,26 @@ export const commands = {
     executeCommand: jest.fn(),
 };
 
+type MockWorkspaceFolder = { name?: string; uri: { fsPath: string } };
+
+function workspaceFolderList(): MockWorkspaceFolder[] | undefined {
+    return workspace.workspaceFolders;
+}
+
 export const workspace = {
     getConfiguration: jest.fn(() => ({
         get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
         update: jest.fn(),
+        inspect: jest.fn(() => undefined),
     })),
-    workspaceFolders: undefined,
+    workspaceFolders: undefined as MockWorkspaceFolder[] | undefined,
+    /** The innermost folder holding the uri, like VS Code's. */
+    getWorkspaceFolder: jest.fn((uri: { fsPath: string }): MockWorkspaceFolder | undefined =>
+        [...(workspaceFolderList() ?? [])]
+            .filter(folder => uri.fsPath === folder.uri.fsPath || uri.fsPath.startsWith(`${folder.uri.fsPath}/`))
+            .sort((a, b) => b.uri.fsPath.length - a.uri.fsPath.length)[0]),
+    onDidChangeConfiguration: jest.fn(() => createDisposable()),
+    onDidGrantWorkspaceTrust: jest.fn(() => createDisposable()),
     fs: {
         readFile: jest.fn(),
         writeFile: jest.fn(),
@@ -89,6 +103,13 @@ export const env = {
     clipboard: { writeText: jest.fn() },
     openExternal: jest.fn(),
 };
+
+export enum FileType {
+    Unknown = 0,
+    File = 1,
+    Directory = 2,
+    SymbolicLink = 64,
+}
 
 export enum StatusBarAlignment {
     Left = 1,
@@ -146,14 +167,23 @@ export class ThemeIcon {
 
 export class Uri {
     readonly fsPath: string;
-    private constructor(fsPath: string) {
+    readonly scheme: string;
+    private constructor(fsPath: string, scheme: string) {
         this.fsPath = fsPath;
+        this.scheme = scheme;
     }
     static file(p: string) {
-        return new Uri(p);
+        return new Uri(p, 'file');
     }
     static parse(s: string) {
-        return new Uri(s);
+        return new Uri(s, /^([a-z][a-z0-9+.-]*):/i.exec(s)?.[1] ?? 'file');
+    }
+    get path(): string {
+        return this.fsPath;
+    }
+    /** Distinct per location like the real Uri, so URI-keyed maps don't collide. */
+    toString(): string {
+        return this.scheme === 'file' ? `file://${this.fsPath}` : this.fsPath;
     }
 }
 
@@ -161,5 +191,20 @@ export class TabInputText {
     uri: Uri;
     constructor(uri: Uri) {
         this.uri = uri;
+    }
+}
+
+/** Mirrors vscode.FileSystemError: `code` is the factory name, e.g. 'FileNotFound'. */
+export class FileSystemError extends Error {
+    readonly code: string;
+    private constructor(message: string, code: string) {
+        super(message);
+        this.code = code;
+    }
+    static FileNotFound(target?: unknown) {
+        return new FileSystemError(`File not found: ${String(target ?? '')}`, 'FileNotFound');
+    }
+    static NoPermissions(target?: unknown) {
+        return new FileSystemError(`No permissions: ${String(target ?? '')}`, 'NoPermissions');
     }
 }
