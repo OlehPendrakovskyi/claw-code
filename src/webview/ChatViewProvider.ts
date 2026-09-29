@@ -6,7 +6,8 @@ import { TextEncoder } from 'util';
 import { ChatEvent, ChatService } from '../chat/ChatService';
 import { getWebviewContent } from './content';
 import { GRID_DIMENSIONS } from './content-js';
-import { envWithAbsolutePath, resolveGitExecutable } from './gitExecutable';
+import { envWithAbsolutePath } from '../core/searchPath';
+import { resolveGitExecutable } from './gitExecutable';
 import {
     CONTEXT_CODE_MAX_BYTES,
     SLASH_COMMANDS,

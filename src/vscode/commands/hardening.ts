@@ -23,6 +23,7 @@ import {
 } from '../../core/configIO';
 import { computeToolToggle, readEntryAtPath, type ToolEntry } from '../../core/tools';
 import { splitHardeningCommand } from '../../core/hardeningCommand';
+import { envWithAbsolutePath } from '../../core/searchPath';
 import { openHardeningSettings, getDashboardUrl } from '../config';
 import { execFileAsync } from './shared';
 import { getHardeningTerminal, getOverviewProvider } from './terminals';
@@ -111,7 +112,8 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
     return { short, markdown, generatedAt: new Date() };
 }
 
-/** Run the hardening command's `status --all` via execFile (no shell); returned error text is credential-redacted since execFile embeds child stderr. */
+/** Run the hardening command's `status --all` via execFile (no shell); returned error text is credential-redacted since execFile embeds child stderr.
+ *  The extension runs it itself, so it and what it starts see only absolute PATH entries. */
 async function runStatusAll(prefix: string): Promise<{ output?: string; error?: string }> {
     try {
         const parsed = splitHardeningCommand(prefix);
@@ -121,7 +123,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
         const { stdout, stderr } = await execFileAsync(
             parsed.executable,
             [...parsed.args, 'status', '--all'],
-            { maxBuffer: 1024 * 1024 }
+            { maxBuffer: 1024 * 1024, env: envWithAbsolutePath() }
         );
         const output = [stdout, stderr].filter(Boolean).join('\n').trim();
         return { output: output.length > 0 ? output : undefined };

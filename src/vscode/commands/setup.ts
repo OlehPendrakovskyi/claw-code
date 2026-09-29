@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
+import * as path from 'path';
 import {
     LEGACY_CLI_ALIASES,
     OPENCLAW_INSTALL_SCRIPT,
@@ -27,13 +28,15 @@ const PROVIDER_DOCS: Record<string, string> = {
 
 let isConnecting = false;
 
-/** Probe for a command's presence without invoking a shell (where / sh -c with a quoted positional). */
+/** Probe for a command's presence without invoking a shell (where / sh -c with a quoted positional).
+ *  The command runs in the user's terminal, so the probe searches the same PATH; only the probing
+ *  tool itself goes by absolute path, as a bare `where` is looked up in the cwd first on Windows. */
 export async function isCommandAvailable(command: string) {
     try {
         if (process.platform === 'win32') {
-            await execFileAsync('where', [command]);
+            await execFileAsync(path.win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'where.exe'), [command]);
         } else {
-            await execFileAsync('sh', ['-c', 'command -v "$1"', 'sh', command]);
+            await execFileAsync('/bin/sh', ['-c', 'command -v "$1"', 'sh', command]);
         }
         return true;
     } catch {

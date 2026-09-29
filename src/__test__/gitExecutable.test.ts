@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { envWithAbsolutePath, findGitOnPath, resolveGitExecutable } from '../webview/gitExecutable';
+import { findGitOnPath, resolveGitExecutable } from '../webview/gitExecutable';
 
 type ExtensionsStub = { getExtension: (id: string) => unknown };
 
@@ -24,26 +24,12 @@ describe('gitExecutable', () => {
             expect(found).toBe('C:\\Program Files\\Git\\cmd\\git.exe');
         });
 
+        it('searches the POSIX PATH, not a differently cased variable', () => {
+            expect(findGitOnPath('linux', { Path: '/elsewhere', PATH: '/usr/bin' }, candidate => candidate.startsWith('/usr/bin'))).toBe('/usr/bin/git');
+        });
+
         it('finds nothing when no absolute entry holds git', () => {
             expect(findGitOnPath('linux', { PATH: '.:bin' }, () => true)).toBeUndefined();
-        });
-    });
-
-    describe('envWithAbsolutePath', () => {
-        it('drops relative PATH entries under the env\'s own key spelling', () => {
-            expect(envWithAbsolutePath('win32', { Path: '.;C:\\Git\\cmd;tools', HOME: 'h' })).toEqual({ Path: 'C:\\Git\\cmd', HOME: 'h' });
-            expect(envWithAbsolutePath('linux', { PATH: '.:/usr/bin:bin' })).toEqual({ PATH: '/usr/bin' });
-        });
-
-        it('drops PATH when no absolute entry is left, as an empty POSIX PATH searches the cwd', () => {
-            expect(envWithAbsolutePath('linux', { PATH: '.:bin', HOME: 'h' })).toEqual({ HOME: 'h' });
-            expect(envWithAbsolutePath('linux', { PATH: '' })).toEqual({});
-            expect(envWithAbsolutePath('win32', { Path: 'tools' })).toEqual({});
-        });
-
-        it('cleans the POSIX PATH, not a differently cased variable', () => {
-            expect(envWithAbsolutePath('linux', { Path: 'bin', PATH: '.:/usr/bin' })).toEqual({ Path: 'bin', PATH: '/usr/bin' });
-            expect(findGitOnPath('linux', { Path: '/elsewhere', PATH: '/usr/bin' }, candidate => candidate.startsWith('/usr/bin'))).toBe('/usr/bin/git');
         });
     });
 
