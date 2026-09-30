@@ -47,7 +47,7 @@ jobs:
         run: |
           D=$(mktemp -d); cd "$D"; git init -q; echo start > big.txt; git add big.txt
           git -c user.name=t -c user.email=t@t commit -qm init
-          yes 'changed line' | head -n 50000 > big.txt
+          node -e 'require("fs").writeFileSync("big.txt", "changed line\n".repeat(50000))'
           GIT=$(node -e 'const p=require("path");for(const d of process.env.PATH.split(";")){const c=p.join(d,"git.exe");if(require("fs").existsSync(c)){console.log(c);break}}')
           echo "git on PATH: $GIT"
           node -e '
