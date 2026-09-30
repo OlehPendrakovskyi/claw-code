@@ -18,10 +18,13 @@ jest.mock('../webview/chatServiceFactory', () => ({
 
 jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
-// Identity realpath keeps sends free of real disk I/O, so flush() is deterministic.
+// Identity realpath keeps sends free of real disk I/O, so flush() is deterministic; the
+// attachment reader's fd check needs the real one.
 jest.mock('fs', () => {
     const actual = jest.requireActual('fs');
-    return { ...actual, promises: { ...actual.promises, realpath: async (p: string) => p } };
+    const isFdLink = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/');
+    const realpath = async (p: string): Promise<string> => isFdLink(p) ? actual.promises.realpath(p) : p;
+    return { ...actual, promises: { ...actual.promises, realpath } };
 });
 
 import { ChatViewProvider } from '../webview/ChatViewProvider';
@@ -466,7 +469,7 @@ describe('ChatViewProvider', () => {
                 const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
                 expect(sent).toHaveLength(1);
                 expect(sent[0]).toContain('with attachment');
-                expect(sent[0]).toContain(file);
+                expect(sent[0]).toContain('attached body');
             } finally {
                 jest.requireActual<typeof import('fs')>('fs').rmSync(dir, { recursive: true, force: true });
             }

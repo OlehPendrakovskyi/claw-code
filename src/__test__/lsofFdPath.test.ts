@@ -1,7 +1,7 @@
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import { LSOF_PATH, LSOF_TIMEOUT_MS, decodeLsofName, lsofNameForFd, lsofShowsUnambiguously } from '../webview/lsofFdPath';
+import { LSOF_PATH, LSOF_RETRY_AFTER_MS, LSOF_TIMEOUT_MS, decodeLsofName, lsofNameForFd, lsofShowsUnambiguously } from '../webview/lsofFdPath';
 import { makeTempDir } from './helpers/tempDir';
 
 // The real execFile unless a test answers for it, so the macOS tests still reach lsof.
@@ -10,12 +10,15 @@ jest.mock('child_process', () => {
     return { ...actual, execFile: jest.fn(actual.execFile) };
 });
 
-const execFileMock = jest.mocked(childProcess.execFile);
-
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
 describe('lsofFdPath', () => {
     describe('lsofNameForFd', () => {
+        // A fresh module per test, so one test's failed run never backs off the next test's lsof.
+        let lsof: typeof import('../webview/lsofFdPath');
+        let execFileMock: jest.MockedFunction<typeof childProcess.execFile>;
+        let now: number;
+
         /** Answers the next lsof call with `stdout`, or fails it with `error`. */
         const answer = (stdout: string, error: Error | null = null): void => {
             execFileMock.mockImplementationOnce(((_file: string, _args: string[], _options: object, callback: ExecFileCallback) => {
@@ -23,14 +26,25 @@ describe('lsofFdPath', () => {
                 return {} as childProcess.ChildProcess;
             }) as typeof childProcess.execFile);
         };
+        const fail = () => answer('', Object.assign(new Error('spawn /usr/sbin/lsof ENOENT'), { code: 'ENOENT' }));
 
         beforeEach(() => {
+            jest.isolateModules(() => {
+                lsof = jest.requireActual('../webview/lsofFdPath');
+                execFileMock = jest.mocked(jest.requireMock<typeof childProcess>('child_process').execFile);
+            });
             execFileMock.mockClear();
+            now = 1_000_000;
+            jest.spyOn(Date, 'now').mockImplementation(() => now);
+        });
+
+        afterEach(() => {
+            jest.mocked(Date.now).mockRestore();
         });
 
         it('asks the absolute lsof about this process\'s fd, in a UTF-8 locale and with a timeout', async () => {
             answer(`p${process.pid}\nf7\nn/work/a.ts\n`);
-            await lsofNameForFd(7);
+            await lsof.lsofNameForFd(7);
             expect(execFileMock).toHaveBeenCalledWith(
                 LSOF_PATH,
                 ['-w', '-a', '-p', String(process.pid), '-d', '7', '-Fn'],
@@ -42,17 +56,37 @@ describe('lsofFdPath', () => {
 
         it('returns the name field of the output', async () => {
             answer(`p${process.pid}\nf7\nn/work/with space/a.ts\n`);
-            expect(await lsofNameForFd(7)).toBe('/work/with space/a.ts');
+            expect(await lsof.lsofNameForFd(7)).toBe('/work/with space/a.ts');
         });
 
         it('cannot tell when lsof fails, times out or is missing', async () => {
-            answer('', Object.assign(new Error('spawn /usr/sbin/lsof ENOENT'), { code: 'ENOENT' }));
-            expect(await lsofNameForFd(7)).toBeUndefined();
+            fail();
+            expect(await lsof.lsofNameForFd(7)).toBeUndefined();
         });
 
         it('cannot tell when the output names no file', async () => {
             answer(`p${process.pid}\nf7\n`);
-            expect(await lsofNameForFd(7)).toBeUndefined();
+            expect(await lsof.lsofNameForFd(7)).toBeUndefined();
+        });
+
+        it('does not ask a failed lsof again until the retry delay has passed', async () => {
+            fail();
+            await lsof.lsofNameForFd(7);
+            now += LSOF_RETRY_AFTER_MS - 1;
+            expect(await lsof.lsofNameForFd(8)).toBeUndefined();
+            expect(execFileMock).toHaveBeenCalledTimes(1);
+            now += 1;
+            answer(`p${process.pid}\nf9\nn/work/a.ts\n`);
+            expect(await lsof.lsofNameForFd(9)).toBe('/work/a.ts');
+            expect(execFileMock).toHaveBeenCalledTimes(2);
+        });
+
+        it('keeps asking an lsof that answers', async () => {
+            answer(`p${process.pid}\nf7\nn/work/a.ts\n`);
+            answer(`p${process.pid}\nf8\nn/work/b.ts\n`);
+            await lsof.lsofNameForFd(7);
+            expect(await lsof.lsofNameForFd(8)).toBe('/work/b.ts');
+            expect(execFileMock).toHaveBeenCalledTimes(2);
         });
     });
 

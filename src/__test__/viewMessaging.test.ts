@@ -213,10 +213,13 @@ describe('viewMessaging', () => {
 
         const readText = () => readAttachments([{ name: 'note.txt', path: file, type: 'file' }]);
         const readImage = () => readAttachments([{ name: 'pic.png', path: image, type: 'image' }]);
+        // lsof prints a caret ambiguously, so this macOS path is the one /dev/fd decides.
+        let caretFile: string;
+        const readCaret = () => readAttachments([{ name: 'caret^note.txt', path: caretFile, type: 'file' }]);
         let lsofSpy: jest.SpyInstance<Promise<string | undefined>, [number]>;
 
         beforeEach(() => {
-            // lsof answers nothing unless a test says otherwise, so the /dev/fd fallback is what runs.
+            // lsof cannot tell unless a test says otherwise.
             lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockResolvedValue(undefined);
             if (process.platform === 'win32') {
                 return;
@@ -228,6 +231,8 @@ describe('viewMessaging', () => {
             fs.writeFileSync(file, 'fd-anchored content');
             image = path.join(dir, 'pic.png');
             fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+            caretFile = path.join(dir, 'caret^note.txt');
+            fs.writeFileSync(caretFile, 'caret content');
         });
 
         afterEach(() => {
@@ -272,14 +277,15 @@ describe('viewMessaging', () => {
             expect(imageResult.attachments).toHaveLength(1);
         });
 
-        posixOnly('accepts text and images on macOS, where /dev/fd answers with the file name', async () => {
+        posixOnly('rejects text and images on macOS when lsof cannot tell, whatever /dev/fd names', async () => {
             setPlatform('darwin');
             stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
             const text = await readText();
-            expect(text.prompt).toContain('fd-anchored content');
+            expect(text.prompt).not.toContain('fd-anchored content');
+            expect(text.prompt).toContain('[Could not read file]');
             stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
             const imageResult = await readImage();
-            expect(imageResult.attachments).toHaveLength(1);
+            expect(imageResult.attachments).toHaveLength(0);
         });
 
         posixOnly('accepts an attachment when /dev/fd is not mounted', async () => {
@@ -291,14 +297,12 @@ describe('viewMessaging', () => {
             expect(prompt).toContain('fd-anchored content');
         });
 
-        posixOnly('rejects text and images on macOS when /dev/fd names a different file', async () => {
+        posixOnly('rejects a caret-named macOS attachment when /dev/fd names a different file', async () => {
             setPlatform('darwin');
             stubFdLink(async () => '/dev/fd/id_rsa');
-            const text = await readText();
-            expect(text.prompt).not.toContain('fd-anchored content');
-            expect(text.prompt).toContain('[Could not read file]');
-            const imageResult = await readImage();
-            expect(imageResult.attachments).toHaveLength(0);
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
+            expect(prompt).toContain('[Could not read file]');
         });
 
         posixOnly('accepts a macOS attachment whose lsof path is the stored path, asking lsof about its own fd', async () => {
@@ -341,36 +345,34 @@ describe('viewMessaging', () => {
             expect(prompt).not.toContain('fd-anchored content');
         });
 
-        posixOnly('falls back to the /dev/fd name for a macOS path lsof would print ambiguously', async () => {
+        posixOnly('decides a macOS path lsof would print ambiguously by its /dev/fd name', async () => {
             setPlatform('darwin');
-            const caret = path.join(dir, 'caret^note.txt');
-            fs.writeFileSync(caret, 'caret content');
             lsofSpy.mockResolvedValue(path.join(dir, 'elsewhere', 'caret^note.txt'));
             stubFdLink(async () => '/dev/fd/caret^note.txt');
-            const { prompt } = await readAttachments([{ name: 'caret^note.txt', path: caret, type: 'file' }]);
+            const { prompt } = await readCaret();
             expect(prompt).toContain('caret content');
             expect(lsofSpy).not.toHaveBeenCalled();
         });
 
-        posixOnly('rejects a macOS attachment when /dev/fd echoes the fd path instead of a name', async () => {
+        posixOnly('rejects a caret-named macOS attachment when /dev/fd echoes the fd path instead of a name', async () => {
             setPlatform('darwin');
             stubFdLink(async (fdPath) => fdPath);
-            const { prompt } = await readText();
-            expect(prompt).not.toContain('fd-anchored content');
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
             expect(prompt).toContain('[Could not read file]');
         });
 
-        posixOnly('fails closed on macOS when /dev/fd cannot be resolved', async () => {
+        posixOnly('fails closed for a caret-named macOS attachment when /dev/fd cannot be resolved', async () => {
             setPlatform('darwin');
             stubFdLink(async () => {
                 throw new Error('ENOENT');
             });
-            const { prompt } = await readText();
-            expect(prompt).not.toContain('fd-anchored content');
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
         });
 
         posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
-            setPlatform('darwin');
+            setPlatform('freebsd');
             stubFdLink(async () => '/private/etc/passwd');
             const text = await readText();
             expect(text.prompt).not.toContain('fd-anchored content');

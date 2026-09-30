@@ -3,22 +3,34 @@ import { execFile } from 'child_process';
 /** Absolute, so an lsof planted on PATH is never the one run. */
 export const LSOF_PATH = '/usr/sbin/lsof';
 export const LSOF_TIMEOUT_MS = 2000;
+/** After a failed run lsof is not asked again for this long, so a stalled lsof costs one
+ *  timeout, not one per attachment of a send. */
+export const LSOF_RETRY_AFTER_MS = 30_000;
+
+let lsofFailedAt: number | undefined;
 
 /** The single-character escapes lsof writes after a backslash. */
 const LSOF_ESCAPES = new Map([['\\', '\\'], ['b', '\b'], ['f', '\f'], ['n', '\n'], ['r', '\r'], ['t', '\t']]);
 
 /** The full path macOS reports for this process's open descriptor `fd`, as lsof prints it
  *  (escaped, see {@link decodeLsofName}), or undefined when lsof cannot tell (missing, timed
- *  out, no name in its output). Unlike /dev/fd it follows the opened file, so a parent
- *  directory renamed in place shows up. */
+ *  out, no name in its output, or failed within the last {@link LSOF_RETRY_AFTER_MS}).
+ *  Unlike /dev/fd it follows the opened file, so a parent directory renamed in place shows up. */
 export function lsofNameForFd(fd: number): Promise<string | undefined> {
+    if (lsofFailedAt !== undefined && Date.now() - lsofFailedAt < LSOF_RETRY_AFTER_MS) {
+        return Promise.resolve(undefined);
+    }
     return new Promise(resolve => {
         execFile(
             LSOF_PATH,
             ['-w', '-a', '-p', String(process.pid), '-d', String(fd), '-Fn'],
             // A UTF-8 locale, so lsof prints printable non-ASCII names as they are.
             { env: { LC_ALL: 'en_US.UTF-8' }, timeout: LSOF_TIMEOUT_MS, encoding: 'utf8' },
-            (error, stdout) => resolve(error ? undefined : nameField(stdout)),
+            (error, stdout) => {
+                const name = error ? undefined : nameField(stdout);
+                lsofFailedAt = name === undefined ? Date.now() : undefined;
+                resolve(name);
+            },
         );
     });
 }

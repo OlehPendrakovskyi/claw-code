@@ -268,11 +268,11 @@ const FD_DIR = '/dev/fd/';
  *  - Linux always provides /proc/self/fd, so a lookup that fails or points
  *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
  *  - macOS has no fd link that Node can read the full path from, so lsof
- *    reports it, and any path but `expected` rejects. When lsof cannot tell,
- *    or `expected` holds a caret or control character that lsof prints
- *    ambiguously, /dev/fd still answers `/dev/fd/<name of the opened file>`:
- *    a lookup that fails or names another file rejects, and only a
- *    same-named file in another directory gets past that fallback.
+ *    reports it, and any path but `expected` rejects, as does no answer.
+ *    Only when `expected` holds a caret or control character, which lsof
+ *    prints ambiguously, does /dev/fd decide: it answers `/dev/fd/<name of
+ *    the opened file>`, so a lookup that fails or names another file
+ *    rejects, and only a same-named file in another directory gets past.
  *  - Other POSIX systems offer /dev/fd at best, and FreeBSD without
  *    `linrdlnk` echoes the fd path back, which carries no location. They
  *    rely on the identity checks, as Windows does.
@@ -290,9 +290,9 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
     }
     const fdPath = `${FD_DIR}${handle.fd}`;
     if (process.platform === 'darwin') {
-        const lsofName = lsofShowsUnambiguously(expected) ? await lsofNameForFd(handle.fd) : undefined;
-        if (lsofName !== undefined) {
-            return decodeLsofName(lsofName) === expected;
+        if (lsofShowsUnambiguously(expected)) {
+            const lsofName = await lsofNameForFd(handle.fd);
+            return lsofName !== undefined && decodeLsofName(lsofName) === expected;
         }
         try {
             const resolved = await fsp.realpath(fdPath);
