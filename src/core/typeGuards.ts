@@ -92,7 +92,7 @@ export function readStrings(value: unknown): string[] {
   return readArray(value).filter((item): item is string => typeof item === 'string' && item.length > 0);
 }
 
-/** The value as a plain record, or `undefined` for anything else (arrays included). */
+/** The value as a record when it is a non-array object, `undefined` otherwise (arrays included). */
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? (value as Record<string, unknown>) : undefined;
 }
