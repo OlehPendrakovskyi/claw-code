@@ -651,7 +651,8 @@ function toFileSearchResult(uri: vscode.Uri, cwd: string): FileSearchResult {
     return {
         name: path.basename(uri.fsPath),
         path: uri.fsPath,
-        relativePath: cwd ? path.relative(cwd, uri.fsPath) : uri.fsPath,
+        // Forward slashes on every OS, so a query typed as `src/app` matches on Windows too.
+        relativePath: cwd ? path.relative(cwd, uri.fsPath).split(path.sep).join('/') : uri.fsPath,
     };
 }
 

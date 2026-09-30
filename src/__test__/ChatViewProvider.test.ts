@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { ChatEvent } from '../chat/ChatService';
 
 const mockResolve = jest.fn();
@@ -28,6 +29,7 @@ import type { GatewayChatService } from '../core/gatewayChatService';
 import { COLD_SESSION_PLACEHOLDER } from '../core/agentPicker';
 import { renderMarkdown } from '../webview/viewMessaging';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
+import { makeTempDir, TEMP_ROOT } from './helpers/tempDir';
 
 type Posted = Record<string, unknown>;
 type ThreadState = {
@@ -449,12 +451,12 @@ describe('ChatViewProvider', () => {
 
     describe('sending with attachments', () => {
         it('sends the prompt once the attachments are read', async () => {
-            const dir = jest.requireActual<typeof import('fs')>('fs').mkdtempSync('/tmp/claw-send-');
-            const file = `${dir}/note.txt`;
+            const dir = makeTempDir('claw-send-');
+            const file = path.join(dir, 'note.txt');
             jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
             try {
                 const { sidebar } = makeProvider();
-                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file(TEMP_ROOT) }];
                 await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
                 await flush();
 

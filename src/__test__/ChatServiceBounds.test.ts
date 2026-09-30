@@ -5,6 +5,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
 import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_TAIL_MAX_CHARS, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
+import { usePlatform } from './helpers/platform';
 
 jest.mock('child_process', () => ({ spawn: jest.fn() }));
 
@@ -165,6 +166,9 @@ describe('ChatService buffer and abort bounds', () => {
     });
 
     describe('ABORT_KILL_GRACE_MS', () => {
+        // The grace escalation signals the POSIX process group; Windows kills the tree once.
+        usePlatform('linux');
+
         it('sends SIGTERM at once and SIGKILL to the process group exactly after the grace period', () => {
             jest.useFakeTimers();
             const { child, service } = start();
