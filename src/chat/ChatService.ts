@@ -6,6 +6,7 @@ import { resolveCliLaunch, type CliLaunch } from '../core/cliLauncher';
 import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
+import { asNonEmptyString, asRecord, parseJsonRecord } from '../core/typeGuards';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -96,25 +97,13 @@ export type ChatEvent =
 
 type JsonRecord = Record<string, unknown>;
 
-function asRecord(value: unknown): JsonRecord | undefined {
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as JsonRecord : undefined;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
-    return typeof value === 'string' && value !== '' ? value : undefined;
+    return asNonEmptyString(value) ?? undefined;
 }
 
 /** A positive token count, or undefined for anything else. */
 function tokenCount(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
-function parseJsonRecord(text: string): JsonRecord | undefined {
-    try {
-        return asRecord(JSON.parse(text));
-    } catch {
-        return undefined;
-    }
 }
 
 function stringifyToolEvent(value: unknown): string {

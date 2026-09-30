@@ -12,6 +12,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { absolutePathEntries, isFullyQualified, pathKey, type Env } from './searchPath';
+import { asRecord, parseJsonRecord } from './typeGuards';
 
 /** How to start the CLI: `command` with `args` before the CLI's own. */
 export type CliLaunch = {
@@ -219,16 +220,5 @@ function findNode(shimDir: string, dirs: string[], host: LauncherHost): string |
 }
 
 function parseJson(text: string | undefined): Record<string, unknown> | undefined {
-    if (text === undefined) {
-        return undefined;
-    }
-    try {
-        return asRecord(JSON.parse(text.replace(/^\uFEFF/, '')));
-    } catch {
-        return undefined;
-    }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    return text === undefined ? undefined : parseJsonRecord(text);
 }
