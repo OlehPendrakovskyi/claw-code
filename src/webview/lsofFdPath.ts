@@ -26,7 +26,7 @@ export function lsofNameForFd(fd: number): Promise<string | undefined> {
 /** Whether lsof prints `filePath` in a form that decodes back to it alone. lsof shows a
  *  control character as `^X`, which a literal caret followed by X also reads as. */
 export function lsofShowsUnambiguously(filePath: string): boolean {
-    return !/[\x00-\x1f^]/.test(filePath);
+    return [...filePath].every(char => char !== '^' && char.charCodeAt(0) >= 0x20);
 }
 
 /** The path behind lsof's rendering of a name: `\\`, `\t` and the like, and `\xHH` for each
