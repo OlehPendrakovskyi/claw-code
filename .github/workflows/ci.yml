@@ -46,10 +46,12 @@ jobs:
         run: |
           node - <<'DIAG'
           const fs = require('fs'), os = require('os'), path = require('path');
-          const tryAll = async (p) => ({
-            promises: await fs.promises.realpath(p).catch(e => 'ERR ' + e.code),
-            native: (() => { try { return fs.realpathSync.native(p); } catch (e) { return 'ERR ' + e.code; } })(),
-          });
+          const { execFileSync } = require('child_process');
+          const safe = (f) => { try { return f(); } catch (e) { return 'ERR ' + (e.code || e.status || e.message); } };
+          const lsofPath = (fd) => {
+            const out = execFileSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], { encoding: 'utf8' });
+            return out.split('\n').find(l => l.startsWith('n'))?.slice(1);
+          };
           (async () => {
             const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'vol-'));
             const dirA = path.join(root, 'a'); fs.mkdirSync(dirA);
@@ -57,25 +59,22 @@ jobs:
             const h = await fs.promises.open(file, 'r');
             const st = await h.stat();
             const vol = `/.vol/${st.dev}/${st.ino}`;
-            const out = { file, dev: st.dev, ino: st.ino, vol };
-            out.basic = await tryAll(vol);
-            out.volDirExists = fs.existsSync('/.vol');
-            let t = process.hrtime.bigint();
-            for (let i = 0; i < 100; i++) await fs.promises.realpath(vol).catch(() => 0);
-            out.avgMicros = Number((process.hrtime.bigint() - t) / 100n) / 1000;
-            // Swap by rename: the opened inode now lives under b/.
+            const out = { file, vol };
+            out.volStat = safe(() => { const s = fs.statSync(vol); return { ino: s.ino, same: s.ino === st.ino }; });
+            out.volOpen = safe(() => { const fd = fs.openSync(vol, 'r'); fs.closeSync(fd); return 'ok'; });
+            out.volRoot = safe(() => fs.readdirSync('/.vol').slice(0, 5));
+            out.volDevStat = safe(() => fs.statSync(`/.vol/${st.dev}`).ino);
+            out.statN = safe(() => execFileSync('/usr/bin/stat', ['-f', '%N', vol], { encoding: 'utf8' }).trim());
+            out.lsof = safe(() => lsofPath(h.fd));
+            const t = process.hrtime.bigint();
+            for (let i = 0; i < 10; i++) safe(() => lsofPath(h.fd));
+            out.lsofAvgMs = Number((process.hrtime.bigint() - t) / 10n) / 1e6;
             fs.renameSync(dirA, path.join(root, 'b'));
-            out.afterParentRename = await tryAll(vol);
-            out.fdAfterParentRename = await tryAll(`/dev/fd/${h.fd}`);
-            // Hard link: two names for one inode.
-            const f2 = path.join(root, 'b', 'other.txt'); fs.linkSync(path.join(root, 'b', 'note.txt'), f2);
-            out.withHardLink = await tryAll(vol);
-            // Deleted but still open.
-            fs.unlinkSync(path.join(root, 'b', 'note.txt')); fs.unlinkSync(f2);
-            out.afterUnlink = await tryAll(vol);
-            // Other volume kinds: a file on the boot volume outside the data volume.
-            const sys = fs.statSync('/bin/ls');
-            out.systemVolume = { dev: sys.dev, r: await tryAll(`/.vol/${sys.dev}/${sys.ino}`) };
+            out.lsofAfterParentRename = safe(() => lsofPath(h.fd));
+            fs.linkSync(path.join(root, 'b', 'note.txt'), path.join(root, 'b', 'other.txt'));
+            out.lsofWithHardLink = safe(() => lsofPath(h.fd));
+            fs.unlinkSync(path.join(root, 'b', 'note.txt'));
+            out.lsofAfterUnlinkOneName = safe(() => lsofPath(h.fd));
             await h.close();
             console.log(JSON.stringify(out, null, 1));
           })();
