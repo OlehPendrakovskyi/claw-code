@@ -54,8 +54,10 @@ jobs:
         run: pnpm run compile
 
       # jest directly: `pnpm run test` would repeat compile and lint through pretest.
+      # A step timeout, unlike the job's, fails the step and keeps its log.
       - name: Test
-        run: pnpm exec jest
+        timeout-minutes: 10
+        run: pnpm exec jest ${{ runner.os == 'macOS' && '--verbose' || '' }}
 
       - name: License check
         if: runner.os == 'Linux'
