@@ -10,6 +10,7 @@
 
 import type { TranscriptMessage } from './gatewayProtocol/model';
 import { withTimeoutNull } from './async';
+import { HISTORY_READ_TIMEOUT_MS } from './constants';
 
 /** Reads one transcript entry; null when the gateway did not return it. */
 export type EntryReader = (sessionKey: string, entryId: string) => Promise<TranscriptMessage | null>;
@@ -20,7 +21,7 @@ const MAX_QUEUED_PER_SESSION = 8;
 /** The session's later rows and run events wait behind a read, so a row whose read is slow is
  *  rendered as it came early; the read itself keeps the session's turn until it settles (the
  *  gateway request has its own timeout), so a slow gateway never serves two reads of one session at once. */
-const READ_TIMEOUT_MS = 10_000;
+const READ_TIMEOUT_MS = HISTORY_READ_TIMEOUT_MS;
 
 /** Completed entries remembered across sessions, so a row delivered again (live racing catch-up) is not read again. */
 const MAX_REMEMBERED_ENTRIES = 256;

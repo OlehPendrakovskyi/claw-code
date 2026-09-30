@@ -27,17 +27,20 @@ export const COMMANDS = {
   GATEWAY_RESET_DEVICE_IDENTITY: 'openclaw.gateway.resetDeviceIdentity',
 } as const;
 
-/** Command ids used by the host but not declared in package.json `contributes`. */
+/** Command ids registered by the host but not declared in package.json `contributes`; mirrors the `commandRegistrations` table in `vscode/activate.ts`. */
 export const INTERNAL_COMMANDS = {
-  DOCTOR: 'openclaw.doctor',
-  UPDATE: 'openclaw.update',
   CONFIGURE: 'openclaw.configure',
-  TOOLS_TOGGLE: 'openclaw.tools.toggle',
-  TOOLS_SHOW: 'openclaw.tools.show',
-  HARDENING_RUN: 'openclaw.hardening.run',
-  HARDENING_DEEP: 'openclaw.hardening.deep',
+  DOCTOR: 'openclaw.doctor',
+  HARDENING_OPEN_CONFIG: 'openclaw.hardening.openConfig',
+  HARDENING_OPEN_DASHBOARD: 'openclaw.hardening.openDashboard',
+  HARDENING_OPEN_DOCS: 'openclaw.hardening.openDocs',
+  HARDENING_REFRESH: 'openclaw.hardening.refresh',
+  HARDENING_RUN_STATUS: 'openclaw.hardening.runStatus',
   OPEN_DOCS: 'openclaw.openDocs',
-  OVERVIEW_REFRESH: 'openclaw.overview.refresh',
+  TOOLS_REFRESH: 'openclaw.tools.refresh',
+  TOOLS_TOGGLE: 'openclaw.tools.toggle',
+  TOOLS_UNINSTALL: 'openclaw.tools.uninstall',
+  UPDATE: 'openclaw.update',
 } as const;
 
 /** Settings keys declared in package.json `contributes.configuration`. */
