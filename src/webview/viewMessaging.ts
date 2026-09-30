@@ -256,6 +256,8 @@ function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefine
     return end === lineStart ? String(lineStart) : `${lineStart}-${end}`;
 }
 
+const FD_DIR = '/dev/fd/';
+
 /** Whether an opened handle still refers to the file at canonical path
  *  `expected`, judged by the OS's handle view rather than live path state.
  *
@@ -264,10 +266,11 @@ function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefine
  *  the path-based checks around it cannot see.
  *  - Linux always provides /proc/self/fd, so a lookup that fails or points
  *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
- *  - Other POSIX systems offer /dev/fd at best; macOS and FreeBSD without
- *    `linrdlnk` echo the fd path back, which carries no location. Only a
- *    resolution to a different path rejects there, so attachments keep
- *    working and those systems rely on the identity checks, as Windows does.
+ *  - Other POSIX systems offer /dev/fd at best, and it carries no location:
+ *    FreeBSD without `linrdlnk` echoes the fd path back, and macOS answers
+ *    `/dev/fd/<file name>`. Only a resolution outside /dev/fd rejects there,
+ *    so attachments keep working and those systems rely on the identity
+ *    checks, as Windows does.
  *  - Windows has no fd view. */
 async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise<boolean> {
     if (process.platform === 'win32') {
@@ -280,10 +283,10 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
             return false;
         }
     }
-    const fdPath = `/dev/fd/${handle.fd}`;
+    const fdPath = `${FD_DIR}${handle.fd}`;
     try {
         const resolved = await fsp.realpath(fdPath);
-        return resolved === fdPath || resolved === expected;
+        return resolved.startsWith(FD_DIR) || resolved === expected;
     } catch {
         return true;
     }

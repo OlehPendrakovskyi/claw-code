@@ -1543,7 +1543,8 @@ describe('ChatViewProvider send lifecycle', () => {
                 expect(gatewayPrompts()[0]).toContain('truncated="first 32768 bytes kept"');
                 expect(gatewayPrompts()[0]).toContain('changed line');
             } finally {
-                actualFs.rmSync(dir, { recursive: true, force: true });
+                // Windows refuses to remove the repo while the git child still holds it.
+                actualFs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
             }
         });
 

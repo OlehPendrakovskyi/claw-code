@@ -41,25 +41,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TEMP diagnose /dev/fd realpath
-        if: runner.os == 'macOS'
-        run: |
-          node -e '
-          const fs = require("fs"), os = require("os"), path = require("path");
-          (async () => {
-            const dir = fs.realpathSync.native(os.tmpdir());
-            const file = path.join(fs.mkdtempSync(path.join(dir, "diag-")), "a.txt");
-            fs.writeFileSync(file, "x");
-            const h = await fs.promises.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-            const fdPath = "/dev/fd/" + h.fd;
-            console.log(JSON.stringify({ file, fdPath,
-              promises: await fs.promises.realpath(fdPath).catch(e => "ERR " + e.code),
-              native: (() => { try { return fs.realpathSync.native(fdPath); } catch (e) { return "ERR " + e.code; } })(),
-              js: (() => { try { return fs.realpathSync(fdPath); } catch (e) { return "ERR " + e.code; } })(),
-              lstat: (() => { const s = fs.lstatSync(fdPath); return { link: s.isSymbolicLink(), file: s.isFile(), chr: s.isCharacterDevice() }; })(),
-            }, null, 1));
-          })();'
-
       # Typecheck, lint and the license check give the same answer on every OS.
       - name: Typecheck
         if: runner.os == 'Linux'

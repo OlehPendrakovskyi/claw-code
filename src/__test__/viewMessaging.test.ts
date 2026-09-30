@@ -257,11 +257,21 @@ describe('viewMessaging', () => {
             expect(prompt).not.toContain('fd-anchored content');
         });
 
-        posixOnly('accepts text and images on macOS, where /dev/fd echoes its own path', async () => {
-            setPlatform('darwin');
+        posixOnly('accepts text and images where /dev/fd echoes its own path', async () => {
+            setPlatform('freebsd');
             stubFdLink(async (fdPath) => fdPath);
             const text = await readText();
             expect(text.prompt).toContain('fd-anchored content');
+            const imageResult = await readImage();
+            expect(imageResult.attachments).toHaveLength(1);
+        });
+
+        posixOnly('accepts text and images on macOS, where /dev/fd answers with the file name', async () => {
+            setPlatform('darwin');
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const text = await readText();
+            expect(text.prompt).toContain('fd-anchored content');
+            stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
             const imageResult = await readImage();
             expect(imageResult.attachments).toHaveLength(1);
         });
