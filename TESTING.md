@@ -178,6 +178,14 @@
 3. Confirm a warning about the legacy name appears
 4. Confirm the "Use openclaw" action updates the setting
 
+## Continuous Integration
+
+CI runs on every pull request and on every push to `main`, and can be re-run manually (`workflow_dispatch`). One matrix job exercises the test suite on **Ubuntu, Windows and macOS**; typecheck, lint and the license check run once on Linux because they give the same answer on every OS. An aggregate `ci` job passes only when every OS did — that is the check the branch ruleset requires.
+
+- A PR run is cancelled when a newer commit is pushed to the same branch; a `main` run is never cancelled, so no landed commit loses its status.
+- Run the same gates locally before pushing: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test` (`pnpm exec jest`), `pnpm run compile`, `pnpm run license:check`.
+- Tests must pass on all three OSes. Prefer pinning `process.platform` for a platform-branch test (`helpers/platform.usePlatform`) over asserting the current runner, and create temp dirs through `helpers/tempDir` (`os.tmpdir()` canonicalized) rather than `/tmp`.
+
 ## Tips
 
 - Use the **Output** panel (select "OpenClaw") for extension debug logs.
