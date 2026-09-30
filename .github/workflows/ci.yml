@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  # A newer push supersedes a PR run; every commit on main keeps its own status.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A newer push supersedes a PR run. Any other run gets a group of its own, so no commit on main loses its status.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
 
 jobs:
   test:
