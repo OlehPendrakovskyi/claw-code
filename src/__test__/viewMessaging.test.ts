@@ -217,7 +217,7 @@ describe('viewMessaging', () => {
 
         beforeEach(() => {
             // lsof answers nothing unless a test says otherwise, so the /dev/fd fallback is what runs.
-            lsofSpy = jest.spyOn(lsofFdPath, 'openedPathFromLsof').mockResolvedValue(undefined);
+            lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockResolvedValue(undefined);
             if (process.platform === 'win32') {
                 return;
             }
@@ -321,6 +321,35 @@ describe('viewMessaging', () => {
             stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
             const imageResult = await readImage();
             expect(imageResult.attachments).toHaveLength(0);
+        });
+
+        posixOnly('decodes lsof\'s escaping before comparing a macOS path', async () => {
+            setPlatform('darwin');
+            const slashed = path.join(dir, 'back\\slash.txt');
+            fs.writeFileSync(slashed, 'slashed content');
+            lsofSpy.mockResolvedValue(slashed.replace(/\\/g, '\\\\'));
+            stubFdLink(async () => '/dev/fd/unrelated.txt');
+            const { prompt } = await readAttachments([{ name: 'back\\slash.txt', path: slashed, type: 'file' }]);
+            expect(prompt).toContain('slashed content');
+        });
+
+        posixOnly('rejects a macOS lsof path whose caret could stand for a control character', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(path.join(dir, '^Anote.txt'));
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const { prompt } = await readText();
+            expect(prompt).not.toContain('fd-anchored content');
+        });
+
+        posixOnly('falls back to the /dev/fd name for a macOS path lsof would print ambiguously', async () => {
+            setPlatform('darwin');
+            const caret = path.join(dir, 'caret^note.txt');
+            fs.writeFileSync(caret, 'caret content');
+            lsofSpy.mockResolvedValue(path.join(dir, 'elsewhere', 'caret^note.txt'));
+            stubFdLink(async () => '/dev/fd/caret^note.txt');
+            const { prompt } = await readAttachments([{ name: 'caret^note.txt', path: caret, type: 'file' }]);
+            expect(prompt).toContain('caret content');
+            expect(lsofSpy).not.toHaveBeenCalled();
         });
 
         posixOnly('rejects a macOS attachment when /dev/fd echoes the fd path instead of a name', async () => {
@@ -538,8 +567,8 @@ describe('viewMessaging', () => {
             const grow = () => fs.appendFileSync(file, 'g'.repeat(10 * 1024));
             // The fd check runs after stat on every POSIX system, so the file grows there:
             // through lsof on macOS, through the fd link elsewhere.
-            const realLsof = lsofFdPath.openedPathFromLsof;
-            const lsofSpy = jest.spyOn(lsofFdPath, 'openedPathFromLsof').mockImplementation(async (fd) => {
+            const realLsof = lsofFdPath.lsofNameForFd;
+            const lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockImplementation(async (fd) => {
                 grow();
                 return realLsof(fd);
             });
