@@ -148,7 +148,7 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('does not charge the aggregate budget when the final realpath validation fails', async () => {
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-'));
+            const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-')));
             try {
                 const realFile = path.join(dir, 'real.txt');
                 fs.writeFileSync(realFile, 'hello');
@@ -480,13 +480,13 @@ describe('viewMessaging', () => {
 
         posixOnly('rejects a text file that grows past the cap after stat', async () => {
             const file = writeFixture('grow.txt', 'g'.repeat(10 * 1024 * 1024 - 1024));
+            // The fd lookup runs after stat on every POSIX system, so the file grows there.
             realpathImpl = async (p: fs.PathLike) => {
-                if (/^\/proc\/self\/fd\//.test(p as string)) {
+                if (/^\/(proc\/self|dev)\/fd\//.test(p as string)) {
                     fs.appendFileSync(file, 'g'.repeat(10 * 1024));
                 }
                 return realFsp.realpath(p as string);
             };
-            Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
             const { prompt } = await readOne(file, 'file', 'contentBlock');
             expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
         });
