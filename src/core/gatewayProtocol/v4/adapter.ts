@@ -31,6 +31,7 @@ import {
 } from './prompts';
 import { readSessionList, readSessionMessage, readTranscript, toTranscriptMessage } from './messages';
 import { MAX_TIMER_DELAY_MS, readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStrings } from './readers';
+import { isImageMime } from '../../media';
 import type {
   ChatAbortParams,
   ChatAttachment,
@@ -146,7 +147,7 @@ function toConnectDevice({ deviceId, publicKey, signature, signedAtMs, nonce }: 
 
 function toChatAttachment({ name, mimeType, data }: SendAttachment): ChatAttachment {
   return {
-    type: mimeType.startsWith('image/') ? 'image' : 'file',
+    type: isImageMime(mimeType) ? 'image' : 'file',
     mimeType,
     fileName: name,
     content: data.toString('base64'),

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { getNonce } from './content';
 
 const log = vscode.window.createOutputChannel('OpenClaw Debug', { log: true });
 
@@ -10,16 +11,15 @@ export function openDebugChatPanel(extensionUri: vscode.Uri): vscode.WebviewPane
         { enableScripts: true, localResourceRoots: [extensionUri] }
     );
 
-    const nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('');
+    const nonce = getNonce();
+    const cspSource = panel.webview.cspSource;
 
     panel.webview.html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
+      content="default-src 'none'; img-src ${cspSource}; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';">
 <style nonce="${nonce}">
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {

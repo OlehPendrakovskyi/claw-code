@@ -20,7 +20,9 @@ export type UnknownRecord = Readonly<Record<string, unknown>>;
 const EMPTY_RECORD: UnknownRecord = Object.freeze({});
 
 /** Node timers overflow beyond this delay (and then fire after 1 ms). */
-export const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+/** Largest delay usable in `setTimeout`; re-exported from the constants registry. */
+export { MAX_TIMER_DELAY_MS } from './constants';
+import { MAX_TIMER_DELAY_MS } from './constants';
 
 /** A non-array object, else false. */
 export function isRecord(value: unknown): value is UnknownRecord {

@@ -28,3 +28,5 @@ export {
   readText,
   readTrimmedString,
 } from '../../typeGuards';
+
+export { capText } from '../../text';

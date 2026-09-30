@@ -7,6 +7,7 @@ import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
 import { migrateLegacyGatewayToken, promptForGatewayToken, resetDeviceIdentity } from '../core/gatewayConfig';
+import { errorMessage } from '../core/errors';
 import { redactEndpoint, redactPlainSecrets } from '../core/accessInfo/redact';
 import {
     log,
@@ -83,7 +84,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // ChatServiceFactory.ensureMigrated, and runs are serialized.
     const runTokenMigration = () =>
         migrateLegacyGatewayToken(context).catch((err: unknown) => {
-            log.warn(`legacy gateway token migration failed: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`legacy gateway token migration failed: ${errorMessage(err)}`);
         });
     void runTokenMigration();
     // A plaintext token written after activation (settings edit, settings
@@ -116,7 +117,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     }
                 })
                 .catch((err: unknown) => {
-                    const message = err instanceof Error ? err.message : String(err);
+                    const message = errorMessage(err);
                     log.error(`connectGateway failed: ${redactPlainSecrets(message.replace(/\S+:\/\/\S+/g, (url) => redactEndpoint(url)))}`);
                     void vscode.window.showErrorMessage(
                         'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
@@ -208,7 +209,7 @@ async function confirmDeviceIdentityReset(context: vscode.ExtensionContext): Pro
         await resetDeviceIdentity(context.secrets);
         void vscode.window.showInformationMessage('OpenClaw: gateway device identity reset. The next connection pairs a new device.');
     } catch (err) {
-        log.error(`resetting the gateway device identity failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.error(`resetting the gateway device identity failed: ${errorMessage(err)}`);
         void vscode.window.showErrorMessage('OpenClaw: could not reset the gateway device identity. Check the logs for details.');
     }
 }

@@ -47,7 +47,7 @@ export function getWebviewContent(
 }
 
 /** CSP nonce: cryptographically unpredictable, not Math.random. */
-function getNonce(): string {
+export function getNonce(): string {
     const bytes = new Uint8Array(16);
     globalThis.crypto.getRandomValues(bytes);
     return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');

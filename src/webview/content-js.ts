@@ -1,4 +1,5 @@
 import { SLASH_COMMANDS } from './slashCommands';
+import { GRID_DIMENSIONS } from '../core/constants';
 
 // Webview script sources. The exported fragments are spliced into CONTENT_JS;
 // SESSIONS_PANEL_JS also uses the `vscode` API handle CONTENT_JS declares; specs inject it.
@@ -652,7 +653,7 @@ export const OPERATOR_PROMPTS_JS = `
 `;
 
 /** Grid layouts the host accepts for `setDimension`, mirroring the `openclaw.chat.dimension` enum. */
-export const GRID_DIMENSIONS = ['1x1', '2x2', '2x3', '3x3', '4x4'];
+export { GRID_DIMENSIONS } from '../core/constants';
 
 export const CONTENT_JS = `
         (function() {

@@ -27,6 +27,7 @@ import {
   SecretDeviceCredentialStore,
 } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
+import { withTimeout as withTimeoutShared } from '../core/async';
 
 /** Why the shared gateway client is about to drop its runs. */
 export type GatewayInvalidationReason = 'identity' | 'transport';
@@ -390,18 +391,6 @@ export class ChatServiceFactory {
   }
 
   private withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage = 'gateway connect timeout'): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(timeoutMessage)), ms);
-      promise.then(
-        (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (err: Error) => {
-          clearTimeout(timer);
-          reject(err);
-        }
-      );
-    });
+    return withTimeoutShared(promise, ms, timeoutMessage);
   }
 }
