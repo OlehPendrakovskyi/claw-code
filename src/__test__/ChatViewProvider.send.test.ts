@@ -1543,8 +1543,8 @@ describe('ChatViewProvider send lifecycle', () => {
                 expect(gatewayPrompts()[0]).toContain('truncated="first 32768 bytes kept"');
                 expect(gatewayPrompts()[0]).toContain('changed line');
             } finally {
-                // Windows refuses to remove the repo while the git child still holds it.
-                actualFs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+                // Git writes its objects read-only; rmSync fails on them with EPERM on Windows, the async rm clears the flag.
+                await actualFs.promises.rm(dir, { recursive: true, force: true });
             }
         });
 
