@@ -535,15 +535,28 @@ describe('viewMessaging', () => {
 
         posixOnly('rejects a text file that grows past the cap after stat', async () => {
             const file = writeFixture('grow.txt', 'g'.repeat(10 * 1024 * 1024 - 1024));
-            // The fd lookup runs after stat on every POSIX system, so the file grows there.
+            const grow = () => fs.appendFileSync(file, 'g'.repeat(10 * 1024));
+            // The fd check runs after stat on every POSIX system, so the file grows there:
+            // through lsof on macOS, through the fd link elsewhere.
+            const realLsof = lsofFdPath.openedPathFromLsof;
+            const lsofSpy = jest.spyOn(lsofFdPath, 'openedPathFromLsof').mockImplementation(async (fd) => {
+                grow();
+                return realLsof(fd);
+            });
             realpathImpl = async (p: fs.PathLike) => {
                 if (/^\/(proc\/self|dev)\/fd\//.test(p as string)) {
-                    fs.appendFileSync(file, 'g'.repeat(10 * 1024));
+                    grow();
                 }
                 return realFsp.realpath(p as string);
             };
-            const { prompt } = await readOne(file, 'file', 'contentBlock');
-            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+            try {
+                const { prompt } = await readOne(file, 'file', 'contentBlock');
+                // Length first: a failing toContain would print the 10 MB prompt and choke the CI log.
+                expect(prompt.length).toBeLessThan(1024 * 1024);
+                expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+            } finally {
+                lsofSpy.mockRestore();
+            }
         });
 
         posixOnly('reads without O_NOFOLLOW or an fd check on Windows', async () => {

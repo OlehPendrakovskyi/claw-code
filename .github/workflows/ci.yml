@@ -56,33 +56,12 @@ jobs:
       # jest directly: `pnpm run test` would repeat compile and lint through pretest.
       # A step timeout, unlike the job's, fails the step and keeps its log.
       - name: Test
-        if: runner.os != 'macOS'
         timeout-minutes: 10
         run: pnpm exec jest
 
       - name: License check
         if: runner.os == 'Linux'
         run: pnpm run license:check
-
-  macos-bisect:
-    name: TEMP bisect (${{ matrix.group }})
-    runs-on: macos-latest
-    timeout-minutes: 6
-    strategy:
-      fail-fast: false
-      matrix:
-        group: ['conversationHistory', 'FIFO rejection', 'text budget', 'fd-location check', 'content limits', 'readAttachments verification', 'readAttachments images']
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
-        with:
-          version: 12
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec jest --verbose src/__test__/viewMessaging.test.ts -t '${{ matrix.group }}'
 
   # The ruleset on main requires a check named `ci`; this one passes only when every OS did.
   ci:
