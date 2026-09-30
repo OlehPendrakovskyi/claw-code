@@ -55,9 +55,35 @@ jobs:
 
       # jest directly: `pnpm run test` would repeat compile and lint through pretest.
       # A step timeout, unlike the job's, fails the step and keeps its log.
+      - name: TEMP lsof outside jest
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        continue-on-error: true
+        run: |
+          node -e '
+          const { execFile } = require("child_process"); const fs = require("fs");
+          const fd = fs.openSync(__filename === "[eval]" ? "package.json" : __filename, "r");
+          const one = () => new Promise(r => { const t = Date.now(); execFile("/usr/sbin/lsof", ["-w","-a","-p",String(process.pid),"-d",String(fd),"-Fn"], { env: { LC_ALL: "en_US.UTF-8" }, timeout: 2000, encoding: "utf8" }, (e, o) => r({ ms: Date.now() - t, e: e && (e.code || e.signal), o: o && o.trim().split("\n").pop() })); });
+          (async () => { console.log(await one()); console.log(await Promise.all(Array.from({ length: 8 }, one))); })();'
+      - name: TEMP jest lsofFdPath
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: pnpm exec jest --verbose src/__test__/lsofFdPath.test.ts
+      - name: TEMP jest viewMessaging
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: pnpm exec jest --verbose src/__test__/viewMessaging.test.ts
+      - name: TEMP jest ChatViewProvider
+        if: runner.os == 'macOS'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: pnpm exec jest src/__test__/ChatViewProvider.test.ts src/__test__/ChatViewProvider.send.test.ts
       - name: Test
+        if: runner.os != 'macOS'
         timeout-minutes: 10
-        run: pnpm exec jest ${{ runner.os == 'macOS' && '--verbose' || '' }}
+        run: pnpm exec jest
 
       - name: License check
         if: runner.os == 'Linux'
