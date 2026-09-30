@@ -296,6 +296,23 @@ describe('viewMessaging', () => {
             expect(imageResult.attachments).toHaveLength(0);
         });
 
+        posixOnly('rejects a macOS attachment when /dev/fd echoes the fd path instead of a name', async () => {
+            setPlatform('darwin');
+            stubFdLink(async (fdPath) => fdPath);
+            const { prompt } = await readText();
+            expect(prompt).not.toContain('fd-anchored content');
+            expect(prompt).toContain('[Could not read file]');
+        });
+
+        posixOnly('fails closed on macOS when /dev/fd cannot be resolved', async () => {
+            setPlatform('darwin');
+            stubFdLink(async () => {
+                throw new Error('ENOENT');
+            });
+            const { prompt } = await readText();
+            expect(prompt).not.toContain('fd-anchored content');
+        });
+
         posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
             setPlatform('darwin');
             stubFdLink(async () => '/private/etc/passwd');

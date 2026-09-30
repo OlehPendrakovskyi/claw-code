@@ -266,12 +266,13 @@ const FD_DIR = '/dev/fd/';
  *  the path-based checks around it cannot see.
  *  - Linux always provides /proc/self/fd, so a lookup that fails or points
  *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
- *  - Other POSIX systems offer /dev/fd at best. FreeBSD without `linrdlnk`
- *    echoes the fd path back, which carries no location. macOS answers
- *    `/dev/fd/<name of the opened file>`, so a different name rejects, but a
- *    same-named file in another directory passes: only fcntl F_GETPATH,
- *    which Node does not expose, gives the full path. These systems rely on
- *    the identity checks for the rest, as Windows does.
+ *  - macOS always mounts /dev/fd and answers `/dev/fd/<name of the opened
+ *    file>`, so a lookup that fails or names another file rejects. A
+ *    same-named file in another directory still passes: only fcntl
+ *    F_GETPATH, which Node does not expose, gives the full path.
+ *  - Other POSIX systems offer /dev/fd at best, and FreeBSD without
+ *    `linrdlnk` echoes the fd path back, which carries no location. They
+ *    rely on the identity checks, as Windows does.
  *  - Windows has no fd view. */
 async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise<boolean> {
     if (process.platform === 'win32') {
@@ -285,9 +286,17 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
         }
     }
     const fdPath = `${FD_DIR}${handle.fd}`;
+    if (process.platform === 'darwin') {
+        try {
+            const resolved = await fsp.realpath(fdPath);
+            return resolved === `${FD_DIR}${path.basename(expected)}` || resolved === expected;
+        } catch {
+            return false;
+        }
+    }
     try {
         const resolved = await fsp.realpath(fdPath);
-        return resolved === fdPath || resolved === `${FD_DIR}${path.basename(expected)}` || resolved === expected;
+        return resolved === fdPath || resolved === expected;
     } catch {
         return true;
     }
