@@ -12,6 +12,8 @@
 import * as vscode from 'vscode';
 import { log } from '../vscode/commands/shared';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
+import { errorMessage } from './errors';
+import { withTimeout } from './async';
 import { exportDeviceIdentity, generateDeviceIdentity, importDeviceIdentity } from './gatewayProtocol/deviceIdentity';
 import type { ProtocolSetting } from './gatewayProtocol/registry';
 import { isProtocolSetting } from './gatewayProtocol/registry';
@@ -234,7 +236,7 @@ export class GatewayConfigService {
     } catch (err) {
       // The plaintext stays until SecretStorage holds the token: deleting it
       // now would lose the credential.
-      log.warn(`legacy token migration could not use SecretStorage: ${err instanceof Error ? err.message : String(err)}`);
+      log.warn(`legacy token migration could not use SecretStorage: ${errorMessage(err)}`);
       GatewayConfigService.warnMigrationIncomplete(
         'Legacy plaintext gateway token could not be saved to SecretStorage and was left in settings. ' +
         'Check the OS keyring, then reload the window.'
@@ -248,7 +250,7 @@ export class GatewayConfigService {
       try {
         await site.config.update(LEGACY_GATEWAY_TOKEN_SETTING, undefined, site.target, site.overrideInLanguage);
       } catch (err) {
-        log.warn(`legacy token cleanup failed for ${site.id}: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`legacy token cleanup failed for ${site.id}: ${errorMessage(err)}`);
       }
     }
     // Only a fresh inspection proves the plaintext is gone: a failed update,
@@ -395,11 +397,7 @@ function deviceSecretKeys(hostKind: string): { identity: string; tokens: string 
 }
 
 function secretCall<T>(call: Thenable<T>): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('SecretStorage did not answer')), SECRET_CALL_TIMEOUT_MS);
-  });
-  return Promise.race([Promise.resolve(call), timeout]).finally(() => clearTimeout(timer));
+  return withTimeout(Promise.resolve(call), SECRET_CALL_TIMEOUT_MS, 'SecretStorage did not answer');
 }
 
 function delay(ms: number): Promise<void> {
@@ -457,7 +455,7 @@ export class SecretDeviceCredentialStore implements DeviceCredentialStore, vscod
     this.subscription = secrets.onDidChange((event) => {
       if (event.key !== this.keys.identity) return;
       this.noticeIdentityChange().catch((err: unknown) => {
-        log.warn(`reading the gateway device identity failed: ${err instanceof Error ? err.message : String(err)}`);
+        log.warn(`reading the gateway device identity failed: ${errorMessage(err)}`);
       });
     });
   }

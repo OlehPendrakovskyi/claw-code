@@ -1,3 +1,4 @@
+import { escape as escapeHtml } from 'lodash-es';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
@@ -235,14 +236,6 @@ export async function renderMarkdown(text: string): Promise<string> {
     }
 }
 
-function escapeHtml(text: string): string {
-    return text
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
 
 function frameFileBody(filePath: string, content: string, lines?: string): string {
     return frameTaggedBlock('file', lines === undefined ? { path: filePath } : { path: filePath, lines }, content);

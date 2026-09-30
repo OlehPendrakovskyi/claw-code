@@ -9,6 +9,7 @@
  */
 
 import type { TranscriptMessage } from './gatewayProtocol/model';
+import { withTimeoutNull } from './async';
 
 /** Reads one transcript entry; null when the gateway did not return it. */
 export type EntryReader = (sessionKey: string, entryId: string) => Promise<TranscriptMessage | null>;
@@ -117,15 +118,7 @@ export class TruncatedRowCompleter {
 
 /** `read`'s result, or null once the render can no longer wait for it. */
 async function withTimeout(read: Promise<CompletedText | null>): Promise<CompletedText | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), READ_TIMEOUT_MS);
-  });
-  try {
-    return await Promise.race([read, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
+  return withTimeoutNull(read, READ_TIMEOUT_MS);
 }
 
 function completedKey(sessionKey: string, entryId: string): string {

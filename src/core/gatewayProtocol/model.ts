@@ -230,6 +230,9 @@ export type QuestionPrompt = {
 export type OperatorPrompt = ApprovalPrompt | QuestionPrompt;
 
 /** How a prompt stopped waiting; `withdrawn` covers resolved elsewhere and gone from the gateway. */
+export const PROMPT_WITHDRAWN = 'withdrawn';
+
+/** How a prompt stopped waiting; `withdrawn` covers resolved elsewhere and gone from the gateway. */
 export type PromptOutcome = ApprovalDecision | 'answered' | 'cancelled' | 'expired' | 'withdrawn';
 
 /** Answers by question id: one value each, or several where a question allows multiple. */

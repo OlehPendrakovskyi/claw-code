@@ -49,6 +49,12 @@ import type { RunText, TextUpdate } from './gatewayRunText';
 import { OperatorPromptBoard, promptKey } from './operatorPrompts';
 import type { PromptListener } from './operatorPrompts';
 import { TruncatedRowCompleter } from './truncatedRows';
+import { errorMessage } from './errors';
+import { withTimeout, withTimeoutNull } from './async';
+import { capText } from './text';
+import { GATEWAY_MESSAGE_LIMIT, HISTORY_READ_TIMEOUT_MS, CLIENT_VERSION } from './constants';
+import { isImageMime } from './media';
+import { PROMPT_WITHDRAWN } from './gatewayProtocol/model';
 
 /** The session a thread targets until it opens another one; the gateway resolves the alias. */
 export const DEFAULT_SESSION_KEY = 'main';
@@ -208,7 +214,6 @@ type CatchUpBaseline = { lastSeq: number; runs: ReadonlyMap<string, number> };
 
 const silentLogger: Logger = { info() {}, warn() {}, error() {} };
 
-const CLIENT_VERSION = '0.2.1';
 const REQUEST_TIMEOUT_MS = 30_000;
 /** The gateway sends connect.challenge at once; this bounds the whole handshake. */
 const HANDSHAKE_TIMEOUT_MS = 15_000;
@@ -219,9 +224,6 @@ const LIVE_RUN_LIMIT = 50;
 const UNCLAIMED_EVENT_LIMIT = 200;
 const ALIAS_LIMIT = 256;
 const IDLE_SESSION_LIMIT = 100;
-/** Longest gateway-supplied message kept in errors shown to the user. */
-const GATEWAY_MESSAGE_LIMIT = 300;
-
 const URL_IN_TEXT = /\b(?:wss?|https?):\/\/[^\s"'<>]+/gi;
 
 const NOT_CONNECTED_MESSAGE =
@@ -239,7 +241,7 @@ const SEND_RETRY_DELAY_MS = 1000;
 const DEVICE_LOAD_TIMEOUT_MS = 5000;
 
 /** Longest a final without a message waits for the transcript to say what the reply was. */
-const SETTLE_FROM_HISTORY_TIMEOUT_MS = 10_000;
+const SETTLE_FROM_HISTORY_TIMEOUT_MS = HISTORY_READ_TIMEOUT_MS;
 /** A pending approval is retried at this pace; every attempt keeps the gateway's request alive. */
 const PAIRING_RETRY_DELAY_MS = 5000;
 /** How long an unanswered pairing request is retried before the client stops and says so. */
@@ -300,9 +302,7 @@ function defaultWsFactory(url: string): WebSocketLike {
   return new WebSocketCtor(url);
 }
 
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
+
 
 /** Run `use` on a value now, or once its promise resolves. */
 function whenReady<T>(value: T | Promise<T>, use: (ready: T) => void): void {
@@ -310,13 +310,7 @@ function whenReady<T>(value: T | Promise<T>, use: (ready: T) => void): void {
   else use(value);
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
+
 
 /** Device tokens are kept per gateway origin, so one gateway's token never reaches another. */
 function gatewayKey(url: string): string {
@@ -728,7 +722,7 @@ export class GatewayChatService {
       this.prompts.settle(key, outcome);
     } catch (err) {
       if (err instanceof RpcRejectedError && (this.connection?.adapter ?? this.offeredAdapter()).isStalePromptFailure(err.failure)) {
-        this.prompts.settle(key, 'withdrawn');
+        this.prompts.settle(key, PROMPT_WITHDRAWN);
         return;
       }
       if (err instanceof RpcRejectedError || neverSent(err)) {
@@ -1193,7 +1187,7 @@ export class GatewayChatService {
   /** A gateway message is shown to the user: strip credentials and cap its length. */
   private redactGatewayMessage(message: string): string {
     const redacted = this.redactCredentials(message);
-    return redacted.length > GATEWAY_MESSAGE_LIMIT ? `${redacted.slice(0, GATEWAY_MESSAGE_LIMIT)}…` : redacted;
+    return capText(redacted, GATEWAY_MESSAGE_LIMIT) ?? redacted;
   }
 
   /* ---------------------------------------------------------------- */
@@ -1570,9 +1564,9 @@ export class GatewayChatService {
   /** A file over the gateway's advertised per-attachment ceiling would be rejected after upload. */
   private attachmentRefusal(attachments: readonly SendAttachment[], limits: ConnectionLimits): string | null {
     for (const { name, mimeType, data } of attachments) {
-      const limit = mimeType.startsWith('image/') ? limits.attachmentMaxImageBytes : limits.attachmentMaxBytes;
+      const limit = isImageMime(mimeType) ? limits.attachmentMaxImageBytes : limits.attachmentMaxBytes;
       if (data.byteLength > limit) {
-        return `Attachment "${name}" is ${data.byteLength} bytes; the gateway accepts at most ${limit} bytes per ${mimeType.startsWith('image/') ? 'image' : 'file'}.`;
+        return `Attachment "${name}" is ${data.byteLength} bytes; the gateway accepts at most ${limit} bytes per ${isImageMime(mimeType) ? 'image' : 'file'}.`;
       }
     }
     return null;
@@ -2033,21 +2027,13 @@ export class GatewayChatService {
   /** The text the transcript holds for a run: its last assistant row with text, '' when it has none;
    *  null when the transcript could not be read in time. */
   private async settledRunText(sessionKey: string, runId: string): Promise<string | null> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), SETTLE_FROM_HISTORY_TIMEOUT_MS);
-    });
     const read = (async (): Promise<string | null> => {
       const history = await this.readHistory(sessionKey);
       if (!history || 'reset' in history) return null;
       const row = [...history.messages].reverse().find((message) => message.role === 'assistant' && message.runId === runId && message.text);
       return row ? (await this.rowCompleter.complete(sessionKey, row)).text : '';
     })().catch(() => null);
-    try {
-      return await Promise.race([read, timeout]);
-    } finally {
-      clearTimeout(timer);
-    }
+    return withTimeoutNull(read, SETTLE_FROM_HISTORY_TIMEOUT_MS);
   }
 
   /** The run's text state; `heardOn` null when no event proved the run live on this socket yet. */

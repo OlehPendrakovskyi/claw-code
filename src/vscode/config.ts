@@ -10,6 +10,11 @@ export async function openOpenClawConfig(createIfMissing: boolean) {
     await openFileInEditor(configPath, createIfMissing, '{\n  \n}\n');
 }
 
+/** Read the extension's `openclaw` configuration section. */
+export function openClawConfig() {
+    return vscode.workspace.getConfiguration('openclaw');
+}
+
 function isValidPathSegment(value: string): boolean {
     return value.length > 0 && !/[/\\]/.test(value) && value !== '.' && value !== '..';
 }

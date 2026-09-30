@@ -8,6 +8,9 @@ import { getWebviewContent } from './content';
 import { GRID_DIMENSIONS } from './content-js';
 import { envWithAbsolutePath } from '../core/searchPath';
 import { asNonEmptyString, isIndexInRange, isOptionalString } from '../core/typeGuards';
+import { errorMessage } from '../core/errors';
+import { canonicalizePath } from '../core/paths';
+import { IMAGE_EXTENSIONS } from '../core/media';
 import { resolveGitExecutable } from './gitExecutable';
 import {
     CONTEXT_CODE_MAX_BYTES,
@@ -778,9 +781,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private static readonly LAST_SESSION_KEY = 'openclaw.lastSessionKey';
 
-    private static readonly IMAGE_EXTENSIONS = new Set([
-        '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.bmp', '.ico', '.tiff', '.tif',
-    ]);
+    private static readonly IMAGE_EXTENSIONS = new Set(IMAGE_EXTENSIONS);
 
     /** Each await re-checks the caller guard: a cancel/clear in between must not repopulate the reset thread. */
     private async addAttachments(thread: ChatThreadState, items: Array<string | FileMention>, options?: { guard?: () => boolean }): Promise<void> {
@@ -809,7 +810,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                     continue;
                 }
                 // The canonical spelling is what the read-time realpath check compares against.
-                const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
+                const canonical = await canonicalizePath(filePath);
                 if (options?.guard?.() === false) {
                     return;
                 }
@@ -1056,7 +1057,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 if (autoAttach) {
                     await this.addAttachments(thread, [autoAttachPath], { guard: () => this.sendOwnsThread(thread, ticket) });
                     // addAttachments stores the canonical realpath.
-                    const canonicalAutoAttach = await fs.promises.realpath(autoAttachPath).catch(() => autoAttachPath);
+                    const canonicalAutoAttach = await canonicalizePath(autoAttachPath);
                     pushNew(thread.pendingAttachments.filter(a => a.path === canonicalAutoAttach));
                 }
             }
@@ -1067,7 +1068,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
                 // Canonical spelling and (path + range) keys, matching what addAttachments stored.
                 const canonicalMentions = await Promise.all(
                     mentions.accepted.map(m =>
-                        fs.promises.realpath(m.path).then(p => ({ ...m, path: p })).catch(() => m)
+                        canonicalizePath(m.path).then(p => ({ ...m, path: p })).catch(() => m)
                     )
                 );
                 await this.addAttachments(thread, canonicalMentions, { guard: () => this.sendOwnsThread(thread, ticket) });
@@ -1314,7 +1315,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Finalize a send that threw, unless something else took the thread over meanwhile. */
     private failSend(thread: ChatThreadState, ticket: SendTicket, origin: string, err: unknown): void {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         log.error(`${origin} failed: ${message}`);
         if (!this.sendOwnsThread(thread, ticket)) {
             return;
@@ -2193,7 +2194,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
         } catch (err) {
             if (row.state === 'submitting') {
                 row.state = 'pending';
-                row.error = err instanceof Error ? err.message : String(err);
+                row.error = errorMessage(err);
                 if (!(err instanceof PromptAnswerUnconfirmedError)) row.submitted = null;
             }
         }
@@ -2210,7 +2211,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             gateway = await this.resolveGatewayOrThrow();
         } catch (err) {
             log.warn('sessions: gateway resolution failed', err);
-            reply([], `Gateway error: ${err instanceof Error ? err.message : String(err)}`);
+            reply([], `Gateway error: ${errorMessage(err)}`);
             return;
         }
         if (!gateway) {
@@ -2806,7 +2807,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
     private async confirmDroppedFiles(filePaths: string[]): Promise<string[]> {
         const outside: string[] = [];
         for (const filePath of filePaths) {
-            const canonical = await fs.promises.realpath(filePath).catch(() => filePath);
+            const canonical = await canonicalizePath(filePath);
             if (!(await this.isWorkspaceScoped(canonical))) {
                 outside.push(filePath);
             }

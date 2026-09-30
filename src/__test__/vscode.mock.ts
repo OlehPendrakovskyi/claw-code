@@ -35,6 +35,7 @@ export const window = {
         webview: {
             html: '',
             options: {},
+            cspSource: 'vscode-webview:',
             postMessage: jest.fn(),
             onDidReceiveMessage: jest.fn(() => createDisposable()),
         },

@@ -27,7 +27,8 @@ import type {
   QuestionReply,
   RpcFailure,
 } from '../model';
-import { readArray, readNonNegativeInteger, readRecord, readString, readStrings, readTrimmedString } from './readers';
+import { PROMPT_WITHDRAWN } from '../model';
+import { readArray, readNonNegativeInteger, readRecord, readString, readStrings, readTrimmedString, capText } from './readers';
 import type { ApprovalResolveParams, QuestionResolveParams } from './schema';
 import { Events, Methods, OperatorScopes } from './schema';
 
@@ -78,7 +79,7 @@ function readDecisions(value: unknown): ApprovalDecision[] {
 }
 
 function capped(text: string | null): string | null {
-  return text && text.length > DETAIL_MAX_CHARS ? `${text.slice(0, DETAIL_MAX_CHARS)}…` : text;
+  return capText(text, DETAIL_MAX_CHARS);
 }
 
 function presentLines(lines: ReadonlyArray<string | null>): string[] {
@@ -189,11 +190,11 @@ function resolved(source: PromptSource, payload: unknown, outcomeOf: (fields: Re
 }
 
 function approvalOutcome(fields: Readonly<Record<string, unknown>>): PromptOutcome {
-  return isDecision(fields.decision) ? fields.decision : 'withdrawn';
+  return isDecision(fields.decision) ? fields.decision : PROMPT_WITHDRAWN;
 }
 
 function questionOutcome(fields: Readonly<Record<string, unknown>>): PromptOutcome {
-  return typeof fields.status === 'string' && QUESTION_OUTCOMES.has(fields.status) ? (fields.status as PromptOutcome) : 'withdrawn';
+  return typeof fields.status === 'string' && QUESTION_OUTCOMES.has(fields.status) ? (fields.status as PromptOutcome) : PROMPT_WITHDRAWN;
 }
 
 /** The neutral event of a prompt event frame; null for malformed payloads and other events. */

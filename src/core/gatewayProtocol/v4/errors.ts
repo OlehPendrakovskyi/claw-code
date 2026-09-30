@@ -8,7 +8,8 @@
 
 import type { HandshakeRejection, HandshakeRejectionKind, PairingRequest, RpcFailure } from '../model';
 import { PROTOCOL_MISMATCH_HINT } from '../model';
-import { readDelayMs, readRecord, readTrimmedString, readString } from './readers';
+import { readDelayMs, readRecord, readTrimmedString, readString, capText } from './readers';
+import { UNKNOWN, GATEWAY_MESSAGE_LIMIT } from '../../constants';
 
 /** Top-level `error.code` values. */
 export const ErrorCodes = {
@@ -213,7 +214,7 @@ function permanentHint(input: RejectionInput): string | null {
 export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
   const fields = readRecord(error);
   const details = readRecord(fields.details);
-  const topCode = readString(fields.code) ?? 'unknown';
+  const topCode = readString(fields.code) ?? UNKNOWN;
   const detailCode = readTrimmedString(details.code);
   const input: RejectionInput = {
     code: detailCode ?? topCode,
@@ -241,7 +242,7 @@ export function classifyHandshakeRejection(error: unknown): HandshakeRejection {
 }
 
 /** Longest gateway error message carried into errors shown to the user. */
-const RPC_MESSAGE_LIMIT = 300;
+const RPC_MESSAGE_LIMIT = GATEWAY_MESSAGE_LIMIT;
 
 /** An untrusted RPC `res.error` (ErrorShapeSchema). */
 export function readRpcFailure(error: unknown): RpcFailure {
@@ -250,8 +251,8 @@ export function readRpcFailure(error: unknown): RpcFailure {
   const retryAfterMs = readDelayMs(fields.retryAfterMs, MAX_RPC_RETRY_WAIT_MS);
   const reason = readString(readRecord(fields.details).reason);
   return {
-    code: readString(fields.code) ?? 'unknown',
-    message: message.length > RPC_MESSAGE_LIMIT ? `${message.slice(0, RPC_MESSAGE_LIMIT)}…` : message,
+    code: readString(fields.code) ?? UNKNOWN,
+    message: capText(message, RPC_MESSAGE_LIMIT) ?? '',
     retryable: fields.retryable === true,
     ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     ...(reason ? { reason } : {}),

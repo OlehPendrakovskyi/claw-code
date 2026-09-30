@@ -27,6 +27,7 @@ import { resolveCommandLaunch } from '../../core/cliLauncher';
 import { envWithAbsolutePath } from '../../core/searchPath';
 import { openHardeningSettings, getDashboardUrl } from '../config';
 import { execFileAsync } from './shared';
+import { errorMessage } from '../../core/errors';
 import { getHardeningTerminal, getOverviewProvider } from './terminals';
 import { isCommandAvailable, showMissingNodeMessage, runSetupFlow } from './setup';
 
@@ -136,7 +137,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
         const output = [stdout, stderr].filter(Boolean).join('\n').trim();
         return { output: output.length > 0 ? output : undefined };
     } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = errorMessage(error);
         return { error: redactPlainSecrets(message.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))) };
     }
 }

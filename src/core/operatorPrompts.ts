@@ -10,6 +10,7 @@
  */
 
 import type { OperatorPrompt, PromptOutcome, PromptSource } from './gatewayProtocol/model';
+import { PROMPT_WITHDRAWN } from './gatewayProtocol/model';
 import { MAX_TIMER_DELAY_MS } from './typeGuards';
 
 /** `key` names the prompt across sources (see {@link promptKey}); `expiresAtMs` is the local-clock deadline. */
@@ -110,7 +111,7 @@ export class OperatorPromptBoard {
   /** Every pending prompt of the kinds is gone for this client (access lost, endpoint changed). */
   withdraw(kinds: readonly PromptKind[]): void {
     for (const { key, prompt } of [...this.pending.values()]) {
-      if (kinds.includes(prompt.kind)) this.settle(key, 'withdrawn');
+      if (kinds.includes(prompt.kind)) this.settle(key, PROMPT_WITHDRAWN);
     }
   }
 
@@ -137,7 +138,7 @@ export class OperatorPromptBoard {
     for (const { key, prompt } of [...this.pending.values()]) {
       if (!covered.includes(sourceOf(prompt)) || backfill.requested.has(key)) continue;
       if (listedKeys.has(key)) this.submissions.delete(key);
-      else this.settle(key, this.submissions.get(key) ?? 'withdrawn');
+      else this.settle(key, this.submissions.get(key) ?? PROMPT_WITHDRAWN);
     }
     for (const prompt of listed) {
       if (!backfill.resolved.has(keyOf(prompt))) this.add(prompt);
@@ -150,7 +151,7 @@ export class OperatorPromptBoard {
       return;
     }
     this.onOverflow();
-    this.settle(ofKind[0].key, 'withdrawn');
+    this.settle(ofKind[0].key, PROMPT_WITHDRAWN);
   }
 
   private armExpiry(key: string, expiresAtMs: number): ReturnType<typeof setTimeout> {

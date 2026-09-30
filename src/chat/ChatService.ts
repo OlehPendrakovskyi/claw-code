@@ -7,6 +7,7 @@ import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 import { asNonEmptyString, asRecord, parseJsonRecord } from '../core/typeGuards';
+import { errorMessage } from '../core/errors';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -742,7 +743,7 @@ export class ChatService {
             });
         } catch (err) {
             log.error('acpx spawn threw', err);
-            completeWithoutProcess(run.onEvent, run.onRunComplete, err instanceof Error ? err.message : String(err));
+            completeWithoutProcess(run.onEvent, run.onRunComplete, errorMessage(err));
             return;
         }
         const retry = fallback === undefined ? undefined : () => {

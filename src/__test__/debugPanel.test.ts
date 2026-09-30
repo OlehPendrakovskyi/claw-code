@@ -26,7 +26,7 @@ describe('openDebugChatPanel', () => {
     it('allows only its own nonce-tagged script and style', () => {
         const html = openDebugChatPanel(vscode.Uri.file('/ext')).webview.html;
         const nonce = html.match(/<script nonce="([0-9a-f]+)">/)?.[1];
-        expect(html).toContain(`content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';"`);
+        expect(html).toContain(`content="default-src 'none'; img-src vscode-webview:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';"`);
     });
 
     describe('host messages', () => {
