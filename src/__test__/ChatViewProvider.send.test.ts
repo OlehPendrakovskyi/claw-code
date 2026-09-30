@@ -15,10 +15,10 @@ jest.mock('../webview/chatServiceFactory', () => ({
 jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
 // Identity realpath keeps mention resolution off the disk; the attachment
-// reader's /proc fd check, and the on-disk workspace roots of the mention tests, need the real one.
+// reader's fd check, and the on-disk workspace roots of the mention tests, need the real one.
 jest.mock('fs', () => {
     const actual = jest.requireActual('fs');
-    const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.includes('claw-roots-');
+    const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/') || p.includes('claw-roots-');
     const realpath = async (p: string): Promise<string> => needsDisk(p) ? actual.promises.realpath(p) : p;
     return { ...actual, promises: { ...actual.promises, realpath } };
 });
