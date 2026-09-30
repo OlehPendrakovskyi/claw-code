@@ -218,6 +218,8 @@ npm install -g acpx
 3. Press **F5** to launch the Extension Development Host
 4. Publish (prepublish + VSCE + Open VSX): `pnpm run publish:all`
 
+Before pushing, run the same gates CI runs: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test`, `pnpm run compile`, `pnpm run license:check`. CI exercises the test suite on Ubuntu, Windows and macOS (see [TESTING.md](./TESTING.md#continuous-integration)).
+
 ## License
 
 [MIT](./LICENSE)
