@@ -50,6 +50,22 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm run lint
 
+      - name: TEMP lsof escaping
+        if: runner.os == 'macOS'
+        timeout-minutes: 2
+        run: |
+          node -e '
+          const fs = require("fs"), os = require("os"), path = require("path"); const { execFileSync } = require("child_process");
+          const dir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "esc-"));
+          const names = ["back\\slash", "caret^A", "tab\tx", "nl\nx", "ctl\x01x", "del\x7fx", "zw\u200bx", "nbsp\u00a0x", "c1\u0085x", "rtl\u202ex", "pct%x", "quote\"x"];
+          for (const n of names) {
+            const f = path.join(dir, n); fs.writeFileSync(f, "x"); const fd = fs.openSync(f, "r");
+            const out = execFileSync("/usr/sbin/lsof", ["-w","-a","-p",String(process.pid),"-d",String(fd),"-Fn"], { env: { LC_ALL: "en_US.UTF-8" }, encoding: "utf8" });
+            const got = out.split("\n").find(l => l.startsWith("n")).slice(1).slice(dir.length + 1);
+            console.log(JSON.stringify({ name: n, lsof: got, same: got === n }));
+            fs.closeSync(fd);
+          }'
+
       - name: Build
         run: pnpm run compile
 
