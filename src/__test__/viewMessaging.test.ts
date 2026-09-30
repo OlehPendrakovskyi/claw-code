@@ -106,7 +106,8 @@ describe('viewMessaging', () => {
             if (isWindows) {
                 return;
             }
-            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-'));
+            // Canonical, so the macOS /var symlink does not reject the FIFO before the open does.
+            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-')));
             fifoPath = path.join(dir, 'pipe');
             execFileSync('mkfifo', [fifoPath]);
         });
@@ -283,6 +284,16 @@ describe('viewMessaging', () => {
             });
             const { prompt } = await readText();
             expect(prompt).toContain('fd-anchored content');
+        });
+
+        posixOnly('rejects text and images on macOS when /dev/fd names a different file', async () => {
+            setPlatform('darwin');
+            stubFdLink(async () => '/dev/fd/id_rsa');
+            const text = await readText();
+            expect(text.prompt).not.toContain('fd-anchored content');
+            expect(text.prompt).toContain('[Could not read file]');
+            const imageResult = await readImage();
+            expect(imageResult.attachments).toHaveLength(0);
         });
 
         posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
