@@ -1543,8 +1543,9 @@ describe('ChatViewProvider send lifecycle', () => {
                 expect(gatewayPrompts()[0]).toContain('truncated="first 32768 bytes kept"');
                 expect(gatewayPrompts()[0]).toContain('changed line');
             } finally {
-                // Git writes its objects read-only; rmSync fails on them with EPERM on Windows, the async rm clears the flag.
-                await actualFs.promises.rm(dir, { recursive: true, force: true });
+                // On Windows the async rm clears git's read-only object flag (rmSync fails with EPERM),
+                // and the retries wait out the killed git diff that still holds the dir as its cwd.
+                await actualFs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
             }
         });
 
