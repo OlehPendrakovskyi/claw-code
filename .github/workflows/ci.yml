@@ -41,45 +41,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: TEMP diagnose /.vol realpath
-        if: runner.os == 'macOS'
-        run: |
-          node - <<'DIAG'
-          const fs = require('fs'), os = require('os'), path = require('path');
-          const { execFileSync } = require('child_process');
-          const safe = (f) => { try { return f(); } catch (e) { return 'ERR ' + (e.code || e.status || e.message); } };
-          const lsofPath = (fd) => {
-            const out = execFileSync('/usr/sbin/lsof', ['-a', '-p', String(process.pid), '-d', String(fd), '-Fn'], { encoding: 'utf8' });
-            return out.split('\n').find(l => l.startsWith('n'))?.slice(1);
-          };
-          (async () => {
-            const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'vol-'));
-            const dirA = path.join(root, 'a'); fs.mkdirSync(dirA);
-            const file = path.join(dirA, 'note.txt'); fs.writeFileSync(file, 'x');
-            const h = await fs.promises.open(file, 'r');
-            const st = await h.stat();
-            const vol = `/.vol/${st.dev}/${st.ino}`;
-            const out = { file, vol };
-            out.volStat = safe(() => { const s = fs.statSync(vol); return { ino: s.ino, same: s.ino === st.ino }; });
-            out.volOpen = safe(() => { const fd = fs.openSync(vol, 'r'); fs.closeSync(fd); return 'ok'; });
-            out.volRoot = safe(() => fs.readdirSync('/.vol').slice(0, 5));
-            out.volDevStat = safe(() => fs.statSync(`/.vol/${st.dev}`).ino);
-            out.statN = safe(() => execFileSync('/usr/bin/stat', ['-f', '%N', vol], { encoding: 'utf8' }).trim());
-            out.lsof = safe(() => lsofPath(h.fd));
-            const t = process.hrtime.bigint();
-            for (let i = 0; i < 10; i++) safe(() => lsofPath(h.fd));
-            out.lsofAvgMs = Number((process.hrtime.bigint() - t) / 10n) / 1e6;
-            fs.renameSync(dirA, path.join(root, 'b'));
-            out.lsofAfterParentRename = safe(() => lsofPath(h.fd));
-            fs.linkSync(path.join(root, 'b', 'note.txt'), path.join(root, 'b', 'other.txt'));
-            out.lsofWithHardLink = safe(() => lsofPath(h.fd));
-            fs.unlinkSync(path.join(root, 'b', 'note.txt'));
-            out.lsofAfterUnlinkOneName = safe(() => lsofPath(h.fd));
-            await h.close();
-            console.log(JSON.stringify(out, null, 1));
-          })();
-          DIAG
-
       # Typecheck, lint and the license check give the same answer on every OS.
       - name: Typecheck
         if: runner.os == 'Linux'
