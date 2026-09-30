@@ -7,6 +7,7 @@ import { ChatEvent, ChatService } from '../chat/ChatService';
 import { getWebviewContent } from './content';
 import { GRID_DIMENSIONS } from './content-js';
 import { envWithAbsolutePath } from '../core/searchPath';
+import { asNonEmptyString, isIndexInRange, isOptionalString } from '../core/typeGuards';
 import { resolveGitExecutable } from './gitExecutable';
 import {
     CONTEXT_CODE_MAX_BYTES,
@@ -80,15 +81,7 @@ const STATE_SETTINGS = ['chat.dimension', 'chat.collapseCompleted', 'chat.hideTo
 const CHAT_TYPES = new Set(['chat', 'code', 'review', 'plan']);
 
 function isNonEmptyString(value: unknown): value is string {
-    return typeof value === 'string' && value.length > 0;
-}
-
-function isOptionalString(value: unknown): value is string | undefined {
-    return value === undefined || typeof value === 'string';
-}
-
-function isIndexInRange(value: unknown, length: number): value is number {
-    return Number.isInteger(value) && (value as number) >= 0 && (value as number) < length;
+    return asNonEmptyString(value) !== null;
 }
 
 function isGridDimension(value: unknown): value is string {

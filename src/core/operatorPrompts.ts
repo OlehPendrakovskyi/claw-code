@@ -10,6 +10,7 @@
  */
 
 import type { OperatorPrompt, PromptOutcome, PromptSource } from './gatewayProtocol/model';
+import { MAX_TIMER_DELAY_MS } from './typeGuards';
 
 /** `key` names the prompt across sources (see {@link promptKey}); `expiresAtMs` is the local-clock deadline. */
 export type PromptChange =
@@ -21,9 +22,6 @@ export type PromptListener = (change: PromptChange) => void;
 type PromptKind = OperatorPrompt['kind'];
 
 type PendingPrompt = { key: string; prompt: OperatorPrompt; expiresAtMs: number; expiry: ReturnType<typeof setTimeout> };
-
-/** Node timers overflow past this delay; a later deadline is re-armed when this one fires. */
-const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 /** Pending prompts kept per kind; past it the oldest is withdrawn, so a flooding gateway cannot grow the board. */
 export const MAX_PENDING_PER_KIND = 256;

@@ -18,6 +18,7 @@ import type {
   SessionListPage,
   SubscriptionAccepted,
 } from '../model';
+import { clamp } from 'lodash-es';
 import { classifyHandshakeRejection, missingScopesRejection, readRpcFailure } from './errors';
 import { readEvent } from './events';
 import {
@@ -88,10 +89,7 @@ function request(method: string, params: object): WireRequest {
 const MIN_TICK_INTERVAL_MS = 1000;
 const MAX_TICK_INTERVAL_MS = Math.floor(MAX_TIMER_DELAY_MS / 2);
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), max);
-}
-
+/** A positive integer from an untrusted field, else the limit's default. */
 function readLimit(value: unknown, fallback: number): number {
   return readPositiveInteger(value) ?? fallback;
 }
