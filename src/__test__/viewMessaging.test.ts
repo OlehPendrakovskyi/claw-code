@@ -5,6 +5,7 @@ import * as path from 'path';
 import type * as FspType from 'fs/promises';
 import { stagedPromptImage } from '../chat/promptImages';
 import { conversationHistory, readAttachments, AttachmentLimits } from '../webview/viewMessaging';
+import * as lsofFdPath from '../webview/lsofFdPath';
 
 /** The payload readAttachments reserves beside an empty base prompt. */
 const FRAMING_RESERVE_BYTES = 1024 * 1024;
@@ -212,8 +213,11 @@ describe('viewMessaging', () => {
 
         const readText = () => readAttachments([{ name: 'note.txt', path: file, type: 'file' }]);
         const readImage = () => readAttachments([{ name: 'pic.png', path: image, type: 'image' }]);
+        let lsofSpy: jest.SpyInstance<Promise<string | undefined>, [number]>;
 
         beforeEach(() => {
+            // lsof answers nothing unless a test says otherwise, so the /dev/fd fallback is what runs.
+            lsofSpy = jest.spyOn(lsofFdPath, 'openedPathFromLsof').mockResolvedValue(undefined);
             if (process.platform === 'win32') {
                 return;
             }
@@ -227,6 +231,7 @@ describe('viewMessaging', () => {
         });
 
         afterEach(() => {
+            lsofSpy.mockRestore();
             Object.defineProperty(process, 'platform', originalPlatform);
             if (process.platform === 'win32') {
                 return;
@@ -292,6 +297,28 @@ describe('viewMessaging', () => {
             const text = await readText();
             expect(text.prompt).not.toContain('fd-anchored content');
             expect(text.prompt).toContain('[Could not read file]');
+            const imageResult = await readImage();
+            expect(imageResult.attachments).toHaveLength(0);
+        });
+
+        posixOnly('accepts a macOS attachment whose lsof path is the stored path, asking lsof about its own fd', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(file);
+            stubFdLink(async () => '/dev/fd/unrelated.txt');
+            const { prompt } = await readText();
+            expect(prompt).toContain('fd-anchored content');
+            expect(lsofSpy).toHaveBeenCalledWith(expect.any(Number));
+        });
+
+        posixOnly('rejects a same-named macOS file in another directory by its lsof path', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(path.join(dir, 'swapped', 'note.txt'));
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const text = await readText();
+            expect(text.prompt).not.toContain('fd-anchored content');
+            expect(text.prompt).toContain('[Could not read file]');
+            lsofSpy.mockResolvedValue(path.join(dir, 'swapped', 'pic.png'));
+            stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
             const imageResult = await readImage();
             expect(imageResult.attachments).toHaveLength(0);
         });

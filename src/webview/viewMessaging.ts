@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
+import { openedPathFromLsof } from './lsofFdPath';
 
 /** O_NONBLOCK on POSIX, absent on Windows: a blocking O_RDONLY open on a
  *  FIFO (named pipe) parks the caller until a writer appears, so every
@@ -266,10 +267,11 @@ const FD_DIR = '/dev/fd/';
  *  the path-based checks around it cannot see.
  *  - Linux always provides /proc/self/fd, so a lookup that fails or points
  *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
- *  - macOS always mounts /dev/fd and answers `/dev/fd/<name of the opened
- *    file>`, so a lookup that fails or names another file rejects. A
- *    same-named file in another directory still passes: only fcntl
- *    F_GETPATH, which Node does not expose, gives the full path.
+ *  - macOS has no fd link that Node can read the full path from, so lsof
+ *    reports it, and any path but `expected` rejects. When lsof cannot tell,
+ *    /dev/fd still answers `/dev/fd/<name of the opened file>`: a lookup
+ *    that fails or names another file rejects, and only a same-named file
+ *    in another directory gets past that fallback.
  *  - Other POSIX systems offer /dev/fd at best, and FreeBSD without
  *    `linrdlnk` echoes the fd path back, which carries no location. They
  *    rely on the identity checks, as Windows does.
@@ -287,6 +289,10 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
     }
     const fdPath = `${FD_DIR}${handle.fd}`;
     if (process.platform === 'darwin') {
+        const openedPath = await openedPathFromLsof(handle.fd);
+        if (openedPath !== undefined) {
+            return openedPath === expected;
+        }
         try {
             const resolved = await fsp.realpath(fdPath);
             return resolved === `${FD_DIR}${path.basename(expected)}` || resolved === expected;
