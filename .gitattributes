@@ -1,0 +1,2 @@
+# LF on every checkout: fixtures are compared byte for byte, and Windows git would otherwise rewrite them to CRLF.
+* text=auto eol=lf

@@ -2,20 +2,27 @@ name: CI
 
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # A newer push supersedes a PR run. Any other run gets a group of its own, so no commit on main loses its status.
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
-  ci:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -34,17 +41,35 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Typecheck, lint and the license check give the same answer on every OS.
       - name: Typecheck
+        if: runner.os == 'Linux'
         run: pnpm run typecheck
 
       - name: Lint
+        if: runner.os == 'Linux'
         run: pnpm run lint
-
-      - name: Test
-        run: pnpm run test
 
       - name: Build
         run: pnpm run compile
 
+      # jest directly: `pnpm run test` would repeat compile and lint through pretest.
+      # A step timeout, unlike the job's, fails the step and keeps its log.
+      - name: Test
+        timeout-minutes: 10
+        run: pnpm exec jest
+
       - name: License check
+        if: runner.os == 'Linux'
         run: pnpm run license:check
+
+  # The ruleset on main requires a check named `ci`; this one passes only when every OS did.
+  ci:
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every OS to pass
+        if: needs.test.result != 'success'
+        run: exit 1

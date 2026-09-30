@@ -14,6 +14,7 @@ import {
     STDERR_TAIL_MAX_CHARS,
     STDOUT_LINE_MAX_CHARS,
 } from '../chat/ChatService';
+import { usePlatform } from './helpers/platform';
 
 jest.mock('child_process', () => ({ spawn: jest.fn() }));
 
@@ -482,6 +483,9 @@ describe('ChatService.sendMessage', () => {
     });
 
     describe('abort', () => {
+        // Asserts the POSIX process-group path; the taskkill test switches to win32 itself.
+        usePlatform('linux');
+
         it('completes at once, signals the process group and ignores the late exit', () => {
             const { child, events, onRunComplete, service } = start();
             service.abort();
@@ -935,10 +939,13 @@ describe('ChatService.sendMessage', () => {
         });
 
         it('does not retry a run aborted before it exited', () => {
-            const { child, service } = start(`see ${staged.marker}`);
-            service.abort();
-            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'x', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } } }));
-            child.emit('close', 2, null);
+            // On win32 the abort itself spawns taskkill, which would count as a retry.
+            withPlatform('linux', () => {
+                const { child, service } = start(`see ${staged.marker}`);
+                service.abort();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'x', data: { detailCode: 'UNSUPPORTED_PROMPT_CONTENT' } } }));
+                child.emit('close', 2, null);
+            });
             expect(spawnMock).toHaveBeenCalledTimes(1);
         });
     });

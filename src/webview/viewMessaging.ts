@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
+import { decodeLsofName, lsofNameForFd, lsofShowsUnambiguously } from './lsofFdPath';
 
 /** O_NONBLOCK on POSIX, absent on Windows: a blocking O_RDONLY open on a
  *  FIFO (named pipe) parks the caller until a writer appears, so every
@@ -256,6 +257,8 @@ function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefine
     return end === lineStart ? String(lineStart) : `${lineStart}-${end}`;
 }
 
+const FD_DIR = '/dev/fd/';
+
 /** Whether an opened handle still refers to the file at canonical path
  *  `expected`, judged by the OS's handle view rather than live path state.
  *
@@ -264,10 +267,15 @@ function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefine
  *  the path-based checks around it cannot see.
  *  - Linux always provides /proc/self/fd, so a lookup that fails or points
  *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
- *  - Other POSIX systems offer /dev/fd at best; macOS and FreeBSD without
- *    `linrdlnk` echo the fd path back, which carries no location. Only a
- *    resolution to a different path rejects there, so attachments keep
- *    working and those systems rely on the identity checks, as Windows does.
+ *  - macOS has no fd link that Node can read the full path from, so lsof
+ *    reports it, and any path but `expected` rejects, as does no answer.
+ *    Only when `expected` holds a caret or control character, which lsof
+ *    prints ambiguously, does /dev/fd decide: it answers `/dev/fd/<name of
+ *    the opened file>`, so a lookup that fails or names another file
+ *    rejects, and only a same-named file in another directory gets past.
+ *  - Other POSIX systems offer /dev/fd at best, and FreeBSD without
+ *    `linrdlnk` echoes the fd path back, which carries no location. They
+ *    rely on the identity checks, as Windows does.
  *  - Windows has no fd view. */
 async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise<boolean> {
     if (process.platform === 'win32') {
@@ -280,7 +288,19 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
             return false;
         }
     }
-    const fdPath = `/dev/fd/${handle.fd}`;
+    const fdPath = `${FD_DIR}${handle.fd}`;
+    if (process.platform === 'darwin') {
+        if (lsofShowsUnambiguously(expected)) {
+            const lsofName = await lsofNameForFd(handle.fd);
+            return lsofName !== undefined && decodeLsofName(lsofName) === expected;
+        }
+        try {
+            const resolved = await fsp.realpath(fdPath);
+            return resolved === `${FD_DIR}${path.basename(expected)}` || resolved === expected;
+        } catch {
+            return false;
+        }
+    }
     try {
         const resolved = await fsp.realpath(fdPath);
         return resolved === fdPath || resolved === expected;
@@ -651,7 +671,8 @@ function toFileSearchResult(uri: vscode.Uri, cwd: string): FileSearchResult {
     return {
         name: path.basename(uri.fsPath),
         path: uri.fsPath,
-        relativePath: cwd ? path.relative(cwd, uri.fsPath) : uri.fsPath,
+        // Forward slashes on every OS, so a query typed as `src/app` matches on Windows too.
+        relativePath: cwd ? path.relative(cwd, uri.fsPath).split(path.sep).join('/') : uri.fsPath,
     };
 }
 

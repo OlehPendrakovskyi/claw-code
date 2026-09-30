@@ -5,6 +5,7 @@ import * as path from 'path';
 import type * as FspType from 'fs/promises';
 import { stagedPromptImage } from '../chat/promptImages';
 import { conversationHistory, readAttachments, AttachmentLimits } from '../webview/viewMessaging';
+import * as lsofFdPath from '../webview/lsofFdPath';
 
 /** The payload readAttachments reserves beside an empty base prompt. */
 const FRAMING_RESERVE_BYTES = 1024 * 1024;
@@ -106,7 +107,8 @@ describe('viewMessaging', () => {
             if (isWindows) {
                 return;
             }
-            dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-'));
+            // Canonical, so the macOS /var symlink does not reject the FIFO before the open does.
+            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-')));
             fifoPath = path.join(dir, 'pipe');
             execFileSync('mkfifo', [fifoPath]);
         });
@@ -148,7 +150,7 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('does not charge the aggregate budget when the final realpath validation fails', async () => {
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-'));
+            const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-')));
             try {
                 const realFile = path.join(dir, 'real.txt');
                 fs.writeFileSync(realFile, 'hello');
@@ -211,8 +213,14 @@ describe('viewMessaging', () => {
 
         const readText = () => readAttachments([{ name: 'note.txt', path: file, type: 'file' }]);
         const readImage = () => readAttachments([{ name: 'pic.png', path: image, type: 'image' }]);
+        // lsof prints a caret ambiguously, so this macOS path is the one /dev/fd decides.
+        let caretFile: string;
+        const readCaret = () => readAttachments([{ name: 'caret^note.txt', path: caretFile, type: 'file' }]);
+        let lsofSpy: jest.SpyInstance<Promise<string | undefined>, [number]>;
 
         beforeEach(() => {
+            // lsof cannot tell unless a test says otherwise.
+            lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockResolvedValue(undefined);
             if (process.platform === 'win32') {
                 return;
             }
@@ -223,9 +231,12 @@ describe('viewMessaging', () => {
             fs.writeFileSync(file, 'fd-anchored content');
             image = path.join(dir, 'pic.png');
             fs.writeFileSync(image, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+            caretFile = path.join(dir, 'caret^note.txt');
+            fs.writeFileSync(caretFile, 'caret content');
         });
 
         afterEach(() => {
+            lsofSpy.mockRestore();
             Object.defineProperty(process, 'platform', originalPlatform);
             if (process.platform === 'win32') {
                 return;
@@ -257,13 +268,24 @@ describe('viewMessaging', () => {
             expect(prompt).not.toContain('fd-anchored content');
         });
 
-        posixOnly('accepts text and images on macOS, where /dev/fd echoes its own path', async () => {
-            setPlatform('darwin');
+        posixOnly('accepts text and images where /dev/fd echoes its own path', async () => {
+            setPlatform('freebsd');
             stubFdLink(async (fdPath) => fdPath);
             const text = await readText();
             expect(text.prompt).toContain('fd-anchored content');
             const imageResult = await readImage();
             expect(imageResult.attachments).toHaveLength(1);
+        });
+
+        posixOnly('rejects text and images on macOS when lsof cannot tell, whatever /dev/fd names', async () => {
+            setPlatform('darwin');
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const text = await readText();
+            expect(text.prompt).not.toContain('fd-anchored content');
+            expect(text.prompt).toContain('[Could not read file]');
+            stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
+            const imageResult = await readImage();
+            expect(imageResult.attachments).toHaveLength(0);
         });
 
         posixOnly('accepts an attachment when /dev/fd is not mounted', async () => {
@@ -275,8 +297,82 @@ describe('viewMessaging', () => {
             expect(prompt).toContain('fd-anchored content');
         });
 
-        posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
+        posixOnly('rejects a caret-named macOS attachment when /dev/fd names a different file', async () => {
             setPlatform('darwin');
+            stubFdLink(async () => '/dev/fd/id_rsa');
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
+            expect(prompt).toContain('[Could not read file]');
+        });
+
+        posixOnly('accepts a macOS attachment whose lsof path is the stored path, asking lsof about its own fd', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(file);
+            stubFdLink(async () => '/dev/fd/unrelated.txt');
+            const { prompt } = await readText();
+            expect(prompt).toContain('fd-anchored content');
+            expect(lsofSpy).toHaveBeenCalledWith(expect.any(Number));
+        });
+
+        posixOnly('rejects a same-named macOS file in another directory by its lsof path', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(path.join(dir, 'swapped', 'note.txt'));
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const text = await readText();
+            expect(text.prompt).not.toContain('fd-anchored content');
+            expect(text.prompt).toContain('[Could not read file]');
+            lsofSpy.mockResolvedValue(path.join(dir, 'swapped', 'pic.png'));
+            stubFdLink(async () => `/dev/fd/${path.basename(image)}`);
+            const imageResult = await readImage();
+            expect(imageResult.attachments).toHaveLength(0);
+        });
+
+        posixOnly('decodes lsof\'s escaping before comparing a macOS path', async () => {
+            setPlatform('darwin');
+            const slashed = path.join(dir, 'back\\slash.txt');
+            fs.writeFileSync(slashed, 'slashed content');
+            lsofSpy.mockResolvedValue(slashed.replace(/\\/g, '\\\\'));
+            stubFdLink(async () => '/dev/fd/unrelated.txt');
+            const { prompt } = await readAttachments([{ name: 'back\\slash.txt', path: slashed, type: 'file' }]);
+            expect(prompt).toContain('slashed content');
+        });
+
+        posixOnly('rejects a macOS lsof path whose caret could stand for a control character', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(path.join(dir, '^Anote.txt'));
+            stubFdLink(async () => `/dev/fd/${path.basename(file)}`);
+            const { prompt } = await readText();
+            expect(prompt).not.toContain('fd-anchored content');
+        });
+
+        posixOnly('decides a macOS path lsof would print ambiguously by its /dev/fd name', async () => {
+            setPlatform('darwin');
+            lsofSpy.mockResolvedValue(path.join(dir, 'elsewhere', 'caret^note.txt'));
+            stubFdLink(async () => '/dev/fd/caret^note.txt');
+            const { prompt } = await readCaret();
+            expect(prompt).toContain('caret content');
+            expect(lsofSpy).not.toHaveBeenCalled();
+        });
+
+        posixOnly('rejects a caret-named macOS attachment when /dev/fd echoes the fd path instead of a name', async () => {
+            setPlatform('darwin');
+            stubFdLink(async (fdPath) => fdPath);
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
+            expect(prompt).toContain('[Could not read file]');
+        });
+
+        posixOnly('fails closed for a caret-named macOS attachment when /dev/fd cannot be resolved', async () => {
+            setPlatform('darwin');
+            stubFdLink(async () => {
+                throw new Error('ENOENT');
+            });
+            const { prompt } = await readCaret();
+            expect(prompt).not.toContain('caret content');
+        });
+
+        posixOnly('rejects text and images when /dev/fd proves a different location', async () => {
+            setPlatform('freebsd');
             stubFdLink(async () => '/private/etc/passwd');
             const text = await readText();
             expect(text.prompt).not.toContain('fd-anchored content');
@@ -470,15 +566,28 @@ describe('viewMessaging', () => {
 
         posixOnly('rejects a text file that grows past the cap after stat', async () => {
             const file = writeFixture('grow.txt', 'g'.repeat(10 * 1024 * 1024 - 1024));
+            const grow = () => fs.appendFileSync(file, 'g'.repeat(10 * 1024));
+            // The fd check runs after stat on every POSIX system, so the file grows there:
+            // through lsof on macOS, through the fd link elsewhere.
+            const realLsof = lsofFdPath.lsofNameForFd;
+            const lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockImplementation(async (fd) => {
+                grow();
+                return realLsof(fd);
+            });
             realpathImpl = async (p: fs.PathLike) => {
-                if (/^\/proc\/self\/fd\//.test(p as string)) {
-                    fs.appendFileSync(file, 'g'.repeat(10 * 1024));
+                if (/^\/(proc\/self|dev)\/fd\//.test(p as string)) {
+                    grow();
                 }
                 return realFsp.realpath(p as string);
             };
-            Object.defineProperty(process, 'platform', { ...originalPlatform, value: 'linux' });
-            const { prompt } = await readOne(file, 'file', 'contentBlock');
-            expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+            try {
+                const { prompt } = await readOne(file, 'file', 'contentBlock');
+                // Length first: a failing toContain would print the 10 MB prompt and choke the CI log.
+                expect(prompt.length).toBeLessThan(1024 * 1024);
+                expect(prompt).toContain('[Attachment skipped: file exceeds size limit]');
+            } finally {
+                lsofSpy.mockRestore();
+            }
         });
 
         posixOnly('reads without O_NOFOLLOW or an fd check on Windows', async () => {

@@ -15,10 +15,10 @@ jest.mock('../webview/chatServiceFactory', () => ({
 jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
 // Identity realpath keeps mention resolution off the disk; the attachment
-// reader's /proc fd check, and the on-disk workspace roots of the mention tests, need the real one.
+// reader's fd check, and the on-disk workspace roots of the mention tests, need the real one.
 jest.mock('fs', () => {
     const actual = jest.requireActual('fs');
-    const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/tmp/claw-roots-');
+    const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/') || p.includes('claw-roots-');
     const realpath = async (p: string): Promise<string> => needsDisk(p) ? actual.promises.realpath(p) : p;
     return { ...actual, promises: { ...actual.promises, realpath } };
 });
@@ -29,6 +29,7 @@ import type { GatewayChatService, GatewaySend } from '../core/gatewayChatService
 import * as viewMessaging from '../webview/viewMessaging';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
 import { CANONICAL_MAIN } from './helpers/gatewayV4';
+import { makeTempDir, TEMP_ROOT } from './helpers/tempDir';
 
 type Posted = Record<string, unknown>;
 type ThreadState = {
@@ -132,8 +133,8 @@ function lastMessage(webview: FakeWebview, threadId: string): Record<string, unk
 }
 
 function withTempFile(name: string, body: string): { dir: string; file: string } {
-    const dir = actualFs.mkdtempSync('/tmp/claw-send-');
-    const file = `${dir}/${name}`;
+    const dir = makeTempDir('claw-send-');
+    const file = path.join(dir, name);
     actualFs.writeFileSync(file, body);
     return { dir, file };
 }
@@ -518,7 +519,7 @@ describe('ChatViewProvider send lifecycle', () => {
             try {
                 const webview = makeProvider();
                 mockResolve.mockResolvedValue(acpxChoice());
-                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file(TEMP_ROOT) }];
                 await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
 
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
@@ -978,6 +979,8 @@ describe('ChatViewProvider send lifecycle', () => {
 
     describe('attachment resolution', () => {
         type ReadCall = Parameters<typeof viewMessaging.readAttachments>;
+        // A mention resolves against the workspace root, which gains a drive letter on Windows.
+        const workFile = path.resolve('/work/a.ts');
 
         function spyOnReads(): jest.SpyInstance<ReturnType<typeof viewMessaging.readAttachments>, ReadCall> {
             return jest.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
@@ -990,7 +993,7 @@ describe('ChatViewProvider send lifecycle', () => {
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @a.ts#L2-3' });
             await flush();
 
-            expect(reads.mock.calls[0][0]).toEqual([{ name: 'a.ts', path: '/work/a.ts', type: 'file', lineStart: 2, lineEnd: 3 }]);
+            expect(reads.mock.calls[0][0]).toEqual([{ name: 'a.ts', path: workFile, type: 'file', lineStart: 2, lineEnd: 3 }]);
             expect(gatewayPrompts()).toEqual(['attached\n\nsee @a.ts#L2-3']);
         });
 
@@ -1013,12 +1016,12 @@ describe('ChatViewProvider send lifecycle', () => {
         it('sends a file both attached and mentioned only once', async () => {
             const webview = makeProvider();
             const reads = spyOnReads();
-            await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/work/a.ts' });
+            await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: workFile });
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @a.ts' });
             await flush();
 
-            expect(reads.mock.calls[0][0].map(a => a.path)).toEqual(['/work/a.ts']);
+            expect(reads.mock.calls[0][0].map(a => a.path)).toEqual([workFile]);
         });
 
         it('ignores a mention outside the workspace', async () => {
@@ -1042,7 +1045,7 @@ describe('ChatViewProvider send lifecycle', () => {
                 update: async () => undefined,
             };
             getConfiguration.mockImplementation(() => config);
-            (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = { document: { uri: vscode.Uri.file('/work/a.ts') } };
+            (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = { document: { uri: vscode.Uri.file(workFile) } };
             try {
                 const webview = makeProvider();
                 const reads = spyOnReads();
@@ -1050,7 +1053,7 @@ describe('ChatViewProvider send lifecycle', () => {
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @a.ts' });
                 await flush();
 
-                expect(reads.mock.calls[0][0].map(a => a.path)).toEqual(['/work/a.ts']);
+                expect(reads.mock.calls[0][0].map(a => a.path)).toEqual([workFile]);
             } finally {
                 getConfiguration.mockImplementation(original);
                 (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = undefined;
@@ -1524,14 +1527,14 @@ describe('ChatViewProvider send lifecycle', () => {
         });
 
         it('sends a diff far past the old output buffer marked truncated, not as no diff', async () => {
-            const dir = actualFs.mkdtempSync('/tmp/claw-git-');
+            const dir = makeTempDir('claw-git-');
             try {
                 const git = (...args: string[]): void => { jest.requireActual<typeof import('child_process')>('child_process').execFileSync('git', args, { cwd: dir }); };
                 git('init', '-q');
-                actualFs.writeFileSync(`${dir}/big.txt`, 'start\n');
+                actualFs.writeFileSync(path.join(dir, 'big.txt'), 'start\n');
                 git('add', 'big.txt');
                 git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'init');
-                actualFs.writeFileSync(`${dir}/big.txt`, 'changed line\n'.repeat(50000));
+                actualFs.writeFileSync(path.join(dir, 'big.txt'), 'changed line\n'.repeat(50000));
                 (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file(dir) }];
                 const webview = makeProvider();
 
@@ -1540,7 +1543,9 @@ describe('ChatViewProvider send lifecycle', () => {
                 expect(gatewayPrompts()[0]).toContain('truncated="first 32768 bytes kept"');
                 expect(gatewayPrompts()[0]).toContain('changed line');
             } finally {
-                actualFs.rmSync(dir, { recursive: true, force: true });
+                // On Windows the async rm clears git's read-only object flag (rmSync fails with EPERM),
+                // and the retries wait out the killed git diff that still holds the dir as its cwd.
+                await actualFs.promises.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
             }
         });
 
@@ -1696,16 +1701,16 @@ describe('ChatViewProvider send lifecycle', () => {
             const reads = (): jest.SpyInstance => jest.spyOn(viewMessaging, 'readAttachments')
                 .mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
             const files = (...relative: string[]): void => relative.forEach(file => {
-                actualFs.mkdirSync(path.dirname(`${base}/${file}`), { recursive: true });
-                actualFs.writeFileSync(`${base}/${file}`, 'x');
+                actualFs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
+                actualFs.writeFileSync(path.join(base, file), 'x');
             });
             const roots = (...names: string[]): void => {
                 (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders =
-                    names.map(name => ({ name, uri: vscode.Uri.file(`${base}/${name}`) }));
+                    names.map(name => ({ name, uri: vscode.Uri.file(path.join(base, name)) }));
             };
 
             beforeEach(() => {
-                base = actualFs.mkdtempSync('/tmp/claw-roots-');
+                base = makeTempDir('claw-roots-');
             });
 
             afterEach(() => {
@@ -1720,7 +1725,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @lib/util.ts' });
 
-                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/lib/util.ts`]);
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([path.join(base, 'lib', 'util.ts')]);
             });
 
             it('prefers a path under the working folder over a folder-name prefix', async () => {
@@ -1731,7 +1736,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @lib/util.ts' });
 
-                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/app/lib/util.ts`]);
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([path.join(base, 'app', 'lib', 'util.ts')]);
             });
 
             it('never reads a single root\'s name as a folder prefix', async () => {
@@ -1742,7 +1747,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
                 await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @pkg/README.md' });
 
-                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([`${base}/pkg/pkg/README.md`]);
+                expect(read.mock.calls[0][0].map((a: { path: string }) => a.path)).toEqual([path.join(base, 'pkg', 'pkg', 'README.md')]);
             });
         });
 

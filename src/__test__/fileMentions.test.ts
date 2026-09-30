@@ -124,7 +124,8 @@ describe('fileMentions', () => {
     });
 
     describe('mention path scoping', () => {
-        const cwd = '/workspace/project';
+        // Resolved, so the root carries a drive letter on Windows like the candidates do.
+        const cwd = path.resolve('/workspace/project');
 
         it('resolves relative paths within the workspace', () => {
             const resolved = path.resolve(cwd, parseFileMentions('@src/a.ts')[0].path);

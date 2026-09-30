@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import type { ChatEvent } from '../chat/ChatService';
 
 const mockResolve = jest.fn();
@@ -17,10 +18,13 @@ jest.mock('../webview/chatServiceFactory', () => ({
 
 jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
 
-// Identity realpath keeps sends free of real disk I/O, so flush() is deterministic.
+// Identity realpath keeps sends free of real disk I/O, so flush() is deterministic; the
+// attachment reader's fd check needs the real one.
 jest.mock('fs', () => {
     const actual = jest.requireActual('fs');
-    return { ...actual, promises: { ...actual.promises, realpath: async (p: string) => p } };
+    const isFdLink = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/');
+    const realpath = async (p: string): Promise<string> => isFdLink(p) ? actual.promises.realpath(p) : p;
+    return { ...actual, promises: { ...actual.promises, realpath } };
 });
 
 import { ChatViewProvider } from '../webview/ChatViewProvider';
@@ -28,6 +32,7 @@ import type { GatewayChatService } from '../core/gatewayChatService';
 import { COLD_SESSION_PLACEHOLDER } from '../core/agentPicker';
 import { renderMarkdown } from '../webview/viewMessaging';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
+import { makeTempDir, TEMP_ROOT } from './helpers/tempDir';
 
 type Posted = Record<string, unknown>;
 type ThreadState = {
@@ -449,12 +454,12 @@ describe('ChatViewProvider', () => {
 
     describe('sending with attachments', () => {
         it('sends the prompt once the attachments are read', async () => {
-            const dir = jest.requireActual<typeof import('fs')>('fs').mkdtempSync('/tmp/claw-send-');
-            const file = `${dir}/note.txt`;
+            const dir = makeTempDir('claw-send-');
+            const file = path.join(dir, 'note.txt');
             jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
             try {
                 const { sidebar } = makeProvider();
-                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
+                (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file(TEMP_ROOT) }];
                 await sidebar.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: [file] });
                 await flush();
 
@@ -464,7 +469,7 @@ describe('ChatViewProvider', () => {
                 const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
                 expect(sent).toHaveLength(1);
                 expect(sent[0]).toContain('with attachment');
-                expect(sent[0]).toContain(file);
+                expect(sent[0]).toContain('attached body');
             } finally {
                 jest.requireActual<typeof import('fs')>('fs').rmSync(dir, { recursive: true, force: true });
             }
