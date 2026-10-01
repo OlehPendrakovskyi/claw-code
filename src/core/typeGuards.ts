@@ -39,9 +39,10 @@ export function asNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** Return `value` when it is a non-empty string, `fallback` otherwise. */
+/** Return `value` when it is a non-empty string, `fallback` otherwise.
+ *  @deprecated Use {@link readStringOr} instead — same contract, canonical name. */
 export function asString(value: unknown, fallback: string): string {
-  return asNonEmptyString(value) ?? fallback;
+  return readStringOr(value, fallback);
 }
 
 /** A non-empty string, else null. */
@@ -49,7 +50,7 @@ export function readString(value: unknown): string | null {
   return asNonEmptyString(value);
 }
 
-/** `value` when it is a non-empty string, `fallback` otherwise. */
+/** Canonical non-empty-string-with-fallback read; `asString` is a deprecated alias. */
 export function readStringOr(value: unknown, fallback: string): string {
   return readString(value) ?? fallback;
 }

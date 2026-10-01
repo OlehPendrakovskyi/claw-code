@@ -247,8 +247,9 @@ export type ApprovalResolution = { id: string; subject: ApprovalSubject; decisio
 export type QuestionReply = { id: string; answers: QuestionAnswers | null };
 
 /** The run triple every run event carries (runStatus, runDelta, runFinal, runAborted,
- *  runError, runSideResult, toolUpdate). Owned here so v4 `ChatEventBase` and the
- *  events reader share one shape. */
+ *  runError, runSideResult). Owned here so v4 `ChatEventBase` and the events reader
+ *  share one shape. `toolUpdate` is deliberately NOT covered: its `sessionKey` is
+ *  `string | null` and the agent-event reader parses its fields separately. */
 export type ChatRunFields = { runId: string; sessionKey: string; seq: number };
 
 /** Everything the gateway pushes that the chat service reacts to. */
