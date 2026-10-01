@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getDashboardUrl } from '../config';
 import { OPENCLAW_NPM_INSTALL } from '../../core/setupOptions';
+import { copyToClipboard } from './shared';
 
 const OPENCLAW_DOCS_URL = 'https://docs.openclaw.ai/';
 const OPENCLAW_ONBOARD_DOCS_URL = 'https://docs.openclaw.ai/start/wizard';
@@ -9,8 +10,7 @@ const OPENCLAW_SECURITY_DOCS_URL = 'https://docs.openclaw.ai/gateway/security';
 
 /** Copy the npm install command to the clipboard. */
 export async function copyInstallCommand() {
-    await vscode.env.clipboard.writeText(OPENCLAW_NPM_INSTALL);
-    vscode.window.showInformationMessage('Install command copied to clipboard.');
+    await copyToClipboard(OPENCLAW_NPM_INSTALL, 'Install command copied to clipboard.');
 }
 
 /** Open the OpenClaw documentation site. */

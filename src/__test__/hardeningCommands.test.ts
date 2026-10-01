@@ -1,4 +1,7 @@
-jest.mock('../vscode/commands/shared', () => ({ execFileAsync: jest.fn() }));
+jest.mock('../vscode/commands/shared', () => ({
+    execFileAsync: jest.fn(),
+    isOpenClawExecutable: jest.fn((executable: string) => executable === 'openclaw' || executable === 'openclaw.exe')
+}));
 jest.mock('../vscode/commands/setup', () => ({ isCommandAvailable: jest.fn(async () => true), showMissingNodeMessage: jest.fn(), runSetupFlow: jest.fn() }));
 jest.mock('../vscode/commands/terminals', () => ({ getHardeningTerminal: jest.fn(), getOverviewProvider: jest.fn(() => undefined) }));
 jest.mock('../vscode/config', () => ({ openHardeningSettings: jest.fn(), getDashboardUrl: jest.fn(() => 'http://127.0.0.1:18789') }));
