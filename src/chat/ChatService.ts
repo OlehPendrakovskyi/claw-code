@@ -7,6 +7,7 @@ import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 import { asNonEmptyString, asRecord, parseJsonRecord } from '../core/typeGuards';
+import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
@@ -76,11 +77,8 @@ function requestKey(id: unknown): string | undefined {
     return typeof id === 'number' && Number.isFinite(id) ? `n:${id}` : undefined;
 }
 
-export type UsageInfo = {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-};
+/** @deprecated Neutral alias — the usage shape is `TokenUsage` (gatewayProtocol/model). Kept for external importers. */
+export type UsageInfo = TokenUsage;
 
 export type ChatEvent =
     | { type: 'text'; text: string }
@@ -88,7 +86,7 @@ export type ChatEvent =
     | { type: 'textReplace'; text: string }
     | { type: 'toolCall'; title: string; status: string; details: string; id?: string }
     /** One turn's token counts, for the per-turn usage readout. */
-    | { type: 'usage'; usage: UsageInfo }
+    | { type: 'usage'; usage: TokenUsage }
     /** How full the agent's context window is now; `windowTokens` is its size when known. */
     | { type: 'contextUsage'; usedTokens: number; windowTokens?: number }
     /** A status line for the user, never part of the assistant's answer. */

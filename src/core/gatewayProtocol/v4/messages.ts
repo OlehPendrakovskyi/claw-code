@@ -6,9 +6,11 @@
 import type { SessionListPage, SessionSummary, TokenUsage, TranscriptMessage, TranscriptRole } from '../model';
 import { TRUNCATION_MARKER } from './schema';
 import {
+  firstFinite,
   isRecord,
   readArray,
   readFiniteNumber,
+  readNestedString,
   readNonNegativeInteger,
   readPositiveInteger,
   readRecord,
@@ -48,11 +50,7 @@ export function displayText(message: unknown): string {
 }
 
 function firstCount(fields: Readonly<Record<string, unknown>>, names: readonly string[]): number | null {
-  for (const name of names) {
-    const count = readFiniteNumber(fields[name]);
-    if (count !== null && count >= 0) return count;
-  }
-  return null;
+  return firstFinite(fields, names);
 }
 
 /** Token usage from any of the field spellings the gateway passes through; null when it has none. */
@@ -117,7 +115,7 @@ function readSessionRow(value: unknown): SessionSummary | null {
   if (!key) {
     return null;
   }
-  const placementState = readString(readRecord(row.placement).state);
+  const placementState = readNestedString(row, 'placement', 'state');
   const activeRunIds = readArray(row.activeRunIds);
   return {
     key,

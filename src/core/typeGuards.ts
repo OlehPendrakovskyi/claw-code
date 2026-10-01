@@ -39,14 +39,20 @@ export function asNonEmptyString(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** Return `value` when it is a non-empty string, `fallback` otherwise. */
+/** Return `value` when it is a non-empty string, `fallback` otherwise.
+ *  @deprecated Use {@link readStringOr} instead — same contract, canonical name. */
 export function asString(value: unknown, fallback: string): string {
-  return asNonEmptyString(value) ?? fallback;
+  return readStringOr(value, fallback);
 }
 
 /** A non-empty string, else null. */
 export function readString(value: unknown): string | null {
   return asNonEmptyString(value);
+}
+
+/** Canonical non-empty-string-with-fallback read; `asString` is a deprecated alias. */
+export function readStringOr(value: unknown, fallback: string): string {
+  return readString(value) ?? fallback;
 }
 
 /** Any string, the empty one included, else null. */
@@ -81,6 +87,20 @@ export function readFiniteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * The first finite, non-negative number among `names` on `record`; null when
+ * there is none. Iterates alias spellings the gateway uses for one value
+ * (e.g. `input` / `inputTokens` / `prompt_tokens`). Aggregation stays with the
+ * caller: this only picks the first candidate, it does not combine them.
+ */
+export function firstFinite(record: Readonly<Record<string, unknown>>, names: readonly string[]): number | null {
+  for (const name of names) {
+    const value = readFiniteNumber(record[name]);
+    if (value !== null && value >= 0) return value;
+  }
+  return null;
+}
+
 export function readDelayMs(value: unknown, maxMs = MAX_TIMER_DELAY_MS): number | undefined {
   const delay = readFiniteNumber(value);
   return delay !== null && delay >= 0 ? Math.min(delay, maxMs) : undefined;
@@ -97,6 +117,12 @@ export function readStrings(value: unknown): string[] {
 /** The value as a record when it is a non-array object, `undefined` otherwise (arrays included). */
 export function asRecord(value: unknown): Record<string, unknown> | undefined {
   return isRecord(value) ? (value as Record<string, unknown>) : undefined;
+}
+
+/** `value[key]` read as a non-empty string, or `value[key][subKey]` when `subKey` is given; null when a step is not a record or the field is absent. */
+export function readNestedString(value: unknown, key: string, subKey?: string): string | null {
+  const nested = readRecord(value)[key];
+  return readString(subKey === undefined ? nested : readRecord(nested)[subKey]);
 }
 
 /**

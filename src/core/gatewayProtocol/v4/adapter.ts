@@ -30,8 +30,9 @@ import {
   readPromptAccess,
 } from './prompts';
 import { readSessionList, readSessionMessage, readTranscript, toTranscriptMessage } from './messages';
-import { MAX_TIMER_DELAY_MS, readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStrings } from './readers';
+import { MAX_TIMER_DELAY_MS, readNestedString, readNonNegativeInteger, readPositiveInteger, readRecord, readString, readStringOr, readStrings } from './readers';
 import { isImageMime } from '../../media';
+import { UNKNOWN } from '../../constants';
 import type {
   ChatAbortParams,
   ChatAttachment,
@@ -121,9 +122,8 @@ function readFeatures(features: unknown): ConnectionFeatures {
 
 /** The alias the gateway resolves to its default agent's main session (hello-ok.snapshot.sessionDefaults). */
 function readSessionAliases(snapshot: unknown): ReadonlyMap<string, string> {
-  const defaults = readRecord(readRecord(snapshot).sessionDefaults);
-  const alias = readString(defaults.mainKey);
-  const canonical = readString(defaults.mainSessionKey);
+  const alias = readNestedString(snapshot, 'sessionDefaults', 'mainKey');
+  const canonical = readNestedString(snapshot, 'sessionDefaults', 'mainSessionKey');
   return new Map(alias && canonical && alias !== canonical ? [[alias, canonical]] : []);
 }
 
@@ -176,16 +176,25 @@ function decodeEvent(frame: Readonly<Record<string, unknown>>): InboundFrame | n
   return { type: 'event', connectionSeq: readNonNegativeInteger(frame.seq), event: readEvent(event, frame.payload) };
 }
 
+/** Run state a history read reports: the run still executing, and the run ids the gateway names
+ *  active (null when it did not say). Shared by the tail and delta readers; the difference
+ *  between the two reads (message shape, cursor requirement, `olderPageOffset`) stays local. */
+function readSessionRunInfo(fields: Readonly<Record<string, unknown>>): { inFlightRunId: string | null; activeRunIds: readonly string[] | null } {
+  const activeRunIds = readRecord(fields.sessionInfo).activeRunIds;
+  return {
+    inFlightRunId: readNestedString(fields, 'inFlightRun', 'runId'),
+    activeRunIds: Array.isArray(activeRunIds) ? readStrings(activeRunIds) : null,
+  };
+}
+
 function readTailHistory(fields: Readonly<Record<string, unknown>>): HistoryRead | null {
   if (!Array.isArray(fields.messages)) {
     return null;
   }
-  const sessionInfo = readRecord(fields.sessionInfo);
   return {
     messages: readTranscript(fields.messages, (row) => toTranscriptMessage(row)),
     cursor: readString(fields.deltaCursor),
-    inFlightRunId: readString(readRecord(fields.inFlightRun).runId),
-    activeRunIds: Array.isArray(sessionInfo.activeRunIds) ? readStrings(sessionInfo.activeRunIds) : null,
+    ...readSessionRunInfo(fields),
     olderPageOffset: fields.hasMore === true ? readNonNegativeInteger(fields.nextOffset) : null,
   };
 }
@@ -195,12 +204,10 @@ function readDeltaHistory(fields: Readonly<Record<string, unknown>>): HistoryRea
   if (!cursor || !Array.isArray(fields.messages)) {
     return null;
   }
-  const sessionInfo = readRecord(fields.sessionInfo);
   return {
     messages: readTranscript(fields.messages, (row) => readSessionMessage(row)?.message ?? null),
     cursor,
-    inFlightRunId: readString(readRecord(fields.inFlightRun).runId),
-    activeRunIds: Array.isArray(sessionInfo.activeRunIds) ? readStrings(sessionInfo.activeRunIds) : null,
+    ...readSessionRunInfo(fields),
     olderPageOffset: null,
   };
 }
@@ -263,10 +270,10 @@ export const v4Adapter: GatewayProtocolAdapter = {
     const auth = readRecord(hello.auth);
     return {
       protocolVersion,
-      serverVersion: readString(readRecord(hello.server).version) ?? 'unknown',
+      serverVersion: readStringOr(readNestedString(hello, 'server', 'version'), UNKNOWN),
       limits: readLimits(hello.policy),
       features: readFeatures(hello.features),
-      role: readString(auth.role) ?? 'unknown',
+      role: readStringOr(readString(auth.role), UNKNOWN),
       scopes: readStrings(auth.scopes),
       sessionAliases: readSessionAliases(hello.snapshot),
       deviceToken: readString(auth.deviceToken),
@@ -305,7 +312,7 @@ export const v4Adapter: GatewayProtocolAdapter = {
   },
 
   parseSendAccepted(payload: unknown): SendAccepted | null {
-    const runId = readString(readRecord(payload).runId);
+    const runId = readNestedString(payload, 'runId');
     return runId ? { runId } : null;
   },
 
