@@ -12,6 +12,8 @@
  * Test fixtures: src/__test__/fixtures/openclaw-protocol-v4/.
  */
 
+import type { ApprovalDecision, ChatRunFields } from '../model';
+
 export const PROTOCOL_VERSION = 4;
 
 /** MAX_PREAUTH_PAYLOAD_BYTES: larger frames are dropped before the handshake completes. */
@@ -195,6 +197,8 @@ export type ChatAbortParams = { sessionKey: string; runId?: string };
 export type ChatHistoryParams = { sessionKey: string; cursor?: string; offset?: number; messageId?: string; limit?: number; maxChars?: number };
 
 /** A transcript row as display-projected by the gateway (chat-display-projection.core.ts). */
+/** The gateway's display projection of a transcript row; parsed as untrusted input by
+ *  `displayText` / `toTranscriptMessage` in ./messages.ts. */
 export type DisplayMessage = {
   role: string;
   content?: string | DisplayContentBlock[];
@@ -229,7 +233,7 @@ export type ChatHistoryDeltaResult = {
 /** ChatHistoryResetResultSchema: the cursor is unusable; read a fresh tail. */
 export type ChatHistoryResetResult = { kind: 'reset' };
 
-type ChatEventBase = { runId: string; sessionKey: string; agentId?: string; seq: number };
+type ChatEventBase = ChatRunFields & { agentId?: string };
 
 /** ChatEventSchema union. `status` events only report startup phases. */
 export type ChatEvent =
@@ -273,6 +277,8 @@ export type SessionsMessagesSubscribeResult = { subscribed: boolean; key: string
 
 export type SessionsListParams = { limit?: number; offset?: number };
 
+/** Zero importers: the runtime reader is the neutral `readSessionRow` in ./messages.ts, which
+ *  returns `SessionSummary`; this type records the raw wire row shape it parses. */
 export type SessionRow = {
   key: string;
   agentId?: string;
@@ -286,6 +292,7 @@ export type SessionRow = {
   placement?: { state: string };
 };
 
+/** Zero importers: the neutral `readSessionList` in ./messages.ts returns `SessionListPage`. */
 export type SessionsListResult = { sessions: SessionRow[]; hasMore?: boolean; nextOffset?: number | null };
 
 /** chat.side_result payload (chat-broadcast.ts broadcastSideResult): a /btw answer beside the run. */
@@ -309,8 +316,8 @@ export type SessionMessageEvent = {
 /* approval-shared.ts, questions.ts)                                 */
 /* ---------------------------------------------------------------- */
 
-/** ApprovalDecisionSchema; `deny` is always allowed. */
-export type ApprovalDecisionValue = 'allow-once' | 'allow-always' | 'deny';
+/** ApprovalDecisionSchema; `deny` is always allowed. Alias of the neutral model's `ApprovalDecision`. */
+export type ApprovalDecisionValue = ApprovalDecision;
 
 /** The sanitized exec request record the gateway broadcasts (exec-approval.ts `request`). */
 export type ExecApprovalRequest = {

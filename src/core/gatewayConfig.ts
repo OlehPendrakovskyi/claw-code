@@ -14,7 +14,7 @@ import { log } from '../vscode/commands/shared';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
 import { errorMessage } from './errors';
 import { withTimeout } from './async';
-import { exportDeviceIdentity, generateDeviceIdentity, importDeviceIdentity } from './gatewayProtocol/deviceIdentity';
+import { exportDeviceIdentity, generateDeviceIdentity, importDeviceIdentity, isStoredDeviceToken } from './gatewayProtocol/deviceIdentity';
 import type { ProtocolSetting } from './gatewayProtocol/registry';
 import { isProtocolSetting } from './gatewayProtocol/registry';
 
@@ -414,13 +414,6 @@ function serializeDeviceSecrets<T>(task: () => Promise<T>): Promise<T> {
 }
 
 type DeviceTokenMap = Record<string, StoredDeviceToken>;
-
-function isStoredDeviceToken(value: unknown): value is StoredDeviceToken {
-  if (typeof value !== 'object' || value === null) return false;
-  const { deviceId, role, token, scopes } = value as Record<string, unknown>;
-  const hasStrings = typeof deviceId === 'string' && typeof role === 'string' && typeof token === 'string' && token !== '';
-  return hasStrings && Array.isArray(scopes) && scopes.every((scope) => typeof scope === 'string');
-}
 
 function parseDeviceTokens(json: string | undefined): DeviceTokenMap {
   try {

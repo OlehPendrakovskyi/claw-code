@@ -4,7 +4,7 @@
  * ./prompts.ts) reduced to neutral inbound events.
  */
 
-import type { InboundEvent, ToolStatus } from '../model';
+import type { ChatRunFields, InboundEvent, ToolStatus } from '../model';
 import { displayText, readSessionMessage, readUsage } from './messages';
 import { readApprovalWait, readPromptEvent } from './prompts';
 import { describeJson, readDelayMs, readNonNegativeInteger, readRecord, readString, readText } from './readers';
@@ -18,7 +18,7 @@ const AGENT_TOOL_STREAM = 'tool';
 /** Longest a restart announcement may hold back reconnecting. */
 const MAX_RESTART_WAIT_MS = 5 * 60_000;
 
-type RunFields = { runId: string; sessionKey: string; seq: number };
+type RunFields = ChatRunFields;
 
 function readRunFields(payload: Readonly<Record<string, unknown>>): RunFields | null {
   const runId = readString(payload.runId);

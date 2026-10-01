@@ -29,6 +29,14 @@ export type DeviceIdentity = {
 /** A token a gateway issued this device, with the grant it came with. */
 export type StoredDeviceToken = { deviceId: string; role: string; token: string; scopes: readonly string[] };
 
+/** Narrow an untrusted value (a parsed SecretStorage map entry) to a `StoredDeviceToken`. */
+export function isStoredDeviceToken(value: unknown): value is StoredDeviceToken {
+  if (typeof value !== 'object' || value === null) return false;
+  const { deviceId, role, token, scopes } = value as Record<string, unknown>;
+  const hasStrings = typeof deviceId === 'string' && typeof role === 'string' && typeof token === 'string' && token !== '';
+  return hasStrings && Array.isArray(scopes) && scopes.every((scope) => typeof scope === 'string');
+}
+
 /** Where the identity and the tokens gateways issued it are kept. `gateway` names one gateway (its URL origin). */
 export interface DeviceCredentialStore {
   /** This client's identity, created and persisted on first use. */

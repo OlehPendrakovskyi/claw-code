@@ -11,12 +11,12 @@ import { decodeLsofName, lsofNameForFd, lsofShowsUnambiguously } from './lsofFdP
 const openNonBlock = process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK;
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
-import { ChatService, PROMPT_MAX_BYTES, UsageInfo } from '../chat/ChatService';
+import { ChatService, PROMPT_MAX_BYTES } from '../chat/ChatService';
 import type { GatewayChatService } from '../core/gatewayChatService';
 import { ConversationTurn, EditorContext, ContextType, frameTaggedBlock } from './slashCommands';
 import { handshakeAdapter, resolveProtocolSetting } from '../core/gatewayProtocol/registry';
 import type { GatewayProtocolAdapter } from '../core/gatewayProtocol/adapter';
-import type { SendAttachment } from '../core/gatewayProtocol/model';
+import type { SendAttachment, TokenUsage } from '../core/gatewayProtocol/model';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 
 /** Shared output channel for chat panel logging. */
@@ -82,7 +82,7 @@ export type ChatThreadState = {
     source: string;
     contextTokens: number;
     contextMax: number;
-    lastUsage: UsageInfo | null;
+    lastUsage: TokenUsage | null;
     service: ChatService;
     /** Backend transport of the most recent send (legacy or gateway); lifecycle actions target it. */
     transportBackend?: ChatService | GatewayChatService;
@@ -125,7 +125,7 @@ export type ThreadSnapshot = {
     source: string;
     contextTokens: number;
     contextMax: number;
-    lastUsage: UsageInfo | null;
+    lastUsage: TokenUsage | null;
 };
 
 /** Post a message to every live webview target. */
