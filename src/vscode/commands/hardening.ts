@@ -26,7 +26,7 @@ import { splitHardeningCommand } from '../../core/hardeningCommand';
 import { resolveCommandLaunch } from '../../core/cliLauncher';
 import { envWithAbsolutePath } from '../../core/searchPath';
 import { openHardeningSettings, getDashboardUrl } from '../config';
-import { execFileAsync } from './shared';
+import { execFileAsync, isOpenClawExecutable } from './shared';
 import { errorMessage } from '../../core/errors';
 import { getHardeningTerminal, getOverviewProvider } from './terminals';
 import { isCommandAvailable, showMissingNodeMessage, runSetupFlow } from './setup';
@@ -144,42 +144,62 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
 
 /** Toggle a tool entry's enabled flag in the config. */
 export async function toggleToolEntry(tool: ToolEntry) {
-    const { config, error, path: configPath } = await loadOpenClawConfigRecord();
-    if (!config) {
-        vscode.window.showErrorMessage(error ?? 'OpenClaw config not found.');
-        return;
-    }
-    const parentInfo = getParentAtPath(config, tool.path);
-    if (!parentInfo) {
-        vscode.window.showErrorMessage(`Unable to locate tool "${tool.label}" in config.`);
-        return;
-    }
-    const { parent, key } = parentInfo;
-    const toggle = computeToolToggle(readEntryAtPath(parent, key));
-    if (!toggle.ok) {
-        vscode.window.showErrorMessage(
-            toggle.reason === 'missing'
-                ? `Unable to locate tool "${tool.label}" in config.`
-                : `Tool "${tool.label}" has an unsupported format.`
-        );
-        return;
-    }
+    await withToolEntry(tool, (parent, key) => {
+        const toggle = computeToolToggle(readEntryAtPath(parent, key));
+        if (!toggle.ok) {
+            return {
+                error:
+                    toggle.reason === 'missing'
+                        ? `Unable to locate tool "${tool.label}" in config.`
+                        : `Tool "${tool.label}" has an unsupported format.`
+            };
+        }
 
-    if (Array.isArray(parent) && typeof key === 'number') {
-        parent[key] = toggle.nextEntry;
-    } else if (isRecord(parent) && typeof key === 'string') {
-        parent[key] = toggle.nextEntry;
-    }
+        if (Array.isArray(parent) && typeof key === 'number') {
+            parent[key] = toggle.nextEntry;
+        } else if (isRecord(parent) && typeof key === 'string') {
+            parent[key] = toggle.nextEntry;
+        }
 
-    await writeOpenClawConfigRecord(configPath, config);
-    getOverviewProvider()?.refreshTools();
-    vscode.window.showInformationMessage(
-        `${toggle.enabled ? 'Enabled' : 'Disabled'} tool "${tool.label}".`
-    );
+        return { write: true, message: `${toggle.enabled ? 'Enabled' : 'Disabled'} tool "${tool.label}".` };
+    });
 }
 
 /** Uninstall a tool entry described in the config. */
 export async function uninstallToolEntry(tool: ToolEntry) {
+    await withToolEntry(tool, async (parent, key) => {
+        const action = await vscode.window.showWarningMessage(
+            `Remove "${tool.label}" from OpenClaw tools?`,
+            { modal: true },
+            'Remove'
+        );
+        if (action !== 'Remove') {
+            return { write: false };
+        }
+
+        if (Array.isArray(parent) && typeof key === 'number') {
+            parent.splice(key, 1);
+        } else if (isRecord(parent) && typeof key === 'string') {
+            delete parent[key];
+        }
+
+        return { write: true, message: `Removed tool "${tool.label}".` };
+    });
+}
+
+type ToolEntryMutation =
+    | { write: false }
+    | { write: true; message: string }
+    | { error: string };
+
+/** Resolve a tool entry in the config, run `mutate`, then persist and refresh on a successful write. */
+async function withToolEntry(
+    tool: ToolEntry,
+    mutate: (
+        parent: Record<string, unknown> | unknown[],
+        key: string | number
+    ) => ToolEntryMutation | Promise<ToolEntryMutation>
+) {
     const { config, error, path: configPath } = await loadOpenClawConfigRecord();
     if (!config) {
         vscode.window.showErrorMessage(error ?? 'OpenClaw config not found.');
@@ -191,25 +211,18 @@ export async function uninstallToolEntry(tool: ToolEntry) {
         return;
     }
 
-    const action = await vscode.window.showWarningMessage(
-        `Remove "${tool.label}" from OpenClaw tools?`,
-        { modal: true },
-        'Remove'
-    );
-    if (action !== 'Remove') {
+    const result = await mutate(parentInfo.parent, parentInfo.key);
+    if ('error' in result) {
+        vscode.window.showErrorMessage(result.error);
         return;
     }
-
-    const { parent, key } = parentInfo;
-    if (Array.isArray(parent) && typeof key === 'number') {
-        parent.splice(key, 1);
-    } else if (isRecord(parent) && typeof key === 'string') {
-        delete parent[key];
+    if (!result.write) {
+        return;
     }
 
     await writeOpenClawConfigRecord(configPath, config);
     getOverviewProvider()?.refreshTools();
-    vscode.window.showInformationMessage(`Removed tool "${tool.label}".`);
+    vscode.window.showInformationMessage(result.message);
 }
 
 /** Ensure the hardening command is usable, prompting for setup when missing. */
@@ -237,7 +250,7 @@ export async function ensureHardeningCommandReady(): Promise<{ prefix: string; m
         return null;
     }
 
-    if (executable === 'openclaw' || executable === 'openclaw.exe') {
+    if (isOpenClawExecutable(executable)) {
         const hasNode = await isCommandAvailable('node');
         if (!hasNode) {
             await showMissingNodeMessage();

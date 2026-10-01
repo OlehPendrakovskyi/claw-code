@@ -13,7 +13,7 @@ import {
 } from '../../core/setupOptions';
 import { setStatus } from '../statusbar';
 import { openOpenClawConfig, openAuthProfiles, openSettings } from '../config';
-import { log, execFileAsync, type QuickPickOption } from './shared';
+import { log, execFileAsync, copyToClipboard, isOpenClawExecutable, type QuickPickOption } from './shared';
 import { getSetupTerminal, getOpenClawTerminal } from './terminals';
 import { copyInstallCommand, openDocs, openOnboardDocs, openDashboard, openUpdateDocs, openNodeDocs } from './docs';
 
@@ -81,7 +81,7 @@ export async function connect() {
             command = updatedCommand;
             executable = command.split(/\s+/)[0];
         }
-        const needsNode = executable === 'openclaw' || executable === 'openclaw.exe';
+        const needsNode = isOpenClawExecutable(executable);
         if (needsNode) {
             const hasNode = await isCommandAvailable('node');
             if (!hasNode) {
@@ -99,24 +99,9 @@ export async function connect() {
                 await showLegacyMissingOpenClawMessage(legacyAvailable);
                 return;
             }
-            const action = await vscode.window.showErrorMessage(
-                `Command not found: ${executable}. Install OpenClaw or update OpenClaw: Command in settings.`,
-                'Install CLI',
-                'More options...'
+            await showInstallPrompt(
+                `Command not found: ${executable}. Install OpenClaw or update OpenClaw: Command in settings.`
             );
-
-            if (action === 'Install CLI') {
-                await runSetupFlow();
-            } else if (action === 'More options...') {
-                const pick = await showInstallMoreOptions();
-                if (pick === 'copy') {
-                    await copyInstallCommand();
-                } else if (pick === 'docs') {
-                    await openDocs();
-                } else if (pick === 'settings') {
-                    await openSettings();
-                }
-            }
             return;
         }
 
@@ -173,25 +158,10 @@ export async function runSetupFlow() {
 export async function runModelSetupWizard() {
     const hasOpenClaw = await isCommandAvailable('openclaw');
     if (!hasOpenClaw) {
-        const action = await vscode.window.showErrorMessage(
+        await showInstallPrompt(
             'OpenClaw CLI not found. Install it to run the Model Setup Wizard.',
-            'Install CLI',
-            'More options...',
-            'Cancel'
+            { withCancel: true }
         );
-
-        if (action === 'Install CLI') {
-            await runSetupFlow();
-        } else if (action === 'More options...') {
-            const pick = await showInstallMoreOptions();
-            if (pick === 'copy') {
-                await copyInstallCommand();
-            } else if (pick === 'docs') {
-                await openDocs();
-            } else if (pick === 'settings') {
-                await openSettings();
-            }
-        }
         return;
     }
 
@@ -263,8 +233,7 @@ async function runInstallCommand(command: string) {
     );
 
     if (decision === 'Copy command') {
-        await vscode.env.clipboard.writeText(command);
-        vscode.window.showInformationMessage('Install command copied to clipboard.');
+        await copyToClipboard(command, 'Install command copied to clipboard.');
         return;
     }
 
@@ -287,7 +256,7 @@ async function runSetupCommand(command: string) {
 /** Run a CLI command in a terminal after confirming availability. */
 export async function runCliInTerminal(command: string, message: string) {
     const executable = command.split(/\s+/)[0];
-    if (executable === 'openclaw' || executable === 'openclaw.exe') {
+    if (isOpenClawExecutable(executable)) {
         const hasNode = await isCommandAvailable('node');
         if (!hasNode) {
             await showMissingNodeMessage();
@@ -295,13 +264,9 @@ export async function runCliInTerminal(command: string, message: string) {
         }
         const available = await isCommandAvailable(executable);
         if (!available) {
-            const action = await vscode.window.showErrorMessage(
-                `Command not found: ${executable}. Install OpenClaw first.`,
-                'Install CLI'
-            );
-            if (action === 'Install CLI') {
-                await runSetupFlow();
-            }
+            await showInstallPrompt(`Command not found: ${executable}. Install OpenClaw first.`, {
+                showMoreOptions: false
+            });
             return;
         }
     }
@@ -468,8 +433,7 @@ export async function showMissingNodeMessage() {
     if (action === 'More options...') {
         const pick = await showNodeMoreOptions(installCommand);
         if (pick === 'copy' && installCommand) {
-            await vscode.env.clipboard.writeText(installCommand);
-            vscode.window.showInformationMessage('Node.js install command copied to clipboard.');
+            await copyToClipboard(installCommand, 'Node.js install command copied to clipboard.');
         } else if (pick === 'docs') {
             await openNodeDocs();
         }
@@ -503,18 +467,7 @@ async function handleLegacyMigration(command: string, legacyExecutable: string):
     }
 
     if (action === 'More options...') {
-        const pick = await showLegacyMoreOptions();
-        if (pick === 'updateDocs') {
-            await openUpdateDocs();
-        } else if (pick === 'copyInstall') {
-            await vscode.env.clipboard.writeText(OPENCLAW_INSTALL_SCRIPT);
-            vscode.window.showInformationMessage('Installer command copied to clipboard.');
-        } else if (pick === 'copyNpm') {
-            await vscode.env.clipboard.writeText(OPENCLAW_NPM_INSTALL);
-            vscode.window.showInformationMessage('npm update command copied to clipboard.');
-        } else if (pick === 'settings') {
-            await openSettings();
-        }
+        await handleLegacyMoreOptions();
         return null;
     }
 
@@ -543,18 +496,7 @@ async function showLegacyMissingOpenClawMessage(legacyExecutable: string) {
     }
 
     if (action === 'More options...') {
-        const pick = await showLegacyMoreOptions();
-        if (pick === 'updateDocs') {
-            await openUpdateDocs();
-        } else if (pick === 'copyInstall') {
-            await vscode.env.clipboard.writeText(OPENCLAW_INSTALL_SCRIPT);
-            vscode.window.showInformationMessage('Installer command copied to clipboard.');
-        } else if (pick === 'copyNpm') {
-            await vscode.env.clipboard.writeText(OPENCLAW_NPM_INSTALL);
-            vscode.window.showInformationMessage('npm update command copied to clipboard.');
-        } else if (pick === 'settings') {
-            await openSettings();
-        }
+        await handleLegacyMoreOptions();
     }
 }
 
@@ -590,4 +532,49 @@ async function showLegacyMoreOptions(): Promise<
     ];
     const pick = await vscode.window.showQuickPick(items, { placeHolder: 'More OpenClaw options' });
     return pick?.value;
+}
+
+type ShowInstallPromptOptions = { withCancel?: boolean; showMoreOptions?: boolean };
+
+/** Show the shared "Install CLI / More options" prompt and run the chosen install actions. */
+async function showInstallPrompt(message: string, options: ShowInstallPromptOptions = {}): Promise<void> {
+    const actions = ['Install CLI'];
+    if (options.showMoreOptions !== false) {
+        actions.push('More options...');
+    }
+    if (options.withCancel) {
+        actions.push('Cancel');
+    }
+
+    const action = await vscode.window.showErrorMessage(message, ...actions);
+
+    if (action === 'Install CLI') {
+        await runSetupFlow();
+        return;
+    }
+
+    if (action === 'More options...') {
+        const pick = await showInstallMoreOptions();
+        if (pick === 'copy') {
+            await copyInstallCommand();
+        } else if (pick === 'docs') {
+            await openDocs();
+        } else if (pick === 'settings') {
+            await openSettings();
+        }
+    }
+}
+
+/** Open the legacy-CLI "More options" picker and run the chosen action. */
+async function handleLegacyMoreOptions(): Promise<void> {
+    const pick = await showLegacyMoreOptions();
+    if (pick === 'updateDocs') {
+        await openUpdateDocs();
+    } else if (pick === 'copyInstall') {
+        await copyToClipboard(OPENCLAW_INSTALL_SCRIPT, 'Installer command copied to clipboard.');
+    } else if (pick === 'copyNpm') {
+        await copyToClipboard(OPENCLAW_NPM_INSTALL, 'npm update command copied to clipboard.');
+    } else if (pick === 'settings') {
+        await openSettings();
+    }
 }

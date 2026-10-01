@@ -14,6 +14,23 @@ import {
 } from './util.js';
 import type { AccessInfo } from './types.js';
 
+/** Add a label per entry to `results`, skipping entries without a formattable label. */
+function addEntryLabels(results: Set<string>, entries: unknown[]) {
+    for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
+        results.add(label);
+    }
+}
+
+/** Add a `name (endpoint)` label per named record entry to `results`. */
+function addRecordLabels(results: Set<string>, entries: Record<string, unknown>) {
+    for (const [name, entry] of Object.entries(entries)) {
+        const label = formatNamedEntry(entry, name);
+        if (label) {
+            results.add(label);
+        }
+    }
+}
+
 /** Extract access-relevant details (servers, tools, keys, endpoints, files) from a config object. */
 export function extractAccessInfoFromConfig(config: unknown, configPath: string): AccessInfo {
     const info = createEmptyAccessInfo();
@@ -67,31 +84,21 @@ export function mergeAccessInfo(base: AccessInfo, extra: AccessInfo): AccessInfo
 /** Collect MCP server labels from the common config layouts (`mcp`, `mcp.servers`, `mcpServers`). */
 export function extractMcpServers(config: Record<string, unknown>): string[] {
     const results = new Set<string>();
-    const addLabels = (entries: unknown[]) => {
-        for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
-            results.add(label);
-        }
-    };
     const mcp = get(config, 'mcp');
     if (Array.isArray(mcp)) {
-        addLabels(mcp);
+        addEntryLabels(results, mcp);
     }
     if (isRecord(mcp)) {
         const servers = get(mcp, 'servers');
         if (Array.isArray(servers)) {
-            addLabels(servers);
+            addEntryLabels(results, servers);
         } else if (isRecord(servers)) {
-            for (const [name, entry] of Object.entries(servers)) {
-                const label = formatNamedEntry(entry, name);
-                if (label) {
-                    results.add(label);
-                }
-            }
+            addRecordLabels(results, servers);
         }
     }
     const mcpServers = get(config, 'mcpServers');
     if (Array.isArray(mcpServers)) {
-        addLabels(mcpServers);
+        addEntryLabels(results, mcpServers);
     }
     return uniqSorted([...results]);
 }
@@ -99,11 +106,6 @@ export function extractMcpServers(config: Record<string, unknown>): string[] {
 /** Collect tool labels from `tools`, `mcp.tools` and `capabilities.tools` config sections. */
 export function extractTools(config: Record<string, unknown>): string[] {
     const results = new Set<string>();
-    const addLabels = (entries: unknown[]) => {
-        for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
-            results.add(label);
-        }
-    };
     const sources = [get(config, 'tools')];
     if (isRecord(config.mcp)) {
         sources.push(get(config.mcp, 'tools'));
@@ -114,14 +116,9 @@ export function extractTools(config: Record<string, unknown>): string[] {
 
     for (const source of sources) {
         if (Array.isArray(source)) {
-            addLabels(source);
+            addEntryLabels(results, source);
         } else if (isRecord(source)) {
-            for (const [name, entry] of Object.entries(source)) {
-                const label = formatNamedEntry(entry, name);
-                if (label) {
-                    results.add(label);
-                }
-            }
+            addRecordLabels(results, source);
         }
     }
 
