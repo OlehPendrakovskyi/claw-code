@@ -12,8 +12,8 @@ import {
     renderMarkdown,
 } from '../webview/viewMessaging';
 
-// The renderer loads its parser through a dynamic import jest cannot run, so
-// these tests feed renderMarkdown the HTML shape the renderer emits.
+// The renderer pulls its parser in through a dynamic import. These tests mock
+// that module and feed renderMarkdown the HTML shape the renderer emits.
 vi.mock('@create-markdown/preview', () => ({ markdownToHTML: vi.fn() }));
 
 const markdownToHTMLMock = vi.mocked(markdownToHTML);
