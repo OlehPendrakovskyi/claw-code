@@ -6,7 +6,7 @@ import { resolveCliLaunch, type CliLaunch } from '../core/cliLauncher';
 import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
-import { asNonEmptyString, asRecord, parseJsonRecord } from '../core/typeGuards';
+import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
@@ -100,11 +100,6 @@ function nonEmptyString(value: unknown): string | undefined {
     return asNonEmptyString(value) ?? undefined;
 }
 
-/** A positive token count, or undefined for anything else. */
-function tokenCount(value: unknown): number | undefined {
-    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
 function stringifyToolEvent(value: unknown): string {
     try {
         return JSON.stringify(value, null, 2);
@@ -123,10 +118,10 @@ const STOP_REASON_NOTICES: Record<string, string> = {
 /** The prompt turn's usage (ACP `Usage`) and a notice for a short stop. */
 function promptResultEvents(stopReason: string, usage: JsonRecord | undefined): ChatEvent[] {
     const events: ChatEvent[] = [];
-    const inputTokens = tokenCount(usage?.inputTokens) ?? 0;
-    const outputTokens = tokenCount(usage?.outputTokens) ?? 0;
+    const inputTokens = readPositiveInteger(usage?.inputTokens) ?? 0;
+    const outputTokens = readPositiveInteger(usage?.outputTokens) ?? 0;
     // ACP's total also counts cached and thought tokens, which the two parts leave out.
-    const totalTokens = tokenCount(usage?.totalTokens) ?? inputTokens + outputTokens;
+    const totalTokens = readPositiveInteger(usage?.totalTokens) ?? inputTokens + outputTokens;
     if (totalTokens > 0) {
         events.push({ type: 'usage', usage: { promptTokens: inputTokens, completionTokens: outputTokens, totalTokens } });
     }
@@ -139,12 +134,12 @@ function promptResultEvents(stopReason: string, usage: JsonRecord | undefined): 
 
 /** ACP `usage_update`: `used` tokens are in a context window of `size`. */
 function contextUsage(update: JsonRecord): ChatEvent | null {
-    const usedTokens = tokenCount(update.used);
-    if (usedTokens === undefined) {
+    const usedTokens = readPositiveInteger(update.used);
+    if (usedTokens === null) {
         return null;
     }
-    const windowTokens = tokenCount(update.size);
-    return windowTokens === undefined ? { type: 'contextUsage', usedTokens } : { type: 'contextUsage', usedTokens, windowTokens };
+    const windowTokens = readPositiveInteger(update.size);
+    return windowTokens === null ? { type: 'contextUsage', usedTokens } : { type: 'contextUsage', usedTokens, windowTokens };
 }
 
 /** ACP tool-call statuses in the webview's vocabulary. */

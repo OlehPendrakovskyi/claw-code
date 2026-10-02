@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { readBoundedSync } from '../core/readBounded';
 
 /** The one project-level file acpx 0.19.3 reads, from its `--cwd` (no parent
  *  walk, no opt-out flag): it can redefine agent commands and MCP servers.
@@ -136,16 +137,8 @@ function readBoundedRegularFile(filePath: string): Buffer | undefined {
             return undefined;
         }
         // One byte past the stat size shows a file that grew since.
-        const buffer = Buffer.alloc(stats.size + 1);
-        let length = 0;
-        while (length < buffer.length) {
-            const read = fs.readSync(fd, buffer, length, buffer.length - length, length);
-            if (read === 0) {
-                break;
-            }
-            length += read;
-        }
-        return length > stats.size ? undefined : buffer.subarray(0, length);
+        const bytes = readBoundedSync((buffer, offset, length, position) => fs.readSync(fd, buffer, offset, length, position), CONFIG_MAX_BYTES, stats.size);
+        return bytes.length > stats.size ? undefined : bytes;
     } finally {
         fs.closeSync(fd);
     }

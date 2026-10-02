@@ -163,14 +163,14 @@ describe('agentPicker', () => {
     describe('mapHistoryMessages', () => {
         it('maps the real captured tail, dropping the run-failure notice row', () => {
             const messages = mapHistoryMessages(historyFromWire(capturedPayload('historyTailResult')));
-            expect(messages[0]).toEqual({ role: 'user', content: 'hello from probe', entryId: 'e5f1f654-4655-43f2-9051-1a26d778efcc' });
+            expect(messages[0]).toEqual({ role: 'user', content: 'hello from probe', entryId: 'e5f1f654-4655-43f2-9051-1a26d778efcc', truncated: false });
             expect(messages.some((message) => message.content.startsWith('This turn ended before a reply'))).toBe(false);
             expect(messages.map((message) => message.role)).toEqual(['user', 'user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
         });
 
-        it('marks a row the gateway shortened', () => {
+        it('reports a row the gateway shortened, without display wording of its own', () => {
             const snapshot = historyFromWire(payloads.historyTail([{ role: 'assistant', text: 'beginning\n...(truncated)...', seq: 1, id: 'e1' }]));
-            expect(mapHistoryMessages(snapshot)).toEqual([{ role: 'assistant', content: 'beginning\n\n…(shortened by the gateway)', entryId: 'e1' }]);
+            expect(mapHistoryMessages(snapshot)).toEqual([{ role: 'assistant', content: 'beginning', entryId: 'e1', truncated: true }]);
         });
 
         it('skips rows without text and keeps the transcript order', () => {
@@ -181,8 +181,8 @@ describe('agentPicker', () => {
                 { role: 'assistant', text: 'answer', seq: 4, id: 'e4' },
             ]));
             expect(mapHistoryMessages(snapshot)).toEqual([
-                { role: 'user', content: 'question', entryId: 'e1' },
-                { role: 'assistant', content: 'answer', entryId: 'e4' },
+                { role: 'user', content: 'question', entryId: 'e1', truncated: false },
+                { role: 'assistant', content: 'answer', entryId: 'e4', truncated: false },
             ]);
         });
 

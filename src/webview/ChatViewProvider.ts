@@ -91,11 +91,17 @@ function isGridDimension(value: unknown): value is string {
     return typeof value === 'string' && GRID_DIMENSIONS.includes(value);
 }
 
+/** Appended to a restored row the gateway showed only in part. The wording is
+ *  the webview's: core reports truncation as a flag, so this stays where a
+ *  reader sees it. */
+const SHORTENED_ROW_SUFFIX = '\n\n…(shortened by the gateway)';
+
 /** Restored history as transcript rows, assistant markdown rendered like live replies. */
 async function toTranscriptMessages(history: HistorySnapshot): Promise<ChatMessage[]> {
-    return Promise.all(mapHistoryMessages(history).map(async ({ role, content }): Promise<ChatMessage> =>
-        role === 'assistant' ? { role, content, html: await renderMarkdown(content) } : { role, content }
-    ));
+    return Promise.all(mapHistoryMessages(history).map(async ({ role, content, truncated }): Promise<ChatMessage> => {
+        const text = truncated ? `${content}${SHORTENED_ROW_SUFFIX}` : content;
+        return role === 'assistant' ? { role, content: text, html: await renderMarkdown(text) } : { role, content: text };
+    }));
 }
 
 /** Mark the current run's still-open tool entries terminal: the run ended without reporting them. */

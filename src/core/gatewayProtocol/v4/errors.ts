@@ -7,7 +7,7 @@
  */
 
 import type { HandshakeRejection, HandshakeRejectionKind, PairingRequest, RpcFailure } from '../model';
-import { PROTOCOL_MISMATCH_HINT } from '../model';
+import { PROTOCOL_MISMATCH_CODE, PROTOCOL_MISMATCH_HINT } from '../model';
 import { readDelayMs, readNestedString, readRecord, readTrimmedString, readString, readStringOr, capText } from './readers';
 import { UNKNOWN, GATEWAY_MESSAGE_LIMIT } from '../../constants';
 
@@ -43,7 +43,7 @@ export const ConnectErrorDetailCodes = {
   CONTROL_UI_BUILD_MISMATCH: 'CONTROL_UI_BUILD_MISMATCH',
   CONTROL_UI_ORIGIN_NOT_ALLOWED: 'CONTROL_UI_ORIGIN_NOT_ALLOWED',
   CONTROL_UI_DEVICE_IDENTITY_REQUIRED: 'CONTROL_UI_DEVICE_IDENTITY_REQUIRED',
-  PROTOCOL_MISMATCH: 'PROTOCOL_MISMATCH',
+  PROTOCOL_MISMATCH: PROTOCOL_MISMATCH_CODE,
   CLIENT_VERSION_MISMATCH: 'CLIENT_VERSION_MISMATCH',
   DEVICE_IDENTITY_REQUIRED: 'DEVICE_IDENTITY_REQUIRED',
   DEVICE_AUTH_INVALID: 'DEVICE_AUTH_INVALID',

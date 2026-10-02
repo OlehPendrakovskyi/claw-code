@@ -637,6 +637,18 @@ describe('ChatService.sendMessage', () => {
             expect(events).toEqual([{ type: 'usage', usage: { promptTokens: 10, completionTokens: 4, totalTokens: 14 } }]);
         });
 
+        it.each([
+            // A rejected count reads as 0 rather than being rounded into the usage.
+            ['a fractional prompt count', { inputTokens: 10.5, outputTokens: 4 }, { promptTokens: 0, completionTokens: 4, totalTokens: 4 }],
+            ['a prompt count past the safe integers', { inputTokens: Number.MAX_SAFE_INTEGER + 2, outputTokens: 4 }, { promptTokens: 0, completionTokens: 4, totalTokens: 4 }],
+            // A rejected total falls back to the two parts the gateway sent.
+            ['a fractional total', { inputTokens: 10, outputTokens: 4, totalTokens: 14.5 }, { promptTokens: 10, completionTokens: 4, totalTokens: 14 }],
+        ])('drops %s rather than rounding it into the reported usage', (_case, usage, expected) => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: 2, result: { stopReason: 'end_turn', usage } }));
+            expect(events).toEqual([{ type: 'usage', usage: expected }]);
+        });
+
         it('prefers ACP\'s totalTokens, which also counts cached and thought tokens', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({
@@ -991,6 +1003,18 @@ describe('ChatService.sendMessage', () => {
                 { type: 'contextUsage', usedTokens: 5300, windowTokens: 200000 },
                 { type: 'contextUsage', usedTokens: 5400 },
             ]);
+        });
+
+        it.each([
+            ['a fractional count', 5300.5],
+            ['a count past the safe integers', Number.MAX_SAFE_INTEGER + 2],
+        ])('drops a usage_update with %s', (_case, used) => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines(
+                acpUpdate({ sessionUpdate: 'usage_update', used, size: 200000 }),
+                acpUpdate({ sessionUpdate: 'usage_update', used: 1, size: 200000 }),
+            ));
+            expect(events).toEqual([{ type: 'contextUsage', usedTokens: 1, windowTokens: 200000 }]);
         });
     });
 });

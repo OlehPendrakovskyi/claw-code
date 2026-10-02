@@ -9,7 +9,7 @@
 
 import type { GatewayProtocolAdapter } from './adapter';
 import type { HandshakeRejection } from './model';
-import { PROTOCOL_MISMATCH_HINT } from './model';
+import { PROTOCOL_MISMATCH_CODE, PROTOCOL_MISMATCH_HINT } from './model';
 import { v4Adapter } from './v4/adapter';
 
 /** Values of `openclaw.gateway.protocolVersion`, kept in sync with package.json. */
@@ -53,7 +53,7 @@ export function negotiatedAdapter(range: ProtocolRange, protocolVersion: number)
   }
   return {
     kind: 'permanent',
-    code: 'PROTOCOL_MISMATCH',
+    code: PROTOCOL_MISMATCH_CODE,
     message: `gateway negotiated protocol ${protocolVersion}; this client offered ${range.min}..${range.max}`,
     hint: PROTOCOL_MISMATCH_HINT,
   };

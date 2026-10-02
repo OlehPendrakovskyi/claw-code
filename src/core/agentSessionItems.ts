@@ -85,10 +85,11 @@ export type HistoryMessage = {
   role: 'user' | 'assistant';
   content: string;
   entryId: string | null;
+  /** The gateway showed this row only in part. Core reports the fact; the
+   *  webview decides how a shortened row reads, so no display wording is
+   *  baked into the protocol-independent layer. */
+  truncated: boolean;
 };
-
-/** Marks a restored row the gateway shows only in part. */
-const TRUNCATED_ROW_SUFFIX = '\n\n…(shortened by the gateway)';
 
 /** Cold-placeholder message text shown for non-materialized sessions. */
 export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will load once it starts.';
@@ -101,7 +102,6 @@ export const COLD_SESSION_PLACEHOLDER = 'Session is unloaded — history will lo
 export function mapHistoryMessages(snapshot: HistorySnapshot | null): HistoryMessage[] {
   return (snapshot?.messages ?? []).flatMap((message) => {
     if (message.role === 'other' || !message.text) return [];
-    const content = message.truncated ? `${message.text}${TRUNCATED_ROW_SUFFIX}` : message.text;
-    return [{ role: message.role, content, entryId: message.entryId }];
+    return [{ role: message.role, content: message.text, entryId: message.entryId, truncated: message.truncated }];
   });
 }

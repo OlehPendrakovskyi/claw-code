@@ -22,6 +22,7 @@ import { ChatViewProvider } from '../webview/ChatViewProvider';
 import type { GatewayChatService } from '../core/gatewayChatService';
 import type { HistorySnapshot } from '../core/gatewayProtocol/model';
 import { historySnapshot, sessionSummaries } from './helpers/mockGatewayService';
+import { TRUNCATION_MARKER } from '../core/gatewayProtocol/v4/schema';
 
 type Posted = Record<string, unknown>;
 type ThreadState = {
@@ -61,6 +62,9 @@ const { GatewayChatService: MockGatewayChatService } =
     jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const LAST_SESSION_KEY = 'openclaw.lastSessionKey';
+
+/** The wording a restored row the gateway sent in part ends with. */
+const SHORTENED = '\n\n…(shortened by the gateway)';
 
 const WARM_ROWS = [
     { key: 'agent:main:main', label: 'Main' },
@@ -308,6 +312,25 @@ describe('ChatViewProvider sessions', () => {
             await flush();
 
             expect(threadOf(sidebar, 'thread-1').messages).toEqual([{ role: 'user', content: 'main history' }]);
+        });
+
+        it('marks a row the gateway sent in part, on user and assistant rows alike', async () => {
+            const { sidebar } = makeProvider();
+            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([
+                { role: 'user', text: `asked for the log${TRUNCATION_MARKER}` },
+                { role: 'assistant', text: `here it is${TRUNCATION_MARKER}` },
+            ]));
+            await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
+            await flush();
+
+            const messages = threadOf(sidebar, 'thread-1').messages;
+            expect(messages[0]).toEqual({ role: 'user', content: `asked for the log${SHORTENED}` });
+            // An assistant row carries rendered markdown alongside its text.
+            expect(messages[1]).toMatchObject({
+                role: 'assistant',
+                content: `here it is${SHORTENED}`,
+            });
+            expect(String((messages[1] as { html?: string }).html)).toContain('here it is');
         });
 
         it('titles the thread with the key when sessions.list fails during the open', async () => {
