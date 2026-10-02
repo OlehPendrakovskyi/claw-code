@@ -133,34 +133,34 @@ describe('computeToolToggle', () => {
 
 describe('loadToolsForOverview', () => {
     it('returns collected entries from the loaded config', async () => {
-        jest.resetModules();
-        jest.doMock('../core/configIO', () => ({
-            loadOpenClawConfigRecord: jest.fn(async () => ({
+        vi.resetModules();
+        vi.doMock('../core/configIO', () => ({
+            loadOpenClawConfigRecord: vi.fn(async () => ({
                 config: { tools: ['read'] },
                 path: '/tmp/openclaw.json'
             }))
         }));
-        const { loadToolsForOverview: load } = require('../core/tools');
+        const { loadToolsForOverview: load } = await import('../core/tools');
         const result = await load();
         expect(result.entries.map((e: ToolEntry) => e.label)).toEqual(['read']);
         expect(result.error).toBeUndefined();
-        jest.dontMock('../core/configIO');
+        vi.doUnmock('../core/configIO');
     });
 
     it('propagates the config error and returns no entries', async () => {
-        jest.resetModules();
-        jest.doMock('../core/configIO', () => ({
-            loadOpenClawConfigRecord: jest.fn(async () => ({
+        vi.resetModules();
+        vi.doMock('../core/configIO', () => ({
+            loadOpenClawConfigRecord: vi.fn(async () => ({
                 config: null,
                 error: 'Config file not found.',
                 path: '/tmp/openclaw.json'
             }))
         }));
-        const { loadToolsForOverview: load } = require('../core/tools');
+        const { loadToolsForOverview: load } = await import('../core/tools');
         const result = await load();
         expect(result.entries).toEqual([]);
         expect(result.error).toBe('Config file not found.');
-        jest.dontMock('../core/configIO');
+        vi.doUnmock('../core/configIO');
     });
 });
 

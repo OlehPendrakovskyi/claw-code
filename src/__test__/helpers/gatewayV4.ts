@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 /**
  * Test support for the OpenClaw Gateway protocol v4: the JSON Schemas exported
  * from the real openclaw TypeBox definitions (fixtures/openclaw-protocol-v4,

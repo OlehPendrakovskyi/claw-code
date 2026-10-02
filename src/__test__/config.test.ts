@@ -1,17 +1,18 @@
-jest.mock('os', () => ({ homedir: () => '/home/u' }));
+import type { Mock } from 'vitest';
+vi.mock('os', () => ({ homedir: () => '/home/u' }));
 
 import * as vscode from 'vscode';
 import { fileExists, getDashboardUrl, openAuthProfiles, openFileInEditor } from '../vscode/config';
 
-const showInputBox = jest.mocked(vscode.window.showInputBox);
-const showErrorMessage = jest.mocked(vscode.window.showErrorMessage);
-const openTextDocument = jest.mocked(vscode.workspace.openTextDocument);
-const stat = jest.mocked(vscode.workspace.fs.stat);
-const writeFile = jest.mocked(vscode.workspace.fs.writeFile);
-const createDirectory = jest.mocked(vscode.workspace.fs.createDirectory);
+const showInputBox = vi.mocked(vscode.window.showInputBox);
+const showErrorMessage = vi.mocked(vscode.window.showErrorMessage);
+const openTextDocument = vi.mocked(vscode.workspace.openTextDocument);
+const stat = vi.mocked(vscode.workspace.fs.stat);
+const writeFile = vi.mocked(vscode.workspace.fs.writeFile);
+const createDirectory = vi.mocked(vscode.workspace.fs.createDirectory);
 
-function showTextDocument(): jest.Mock {
-    return (vscode.window as unknown as { showTextDocument: jest.Mock }).showTextDocument;
+function showTextDocument(): Mock {
+    return (vscode.window as unknown as { showTextDocument: Mock }).showTextDocument;
 }
 
 function statError() {
@@ -19,7 +20,7 @@ function statError() {
 }
 
 beforeEach(() => {
-    Object.assign(vscode.window, { showTextDocument: jest.fn(() => Promise.resolve({})) });
+    Object.assign(vscode.window, { showTextDocument: vi.fn(() => Promise.resolve({})) });
     showInputBox.mockReset().mockResolvedValue(undefined as never);
     showErrorMessage.mockReset().mockResolvedValue(undefined as never);
     openTextDocument.mockReset().mockResolvedValue({} as never);
@@ -120,7 +121,7 @@ describe('vscode config helpers', () => {
 
     describe('getDashboardUrl', () => {
         function configure(value: unknown): void {
-            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
                 get: () => value,
             } as unknown as vscode.WorkspaceConfiguration);
         }

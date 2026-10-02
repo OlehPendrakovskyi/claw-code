@@ -1,23 +1,24 @@
+import type { MockInstance } from 'vitest';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { ChatEvent } from '../chat/ChatService';
 
-const mockResolve = jest.fn();
+const mockResolve = vi.fn();
 const mockFactoryCallbacks: { onInvalidated?: (reason: 'identity' | 'transport') => void } = {};
 
-jest.mock('../webview/chatServiceFactory', () => ({
-    ChatServiceFactory: jest.fn().mockImplementation((_context, _onStatus, onInvalidated) => {
+vi.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: vi.fn().mockImplementation(function (_context, _onStatus, onInvalidated) {
         mockFactoryCallbacks.onInvalidated = onInvalidated;
-        return { resolve: (...args: unknown[]) => mockResolve(...args), dispose: jest.fn() };
+        return { resolve: (...args: unknown[]) => mockResolve(...args), dispose: vi.fn() };
     }),
 }));
 
-jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+vi.mock('../core/gatewayChatService', async () => (await vi.importActual<typeof import('./helpers/mockGatewayService')>('./helpers/mockGatewayService')).mockGatewayModule());
 
 // Identity realpath keeps mention resolution off the disk; the attachment
 // reader's fd check, and the on-disk workspace roots of the mention tests, need the real one.
-jest.mock('fs', () => {
-    const actual = jest.requireActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs');
     const needsDisk = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/') || p.includes('claw-roots-');
     const realpath = async (p: string): Promise<string> => needsDisk(p) ? actual.promises.realpath(p) : p;
     return { ...actual, promises: { ...actual.promises, realpath } };
@@ -62,17 +63,17 @@ type FakeView = {
 type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void; reject: (err: unknown) => void };
 
 const { GatewayChatService: MockGatewayChatService } =
-    jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
+    await vi.importMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const SESSION_ROWS = [
     { key: 'agent:main:main', label: 'Main' },
     { key: 'agent:coder:main', label: 'Coder' },
 ];
 
-const actualFs = jest.requireActual<typeof import('fs')>('fs');
+const actualFs = await vi.importActual<typeof import('fs')>('fs');
 
 // Real setImmediate: the global one is faked.
-const { setImmediate: realSetImmediate } = jest.requireActual<typeof import('timers')>('timers');
+const { setImmediate: realSetImmediate } = await vi.importActual<typeof import('timers')>('timers');
 
 async function flush(): Promise<void> {
     for (let i = 0; i < 10; i++) {
@@ -88,12 +89,12 @@ function deferred<T>(): Deferred<T> {
 }
 
 function makeMemento(): vscode.Memento {
-    return { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined) };
+    return { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined) };
 }
 
 function makeContext(workspaceState = makeMemento()): vscode.ExtensionContext {
     const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
-        globalState: { ...makeMemento(), setKeysForSync: jest.fn() },
+        globalState: { ...makeMemento(), setKeysForSync: vi.fn() },
         workspaceState,
     };
     return context as vscode.ExtensionContext;
@@ -111,7 +112,7 @@ function makeProvider(workspaceState?: vscode.Memento): FakeWebview {
         onDidReceiveMessage: (cb: (message: Posted) => Promise<void>) => { handler = cb; return { dispose() {} }; },
         asWebviewUri: (uri: vscode.Uri) => uri,
     };
-    const view: FakeView = { webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    const view: FakeView = { webview, visible: true, show: vi.fn(), onDidDispose: vi.fn() };
     provider.resolveWebviewView(view as vscode.WebviewView, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
     return { posted, send: (message) => handler(message) };
 }
@@ -141,21 +142,21 @@ function withTempFile(name: string, body: string): { dir: string; file: string }
 
 describe('ChatViewProvider send lifecycle', () => {
     let gateway: GatewayChatService;
-    let acpxSend: jest.SpyInstance<void, AcpxSendArgs>;
-    let acpxAbort: jest.SpyInstance<void, []>;
+    let acpxSend: MockInstance<(...args: AcpxSendArgs) => void>;
+    let acpxAbort: MockInstance<() => void>;
 
     const gatewayChoice = (): BackendChoice => ({ service: gateway, transport: 'gateway' });
     const acpxChoice = (service = new ChatService()): BackendChoice => ({ service, transport: 'acpx' });
-    const gatewayPrompts = (): string[] => jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
+    const gatewayPrompts = (): string[] => vi.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
     const acpxPrompts = (): string[] => acpxSend.mock.calls.map(call => call[0]);
 
     function lastGatewayRun(): GatewaySend {
-        const calls = jest.mocked(gateway.sendMessage).mock.calls;
+        const calls = vi.mocked(gateway.sendMessage).mock.calls;
         return calls[calls.length - 1][0];
     }
 
     /** Session keys the gateway sends targeted, in call order. */
-    const gatewaySessionKeys = (): string[] => jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].sessionKey);
+    const gatewaySessionKeys = (): string[] => vi.mocked(gateway.sendMessage).mock.calls.map(call => call[0].sessionKey);
 
     function lastAcpxRun(): AcpxSendArgs {
         return acpxSend.mock.calls[acpxSend.mock.calls.length - 1];
@@ -172,25 +173,25 @@ describe('ChatViewProvider send lifecycle', () => {
     async function openSession(webview: FakeWebview, sessionKey = 'agent:main:main'): Promise<(event: ChatEvent) => void> {
         await webview.send({ type: 'openSession', sessionKey, threadId: 'thread-1' });
         await flush();
-        const calls = jest.mocked(gateway.resumeSession).mock.calls;
+        const calls = vi.mocked(gateway.resumeSession).mock.calls;
         return calls[calls.length - 1][1];
     }
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        vi.useFakeTimers();
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }];
         gateway = new MockGatewayChatService();
-        jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(SESSION_ROWS));
+        vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(SESSION_ROWS));
         mockResolve.mockReset();
         mockResolve.mockResolvedValue(gatewayChoice());
-        acpxSend = jest.spyOn(ChatService.prototype, 'sendMessage').mockImplementation(() => undefined);
-        acpxAbort = jest.spyOn(ChatService.prototype, 'abort').mockImplementation(() => undefined);
+        acpxSend = vi.spyOn(ChatService.prototype, 'sendMessage').mockImplementation(() => undefined);
+        acpxAbort = vi.spyOn(ChatService.prototype, 'abort').mockImplementation(() => undefined);
     });
 
     afterEach(() => {
-        jest.useRealTimers();
-        jest.restoreAllMocks();
-        jest.mocked(vscode.workspace.fs.stat).mockReset();
+        vi.useRealTimers();
+        vi.restoreAllMocks();
+        vi.mocked(vscode.workspace.fs.stat).mockReset();
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
     });
 
@@ -235,7 +236,7 @@ describe('ChatViewProvider send lifecycle', () => {
             mockResolve.mockResolvedValue(acpxChoice());
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const rebinds = jest.mocked(gateway.rebindTranscriptSink).mock.calls;
+            const rebinds = vi.mocked(gateway.rebindTranscriptSink).mock.calls;
             const transcript = rebinds[rebinds.length - 1][1];
             const run = lastAcpxRun()[4];
 
@@ -270,11 +271,11 @@ describe('ChatViewProvider send lifecycle', () => {
         it('restores the suspended transcript sink when the send throws', async () => {
             const webview = makeProvider();
             await openSession(webview);
-            jest.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
+            vi.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const rebinds = jest.mocked(gateway.rebindTranscriptSink).mock.calls;
+            const rebinds = vi.mocked(gateway.rebindTranscriptSink).mock.calls;
             expect(rebinds.map(call => call[0])).toEqual(['agent:main:main']);
             rebinds[0][1]({ type: 'text', text: 'heard again' });
             await flush();
@@ -314,7 +315,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         it('reports a failing attachment read in the thread', async () => {
             const webview = makeProvider();
-            jest.spyOn(viewMessaging, 'readAttachments').mockRejectedValue(new Error('disk gone'));
+            vi.spyOn(viewMessaging, 'readAttachments').mockRejectedValue(new Error('disk gone'));
             (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
             await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-note.txt'] });
 
@@ -342,7 +343,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('during mention resolution sends nothing and keeps the mention out of the thread', async () => {
             const webview = makeProvider();
             const stat = deferred<vscode.FileStat>();
-            jest.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
+            vi.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'look at @a.ts' });
             await flush();
@@ -358,7 +359,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const webview = makeProvider();
             const [resolve] = deferResolves(1);
             const fresh = new ChatService();
-            const dispose = jest.spyOn(fresh, 'dispose');
+            const dispose = vi.spyOn(fresh, 'dispose');
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -374,8 +375,8 @@ describe('ChatViewProvider send lifecycle', () => {
         it('during the attachment read removes the snapshots and sends nothing', async () => {
             const webview = makeProvider();
             const read = deferred<AttachmentRead>();
-            const disposeSnapshots = jest.fn(async () => undefined);
-            jest.spyOn(viewMessaging, 'readAttachments').mockReturnValue(read.promise);
+            const disposeSnapshots = vi.fn(async () => undefined);
+            vi.spyOn(viewMessaging, 'readAttachments').mockReturnValue(read.promise);
             mockResolve.mockResolvedValue(acpxChoice());
             (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file('/tmp') }];
             await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/tmp/claw-note.txt'] });
@@ -444,7 +445,7 @@ describe('ChatViewProvider send lifecycle', () => {
             await webview.send({ type: 'newSession' });
             const [resolve] = deferResolves(1);
             const fresh = new ChatService();
-            const dispose = jest.spyOn(fresh, 'dispose');
+            const dispose = vi.spyOn(fresh, 'dispose');
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -461,7 +462,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('sends each prompt once through the backend resolved for it', async () => {
             const webview = makeProvider();
             const acpx = new ChatService();
-            const disposeAcpx = jest.spyOn(acpx, 'dispose');
+            const disposeAcpx = vi.spyOn(acpx, 'dispose');
             mockResolve
                 .mockResolvedValueOnce(gatewayChoice())
                 .mockResolvedValueOnce(acpxChoice(acpx))
@@ -496,7 +497,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const rebinds = jest.mocked(gateway.rebindTranscriptSink).mock.calls;
+            const rebinds = vi.mocked(gateway.rebindTranscriptSink).mock.calls;
             const transcript = rebinds[rebinds.length - 1][1];
             const run = lastAcpxRun()[4];
             run({ type: 'text', text: 'part one ' });
@@ -585,7 +586,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('explains each rejected send, keeps the reason past the history restore and hands the text back', async () => {
             const webview = makeProvider();
             const [openResolve] = deferResolves(1);
-            jest.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
+            vi.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
             void webview.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
 
@@ -603,7 +604,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('retires a send whose backend resolved after an open started, keeping the reason past the restore', async () => {
             const webview = makeProvider();
             const [sendResolve, openResolve] = deferResolves(2);
-            jest.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
+            vi.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -623,7 +624,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('forgets rejected sends once the open settles', async () => {
             const webview = makeProvider();
             const [firstOpen] = deferResolves(1);
-            jest.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
+            vi.mocked(gateway.getHistory).mockResolvedValue(HISTORY);
             void webview.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
@@ -689,7 +690,7 @@ describe('ChatViewProvider send lifecycle', () => {
             await webview.send({ type: 'attachFiles', threadId: 'thread-2', filePaths: ['/tmp/claw-two.txt'] });
             const readOne = deferred<AttachmentRead>();
             const readTwo = deferred<AttachmentRead>();
-            jest.spyOn(viewMessaging, 'readAttachments').mockReturnValueOnce(readOne.promise).mockReturnValueOnce(readTwo.promise);
+            vi.spyOn(viewMessaging, 'readAttachments').mockReturnValueOnce(readOne.promise).mockReturnValueOnce(readTwo.promise);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'from one' });
             await flush();
@@ -700,7 +701,7 @@ describe('ChatViewProvider send lifecycle', () => {
             readOne.resolve({ prompt: 'one attached', attachments: [], dispose: async () => undefined });
             await flush();
 
-            const sends = jest.mocked(gateway.sendMessage).mock.calls.map(([send]) => [send.sessionKey, send.prompt]);
+            const sends = vi.mocked(gateway.sendMessage).mock.calls.map(([send]) => [send.sessionKey, send.prompt]);
             expect(sends).toEqual([
                 ['agent:coder:main', 'two attached\n\nfrom two'],
                 ['agent:main:main', 'one attached\n\nfrom one'],
@@ -729,9 +730,9 @@ describe('ChatViewProvider send lifecycle', () => {
         it('leaves the binding alone when the send is cancelled while the session check is in flight', async () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:coder:main');
-            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
             const list = deferred<ReturnType<typeof sessionSummaries>>();
-            jest.mocked(gateway.listSessions).mockReturnValueOnce(list.promise);
+            vi.mocked(gateway.listSessions).mockReturnValueOnce(list.promise);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -741,15 +742,15 @@ describe('ChatViewProvider send lifecycle', () => {
 
             expect(threadOf(webview, 'thread-1').messages.some(m => String(m.content).includes('not known'))).toBe(false);
             expect(gateway.clearSessionSink).not.toHaveBeenCalled();
-            jest.advanceTimersByTime(5000);
+            vi.advanceTimersByTime(5000);
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'again' });
             await flush();
             expect(lastGatewayRun()).toMatchObject({ sessionKey: 'agent:coder:main', prompt: 'again' });
         });
 
         it('treats the default alias and its canonical key as one session', async () => {
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
-            jest.mocked(gateway.canonicalSessionKey).mockImplementation(key => key === 'main' ? CANONICAL_MAIN : key);
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
+            vi.mocked(gateway.canonicalSessionKey).mockImplementation(key => key === 'main' ? CANONICAL_MAIN : key);
             const webview = makeProvider();
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'from one' });
             await flush();
@@ -768,8 +769,8 @@ describe('ChatViewProvider send lifecycle', () => {
         });
 
         it('holds a send on the canonical key while a send on the default alias still prepares', async () => {
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
-            jest.mocked(gateway.canonicalSessionKey).mockImplementation(key => key === 'main' ? CANONICAL_MAIN : key);
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
+            vi.mocked(gateway.canonicalSessionKey).mockImplementation(key => key === 'main' ? CANONICAL_MAIN : key);
             const webview = makeProvider();
             await webview.send({ type: 'newSession' });
             await webview.send({ type: 'openSession', sessionKey: CANONICAL_MAIN, threadId: 'thread-2' });
@@ -843,7 +844,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const onSessionResolved = lastGatewayRun().onSessionResolved!;
 
             onSessionResolved('agent:main:main', 'main');
-            jest.mocked(gateway.hasOwnedRun).mockReturnValue(true);
+            vi.mocked(gateway.hasOwnedRun).mockReturnValue(true);
             await webview.send({ type: 'cancel', threadId: 'thread-1' });
 
             expect(gateway.abort).toHaveBeenCalledWith('agent:main:main');
@@ -874,13 +875,13 @@ describe('ChatViewProvider send lifecycle', () => {
             run({ type: 'done' });
             await flush();
 
-            expect(jest.mocked(gateway.rebindTranscriptSink).mock.calls.map(call => call[0])).toEqual(['agent:main:resolved']);
+            expect(vi.mocked(gateway.rebindTranscriptSink).mock.calls.map(call => call[0])).toEqual(['agent:main:resolved']);
         });
 
         it('drops a reply whose thread was cleared while it rendered', async () => {
             const webview = makeProvider();
             const render = deferred<string>();
-            jest.spyOn(viewMessaging, 'renderMarkdown').mockReturnValue(render.promise);
+            vi.spyOn(viewMessaging, 'renderMarkdown').mockReturnValue(render.promise);
             const run = await sendAndCaptureRun(webview);
 
             run({ type: 'text', text: 'reply' });
@@ -898,8 +899,8 @@ describe('ChatViewProvider send lifecycle', () => {
         it('resets a thread bound to a session the current gateway no longer lists', async () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:coder:main');
-            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
+            vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
@@ -937,10 +938,10 @@ describe('ChatViewProvider send lifecycle', () => {
             const staleTranscript = await openSession(webview);
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            jest.mocked(gateway.hasOwnedRun).mockReturnValue(true);
+            vi.mocked(gateway.hasOwnedRun).mockReturnValue(true);
 
             await webview.send({ type: 'clearThread', threadId: 'thread-1' });
-            const rebinds = jest.mocked(gateway.rebindTranscriptSink).mock.calls;
+            const rebinds = vi.mocked(gateway.rebindTranscriptSink).mock.calls;
             staleTranscript({ type: 'text', text: 'stale' });
             rebinds[rebinds.length - 1][1]({ type: 'text', text: 'fresh' });
             await flush();
@@ -954,7 +955,7 @@ describe('ChatViewProvider send lifecycle', () => {
             await webview.send({ type: 'newSession' });
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            jest.mocked(gateway.hasOwnedRun).mockReturnValue(true);
+            vi.mocked(gateway.hasOwnedRun).mockReturnValue(true);
 
             await webview.send({ type: 'closeThread', threadId: 'thread-1' });
 
@@ -982,8 +983,8 @@ describe('ChatViewProvider send lifecycle', () => {
         // A mention resolves against the workspace root, which gains a drive letter on Windows.
         const workFile = path.resolve('/work/a.ts');
 
-        function spyOnReads(): jest.SpyInstance<ReturnType<typeof viewMessaging.readAttachments>, ReadCall> {
-            return jest.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
+        function spyOnReads(): MockInstance<(...args: ReadCall) => ReturnType<typeof viewMessaging.readAttachments>> {
+            return vi.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
         }
 
         it('sends a mentioned line range with the prompt', async () => {
@@ -1000,7 +1001,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('hands images to the gateway as send attachments, budgeted by the negotiated protocol', async () => {
             const webview = makeProvider();
             const image = { name: 'shot.png', mimeType: 'image/png', data: Buffer.from('png') };
-            const reads = jest.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: '', attachments: [image], dispose: async () => undefined });
+            const reads = vi.spyOn(viewMessaging, 'readAttachments').mockResolvedValue({ prompt: '', attachments: [image], dispose: async () => undefined });
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'look at @a.ts' });
             await flush();
@@ -1008,7 +1009,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const options = reads.mock.calls[0][1];
             expect(options).toMatchObject({ imageMode: 'attachment', basePrompt: 'look at @a.ts' });
             expect(options?.attachmentWireBytes?.({ name: 'x.png', mimeType: 'image/png', byteLength: 3 })).toBe(gateway.attachmentWireBytes({ name: 'x.png', mimeType: 'image/png', byteLength: 3 }));
-            const [send] = jest.mocked(gateway.sendMessage).mock.calls[0];
+            const [send] = vi.mocked(gateway.sendMessage).mock.calls[0];
             expect(send.prompt).toBe('look at @a.ts');
             expect(send.attachments).toEqual([image]);
         });
@@ -1036,7 +1037,7 @@ describe('ChatViewProvider send lifecycle', () => {
         });
 
         it('auto-attaches the open editor file once when it is also mentioned', async () => {
-            const getConfiguration = jest.mocked(vscode.workspace.getConfiguration);
+            const getConfiguration = vi.mocked(vscode.workspace.getConfiguration);
             const original = getConfiguration.getMockImplementation();
             const config: vscode.WorkspaceConfiguration = {
                 get: ((key: string, defaultValue?: unknown) => key === 'chat.attachOpenFile' ? true : defaultValue) as vscode.WorkspaceConfiguration['get'],
@@ -1055,7 +1056,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
                 expect(reads.mock.calls[0][0].map(a => a.path)).toEqual([workFile]);
             } finally {
-                getConfiguration.mockImplementation(original);
+                getConfiguration.mockImplementation(original ?? (() => ({ get: vi.fn() }) as never));
                 (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = undefined;
             }
         });
@@ -1063,7 +1064,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('attaches nothing picked in a dialog that outlived a cancel', async () => {
             const webview = makeProvider();
             const picked = deferred<vscode.Uri[] | undefined>();
-            jest.mocked(vscode.window.showOpenDialog).mockReturnValueOnce(picked.promise);
+            vi.mocked(vscode.window.showOpenDialog).mockReturnValueOnce(picked.promise);
 
             void webview.send({ type: 'attach', threadId: 'thread-1' });
             await webview.send({ type: 'cancel', threadId: 'thread-1' });
@@ -1142,7 +1143,7 @@ describe('ChatViewProvider send lifecycle', () => {
             mockResolve.mockResolvedValue(acpxChoice());
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const rebinds = jest.mocked(gateway.rebindTranscriptSink).mock.calls;
+            const rebinds = vi.mocked(gateway.rebindTranscriptSink).mock.calls;
             const [sessionKey, callback] = rebinds[rebinds.length - 1];
 
             await webview.send({ type: 'closeThread', threadId: 'thread-1' });
@@ -1155,7 +1156,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const transcript = await openSession(webview);
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            jest.mocked(gateway.removeTranscriptSink).mockClear();
+            vi.mocked(gateway.removeTranscriptSink).mockClear();
 
             lastGatewayRun().onSessionResolved!('agent:main:resolved', 'agent:main:main');
 
@@ -1188,7 +1189,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:main:main');
             const [sendResolve, openResolve] = deferResolves(2);
-            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'user', text: 'earlier', id: 'u1' }]));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'user', text: 'earlier', id: 'u1' }]));
 
             const sending = webview.send({ type: 'send', threadId: 'thread-1', text: 'go', clientId: 'c1' });
             await flush();
@@ -1237,7 +1238,7 @@ describe('ChatViewProvider send lifecycle', () => {
             lastAcpxRun()[4]({ type: 'done' });
             await flush();
             mockFactoryCallbacks.onInvalidated!('identity');
-            jest.mocked(gateway.rebindTranscriptSink).mockClear();
+            vi.mocked(gateway.rebindTranscriptSink).mockClear();
 
             await webview.send({ type: 'clearThread', threadId: 'thread-1' });
 
@@ -1246,7 +1247,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         it('binds a deferred resume to a thread still unbound after its acpx run', async () => {
             const workspaceState = makeMemento();
-            jest.mocked(workspaceState.get).mockReturnValue('agent:coder:main');
+            vi.mocked(workspaceState.get).mockReturnValue('agent:coder:main');
             const [resumeResolve] = deferResolves(1);
             const webview = makeProvider(workspaceState);
             mockResolve.mockResolvedValue(acpxChoice());
@@ -1254,20 +1255,20 @@ describe('ChatViewProvider send lifecycle', () => {
             await flush();
             resumeResolve.resolve(gatewayChoice());
             await flush();
-            jest.mocked(gateway.resumeSession).mockClear();
+            vi.mocked(gateway.resumeSession).mockClear();
             mockResolve.mockResolvedValue(gatewayChoice());
 
             lastAcpxRun()[4]({ type: 'done' });
             await flush();
 
-            expect(jest.mocked(gateway.resumeSession).mock.calls.map(call => call[0])).toEqual(['agent:coder:main']);
+            expect(vi.mocked(gateway.resumeSession).mock.calls.map(call => call[0])).toEqual(['agent:coder:main']);
         });
 
         it('erases a stale persisted session when the only newer choice never got written', async () => {
             const workspaceState = makeMemento();
-            jest.mocked(workspaceState.get).mockReturnValue('agent:gone:main');
+            vi.mocked(workspaceState.get).mockReturnValue('agent:gone:main');
             const firstWrite = deferred<void>();
-            jest.mocked(workspaceState.update).mockImplementationOnce(() => firstWrite.promise);
+            vi.mocked(workspaceState.update).mockImplementationOnce(() => firstWrite.promise);
             const [resumeResolve] = deferResolves(1);
             const webview = makeProvider(workspaceState);
 
@@ -1288,12 +1289,12 @@ describe('ChatViewProvider send lifecycle', () => {
     describe('review round 5', () => {
         const persisted = (sessionKey: string): vscode.Memento => {
             const workspaceState = makeMemento();
-            jest.mocked(workspaceState.get).mockImplementation((key: string) => key === 'openclaw.lastSessionKey' ? sessionKey : undefined);
+            vi.mocked(workspaceState.get).mockImplementation((key: string) => key === 'openclaw.lastSessionKey' ? sessionKey : undefined);
             return workspaceState;
         };
 
         it('sends from a fresh thread through the default alias and binds the canonical key from the ack', async () => {
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: CANONICAL_MAIN, label: 'Main' }]));
             const webview = makeProvider();
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'hi' });
@@ -1309,8 +1310,8 @@ describe('ChatViewProvider send lifecycle', () => {
         it('keeps the binding and gives the draft back when the session cannot be checked', async () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:coder:main');
-            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
-            jest.mocked(gateway.listSessions).mockRejectedValue(new Error('timeout'));
+            vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.listSessions).mockRejectedValue(new Error('timeout'));
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go', clientId: 'c1' });
             await flush();
@@ -1319,7 +1320,7 @@ describe('ChatViewProvider send lifecycle', () => {
             expect(webview.posted).toContainEqual({ type: 'sendRejected', threadId: 'thread-1', clientId: 'c1' });
             expect(gateway.clearSessionSink).not.toHaveBeenCalled();
 
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(SESSION_ROWS));
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(SESSION_ROWS));
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             expect(gatewayPrompts()).toEqual(['go']);
             expect(lastGatewayRun().sessionKey).toBe('agent:coder:main');
@@ -1328,9 +1329,9 @@ describe('ChatViewProvider send lifecycle', () => {
         it('refetches the allowlist before calling a bound session unknown', async () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:coder:main');
-            jest.mocked(gateway.listSessions).mockResolvedValueOnce(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
+            vi.mocked(gateway.listSessions).mockResolvedValueOnce(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
             await webview.send({ type: 'requestSessions', threadId: 'thread-1' });
-            jest.advanceTimersByTime(5000);
+            vi.advanceTimersByTime(5000);
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
 
@@ -1375,25 +1376,25 @@ describe('ChatViewProvider send lifecycle', () => {
         it('resumes a session dropped by an identity change once the new gateway lists it', async () => {
             const webview = makeProvider();
             await openSession(webview, 'agent:main:main');
-            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
             mockFactoryCallbacks.onInvalidated!('identity');
-            jest.mocked(gateway.resumeSession).mockClear();
+            vi.mocked(gateway.resumeSession).mockClear();
 
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             lastGatewayRun().onEvent({ type: 'done' });
             await flush();
 
-            expect(jest.mocked(gateway.resumeSession).mock.calls.map(call => call[0])).toEqual(['agent:main:main']);
+            expect(vi.mocked(gateway.resumeSession).mock.calls.map(call => call[0])).toEqual(['agent:main:main']);
         });
 
         it('does not resume a dropped session the new gateway no longer lists', async () => {
             const webview = makeProvider();
             await webview.send({ type: 'newSession' });
             await openSession(webview, 'agent:coder:main');
-            jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
+            vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main', label: 'Main' }]));
             mockFactoryCallbacks.onInvalidated!('identity');
-            jest.mocked(gateway.resumeSession).mockClear();
+            vi.mocked(gateway.resumeSession).mockClear();
 
             await webview.send({ type: 'send', threadId: 'thread-2', text: 'go' });
             lastGatewayRun().onEvent({ type: 'done' });
@@ -1407,7 +1408,7 @@ describe('ChatViewProvider send lifecycle', () => {
         it('keeps a file attached while a send prepares for the next send', async () => {
             const webview = makeProvider();
             const stat = deferred<vscode.FileStat>();
-            jest.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
+            vi.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'see @slow.ts' });
             await flush();
@@ -1422,7 +1423,7 @@ describe('ChatViewProvider send lifecycle', () => {
             const webview = makeProvider();
             const transcript = await openSession(webview, 'agent:main:main');
             const stat = deferred<vscode.FileStat>();
-            jest.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
+            vi.mocked(vscode.workspace.fs.stat).mockImplementationOnce(() => stat.promise);
 
             void webview.send({ type: 'send', threadId: 'thread-1', text: 'see @slow.ts' });
             await flush();
@@ -1441,7 +1442,7 @@ describe('ChatViewProvider send lifecycle', () => {
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'acpx' });
             lastAcpxRun()[4]({ type: 'toolCall', title: 'Read', status: 'running', details: '' });
             await flush();
-            jest.mocked(gateway.getHistory).mockResolvedValue(null);
+            vi.mocked(gateway.getHistory).mockResolvedValue(null);
             mockResolve.mockResolvedValue(gatewayChoice());
 
             await openSession(webview, 'agent:main:main');
@@ -1452,7 +1453,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         it('posts the state once per settings change, and not for settings it does not show', async () => {
             const webview = makeProvider();
-            const listeners = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls;
+            const listeners = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls;
             const listener = listeners[listeners.length - 1][0];
             const stateCount = (): number => webview.posted.filter(isStateMessage).length;
             const changed = (key: string): vscode.ConfigurationChangeEvent => ({ affectsConfiguration: (section: string) => section === `openclaw.${key}` });
@@ -1529,7 +1530,8 @@ describe('ChatViewProvider send lifecycle', () => {
         it('sends a diff far past the old output buffer marked truncated, not as no diff', async () => {
             const dir = makeTempDir('claw-git-');
             try {
-                const git = (...args: string[]): void => { jest.requireActual<typeof import('child_process')>('child_process').execFileSync('git', args, { cwd: dir }); };
+                const childProcessActual = await vi.importActual<typeof import('child_process')>('child_process');
+                const git = (...args: string[]): void => { childProcessActual.execFileSync('git', args, { cwd: dir }); };
                 git('init', '-q');
                 actualFs.writeFileSync(path.join(dir, 'big.txt'), 'start\n');
                 git('add', 'big.txt');
@@ -1684,7 +1686,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
             it('keeps the last active editor\'s folder while a chat panel has focus', async () => {
                 const webview = makeProvider();
-                const editorListeners = jest.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls;
+                const editorListeners = vi.mocked(vscode.window.onDidChangeActiveTextEditor).mock.calls;
                 const onEditorChange = editorListeners[editorListeners.length - 1][0];
                 onEditorChange({ document: { uri: vscode.Uri.file('/ws/lib/util.ts') } } as vscode.TextEditor);
                 onEditorChange(undefined);
@@ -1698,7 +1700,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         describe('mentions on disk', () => {
             let base: string;
-            const reads = (): jest.SpyInstance => jest.spyOn(viewMessaging, 'readAttachments')
+            const reads = (): MockInstance => vi.spyOn(viewMessaging, 'readAttachments')
                 .mockResolvedValue({ prompt: 'attached', attachments: [], dispose: async () => undefined });
             const files = (...relative: string[]): void => relative.forEach(file => {
                 actualFs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
@@ -1753,7 +1755,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         it('says why a mention or a pick was not attached, and never attaches a folder', async () => {
             const webview = makeProvider();
-            jest.mocked(vscode.workspace.fs.stat).mockResolvedValueOnce({ type: 2, ctime: 0, mtime: 0, size: 0 });
+            vi.mocked(vscode.workspace.fs.stat).mockResolvedValueOnce({ type: 2, ctime: 0, mtime: 0, size: 0 });
             await webview.send({ type: 'attachFile', threadId: 'thread-1', filePath: '/work/src' });
             await webview.send({ type: 'send', threadId: 'thread-1', text: 'see @../outside.ts' });
 
@@ -1765,7 +1767,7 @@ describe('ChatViewProvider send lifecycle', () => {
 
         it('attaches dropped files from outside the workspace only once the user approves', async () => {
             const webview = makeProvider();
-            const ask = jest.mocked(vscode.window.showWarningMessage);
+            const ask = vi.mocked(vscode.window.showWarningMessage);
             ask.mockResolvedValueOnce(undefined);
             await webview.send({ type: 'attachFiles', threadId: 'thread-1', filePaths: ['/work/a.ts', '/home/u/.ssh/id_rsa'] });
             expect(pendingPaths(webview)).toEqual(['/work/a.ts']);

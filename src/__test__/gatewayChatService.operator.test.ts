@@ -21,7 +21,7 @@ import {
     type MockSocket,
 } from './helpers/gatewayV4';
 
-jest.mock('ws', () => jest.fn());
+vi.mock('ws', () => ({ default: vi.fn() }));
 
 const APPROVAL_SCOPES = ['operator.read', 'operator.write', 'operator.approvals', 'operator.questions'];
 const CUT = '\n...(truncated)...';
@@ -81,7 +81,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
 
     afterEach(() => {
         for (const svc of services.splice(0)) svc.dispose();
-        jest.useRealTimers();
+        vi.useRealTimers();
         expect(protocolViolations.splice(0)).toEqual([]);
     });
 
@@ -213,14 +213,14 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('expires an approval after the lifetime the gateway gave it, whatever the local clock says', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             // The gateway's clock is years apart from the local one; only its created→expires span counts.
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1', expiresAtMs: PROMPT_CREATED_AT_MS + 5000 }, 'ls'));
             expect(requested(h.changes).map((prompt) => prompt.id)).toEqual(['a1']);
-            jest.advanceTimersByTime(4999);
+            vi.advanceTimersByTime(4999);
             expect(outcomes(h.changes)).toEqual([]);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(outcomes(h.changes)).toEqual([['exec:a1', 'expired']]);
         });
 
@@ -257,13 +257,13 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('settles an answer the gateway applied although its reply was lost to a reconnect', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             const resolving = h.svc.resolveApproval('exec:a1', 'allow-once');
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await expect(resolving).rejects.toThrow();
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             answerBackfill(h, {});
             await settle();
@@ -271,12 +271,12 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('forgets an answer that was never sent, so a later backfill does not report it as given', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await expect(h.svc.resolveApproval('exec:a1', 'allow-once')).rejects.toThrow();
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             answerBackfill(h, {});
             await settle();
@@ -324,11 +324,11 @@ describe('GatewayChatService operator prompts and cut rows', () => {
 
     describe('backfill', () => {
         it('lists what predates the connection, then drops what a reconnect no longer lists but keeps what raced it', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected({ lists: { exec: [{ approvalKind: 'exec', ...payloads.execApproval({ id: 'old' }, 'make') }] } });
             expect(requested(h.changes).map((prompt) => prompt.id)).toEqual(['old']);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'raced' }, 'make test'));
             answerBackfill(h, {});
@@ -338,10 +338,10 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('keeps prompts of a kind whose list failed', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected({ lists: { questions: [payloads.question({ id: 'q1' }, [{ questionId: 'pick', question: 'Which?' }])] } });
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             h.socket().reply('exec.approval.list', []);
             h.socket().reply('plugin.approval.list', []);
@@ -351,12 +351,12 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('still settles exec approvals when only the plugin list failed', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'exec.approval.requested', payloads.execApproval({ id: 'a1' }, 'ls'));
             receive(h, 'plugin.approval.requested', payloads.pluginApproval({ id: 'p1' }, 'Write'));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             h.socket().reply('exec.approval.list', []);
             h.socket().replyError('plugin.approval.list', { code: 'UNAVAILABLE', message: 'busy' });
@@ -500,7 +500,7 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('renders a cut row whose read outlasts the render timeout as it came, still ahead of what followed it', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const seen = observe(h);
             await settle();
@@ -510,10 +510,10 @@ describe('GatewayChatService operator prompts and cut rows', () => {
             receive(h, 'chat', payloads.final({ runId: 'r2', seq: 2 }, 'SECOND'));
             await settle();
             expect(seen).toEqual([]);
-            await jest.advanceTimersByTimeAsync(10_000);
+            await vi.advanceTimersByTimeAsync(10_000);
             expect(seen).toEqual([{ type: 'text', text: LONG_REPLY.slice(0, 8000) }, { type: 'text', text: 'SECOND' }, { type: 'done' }]);
             h.socket().reply('chat.history', fullRead());
-            await jest.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(0);
             expect(seen).toHaveLength(3);
         });
 
@@ -580,13 +580,13 @@ describe('GatewayChatService operator prompts and cut rows', () => {
         });
 
         it('finishes a run that ended while the socket was away with its whole final text', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'word ', 'word '));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await handshake(h);
             answerBackfill(h, {});
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());

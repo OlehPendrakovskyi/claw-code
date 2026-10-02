@@ -154,7 +154,7 @@ describe('agentPicker', () => {
         it('returns the chosen item, and shows nothing without sessions', async () => {
             const sessions = sessionsFromWire([{ key: 'agent:dev:main' }]);
             expect(await new AgentPicker({ listSessions: async () => sessions }, pickFirst).pick()).toMatchObject({ sessionKey: 'agent:dev:main' });
-            const show = jest.fn();
+            const show = vi.fn();
             expect(await new AgentPicker({ listSessions: async () => [] }, { show }).pick()).toBeUndefined();
             expect(show).not.toHaveBeenCalled();
         });

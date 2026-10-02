@@ -1,3 +1,4 @@
+import type { MockedFunction } from 'vitest';
 import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -5,9 +6,9 @@ import { LSOF_PATH, LSOF_RETRY_AFTER_MS, LSOF_TIMEOUT_MS, decodeLsofName, lsofNa
 import { makeTempDir } from './helpers/tempDir';
 
 // The real execFile unless a test answers for it, so the macOS tests still reach lsof.
-jest.mock('child_process', () => {
-    const actual = jest.requireActual<typeof import('child_process')>('child_process');
-    return { ...actual, execFile: jest.fn(actual.execFile) };
+vi.mock('child_process', async () => {
+    const actual = await vi.importActual<typeof import('child_process')>('child_process');
+    return { ...actual, execFile: vi.fn(actual.execFile) };
 });
 
 type ExecFileCallback = (error: Error | null, stdout: string, stderr: string) => void;
@@ -16,7 +17,7 @@ describe('lsofFdPath', () => {
     describe('lsofNameForFd', () => {
         // A fresh module per test, so one test's failed run never backs off the next test's lsof.
         let lsof: typeof import('../webview/lsofFdPath');
-        let execFileMock: jest.MockedFunction<typeof childProcess.execFile>;
+        let execFileMock: MockedFunction<typeof childProcess.execFile>;
         let now: number;
 
         /** Answers the next lsof call with `stdout`, or fails it with `error`. */
@@ -28,18 +29,17 @@ describe('lsofFdPath', () => {
         };
         const fail = () => answer('', Object.assign(new Error('spawn /usr/sbin/lsof ENOENT'), { code: 'ENOENT' }));
 
-        beforeEach(() => {
-            jest.isolateModules(() => {
-                lsof = jest.requireActual('../webview/lsofFdPath');
-                execFileMock = jest.mocked(jest.requireMock<typeof childProcess>('child_process').execFile);
-            });
+        beforeEach(async () => {
+            vi.resetModules();
+            lsof = await vi.importActual<typeof import('../webview/lsofFdPath')>('../webview/lsofFdPath');
+            execFileMock = (await vi.importMock<typeof childProcess>('child_process')).execFile as unknown as MockedFunction<typeof childProcess.execFile>;
             execFileMock.mockClear();
             now = 1_000_000;
-            jest.spyOn(Date, 'now').mockImplementation(() => now);
+            vi.spyOn(Date, 'now').mockImplementation(() => now);
         });
 
         afterEach(() => {
-            jest.mocked(Date.now).mockRestore();
+            vi.mocked(Date.now).mockRestore();
         });
 
         it('asks the absolute lsof about this process\'s fd, in a UTF-8 locale and with a timeout', async () => {

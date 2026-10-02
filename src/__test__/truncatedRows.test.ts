@@ -8,7 +8,7 @@ function cutRow(entryId: string, text = 'cut'): TranscriptMessage {
 describe('TruncatedRowCompleter', () => {
     describe('complete', () => {
         it('reads an entry once, even when its row is delivered again after the read settled', async () => {
-            const readEntry = jest.fn(async (_sessionKey: string, entryId: string) => ({ ...cutRow(entryId, 'cut and the rest'), truncated: false }));
+            const readEntry = vi.fn(async (_sessionKey: string, entryId: string) => ({ ...cutRow(entryId, 'cut and the rest'), truncated: false }));
             const completer = new TruncatedRowCompleter(readEntry);
             const first = await completer.complete('main', cutRow('e1'));
             const again = await completer.complete('main', { ...cutRow('e1'), seq: 2 });
@@ -19,7 +19,7 @@ describe('TruncatedRowCompleter', () => {
 
         it('shares only the text with a row of the same entry delivered while the read runs', async () => {
             let finishRead: (row: TranscriptMessage) => void = () => undefined;
-            const readEntry = jest.fn(() => new Promise<TranscriptMessage>((resolve) => (finishRead = resolve)));
+            const readEntry = vi.fn(() => new Promise<TranscriptMessage>((resolve) => (finishRead = resolve)));
             const completer = new TruncatedRowCompleter(readEntry);
             const first = completer.complete('main', cutRow('e1'));
             const again = completer.complete('main', { ...cutRow('e1'), seq: 2, runId: 'r2' });
@@ -31,7 +31,7 @@ describe('TruncatedRowCompleter', () => {
         });
 
         it('reads the entry again after a failed read', async () => {
-            const readEntry = jest.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce({ ...cutRow('e1', 'cut and the rest'), truncated: false });
+            const readEntry = vi.fn().mockRejectedValueOnce(new Error('busy')).mockResolvedValueOnce({ ...cutRow('e1', 'cut and the rest'), truncated: false });
             const completer = new TruncatedRowCompleter(readEntry);
             expect(await completer.complete('main', cutRow('e1'))).toMatchObject({ text: 'cut', truncated: true });
             expect(await completer.complete('main', cutRow('e1'))).toMatchObject({ text: 'cut and the rest', truncated: false });
@@ -39,7 +39,7 @@ describe('TruncatedRowCompleter', () => {
         });
 
         it('forgets completed entries when the endpoint is reset', async () => {
-            const readEntry = jest.fn(async (_sessionKey: string, entryId: string) => ({ ...cutRow(entryId, 'cut and the rest'), truncated: false }));
+            const readEntry = vi.fn(async (_sessionKey: string, entryId: string) => ({ ...cutRow(entryId, 'cut and the rest'), truncated: false }));
             const completer = new TruncatedRowCompleter(readEntry);
             await completer.complete('main', cutRow('e1'));
             completer.reset();
@@ -49,7 +49,7 @@ describe('TruncatedRowCompleter', () => {
 
         it('does not remember a read that settles after a reset', async () => {
             let finishRead: (row: TranscriptMessage) => void = () => undefined;
-            const readEntry = jest.fn().mockImplementationOnce(() => new Promise((resolve) => (finishRead = resolve))).mockResolvedValue(null);
+            const readEntry = vi.fn().mockImplementationOnce(() => new Promise((resolve) => (finishRead = resolve))).mockResolvedValue(null);
             const completer = new TruncatedRowCompleter(readEntry);
             const stale = completer.complete('main', cutRow('e1'));
             await Promise.resolve();
@@ -61,12 +61,12 @@ describe('TruncatedRowCompleter', () => {
         });
 
         describe('a read slower than the render can wait', () => {
-            beforeEach(() => jest.useFakeTimers());
-            afterEach(() => jest.useRealTimers());
+            beforeEach(() => vi.useFakeTimers());
+            afterEach(() => vi.useRealTimers());
 
             function deferredReader() {
                 const pending: Array<{ entryId: string; resolve: (row: TranscriptMessage | null) => void }> = [];
-                const readEntry = jest.fn((_sessionKey: string, entryId: string) => new Promise<TranscriptMessage | null>((resolve) => pending.push({ entryId, resolve })));
+                const readEntry = vi.fn((_sessionKey: string, entryId: string) => new Promise<TranscriptMessage | null>((resolve) => pending.push({ entryId, resolve })));
                 return { readEntry, pending };
             }
 
@@ -74,13 +74,13 @@ describe('TruncatedRowCompleter', () => {
                 const { readEntry, pending } = deferredReader();
                 const completer = new TruncatedRowCompleter(readEntry);
                 const first = completer.complete('main', cutRow('e1'));
-                await jest.advanceTimersByTimeAsync(10_000);
+                await vi.advanceTimersByTimeAsync(10_000);
                 await expect(first).resolves.toMatchObject({ text: 'cut', truncated: true });
                 const second = completer.complete('main', cutRow('e2'));
-                await jest.advanceTimersByTimeAsync(0);
+                await vi.advanceTimersByTimeAsync(0);
                 expect(readEntry).toHaveBeenCalledTimes(1);
                 pending[0].resolve(null);
-                await jest.advanceTimersByTimeAsync(0);
+                await vi.advanceTimersByTimeAsync(0);
                 expect(readEntry).toHaveBeenLastCalledWith('main', 'e2');
                 pending[1].resolve({ ...cutRow('e2', 'cut and more'), truncated: false });
                 await expect(second).resolves.toMatchObject({ text: 'cut and more' });
@@ -91,7 +91,7 @@ describe('TruncatedRowCompleter', () => {
                 const completer = new TruncatedRowCompleter(readEntry);
                 void completer.complete('main', cutRow('e1'));
                 const second = completer.complete('main', cutRow('e2'));
-                await jest.advanceTimersByTimeAsync(10_000);
+                await vi.advanceTimersByTimeAsync(10_000);
                 await expect(second).resolves.toMatchObject({ text: 'cut', truncated: true });
             });
 
@@ -99,10 +99,10 @@ describe('TruncatedRowCompleter', () => {
                 const { readEntry, pending } = deferredReader();
                 const completer = new TruncatedRowCompleter(readEntry);
                 const first = completer.complete('main', cutRow('e1'));
-                await jest.advanceTimersByTimeAsync(10_000);
+                await vi.advanceTimersByTimeAsync(10_000);
                 await first;
                 pending[0].resolve({ ...cutRow('e1', 'cut and the rest'), truncated: false });
-                await jest.advanceTimersByTimeAsync(0);
+                await vi.advanceTimersByTimeAsync(0);
                 await expect(completer.complete('main', cutRow('e1'))).resolves.toMatchObject({ text: 'cut and the rest', truncated: false });
                 expect(readEntry).toHaveBeenCalledTimes(1);
             });

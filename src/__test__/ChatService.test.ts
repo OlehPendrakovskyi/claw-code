@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { ChatService } from '../chat/ChatService';
 
-const getConfigurationMock = jest.mocked(vscode.workspace.getConfiguration);
+const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
 function useSettings(settings: Record<string, unknown>): void {
     getConfigurationMock.mockReturnValue({

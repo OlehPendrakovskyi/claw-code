@@ -26,7 +26,13 @@ import {
     type MockSocket,
 } from './helpers/gatewayV4';
 
-jest.mock('ws', () => jest.fn());
+// `ws` itself is reached through a bare `require()` that no module mock
+// intercepts; core/wsSocket owns that call, so replacing the loader is the seam.
+const { wsCtorMock } = vi.hoisted(() => ({ wsCtorMock: vi.fn() }));
+vi.mock('../core/wsSocket', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../core/wsSocket')>()),
+    loadWsCtor: () => wsCtorMock,
+}));
 
 const TOKEN = 'secret-token-value';
 const GATEWAY_ORIGIN = 'ws://gateway.test:18789';
@@ -90,7 +96,7 @@ describe('GatewayChatService', () => {
 
     afterEach(() => {
         for (const svc of services.splice(0)) svc.dispose();
-        jest.useRealTimers();
+        vi.useRealTimers();
         const violations = protocolViolations.splice(0);
         expect(violations).toEqual([]);
     });
@@ -178,53 +184,53 @@ describe('GatewayChatService', () => {
         });
 
         it('refuses a hello naming a version it did not offer, for good', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             completeHandshake(h.socket(), payloads.helloOk({ protocol: 5 }));
             const error = await connecting.catch((err: unknown) => err);
             expect(error).toBeInstanceOf(GatewayConnectError);
             expect((error as GatewayConnectError).rejection).toMatchObject({ kind: 'permanent', code: 'PROTOCOL_MISMATCH' });
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
 
         it('stops after the real token-mismatch rejection until the connection settings change', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             h.socket().replyError('connect', captured.tokenMismatchRejection.error);
             await expect(connecting).rejects.toThrow('gateway handshake rejected code=AUTH_TOKEN_MISMATCH');
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
             h.svc.updateConnection('ws://gateway.test:18789', 'rotated');
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(2);
         });
 
         it('backs off after a transient rejection, no sooner than the gateway asked', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             h.socket().replyError('connect', { code: 'UNAVAILABLE', message: 'starting', retryAfterMs: 5000, details: { reason: 'startup-sidecars' } });
             await expect(connecting).rejects.toThrow('handshake rejected');
-            jest.advanceTimersByTime(4900);
+            vi.advanceTimersByTime(4900);
             expect(h.sockets).toHaveLength(1);
-            jest.advanceTimersByTime(200);
+            vi.advanceTimersByTime(200);
             expect(h.sockets).toHaveLength(2);
         });
 
         it('pauses on a pending pairing when it proved no device', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             h.socket().replyError('connect', { code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED' } });
             const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
             expect(error.rejection.hint).toMatch(/openclaw devices approve/);
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
 
@@ -237,10 +243,10 @@ describe('GatewayChatService', () => {
         });
 
         it('gives up when no challenge arrives', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
-            jest.advanceTimersByTime(15_000);
+            vi.advanceTimersByTime(15_000);
             await expect(connecting).rejects.toThrow('handshake timed out');
         });
 
@@ -254,11 +260,11 @@ describe('GatewayChatService', () => {
         });
 
         it('reconnects with a new hello when the protocol setting changes', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             h.svc.updateConnection('ws://gateway.test:18789', TOKEN, '4');
             expect(h.svc.isRunning).toBe(false);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             expect(h.sockets).toHaveLength(2);
@@ -268,27 +274,27 @@ describe('GatewayChatService', () => {
 
     describe('keepalive', () => {
         it('reconnects once ticks stop for two tick intervals', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected({ hello: payloads.helloOk({ tickIntervalMs: 1000 }) });
-            jest.advanceTimersByTime(1500);
+            vi.advanceTimersByTime(1500);
             h.socket().receive(JSON.stringify(captured.tick));
-            jest.advanceTimersByTime(1500);
+            vi.advanceTimersByTime(1500);
             expect(h.socket().closed).toEqual([]);
-            jest.advanceTimersByTime(1500);
+            vi.advanceTimersByTime(1500);
             expect(h.sockets[0].closed).toEqual([4000]);
             expect(h.svc.isRunning).toBe(false);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             expect(h.sockets).toHaveLength(2);
         });
 
         it('waits for the restart a shutdown event announced', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'shutdown', { reason: 'gateway restarting', restartExpectedMs: 5000 });
             h.socket().emit('close', 1012, Buffer.alloc(0));
-            jest.advanceTimersByTime(4900);
+            vi.advanceTimersByTime(4900);
             expect(h.sockets).toHaveLength(1);
-            jest.advanceTimersByTime(200);
+            vi.advanceTimersByTime(200);
             expect(h.sockets).toHaveLength(2);
         });
     });
@@ -436,12 +442,12 @@ describe('GatewayChatService', () => {
         });
 
         it('issues chat.send once, even across a reconnect', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             send(h);
             await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             const sends = h.sockets.flatMap((socket) => socket.requests()).filter((request) => request.method === 'chat.send');
@@ -575,7 +581,7 @@ describe('GatewayChatService', () => {
         });
 
         it('says a run started before a reconnect cannot be stopped, and keeps it visible to observers', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const seen: ChatEvent[] = [];
             h.svc.resumeSession(CANONICAL_MAIN, (event) => seen.push(event), { historyRendered: true });
@@ -586,7 +592,7 @@ describe('GatewayChatService', () => {
             h.socket().emit('close', 1006, Buffer.alloc(0));
             h.svc.abort(CANONICAL_MAIN);
             expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             expect(h.socket().requests().map((request) => request.method)).not.toContain('chat.abort');
@@ -686,14 +692,14 @@ describe('GatewayChatService', () => {
 
     describe('reconnect catch-up', () => {
         async function runAcrossDrop(historyReply: (h: Harness, runId: string) => void): Promise<{ h: Harness; run: Send }> {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             receive(h, 'session.message', payloads.sessionMessage({ role: 'user', text: 'hello', seq: 5, runId }));
             receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Partial', 'Partial'));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -728,7 +734,7 @@ describe('GatewayChatService', () => {
         });
 
         it('falls back to a tail read when the cursor was reset', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const seen: ChatEvent[] = [];
             h.svc.restoreSessionState('main', { cursor: 'stale', lastSeq: 2 });
@@ -744,12 +750,12 @@ describe('GatewayChatService', () => {
         });
 
         it('ends runs with the hint when the reconnect is rejected for good', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             h.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             h.socket().replyError('connect', captured.tokenMismatchRejection.error);
             await settle();
@@ -794,7 +800,7 @@ describe('GatewayChatService', () => {
 
     describe('connection bookkeeping', () => {
         it('tells listeners about connects and drops until they unsubscribe', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const states: boolean[] = [];
             const stop = h.svc.onConnectionStateChange((isConnected) => states.push(isConnected));
@@ -803,7 +809,7 @@ describe('GatewayChatService', () => {
             await connecting;
             h.socket().emit('close', 1006, Buffer.alloc(0));
             stop();
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             expect(h.svc.isRunning).toBe(true);
@@ -812,8 +818,9 @@ describe('GatewayChatService', () => {
 
         it('opens its socket with the ws package by default', async () => {
             const socket = createMockSocket();
-            const ws = jest.requireMock<jest.Mock>('ws');
-            ws.mockImplementation(() => socket);
+            const ws = wsCtorMock;
+            // a `function`, not an arrow: the loader's result is called with `new`
+            ws.mockImplementation(function () { return socket; });
             const svc = new GatewayChatService({ url: 'ws://gateway.test:18789', token: TOKEN });
             services.push(svc);
             const connecting = svc.connect();
@@ -890,32 +897,32 @@ describe('GatewayChatService', () => {
         });
 
         it('ignores an unchanged endpoint and does not reconnect a client that never connected', () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             h.svc.updateConnection('ws://gateway.test:18789', TOKEN);
             h.svc.updateConnection('ws://gateway.test:18789', 'other');
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(0);
             expect(h.svc.getGatewayIdentity()).toBe(JSON.stringify(['ws://gateway.test:18789', 'other']));
         });
 
         it('suspends: aborts the local run, finishes its sink and stops reconnecting', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             h.svc.suspend();
             expect(h.sockets[0].lastRequest('chat.abort').params).toEqual({ sessionKey: CANONICAL_MAIN, runId });
             expect(run.events).toEqual([{ type: 'done' }]);
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
 
         it('times out an unanswered RPC and reports a socket that cannot send', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const listing = h.svc.listSessions();
-            jest.advanceTimersByTime(30_000);
+            vi.advanceTimersByTime(30_000);
             await expect(listing).rejects.toThrow('gateway rpc timeout method=sessions.list');
             h.socket().send = () => {
                 throw new Error(`broken pipe ${TOKEN}`);
@@ -999,12 +1006,12 @@ describe('GatewayChatService', () => {
         });
 
         it('keeps sinks of a session whose subscription failed after a reconnect, but ends its run', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().replyError('sessions.messages.subscribe', { code: 'UNAVAILABLE', message: 'busy' });
@@ -1120,12 +1127,12 @@ describe('GatewayChatService', () => {
         });
 
         it('leaves runs alone when the history does not say which are active', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1167,22 +1174,22 @@ describe('GatewayChatService', () => {
         });
 
         it('retries a throttled rejection at the slowest pace and a plain one at once', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const throttled = harness();
             const first = throttled.svc.connect();
             throttled.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             throttled.socket().replyError('connect', { code: 'UNAVAILABLE', message: 'locked', details: { code: 'AUTH_RATE_LIMITED' } });
             await first.catch(() => undefined);
-            jest.advanceTimersByTime(999);
+            vi.advanceTimersByTime(999);
             expect(throttled.sockets).toHaveLength(1);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(throttled.sockets).toHaveLength(2);
             const plain = harness();
             const second = plain.svc.connect();
             plain.socket().receive(eventFrame('connect.challenge', payloads.challenge()));
             plain.socket().replyError('connect', { code: 'UNAVAILABLE', message: 'busy' });
             await second.catch(() => undefined);
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(plain.sockets).toHaveLength(2);
         });
 
@@ -1193,11 +1200,11 @@ describe('GatewayChatService', () => {
         });
 
         it('reconnects promptly after a shutdown that names no restart time', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'shutdown', { reason: 'stopping' });
             h.socket().emit('close', 1012, Buffer.alloc(0));
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(h.sockets).toHaveLength(2);
         });
     });
@@ -1392,12 +1399,12 @@ describe('GatewayChatService', () => {
         });
 
         it('finishes a tracked run the transcript mentions without a final text', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1410,13 +1417,13 @@ describe('GatewayChatService', () => {
 
     describe('review regressions', () => {
         it('re-sends a send the RPC timeout cut off under the same run id, then reports it unconfirmed', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             for (let attempt = 0; attempt < 3; attempt++) {
-                jest.advanceTimersByTime(30_000);
+                vi.advanceTimersByTime(30_000);
                 await settle();
             }
             const sends = h.socket().requests().filter((request) => request.method === 'chat.send');
@@ -1426,7 +1433,7 @@ describe('GatewayChatService', () => {
         });
 
         it('re-sends after a reconnect when the answer to chat.send was lost, and follows the run', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1435,7 +1442,7 @@ describe('GatewayChatService', () => {
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await settle();
             expect(run.events).toEqual([]);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1448,16 +1455,16 @@ describe('GatewayChatService', () => {
         });
 
         it('retries a retryable refusal after the delay the gateway asked for', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             h.socket().replyError('chat.send', { code: 'UNAVAILABLE', message: 'queue full', retryable: true, retryAfterMs: 2000 });
             await settle();
-            jest.advanceTimersByTime(1999);
+            vi.advanceTimersByTime(1999);
             expect(h.socket().requests().filter((request) => request.method === 'chat.send')).toHaveLength(1);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(h.socket().requests().filter((request) => request.method === 'chat.send')).toHaveLength(2);
             h.socket().replyError('chat.send', { code: 'INVALID_REQUEST', message: 'bad' });
             await settle();
@@ -1465,14 +1472,14 @@ describe('GatewayChatService', () => {
         });
 
         it('does not let a run seen before a drop hold the next send open', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             h.svc.resumeSession(CANONICAL_MAIN, () => undefined, { historyRendered: true });
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             receive(h, 'chat', payloads.status({ runId: 'foreign', seq: 0 }));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             const run = send(h, CANONICAL_MAIN);
@@ -1513,13 +1520,13 @@ describe('GatewayChatService', () => {
         });
 
         it('does not finish a tracked run that moved on during the read', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'A', 'A'));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1533,7 +1540,7 @@ describe('GatewayChatService', () => {
         });
 
         it('replays rows missed during an outage even when a live row overtakes the read', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const seen: ChatEvent[] = [];
             h.svc.seedHistory('main', { messages: [{ role: 'assistant', text: 'old', entryId: null, seq: 9, runId: 'r0', usage: null, truncated: false }], cursor: 'c9', inFlightRunId: null, activeRunIds: [], olderPageOffset: null });
@@ -1543,7 +1550,7 @@ describe('GatewayChatService', () => {
             h.socket().reply('chat.history', payloads.historyDelta([], 'c9'));
             await settle();
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1559,17 +1566,17 @@ describe('GatewayChatService', () => {
         });
 
         it('waits for an announced restart once, then backs off normally', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             receive(h, 'shutdown', { reason: 'restart', restartExpectedMs: 5000 });
             h.socket().emit('close', 1012, Buffer.alloc(0));
-            jest.advanceTimersByTime(5000);
+            vi.advanceTimersByTime(5000);
             expect(h.sockets).toHaveLength(2);
             h.socket().emit('close', 1006, Buffer.alloc(0));
             await settle();
-            jest.advanceTimersByTime(199);
+            vi.advanceTimersByTime(199);
             expect(h.sockets).toHaveLength(2);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(h.sockets).toHaveLength(3);
         });
     });
@@ -1588,13 +1595,13 @@ describe('GatewayChatService', () => {
         });
 
         it('finishes a run from a truncated row only with what extends the streamed text', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
             receive(h, 'chat', payloads.delta({ runId, seq: 1 }, 'Streamed ', 'Streamed '));
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1651,14 +1658,14 @@ describe('GatewayChatService', () => {
         });
 
         it('refuses a connection that was granted none of the operator scopes', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness();
             const connecting = h.svc.connect();
             const hello = payloads.helloOk();
             completeHandshake(h.socket(), { ...hello, auth: { role: 'operator', scopes: [] } });
             const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
             expect(error.rejection).toMatchObject({ kind: 'permanent', code: 'MISSING_SCOPE', hint: expect.stringContaining('approve this device') });
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
 
@@ -1689,7 +1696,7 @@ describe('GatewayChatService', () => {
         });
 
         it('retries a retryable refusal without a delay after a second, and only while connected', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1697,9 +1704,9 @@ describe('GatewayChatService', () => {
             h.socket().replyError('chat.send', { code: 'UNAVAILABLE', message: 'busy', retryable: true });
             await settle();
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(999);
+            vi.advanceTimersByTime(999);
             expect(h.sockets[0].requests().filter((request) => request.method === 'chat.send')).toHaveLength(1);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             completeHandshake(h.socket());
             await settle();
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
@@ -1761,14 +1768,14 @@ describe('GatewayChatService', () => {
         });
 
         it('re-subscribes only sessions that still have sinks after a reconnect', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             h.svc.restoreSessionState('agent:idle:main', { cursor: 'c', lastSeq: 1 });
             h.svc.resumeSession(CANONICAL_MAIN, () => undefined, { historyRendered: true });
             h.socket().reply('sessions.messages.subscribe', payloads.subscribed());
             await settle();
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             completeHandshake(h.socket());
             await settle();
             expect(h.socket().requests().filter((request) => request.method === 'sessions.messages.subscribe').map((request) => request.params)).toEqual([{ key: CANONICAL_MAIN }]);
@@ -1799,7 +1806,7 @@ describe('GatewayChatService', () => {
 
     describe('lifecycle', () => {
         it('settles pending requests, finishes sinks and stays silent after dispose', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await connected();
             const run = send(h);
             const runId = await accepted(h);
@@ -1808,7 +1815,7 @@ describe('GatewayChatService', () => {
             await expect(listing).rejects.toThrow('gateway client disposed');
             expect(run.events).toEqual([{ type: 'done' }]);
             h.sockets[0].receive(eventFrame('chat', payloads.final({ runId, seq: 1 }, 'late')));
-            jest.advanceTimersByTime(120_000);
+            vi.advanceTimersByTime(120_000);
             expect(run.events).toEqual([{ type: 'done' }]);
             expect(h.sockets).toHaveLength(1);
             await expect(h.svc.connect()).rejects.toThrow('disposed');
@@ -1890,13 +1897,13 @@ describe('GatewayChatService', () => {
         });
 
         it('keeps the token the gateway issued under its origin, and leaves an unchanged one alone', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             const h = await deviceConnected(store, helloIssuing('dtok-1'));
             await settle();
             expect(store.tokens.get(GATEWAY_ORIGIN)).toEqual({ deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-1', scopes: expect.any(Array) });
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await answerChallenge(h);
             h.socket().reply('connect', helloIssuing('dtok-1'));
             await settle();
@@ -1923,7 +1930,7 @@ describe('GatewayChatService', () => {
         });
 
         it('waits for a pending approval, asking again at a slow pace, and resumes once approved', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             const h = harness({ device: store });
             const states = pairingStates(h);
@@ -1933,9 +1940,9 @@ describe('GatewayChatService', () => {
             const error = (await connecting.catch((err: unknown) => err)) as GatewayConnectError;
             expect(error.rejection).toMatchObject({ kind: 'pause', pairing: { requestId: 'req-1' } });
             expect(states).toEqual([{ status: 'pending', request: { requestId: 'req-1', reason: 'not-paired' }, hint: expect.stringContaining('openclaw devices approve req-1') }]);
-            jest.advanceTimersByTime(4999);
+            vi.advanceTimersByTime(4999);
             expect(h.sockets).toHaveLength(1);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(h.sockets).toHaveLength(2);
             await answerChallenge(h);
             h.socket().reply('connect', helloIssuing('dtok-approved'));
@@ -1946,7 +1953,7 @@ describe('GatewayChatService', () => {
         });
 
         it('stops asking once the approval wait limit passes, until the next explicit connect', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness({ device: new MemoryDeviceStore() });
             const states = pairingStates(h);
             h.svc.connect().catch(() => undefined);
@@ -1954,12 +1961,12 @@ describe('GatewayChatService', () => {
                 await answerChallenge(h);
                 h.socket().replyError('connect', pairingRequired('req-1'));
                 await settle();
-                jest.advanceTimersByTime(5000);
+                vi.advanceTimersByTime(5000);
             }
             expect(states[states.length - 1]).toMatchObject({ status: 'expired', request: { requestId: 'req-1' } });
             expect(h.sockets.length).toBeGreaterThan(170);
             const attempts = h.sockets.length;
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(attempts);
             h.svc.connect().catch(() => undefined);
             await answerChallenge(h);
@@ -1969,7 +1976,7 @@ describe('GatewayChatService', () => {
         });
 
         it('stops a wait_then_retry pairing wait at the limit instead of restarting it on every reconnect', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = harness({ device: new MemoryDeviceStore() });
             const states = pairingStates(h);
             const waiting = { code: 'NOT_PAIRED', message: 'pairing required', details: { code: 'PAIRING_REQUIRED', reason: 'not-paired', requestId: 'req-1', recommendedNextStep: 'wait_then_retry', pauseReconnect: false } };
@@ -1978,17 +1985,17 @@ describe('GatewayChatService', () => {
                 await answerChallenge(h);
                 h.socket().replyError('connect', waiting);
                 await settle();
-                jest.advanceTimersByTime(1000);
+                vi.advanceTimersByTime(1000);
             }
             expect(states[states.length - 1]).toMatchObject({ status: 'expired' });
             const attempts = h.sockets.length;
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(attempts);
             expect(states.filter((state) => state.status === 'expired')).toHaveLength(1);
         });
 
         it('ignores the late rejection of a handshake retired by new settings', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             store.tokens.set('ws://127.0.0.1:18789', { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-local', scopes: [] });
             store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-remote', scopes: [] });
@@ -2003,14 +2010,14 @@ describe('GatewayChatService', () => {
             h.svc.updateConnection('ws://127.0.0.1:18789', TOKEN);
             retired.replyError('connect', tokenMismatch);
             await settle();
-            jest.advanceTimersByTime(2000);
+            vi.advanceTimersByTime(2000);
             await answerChallenge(h);
             expect(h.sockets).toHaveLength(2);
             expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN });
         });
 
         it('retries a refused shared token once with the stored device token, and forgets a refused one', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-old', scopes: ['operator.read'] });
             const h = harness({ device: store, trustsDeviceTokenRetry: true });
@@ -2019,18 +2026,18 @@ describe('GatewayChatService', () => {
             expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN });
             h.socket().replyError('connect', tokenMismatch);
             await expect(connecting).rejects.toMatchObject({ rejection: { kind: 'backoff', code: 'AUTH_TOKEN_MISMATCH' } });
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await answerChallenge(h);
             expect(h.socket().lastRequest('connect').params.auth).toEqual({ token: TOKEN, deviceToken: 'dtok-old' });
             h.socket().replyError('connect', { code: 'INVALID_REQUEST', message: 'unauthorized: device token mismatch', details: { code: 'AUTH_DEVICE_TOKEN_MISMATCH' } });
             await settle();
             expect(store.tokens.has(GATEWAY_ORIGIN)).toBe(false);
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(2);
         });
 
         it('offers no stored device token to an untrusted endpoint', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             store.tokens.set(GATEWAY_ORIGIN, { deviceId: store.identity.deviceId, role: 'operator', token: 'dtok-old', scopes: [] });
             const h = harness({ device: store });
@@ -2038,17 +2045,17 @@ describe('GatewayChatService', () => {
             await answerChallenge(h);
             h.socket().replyError('connect', tokenMismatch);
             await expect(connecting).rejects.toMatchObject({ rejection: { kind: 'permanent' } });
-            jest.advanceTimersByTime(60_000);
+            vi.advanceTimersByTime(60_000);
             expect(h.sockets).toHaveLength(1);
         });
 
         it('stops a run it started before a reconnect, as the same device', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await deviceConnected(new MemoryDeviceStore());
             const run = send(h, CANONICAL_MAIN);
             const runId = await accepted(h);
             h.socket().emit('close', 1006, Buffer.alloc(0));
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await answerChallenge(h);
             h.socket().reply('connect', payloads.helloOk());
             await settle();
@@ -2070,14 +2077,14 @@ describe('GatewayChatService', () => {
         }
 
         async function reconnectAsDevice(h: Harness): Promise<void> {
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await answerChallenge(h);
             h.socket().reply('connect', payloads.helloOk());
             await settle();
         }
 
         it('holds a cancel made while disconnected and sends it right after the same device reconnects', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { h, run, runId } = await cancelledWhileDown(new MemoryDeviceStore());
             expect(run.events).toEqual([]);
             await reconnectAsDevice(h);
@@ -2089,7 +2096,7 @@ describe('GatewayChatService', () => {
         });
 
         it('sends an abort lost with its socket again after the same device reconnects', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const h = await deviceConnected(new MemoryDeviceStore());
             const run = send(h, CANONICAL_MAIN);
             const runId = await accepted(h);
@@ -2106,7 +2113,7 @@ describe('GatewayChatService', () => {
         });
 
         it('says the run continues when the gateway refuses the held cancel', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { h, run } = await cancelledWhileDown(new MemoryDeviceStore());
             await reconnectAsDevice(h);
             h.socket().replyError('chat.abort', { code: 'INVALID_REQUEST', message: 'unauthorized' });
@@ -2115,7 +2122,7 @@ describe('GatewayChatService', () => {
         });
 
         it('drops a held cancel when the device identity changes, and says the run continues', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             const { h, run } = await cancelledWhileDown(store);
             store.identity = generateDeviceIdentity();
@@ -2126,24 +2133,24 @@ describe('GatewayChatService', () => {
         });
 
         it('gives a held cancel up when no handshake completes in time', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { h, run } = await cancelledWhileDown(new MemoryDeviceStore());
-            jest.advanceTimersByTime(119_000);
+            vi.advanceTimersByTime(119_000);
             expect(run.events).toEqual([]);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             expect(run.events).toEqual([{ type: 'notice', text: expect.stringContaining('It continues on the gateway') }, { type: 'done' }]);
             expect(h.sockets.every((socket) => !methods(socket).includes('chat.abort'))).toBe(true);
         });
 
         it('cannot stop a run an earlier identity started, and says so', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const store = new MemoryDeviceStore();
             const h = await deviceConnected(store);
             const run = send(h, CANONICAL_MAIN);
             await accepted(h);
             store.identity = generateDeviceIdentity();
             h.svc.resetDeviceIdentity();
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             await answerChallenge(h);
             expect(h.socket().lastRequest('connect').params.device).toMatchObject({ id: store.identity.deviceId });
             h.socket().reply('connect', payloads.helloOk());

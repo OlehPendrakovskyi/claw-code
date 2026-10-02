@@ -1,7 +1,7 @@
 const mockPlatform = { current: 'linux' as NodeJS.Platform };
 
-jest.mock('os', () => {
-    const actual = jest.requireActual('os');
+vi.mock('os', async () => {
+    const actual = await vi.importActual<typeof import('os')>('os');
     return {
         ...actual,
         platform: () => mockPlatform.current

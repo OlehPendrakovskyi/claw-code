@@ -1,62 +1,65 @@
+import type { Mock, MockedFunction } from 'vitest';
 import type * as GatewayConfig from '../core/gatewayConfig';
 import type { PairingState } from '../core/gatewayChatService';
 
-const mockConnect = jest.fn();
-// Declare before the hoisted jest.mock factories: they reference these
+const mockConnect = vi.fn();
+// Declare before the hoisted vi.mock factories: they reference these
 // spies, and the factory can run before later const initializers.
-const mockUpdateConnection = jest.fn();
-const mockSuspend = jest.fn();
-const mockGetProtocolVersion = jest.fn((): number | null => 4);
-const mockResetDeviceIdentity = jest.fn();
+const mockUpdateConnection = vi.fn();
+const mockSuspend = vi.fn();
+const mockGetProtocolVersion = vi.fn((): number | null => 4);
+const mockResetDeviceIdentity = vi.fn();
 const mockIdentityListeners: Array<() => void> = [];
 const mockDeviceStore = {
     onDidChangeIdentity: (listener: () => void) => {
         mockIdentityListeners.push(listener);
         return { dispose: () => undefined };
     },
-    dispose: jest.fn(),
+    dispose: vi.fn(),
 };
 
-jest.mock('../core/gatewayConfig', () => ({
-    isValidGatewayUrl: jest.requireActual('../core/gatewayConfig').isValidGatewayUrl,
-    sendsTokenInCleartext: jest.requireActual('../core/gatewayConfig').sendsTokenInCleartext,
-    getGatewaySettings: jest.fn(),
-    getGatewayToken: jest.fn(),
-    migrateLegacyGatewayToken: jest.fn(async () => undefined),
-    isLoopbackGatewayUrl: jest.requireActual('../core/gatewayConfig').isLoopbackGatewayUrl,
-    SecretDeviceCredentialStore: jest.fn(() => mockDeviceStore),
+vi.mock('../core/gatewayConfig', async () => ({
+    isValidGatewayUrl: (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).isValidGatewayUrl,
+    sendsTokenInCleartext: (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).sendsTokenInCleartext,
+    getGatewaySettings: vi.fn(),
+    getGatewayToken: vi.fn(),
+    migrateLegacyGatewayToken: vi.fn(async () => undefined),
+    isLoopbackGatewayUrl: (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).isLoopbackGatewayUrl,
+    SecretDeviceCredentialStore: vi.fn(function () { return mockDeviceStore; }),
 }));
 
 const mockConnectionListeners: Array<(connected: boolean) => void> = [];
 const mockPairingListeners: Array<(state: PairingState) => void> = [];
 
-jest.mock('../core/gatewayChatService', () => ({
-    GatewayChatService: jest.fn().mockImplementation(() => ({
-        connect: mockConnect,
-        dispose: jest.fn(),
-        updateConnection: mockUpdateConnection,
-        suspend: mockSuspend,
-        getProtocolVersion: mockGetProtocolVersion,
-        onConnectionStateChange: (listener: (connected: boolean) => void) => {
-            mockConnectionListeners.push(listener);
-            return () => undefined;
-        },
-        onPairingChange: (listener: (state: PairingState) => void) => {
-            mockPairingListeners.push(listener);
-            return () => undefined;
-        },
-        resetDeviceIdentity: mockResetDeviceIdentity,
-    })),
+vi.mock('../core/gatewayChatService', () => ({
+    GatewayChatService: vi.fn().mockImplementation(function () {
+        return {
+            connect: mockConnect,
+            dispose: vi.fn(),
+            updateConnection: mockUpdateConnection,
+            suspend: mockSuspend,
+            getProtocolVersion: mockGetProtocolVersion,
+            onConnectionStateChange: (listener: (connected: boolean) => void) => {
+                mockConnectionListeners.push(listener);
+                return () => undefined;
+            },
+            onPairingChange: (listener: (state: PairingState) => void) => {
+                mockPairingListeners.push(listener);
+                return () => undefined;
+            },
+            resetDeviceIdentity: mockResetDeviceIdentity,
+        };
+    }),
 }));
 
-jest.mock('../webview/viewMessaging', () => ({
-    log: { warn: jest.fn(), info: jest.fn(), error: jest.fn(), debug: jest.fn() },
+vi.mock('../webview/viewMessaging', () => ({
+    log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-jest.mock('../chat/ChatService', () => ({
+vi.mock('../chat/ChatService', () => ({
     // Use `this`-based construction (no returned object literal) so
     // `existing instanceof ChatService` in the factory stays true.
-    ChatService: jest.fn(function (this: { kind: string }) {
+    ChatService: vi.fn(function (this: { kind: string }) {
         this.kind = 'acpx-mock';
     }),
 }));
@@ -68,8 +71,8 @@ import { ChatService } from '../chat/ChatService';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
 import type { HandshakeRejection } from '../core/gatewayProtocol/model';
 
-const mockSettings = getGatewaySettings as jest.MockedFunction<typeof GatewayConfig.getGatewaySettings>;
-const mockToken = getGatewayToken as jest.MockedFunction<typeof GatewayConfig.getGatewayToken>;
+const mockSettings = getGatewaySettings as MockedFunction<typeof GatewayConfig.getGatewaySettings>;
+const mockToken = getGatewayToken as MockedFunction<typeof GatewayConfig.getGatewayToken>;
 
 import * as vscode from 'vscode';
 
@@ -93,7 +96,7 @@ async function changeSecrets(): Promise<void> {
 }
 
 async function changeConfiguration(section: string): Promise<void> {
-    for (const [listener] of jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls) {
+    for (const [listener] of vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls) {
         (listener as (event: { affectsConfiguration: (name: string) => boolean }) => void)({
             affectsConfiguration: (name) => section.startsWith(name),
         });
@@ -115,7 +118,7 @@ function statusSpy() {
 }
 
 beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     secretListeners = [];
     mockConnectionListeners.length = 0;
     mockPairingListeners.length = 0;
@@ -233,7 +236,7 @@ describe('ChatServiceFactory', () => {
     describe('gateway URL validation', () => {
         it('suspends a previously connected client when the URL turns invalid', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -308,7 +311,7 @@ describe('ChatServiceFactory', () => {
     describe('transport switch to acpx', () => {
         it('invalidates gateway runs and suspends the client once, not on every acpx send', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -323,7 +326,7 @@ describe('ChatServiceFactory', () => {
 
         it('does not invalidate anything when no gateway client was ever created', async () => {
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
 
             await factory.resolve();
@@ -335,7 +338,7 @@ describe('ChatServiceFactory', () => {
     describe('token revocation', () => {
         it('reports a token that disappeared as an identity change, not a transport switch', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -351,40 +354,40 @@ describe('ChatServiceFactory', () => {
 
     describe('legacy token migration wait', () => {
         afterEach(() => {
-            jest.useRealTimers();
+            vi.useRealTimers();
         });
 
         it('resolves without the migration when it hangs past the wait limit', async () => {
-            jest.useFakeTimers();
-            jest.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
+            vi.useFakeTimers();
+            vi.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
 
             const pending = factory.resolve();
-            await jest.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
 
             await expect(pending).resolves.toMatchObject({ transport: 'acpx' });
         });
 
         it('does not make every later send wait again for the same hung migration', async () => {
-            jest.useFakeTimers();
-            jest.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
+            vi.useFakeTimers();
+            vi.mocked(migrateLegacyGatewayToken).mockReturnValueOnce(new Promise(() => undefined));
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             const first = factory.resolve();
-            await jest.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
             await first;
 
-            const settled = jest.fn();
+            const settled = vi.fn();
             void factory.resolve().then(settled);
-            await jest.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(0);
 
             expect(settled).toHaveBeenCalledWith(expect.objectContaining({ transport: 'acpx' }));
             expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
         });
 
         it('retries an incomplete migration on the next send', async () => {
-            jest.mocked(migrateLegacyGatewayToken).mockResolvedValueOnce('incomplete').mockResolvedValueOnce('completed');
+            vi.mocked(migrateLegacyGatewayToken).mockResolvedValueOnce('incomplete').mockResolvedValueOnce('completed');
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             await factory.resolve();
@@ -394,7 +397,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('retries a migration that failed, and still resolves the send', async () => {
-            jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
+            vi.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
             await expect(factory.resolve()).resolves.toMatchObject({ transport: 'acpx' });
@@ -411,7 +414,7 @@ describe('ChatServiceFactory', () => {
             factory.dispose();
             const second = await factory.resolve();
 
-            expect(jest.mocked(first.service as GatewayChatService).dispose).toHaveBeenCalledTimes(1);
+            expect(vi.mocked(first.service as GatewayChatService).dispose).toHaveBeenCalledTimes(1);
             expect(second.service).not.toBe(first.service);
             expect(GatewayChatService).toHaveBeenCalledTimes(2);
             expect(mockUpdateConnection).not.toHaveBeenCalled();
@@ -425,7 +428,7 @@ describe('ChatServiceFactory', () => {
     describe('SecretStorage read failures after a connect', () => {
         it('falls back to acpx without suspending the client, and resumes it without re-authenticating', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -439,21 +442,21 @@ describe('ChatServiceFactory', () => {
         });
 
         it('treats a hung keyring as a failed read', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             try {
                 mockToken.mockReturnValue(new Promise(() => undefined));
                 const factory = new ChatServiceFactory(contextStub());
                 const auto = factory.resolve();
-                await jest.advanceTimersByTimeAsync(5000);
+                await vi.advanceTimersByTimeAsync(5000);
                 await expect(auto).resolves.toMatchObject({ transport: 'acpx' });
 
                 mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'gateway', protocolVersion: 'auto' });
                 const forced = factory.resolve();
                 const failure = expect(forced).rejects.toThrow('SecretStorage');
-                await jest.advanceTimersByTimeAsync(5000);
+                await vi.advanceTimersByTimeAsync(5000);
                 await failure;
             } finally {
-                jest.useRealTimers();
+                vi.useRealTimers();
             }
         });
     });
@@ -462,7 +465,7 @@ describe('ChatServiceFactory', () => {
         it('parks a previously connected client instead of reconnecting it tokenless', async () => {
             mockConnect.mockResolvedValue(undefined);
             const spy = statusSpy();
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), spy.onStatus, onInvalidated);
             await factory.resolve();
 
@@ -479,7 +482,7 @@ describe('ChatServiceFactory', () => {
 
         it('does not re-authenticate when the same token comes back after a suspension', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
             mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'acpx', protocolVersion: 'auto' });
@@ -507,7 +510,7 @@ describe('ChatServiceFactory', () => {
 
         it('parks the client as soon as the transport switches to acpx', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -538,7 +541,7 @@ describe('ChatServiceFactory', () => {
 
         it('reconnects a live client with the new hello when the protocol version setting changes', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
             expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: 'ws://127.0.0.1:18789', token: 'secret-token', protocol: 'auto' }));
@@ -553,7 +556,7 @@ describe('ChatServiceFactory', () => {
 
         it('leaves the client alone when the protocol version setting is unchanged', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const onInvalidated = jest.fn();
+            const onInvalidated = vi.fn();
             const factory = new ChatServiceFactory(contextStub(), undefined, onInvalidated);
             await factory.resolve();
 
@@ -576,9 +579,9 @@ describe('ChatServiceFactory', () => {
 
         it('stops listening once disposed', async () => {
             mockConnect.mockResolvedValue(undefined);
-            const disposals: jest.Mock[] = [];
-            jest.mocked(vscode.workspace.onDidChangeConfiguration).mockImplementationOnce(() => {
-                const dispose = jest.fn();
+            const disposals: Mock[] = [];
+            vi.mocked(vscode.workspace.onDidChangeConfiguration).mockImplementationOnce(() => {
+                const dispose = vi.fn();
                 disposals.push(dispose);
                 return { dispose };
             });
@@ -681,14 +684,14 @@ describe('ChatServiceFactory', () => {
             const factory = new ChatServiceFactory(contextStub());
             mockConnect.mockResolvedValue(undefined);
             await factory.resolve();
-            const options = jest.mocked(GatewayChatService).mock.calls[0][0];
+            const options = vi.mocked(GatewayChatService).mock.calls[0][0];
             expect(options.deviceCredentials).toBe(mockDeviceStore);
             expect(options.trustsDeviceTokenRetry?.('ws://127.0.0.1:18789')).toBe(true);
             expect(options.trustsDeviceTokenRetry?.('wss://gateway.example')).toBe(false);
         });
 
         it('announces each pairing request once, with the approve command to copy, and then its approval', async () => {
-            jest.mocked(vscode.window.showWarningMessage).mockResolvedValue('Copy Command' as never);
+            vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('Copy Command' as never);
             const factory = new ChatServiceFactory(contextStub());
             mockConnect.mockResolvedValue(undefined);
             await factory.resolve();
@@ -710,7 +713,7 @@ describe('ChatServiceFactory', () => {
         });
 
         it('says when it gave up waiting for an approval', async () => {
-            jest.mocked(vscode.window.showWarningMessage).mockResolvedValue(undefined);
+            vi.mocked(vscode.window.showWarningMessage).mockResolvedValue(undefined);
             const factory = new ChatServiceFactory(contextStub());
             mockConnect.mockResolvedValue(undefined);
             await factory.resolve();

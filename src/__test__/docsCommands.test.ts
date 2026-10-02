@@ -3,13 +3,13 @@ import { copyInstallCommand, openDashboard, openDocs, openNodeDocs, openOnboardD
 import { getDashboardUrl } from '../vscode/config';
 import { OPENCLAW_NPM_INSTALL } from '../core/setupOptions';
 
-jest.mock('../vscode/config', () => ({ getDashboardUrl: jest.fn(() => 'http://127.0.0.1:18789/') }));
+vi.mock('../vscode/config', () => ({ getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789/') }));
 
-const openExternal = jest.mocked(vscode.env.openExternal);
-const showErrorMessage = jest.mocked(vscode.window.showErrorMessage);
-const writeText = jest.mocked(vscode.env.clipboard.writeText);
-const showInformationMessage = jest.mocked(vscode.window.showInformationMessage);
-const dashboardUrl = jest.mocked(getDashboardUrl);
+const openExternal = vi.mocked(vscode.env.openExternal);
+const showErrorMessage = vi.mocked(vscode.window.showErrorMessage);
+const writeText = vi.mocked(vscode.env.clipboard.writeText);
+const showInformationMessage = vi.mocked(vscode.window.showInformationMessage);
+const dashboardUrl = vi.mocked(getDashboardUrl);
 
 describe('docs commands', () => {
     beforeEach(() => {

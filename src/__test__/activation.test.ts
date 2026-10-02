@@ -6,19 +6,19 @@ import { connect, log } from '../vscode/commands';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
 
-jest.mock('../chat/acpxProjectConfig', () => ({
-    ...jest.requireActual('../chat/acpxProjectConfig'),
-    useProjectConfigApprovalStore: jest.fn(),
+vi.mock('../chat/acpxProjectConfig', async () => ({
+    ...await vi.importActual<typeof import('../chat/acpxProjectConfig')>('../chat/acpxProjectConfig'),
+    useProjectConfigApprovalStore: vi.fn(),
 }));
-jest.mock('../core/gatewayConfig', () => ({
-    ...jest.requireActual('../core/gatewayConfig'),
-    migrateLegacyGatewayToken: jest.fn(async () => undefined),
-    promptForGatewayToken: jest.fn(async () => false),
+vi.mock('../core/gatewayConfig', async () => ({
+    ...await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig'),
+    migrateLegacyGatewayToken: vi.fn(async () => undefined),
+    promptForGatewayToken: vi.fn(async () => false),
 }));
 
-jest.mock('../vscode/commands', () => ({
-    ...jest.requireActual('../vscode/commands'),
-    connect: jest.fn(async () => undefined),
+vi.mock('../vscode/commands', async () => ({
+    ...await vi.importActual<typeof import('../vscode/commands')>('../vscode/commands'),
+    connect: vi.fn(async () => undefined),
 }));
 
 type ConfigurationListener = (event: { affectsConfiguration(section: string): boolean }) => void;
@@ -53,11 +53,11 @@ function makeContext(): { context: vscode.ExtensionContext; subscriptions: vscod
 }
 
 function registeredCommands(): string[] {
-    return jest.mocked(vscode.commands.registerCommand).mock.calls.map(call => call[0]);
+    return vi.mocked(vscode.commands.registerCommand).mock.calls.map(call => call[0]);
 }
 
 function runCommand(id: string): unknown {
-    const call = jest.mocked(vscode.commands.registerCommand).mock.calls.find(c => c[0] === id);
+    const call = vi.mocked(vscode.commands.registerCommand).mock.calls.find(c => c[0] === id);
     if (!call) {
         throw new Error(`${id} not registered`);
     }
@@ -66,7 +66,7 @@ function runCommand(id: string): unknown {
 
 /** Fans a change out to every registered listener: the chat view registers its own beside activate's. */
 function configurationListener(): ConfigurationListener {
-    const listeners = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls.map(call => call[0] as ConfigurationListener);
+    const listeners = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls.map(call => call[0] as ConfigurationListener);
     if (!listeners.length) {
         throw new Error('no configuration listener registered');
     }
@@ -81,7 +81,7 @@ function withSettings(values: Record<string, unknown>): void {
         inspect: () => undefined,
         update: async () => undefined,
     };
-    jest.mocked(vscode.workspace.getConfiguration).mockImplementation(() => configuration);
+    vi.mocked(vscode.workspace.getConfiguration).mockImplementation(() => configuration);
 }
 
 /** Every `openclaw` key the extension reads or writes, found in source so a new read cannot skip package.json. */
@@ -101,7 +101,7 @@ function settingKeysUsedInSource(): string[] {
 
 describe('extension activation', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
         withSettings({});
     });
 
@@ -158,17 +158,17 @@ describe('extension activation', () => {
             runCommand('openclaw.chat.debug');
             runCommand('openclaw.chat.debug');
             expect(vscode.window.createWebviewPanel).toHaveBeenCalledTimes(1);
-            const panel = jest.mocked(vscode.window.createWebviewPanel).mock.results[0].value;
+            const panel = vi.mocked(vscode.window.createWebviewPanel).mock.results[0].value;
             expect(panel.reveal).toHaveBeenCalledTimes(1);
         });
 
         it('logs a failed gateway connect with its secrets redacted before telling the user to check the logs', async () => {
-            jest.mocked(promptForGatewayToken).mockRejectedValueOnce(new Error('store failed for token=abc123 at wss://u:pw@host/x'));
+            vi.mocked(promptForGatewayToken).mockRejectedValueOnce(new Error('store failed for token=abc123 at wss://u:pw@host/x'));
             const { context } = makeContext();
             await activate(context);
             runCommand('openclaw.chat.connectGateway');
             await new Promise(resolve => setImmediate(resolve));
-            const logged = jest.mocked(log.error).mock.calls.map(call => String(call[0])).join('\n');
+            const logged = vi.mocked(log.error).mock.calls.map(call => String(call[0])).join('\n');
             expect(logged).toContain('connectGateway failed');
             expect(logged).not.toContain('abc123');
             expect(logged).not.toContain('pw@');
@@ -196,12 +196,12 @@ describe('extension activation', () => {
             const { context } = makeContext();
             await activate(context);
             expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(1);
-            for (const [listener] of jest.mocked(vscode.workspace.onDidGrantWorkspaceTrust).mock.calls) (listener as () => void)();
+            for (const [listener] of vi.mocked(vscode.workspace.onDidGrantWorkspaceTrust).mock.calls) (listener as () => void)();
             expect(migrateLegacyGatewayToken).toHaveBeenCalledTimes(2);
         });
 
         it('keeps activating when the migration rejects', async () => {
-            jest.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
+            vi.mocked(migrateLegacyGatewayToken).mockRejectedValueOnce(new Error('keyring locked'));
             const { context } = makeContext();
             await expect(activate(context)).resolves.toBeUndefined();
             expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
@@ -210,36 +210,36 @@ describe('extension activation', () => {
 
     describe('auto-connect', () => {
         afterEach(() => {
-            jest.useRealTimers();
+            vi.useRealTimers();
             Object.assign(vscode.workspace, { isTrusted: undefined });
         });
 
         it('does not connect when autoConnect is off', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { context } = makeContext();
             await activate(context);
-            jest.advanceTimersByTime(5000);
+            vi.advanceTimersByTime(5000);
             expect(connect).not.toHaveBeenCalled();
         });
 
         it('connects after the startup delay in a trusted workspace', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             withSettings({ autoConnect: true });
             Object.assign(vscode.workspace, { isTrusted: true });
             const { context } = makeContext();
             await activate(context);
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             expect(connect).toHaveBeenCalledTimes(1);
         });
 
         it('does not connect once the extension is disposed inside the delay', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             withSettings({ autoConnect: true });
             Object.assign(vscode.workspace, { isTrusted: true });
             const { context, subscriptions } = makeContext();
             await activate(context);
             subscriptions.forEach(subscription => subscription.dispose());
-            jest.advanceTimersByTime(1000);
+            vi.advanceTimersByTime(1000);
             expect(connect).not.toHaveBeenCalled();
         });
     });

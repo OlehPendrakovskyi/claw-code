@@ -1,18 +1,20 @@
 import * as vscode from 'vscode';
 
-const mockResolve = jest.fn();
+const mockResolve = vi.fn();
 
-jest.mock('../webview/chatServiceFactory', () => ({
-    ChatServiceFactory: jest.fn().mockImplementation(() => ({
-        resolve: (...args: unknown[]) => mockResolve(...args),
-        dispose: jest.fn(),
-    })),
+vi.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: vi.fn().mockImplementation(function () {
+        return {
+            resolve: (...args: unknown[]) => mockResolve(...args),
+            dispose: vi.fn(),
+        };
+    }),
 }));
 
-jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+vi.mock('../core/gatewayChatService', async () => (await vi.importActual<typeof import('./helpers/mockGatewayService')>('./helpers/mockGatewayService')).mockGatewayModule());
 
-jest.mock('fs', () => {
-    const actual = jest.requireActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs');
     return { ...actual, promises: { ...actual.promises, realpath: async (p: string) => p } };
 });
 
@@ -31,7 +33,7 @@ type FakeView = { webview: vscode.Webview; visible: boolean; show: (preserveFocu
 type TestGateway = GatewayChatService & { emitPrompt(change: PromptChange): void; emitSessionsChanged(sessionKey?: string | null): void };
 
 const { GatewayChatService: MockGatewayChatService } =
-    jest.requireMock<{ GatewayChatService: new () => TestGateway }>('../core/gatewayChatService');
+    await vi.importMock<{ GatewayChatService: new () => TestGateway }>('../core/gatewayChatService');
 
 const MAIN = 'agent:main:main';
 const CODER = 'agent:coder:main';
@@ -80,19 +82,19 @@ function makeWebview(): FakeWebview {
 }
 
 function makeProvider(): FakeWebview {
-    const workspaceState = { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined) };
+    const workspaceState = { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined) };
     const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
-        globalState: { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined), setKeysForSync: jest.fn() },
+        globalState: { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined), setKeysForSync: vi.fn() },
         workspaceState,
     };
     const provider = new ChatViewProvider(vscode.Uri.file('/ext'), context as vscode.ExtensionContext);
     const sidebar = makeWebview();
-    const view: FakeView = { webview: sidebar.webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    const view: FakeView = { webview: sidebar.webview, visible: true, show: vi.fn(), onDidDispose: vi.fn() };
     provider.resolveWebviewView(view as vscode.WebviewView, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
     return sidebar;
 }
 
-const { setImmediate: realSetImmediate } = jest.requireActual<typeof import('timers')>('timers');
+const { setImmediate: realSetImmediate } = await vi.importActual<typeof import('timers')>('timers');
 
 async function flush(): Promise<void> {
     for (let i = 0; i < 10; i++) {
@@ -113,15 +115,15 @@ describe('ChatViewProvider prompts', () => {
     let gateway: TestGateway;
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        vi.useFakeTimers();
         gateway = new MockGatewayChatService();
-        jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: MAIN, label: 'Main' }, { key: CODER, label: 'Coder' }]));
-        jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([]));
+        vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: MAIN, label: 'Main' }, { key: CODER, label: 'Coder' }]));
+        vi.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([]));
         mockResolve.mockReset();
         mockResolve.mockResolvedValue({ service: gateway, transport: 'gateway' });
     });
 
-    afterEach(() => jest.useRealTimers());
+    afterEach(() => vi.useRealTimers());
 
     async function boundTo(sessionKey: string): Promise<FakeWebview> {
         const sidebar = makeProvider();
@@ -159,7 +161,7 @@ describe('ChatViewProvider prompts', () => {
         });
 
         it('sends the time left rather than the host clock deadline', async () => {
-            jest.useFakeTimers({ now: EXPIRES_AT_MS - 90_000 });
+            vi.useFakeTimers({ now: EXPIRES_AT_MS - 90_000 });
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
             expect(promptsOf(sidebar)[0]).toMatchObject({ expiresInMs: 90_000 });
@@ -181,7 +183,7 @@ describe('ChatViewProvider prompts', () => {
         it('resolves an approval with an offered decision and marks it answered here', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockImplementation(async (key, decision) => gateway.emitPrompt({ type: 'resolved', key, outcome: decision }));
+            vi.mocked(gateway.resolveApproval).mockImplementation(async (key, decision) => gateway.emitPrompt({ type: 'resolved', key, outcome: decision }));
             await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
             expect(gateway.resolveApproval).toHaveBeenCalledWith('exec:a1', 'allow-once');
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
@@ -199,7 +201,7 @@ describe('ChatViewProvider prompts', () => {
         it('keeps a row pending with the reason when the answer fails', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('gateway rpc error code=UNAVAILABLE'));
+            vi.mocked(gateway.resolveApproval).mockRejectedValue(new Error('gateway rpc error code=UNAVAILABLE'));
             await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'deny' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'pending', 'gateway rpc error code=UNAVAILABLE']]);
         });
@@ -262,7 +264,7 @@ describe('ChatViewProvider prompts', () => {
         it('reads an answer whose reply was lost as given here once the gateway settles it', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockRejectedValue(new PromptAnswerUnconfirmedError('gateway connection closed'));
+            vi.mocked(gateway.resolveApproval).mockRejectedValue(new PromptAnswerUnconfirmedError('gateway connection closed'));
             await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
             gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'allow-once' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once']]);
@@ -271,7 +273,7 @@ describe('ChatViewProvider prompts', () => {
         it('reads the same decision settled after an answer that was never sent as given elsewhere', async () => {
             const sidebar = await boundTo(MAIN);
             gateway.emitPrompt(requestedChange(APPROVAL));
-            jest.mocked(gateway.resolveApproval).mockRejectedValue(new Error('not connected to the gateway'));
+            vi.mocked(gateway.resolveApproval).mockRejectedValue(new Error('not connected to the gateway'));
             await sidebar.send({ type: 'resolveApproval', threadId: 'thread-1', promptKey: 'exec:a1', decision: 'allow-once' });
             gateway.emitPrompt({ type: 'resolved', key: 'exec:a1', outcome: 'allow-once' });
             expect(summaries(promptsOf(sidebar))).toEqual([['a1', 'resolved', 'Allowed once elsewhere']]);
@@ -291,7 +293,7 @@ describe('ChatViewProvider prompts', () => {
             const sidebar = makeProvider();
             await sidebar.send({ type: 'requestSessions', threadId: 'thread-1' });
             await flush();
-            jest.mocked(vscode.window.showWarningMessage).mockClear();
+            vi.mocked(vscode.window.showWarningMessage).mockClear();
             gateway.emitPrompt(requestedChange({ ...QUESTION, sessionKey: null }));
             expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('no chat thread here shows'));
         });
@@ -300,12 +302,12 @@ describe('ChatViewProvider prompts', () => {
     describe('session index changes', () => {
         it('tells the webviews and refetches the session list on the next key check', async () => {
             const sidebar = await boundTo(MAIN);
-            const listed = jest.mocked(gateway.listSessions).mock.calls.length;
+            const listed = vi.mocked(gateway.listSessions).mock.calls.length;
             gateway.emitSessionsChanged('agent:new:main');
             expect(sidebar.posted.filter(message => message.type === 'sessionsChanged')).toHaveLength(1);
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:new:main', threadId: 'thread-1' });
             await flush();
-            expect(jest.mocked(gateway.listSessions).mock.calls.length).toBeGreaterThan(listed);
+            expect(vi.mocked(gateway.listSessions).mock.calls.length).toBeGreaterThan(listed);
         });
     });
 });

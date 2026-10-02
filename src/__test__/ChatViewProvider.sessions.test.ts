@@ -1,20 +1,23 @@
+import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import type { ChatEvent } from '../chat/ChatService';
 
-const mockResolve = jest.fn();
+const mockResolve = vi.fn();
 
-jest.mock('../webview/chatServiceFactory', () => ({
-    ChatServiceFactory: jest.fn().mockImplementation(() => ({
-        resolve: (...args: unknown[]) => mockResolve(...args),
-        dispose: jest.fn(),
-    })),
+vi.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: vi.fn().mockImplementation(function () {
+        return {
+            resolve: (...args: unknown[]) => mockResolve(...args),
+            dispose: vi.fn(),
+        };
+    }),
 }));
 
-jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+vi.mock('../core/gatewayChatService', async () => (await vi.importActual<typeof import('./helpers/mockGatewayService')>('./helpers/mockGatewayService')).mockGatewayModule());
 
 // Identity realpath keeps sends free of real disk I/O, so flush() is deterministic.
-jest.mock('fs', () => {
-    const actual = jest.requireActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs');
     return { ...actual, promises: { ...actual.promises, realpath: async (p: string) => p } };
 });
 
@@ -53,13 +56,13 @@ type Harness = {
     provider: ChatViewProvider;
     sidebar: FakeWebview;
     view: FakeView;
-    workspaceState: { get: jest.Mock; update: jest.Mock };
+    workspaceState: { get: Mock; update: Mock };
 };
 
 type Deferred<T> = { promise: Promise<T>; resolve(value: T): void };
 
 const { GatewayChatService: MockGatewayChatService } =
-    jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
+    await vi.importMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const LAST_SESSION_KEY = 'openclaw.lastSessionKey';
 
@@ -98,11 +101,11 @@ function makeWebview(): FakeWebview {
 function makeContext(persistedKey?: string): { context: vscode.ExtensionContext; workspaceState: Harness['workspaceState'] } {
     const workspaceState = {
         keys: () => [],
-        get: jest.fn((key: string) => (key === LAST_SESSION_KEY ? persistedKey : undefined)),
-        update: jest.fn(async () => undefined),
+        get: vi.fn((key: string) => (key === LAST_SESSION_KEY ? persistedKey : undefined)),
+        update: vi.fn(async () => undefined),
     };
     const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
-        globalState: { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined), setKeysForSync: jest.fn() },
+        globalState: { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined), setKeysForSync: vi.fn() },
         workspaceState,
     };
     return { context: context as vscode.ExtensionContext, workspaceState };
@@ -112,13 +115,13 @@ function makeProvider(options: { persistedKey?: string } = {}): Harness {
     const { context, workspaceState } = makeContext(options.persistedKey);
     const provider = new ChatViewProvider(vscode.Uri.file('/ext'), context);
     const sidebar = makeWebview();
-    const view: FakeView = { webview: sidebar.webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    const view: FakeView = { webview: sidebar.webview, visible: true, show: vi.fn(), onDidDispose: vi.fn() };
     provider.resolveWebviewView(view as vscode.WebviewView, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
     return { provider, sidebar, view, workspaceState };
 }
 
 // Real setImmediate: the global one is faked.
-const { setImmediate: realSetImmediate } = jest.requireActual<typeof import('timers')>('timers');
+const { setImmediate: realSetImmediate } = await vi.importActual<typeof import('timers')>('timers');
 
 async function flush(): Promise<void> {
     for (let i = 0; i < 10; i++) {
@@ -149,18 +152,18 @@ function lastMessageOf(webview: FakeWebview, threadId: string): Record<string, u
 type MockPanel = {
     active?: boolean;
     visible?: boolean;
-    reveal: jest.Mock;
-    onDidDispose: jest.Mock;
-    webview: { postMessage: jest.Mock; onDidReceiveMessage: jest.Mock };
+    reveal: Mock;
+    onDidDispose: Mock;
+    webview: { postMessage: Mock; onDidReceiveMessage: Mock };
 };
 
 function lastPanel(): MockPanel {
-    const results = jest.mocked(vscode.window.createWebviewPanel).mock.results;
+    const results = vi.mocked(vscode.window.createWebviewPanel).mock.results;
     return results[results.length - 1].value;
 }
 
 /** The pop-out panel the most recent popOut() created, with its message handler. */
-function lastPopOut(): { postMessage: jest.Mock; send(message: unknown): Promise<void>; dispose(): void } {
+function lastPopOut(): { postMessage: Mock; send(message: unknown): Promise<void>; dispose(): void } {
     const panel = lastPanel();
     const [handler] = panel.webview.onDidReceiveMessage.mock.calls[0];
     const [onDispose] = panel.onDidDispose.mock.calls[0];
@@ -168,27 +171,27 @@ function lastPopOut(): { postMessage: jest.Mock; send(message: unknown): Promise
 }
 
 function resumedKeys(gateway: GatewayChatService): string[] {
-    return jest.mocked(gateway.resumeSession).mock.calls.map(call => call[0]);
+    return vi.mocked(gateway.resumeSession).mock.calls.map(call => call[0]);
 }
 
 function transcriptSinkFor(gateway: GatewayChatService, sessionKey: string): (event: ChatEvent) => void {
-    const calls = jest.mocked(gateway.resumeSession).mock.calls.filter(call => call[0] === sessionKey);
+    const calls = vi.mocked(gateway.resumeSession).mock.calls.filter(call => call[0] === sessionKey);
     return calls[calls.length - 1][1];
 }
 
 function lastRunSink(gateway: GatewayChatService): (event: ChatEvent) => void {
-    const calls = jest.mocked(gateway.sendMessage).mock.calls;
+    const calls = vi.mocked(gateway.sendMessage).mock.calls;
     return calls[calls.length - 1][0].onEvent;
 }
 
 /** Session key the most recent send targeted. */
 function lastSentSessionKey(gateway: GatewayChatService): string {
-    const calls = jest.mocked(gateway.sendMessage).mock.calls;
+    const calls = vi.mocked(gateway.sendMessage).mock.calls;
     return calls[calls.length - 1][0].sessionKey;
 }
 
 function pickSession(sessionKey: string): void {
-    (jest.mocked(vscode.window.showQuickPick) as jest.Mock).mockImplementation(
+    (vi.mocked(vscode.window.showQuickPick) as Mock).mockImplementation(
         async (items: Array<{ detail?: string }>) => items.find(item => item.detail === sessionKey)
     );
 }
@@ -197,19 +200,19 @@ describe('ChatViewProvider sessions', () => {
     let gateway: GatewayChatService;
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        vi.useFakeTimers();
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }];
         gateway = new MockGatewayChatService();
-        jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(WARM_ROWS));
+        vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(WARM_ROWS));
         mockResolve.mockReset();
         mockResolve.mockResolvedValue({ service: gateway, transport: 'gateway' });
-        jest.mocked(vscode.window.showWarningMessage).mockClear();
-        jest.mocked(vscode.window.showQuickPick).mockReset();
-        jest.mocked(vscode.window.createWebviewPanel).mockClear();
+        vi.mocked(vscode.window.showWarningMessage).mockClear();
+        vi.mocked(vscode.window.showQuickPick).mockReset();
+        vi.mocked(vscode.window.createWebviewPanel).mockClear();
     });
 
     afterEach(() => {
-        jest.useRealTimers();
+        vi.useRealTimers();
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
     });
 
@@ -244,7 +247,7 @@ describe('ChatViewProvider sessions', () => {
             mockResolve.mockImplementation(() => new Promise(resolve => {
                 resolves.push(() => resolve({ service: gateway, transport: 'gateway' }));
             }));
-            jest.mocked(gateway.getHistory).mockImplementation(async (key: string) => historyOf(key));
+            vi.mocked(gateway.getHistory).mockImplementation(async (key: string) => historyOf(key));
 
             void sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             void sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
@@ -255,7 +258,7 @@ describe('ChatViewProvider sessions', () => {
             await flush();
 
             expect(threadOf(sidebar, 'thread-1').messages).toEqual([{ role: 'user', content: 'agent:main:main' }]);
-            expect(jest.mocked(gateway.getHistory).mock.calls).toEqual([['agent:main:main']]);
+            expect(vi.mocked(gateway.getHistory).mock.calls).toEqual([['agent:main:main']]);
             expect(workspaceState.update.mock.calls).toEqual([[LAST_SESSION_KEY, 'agent:main:main']]);
         });
 
@@ -263,8 +266,8 @@ describe('ChatViewProvider sessions', () => {
             const { sidebar } = makeProvider();
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            jest.mocked(gateway.hasOwnedRun).mockReturnValue(true);
-            jest.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
+            vi.mocked(gateway.hasOwnedRun).mockReturnValue(true);
+            vi.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
 
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
@@ -293,7 +296,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('replaces the previous transcript with a retry notice when a rebind cannot load history', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.getHistory).mockResolvedValueOnce(historyOf('main history')).mockResolvedValueOnce(null);
+            vi.mocked(gateway.getHistory).mockResolvedValueOnce(historyOf('main history')).mockResolvedValueOnce(null);
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
@@ -306,7 +309,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('keeps the transcript when reopening the same session cannot load history', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.getHistory).mockResolvedValueOnce(historyOf('main history')).mockResolvedValueOnce(null);
+            vi.mocked(gateway.getHistory).mockResolvedValueOnce(historyOf('main history')).mockResolvedValueOnce(null);
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
             await flush();
@@ -316,7 +319,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('marks a row the gateway sent in part, on user and assistant rows alike', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([
+            vi.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([
                 { role: 'user', text: `asked for the log${TRUNCATION_MARKER}` },
                 { role: 'assistant', text: `here it is${TRUNCATION_MARKER}` },
             ]));
@@ -336,8 +339,8 @@ describe('ChatViewProvider sessions', () => {
         it('titles the thread with the key when sessions.list fails during the open', async () => {
             const { sidebar } = makeProvider();
             await sidebar.send({ type: 'requestSessions', threadId: 'thread-1' });
-            jest.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
-            jest.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
+            vi.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
 
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
@@ -353,7 +356,7 @@ describe('ChatViewProvider sessions', () => {
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
             await flush();
             const history = deferred<HistorySnapshot | null>();
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
 
             void sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
@@ -361,7 +364,7 @@ describe('ChatViewProvider sessions', () => {
             history.resolve(historyOf('coder history'));
             await flush();
 
-            expect(jest.mocked(gateway.rebindTranscriptSink).mock.calls.map(call => call[0])).not.toContain('agent:main:main');
+            expect(vi.mocked(gateway.rebindTranscriptSink).mock.calls.map(call => call[0])).not.toContain('agent:main:main');
             expect(threadOf(sidebar, 'thread-1').messages).toEqual([]);
         });
 
@@ -372,7 +375,7 @@ describe('ChatViewProvider sessions', () => {
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-2' });
             await flush();
             const secondThreadSink = transcriptSinkFor(gateway, 'agent:main:main');
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(deferred<HistorySnapshot | null>().promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(deferred<HistorySnapshot | null>().promise);
 
             void sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-2' });
             await flush();
@@ -394,7 +397,7 @@ describe('ChatViewProvider sessions', () => {
                 role: 'error',
                 content: 'Failed to persist the last session. Reopen the session to retry.',
             });
-            const [restoredKey, restoredSink] = jest.mocked(gateway.rebindTranscriptSink).mock.calls[0];
+            const [restoredKey, restoredSink] = vi.mocked(gateway.rebindTranscriptSink).mock.calls[0];
             expect(restoredKey).toBe('agent:main:main');
             restoredSink({ type: 'text', text: 'still listening' });
             await flush();
@@ -424,7 +427,7 @@ describe('ChatViewProvider sessions', () => {
             const { sidebar, workspaceState } = makeProvider();
             const firstWrite = deferred<undefined>();
             workspaceState.update.mockReturnValueOnce(firstWrite.promise);
-            jest.mocked(gateway.getHistory).mockImplementation(async (key: string) => historyOf(key));
+            vi.mocked(gateway.getHistory).mockImplementation(async (key: string) => historyOf(key));
 
             void sidebar.send({ type: 'openSession', sessionKey: 'agent:main:main', threadId: 'thread-1' });
             await flush();
@@ -443,12 +446,12 @@ describe('ChatViewProvider sessions', () => {
 
         it('stops a running CLI send when the thread opens a gateway session', async () => {
             const { sidebar } = makeProvider();
-            const cli = { sendMessage: jest.fn(), abort: jest.fn(), dispose: jest.fn() };
+            const cli = { sendMessage: vi.fn(), abort: vi.fn(), dispose: vi.fn() };
             mockResolve.mockResolvedValueOnce({ service: cli, transport: 'acpx' });
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
             expect(cli.sendMessage).toHaveBeenCalledTimes(1);
-            jest.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historyOf('coder history'));
 
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
@@ -463,8 +466,8 @@ describe('ChatViewProvider sessions', () => {
         it('rejects the open when the gateway identity changed while the key was persisted', async () => {
             const { sidebar, workspaceState } = makeProvider();
             workspaceState.update.mockImplementationOnce(async () => {
-                jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
-                jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main' }]));
+                vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+                vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([{ key: 'agent:main:main' }]));
             });
 
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
@@ -503,8 +506,8 @@ describe('ChatViewProvider sessions', () => {
 
         it('retries once when the gateway identity changes mid-refresh', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.listSessions).mockImplementationOnce(async () => {
-                jest.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
+            vi.mocked(gateway.listSessions).mockImplementationOnce(async () => {
+                vi.mocked(gateway.getGatewayIdentity).mockReturnValue('gateway-2');
                 return sessionSummaries([{ key: 'agent:stale:main' }]);
             });
 
@@ -518,9 +521,9 @@ describe('ChatViewProvider sessions', () => {
         it('reports a failure when the identity keeps changing', async () => {
             const { sidebar } = makeProvider();
             let identity = 0;
-            jest.mocked(gateway.listSessions).mockImplementation(async () => {
+            vi.mocked(gateway.listSessions).mockImplementation(async () => {
                 identity += 1;
-                jest.mocked(gateway.getGatewayIdentity).mockReturnValue(`gateway-${identity + 1}`);
+                vi.mocked(gateway.getGatewayIdentity).mockReturnValue(`gateway-${identity + 1}`);
                 return sessionSummaries(WARM_ROWS);
             });
 
@@ -531,7 +534,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('rejects every open as unknown when the gateway lists no sessions', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([]));
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([]));
             await sidebar.send({ type: 'requestSessions', threadId: 'thread-1' });
             expect(sidebar.posted.find(m => m.type === 'sessionsList')).toMatchObject({ sessions: [], error: undefined });
 
@@ -556,7 +559,7 @@ describe('ChatViewProvider sessions', () => {
         it('opens a session created after the allowlist was built', async () => {
             const { provider, sidebar } = makeProvider();
             await sidebar.send({ type: 'requestSessions', threadId: 'thread-1' });
-            jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([...WARM_ROWS, { key: 'agent:new:main' }]));
+            vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries([...WARM_ROWS, { key: 'agent:new:main' }]));
             pickSession('agent:new:main');
 
             await provider.showAgentPicker();
@@ -567,7 +570,7 @@ describe('ChatViewProvider sessions', () => {
         it('ignores a pick whose thread closed while the picker was open', async () => {
             const { provider, sidebar } = makeProvider();
             await sidebar.send({ type: 'newSession' });
-            (jest.mocked(vscode.window.showQuickPick) as jest.Mock).mockImplementation(
+            (vi.mocked(vscode.window.showQuickPick) as Mock).mockImplementation(
                 async (items: Array<{ detail?: string }>) => {
                     await sidebar.send({ type: 'closeThread', threadId: 'thread-2' });
                     return items.find(item => item.detail === 'agent:coder:main');
@@ -600,7 +603,7 @@ describe('ChatViewProvider sessions', () => {
         });
 
         it('keeps the persisted key when sessions.list fails', async () => {
-            jest.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
+            vi.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
             const { workspaceState } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
             expect(workspaceState.update).not.toHaveBeenCalled();
@@ -622,19 +625,19 @@ describe('ChatViewProvider sessions', () => {
         });
 
         it('restores a known session into the active thread', async () => {
-            jest.mocked(gateway.getHistory).mockResolvedValue(historyOf('earlier'));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historyOf('earlier'));
             const { sidebar } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
 
             expect(threadOf(sidebar, 'thread-1').messages).toEqual([{ role: 'user', content: 'earlier' }]);
-            expect(jest.mocked(gateway.resumeSession).mock.calls).toEqual([
+            expect(vi.mocked(gateway.resumeSession).mock.calls).toEqual([
                 ['agent:coder:main', expect.any(Function), { historyRendered: true }],
             ]);
         });
 
         it('keeps restoring into its thread when focus moves during the history fetch', async () => {
             const history = deferred<HistorySnapshot | null>();
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
             const { sidebar } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
 
@@ -649,7 +652,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('defers the resume while a send runs and flushes it when the run is done', async () => {
             const history = deferred<HistorySnapshot | null>();
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
             const { sidebar } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
 
@@ -662,7 +665,7 @@ describe('ChatViewProvider sessions', () => {
 
             lastRunSink(gateway)({ type: 'done' });
             await flush();
-            expect(jest.mocked(gateway.resumeSession).mock.calls).toEqual([
+            expect(vi.mocked(gateway.resumeSession).mock.calls).toEqual([
                 ['agent:coder:main', expect.any(Function), { historyRendered: false }],
             ]);
         });
@@ -704,7 +707,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('retries a deferred resume on the next run when the gateway is down at done', async () => {
             const history = deferred<HistorySnapshot | null>();
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
             const { sidebar } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'first' });
@@ -725,7 +728,7 @@ describe('ChatViewProvider sessions', () => {
 
         it('drops the resume of a thread closed during the history fetch', async () => {
             const history = deferred<HistorySnapshot | null>();
-            jest.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
+            vi.mocked(gateway.getHistory).mockReturnValueOnce(history.promise);
             const { sidebar } = makeProvider({ persistedKey: 'agent:coder:main' });
             await flush();
 
@@ -756,17 +759,17 @@ describe('ChatViewProvider sessions', () => {
         it('resumes the persisted session only once across webviews', async () => {
             const { provider, workspaceState } = makeProvider({ persistedKey: 'agent:coder:main' });
             provider.popOut();
-            provider.attachDebugPanel(jest.mocked(vscode.window.createWebviewPanel)('openclaw.debug', 'Debug', vscode.ViewColumn.Beside));
+            provider.attachDebugPanel(vi.mocked(vscode.window.createWebviewPanel)('openclaw.debug', 'Debug', vscode.ViewColumn.Beside));
             await flush();
             expect(workspaceState.get).toHaveBeenCalledTimes(1);
         });
 
         it('stops posting to the sidebar and debug panel once they are disposed', async () => {
             const { provider, sidebar, view } = makeProvider();
-            const debug = jest.mocked(vscode.window.createWebviewPanel)('openclaw.debug', 'Debug', vscode.ViewColumn.Beside);
+            const debug = vi.mocked(vscode.window.createWebviewPanel)('openclaw.debug', 'Debug', vscode.ViewColumn.Beside);
             provider.attachDebugPanel(debug);
             const debugPanel = lastPanel();
-            jest.mocked(view.onDidDispose).mock.calls[0][0]();
+            vi.mocked(view.onDidDispose).mock.calls[0][0]();
             debugPanel.onDidDispose.mock.calls[0][0]();
             sidebar.posted.length = 0;
             debugPanel.webview.postMessage.mockClear();
@@ -796,7 +799,7 @@ describe('ChatViewProvider sessions', () => {
                 document: { uri: vscode.Uri.file('/work/a.ts'), languageId: 'typescript', getText: () => 'x' },
                 selection: { isEmpty: true },
             };
-            jest.mocked(vscode.workspace.asRelativePath).mockReturnValue('a.ts');
+            vi.mocked(vscode.workspace.asRelativePath).mockReturnValue('a.ts');
         });
 
         afterEach(() => {
@@ -863,8 +866,8 @@ describe('ChatViewProvider sessions', () => {
         ];
 
         it('ignores malformed messages of every type', async () => {
-            const update = jest.fn(async () => undefined);
-            const getConfiguration = jest.mocked(vscode.workspace.getConfiguration);
+            const update = vi.fn(async () => undefined);
+            const getConfiguration = vi.mocked(vscode.workspace.getConfiguration);
             const original = getConfiguration.getMockImplementation();
             getConfiguration.mockImplementation(() => ({
                 get: ((_section: string, defaultValue?: unknown) => defaultValue) as vscode.WorkspaceConfiguration['get'],
@@ -889,7 +892,7 @@ describe('ChatViewProvider sessions', () => {
                 expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled();
                 expect(sidebar.posted.some(m => m.type === 'agentsList' || m.type === 'sessionsList')).toBe(false);
             } finally {
-                getConfiguration.mockImplementation(original);
+                getConfiguration.mockImplementation(original ?? (() => ({ get: vi.fn() }) as never));
             }
         });
 

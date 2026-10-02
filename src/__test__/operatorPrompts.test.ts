@@ -15,7 +15,7 @@ function question(id: string): OperatorPrompt {
     return { kind: 'question', id, questions: [], sessionKey: 'agent:dev:main', runId: null, lifetimeMs: 60_000 };
 }
 
-function board(onOverflow = jest.fn()): { board: OperatorPromptBoard; changes: PromptChange[] } {
+function board(onOverflow = vi.fn()): { board: OperatorPromptBoard; changes: PromptChange[] } {
     const changes: PromptChange[] = [];
     const prompts = new OperatorPromptBoard({ now: () => Date.now(), onOverflow });
     prompts.subscribe((change) => changes.push(change));
@@ -28,11 +28,11 @@ function resolvedOf(changes: PromptChange[]): Array<[string, string]> {
 
 describe('OperatorPromptBoard', () => {
     beforeEach(() => {
-        jest.useFakeTimers();
-        jest.setSystemTime(NOW);
+        vi.useFakeTimers();
+        vi.setSystemTime(NOW);
     });
 
-    afterEach(() => jest.useRealTimers());
+    afterEach(() => vi.useRealTimers());
 
     describe('add and settle', () => {
         it('announces a prompt once and settles it once', () => {
@@ -47,23 +47,23 @@ describe('OperatorPromptBoard', () => {
         it('times a prompt from its receipt for the lifetime the gateway gave it', () => {
             const { board: prompts, changes } = board();
             prompts.add(approval('a1', 5000));
-            jest.advanceTimersByTime(4999);
+            vi.advanceTimersByTime(4999);
             expect(resolvedOf(changes)).toEqual([]);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(resolvedOf(changes)).toEqual([['exec:a1', 'expired']]);
         });
 
         it('expires a prompt whose deadline lies beyond one timer period', () => {
             const { board: prompts, changes } = board();
             prompts.add(approval('a1', 2 ** 31 + 10_000));
-            jest.advanceTimersByTime(2 ** 31 - 1);
+            vi.advanceTimersByTime(2 ** 31 - 1);
             expect(changes).toHaveLength(1);
-            jest.advanceTimersByTime(20_000);
+            vi.advanceTimersByTime(20_000);
             expect(changes[1]).toEqual({ type: 'resolved', key: 'exec:a1', outcome: 'expired' });
         });
 
         it('withdraws the oldest prompt of a kind once it holds as many as it keeps, and says so', () => {
-            const onOverflow = jest.fn();
+            const onOverflow = vi.fn();
             const { board: prompts, changes } = board(onOverflow);
             for (let i = 0; i <= MAX_PENDING_PER_KIND; i++) prompts.add(approval(`a${i}`));
             prompts.add(question('q1'));
