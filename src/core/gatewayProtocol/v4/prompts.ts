@@ -27,13 +27,10 @@ import type {
   QuestionReply,
   RpcFailure,
 } from '../model';
-import { PROMPT_WITHDRAWN } from '../model';
+import { DEFAULT_DECISIONS, PROMPT_WITHDRAWN } from '../model';
 import { readArray, readNonNegativeInteger, readRecord, readString, readStrings, readTrimmedString, capText } from './readers';
 import type { ApprovalResolveParams, QuestionResolveParams } from './schema';
 import { Events, Methods, OperatorScopes } from './schema';
-
-/** Decisions a request offers when it names none (the gateway's default set). */
-const DEFAULT_DECISIONS: readonly ApprovalDecision[] = ['allow-once', 'allow-always', 'deny'];
 
 /** Plugin approval detail may run to 16,384 characters; the row shows its start. */
 const DETAIL_MAX_CHARS = 2000;

@@ -181,6 +181,12 @@ export type ApprovalWait = 'pending' | 'unavailable';
 /** A reviewer's answer to an approval request. */
 export type ApprovalDecision = 'allow-once' | 'allow-always' | 'deny';
 
+/** The decisions an approval request offers when it names none — the gateway's
+ *  default set, and the canonical order. The protocol decoder filters an
+ *  offered list against it; the webview instead checks the decisions the row
+ *  actually carries, since a prompt may offer a custom one. */
+export const DEFAULT_DECISIONS: readonly ApprovalDecision[] = ['allow-once', 'allow-always', 'deny'];
+
 /** What an approval guards: a shell command, or a tool action a plugin holds back. */
 export type ApprovalSubject = 'exec' | 'plugin';
 
