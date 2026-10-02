@@ -57,7 +57,16 @@ export async function readBoundedAsync(
     return collect((buffer, offset) => handle.read(buffer, 0, buffer.length, offset).then((r) => r.bytesRead), maxBytes, statSize + 1);
 }
 
-/** {@link collect} over a descriptor opened with the blocking `fs` API. */
+/**
+ * The blocking twin of {@link readBoundedAsync}, with a narrower contract.
+ *
+ * It reads into one buffer sized `statSize + 1` and never grows it, so unlike
+ * {@link collect} it stops at that allocation rather than at EOF. A file that
+ * grows after the caller's stat while staying under `maxBytes` is therefore
+ * read short instead of being reported as over the cap. That is sound for the
+ * config reader, which re-checks the length against the same stat and refuses
+ * anything past it; a caller that must read to EOF needs the async form.
+ */
 export function readBoundedSync(
     read: (buffer: Buffer, offset: number, length: number, position: number) => number,
     maxBytes: number,
