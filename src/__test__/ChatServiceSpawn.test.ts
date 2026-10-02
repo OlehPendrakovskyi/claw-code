@@ -18,7 +18,20 @@ import {
 } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
 
-vi.mock('child_process', () => ({ spawn: vi.fn() }));
+// The factory must cover the whole export surface of the mocked module, not only
+// the members this test calls: `satisfies` keeps that check honest at compile time
+// (rule 50). The casts are needed because `ChildProcess` is a class and the rest
+// are overloaded functions, neither of which `vi.fn()` can infer.
+vi.mock('child_process', () => ({
+    ChildProcess: class {} as unknown as typeof import('child_process').ChildProcess,
+    exec: vi.fn() as unknown as typeof import('child_process').exec,
+    execFile: vi.fn() as unknown as typeof import('child_process').execFile,
+    execFileSync: vi.fn() as unknown as typeof import('child_process').execFileSync,
+    execSync: vi.fn() as unknown as typeof import('child_process').execSync,
+    fork: vi.fn() as unknown as typeof import('child_process').fork,
+    spawn: vi.fn() as unknown as typeof import('child_process').spawn,
+    spawnSync: vi.fn() as unknown as typeof import('child_process').spawnSync,
+} satisfies typeof import('child_process')));
 
 const spawnMock = vi.mocked(spawn);
 const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);

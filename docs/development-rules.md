@@ -152,7 +152,7 @@ The refactor phases moved code without re-architecting it, so the defects they p
 
 ## Test-runner migration lessons (Jest → Vitest, 2026-10-02/03)
 
-The refactor moved 47 suites and ~1,400 tests from Jest to Vitest with no behavior change intended. These are the classes that cost real time, recorded so the next runner swap is cheaper.
+The refactor moved 48 suites and ~1,400 tests from Jest to Vitest with no behavior change intended. These are the classes that cost real time, recorded so the next runner swap is cheaper.
 
 50. **A module mock's factory must return the module's whole export surface, not just the fields the test touches.** Jest let a factory omit an export and handed the importing module `undefined`; the omission stayed invisible until some unrelated line dereferenced it. Vitest throws at the access instead — `No "x" export is defined on the "y" mock` — which turns a silent stub into a hard failure, but only once something reads that name. So when mocking a module wholesale, copy its export list from the source and assert the mock is complete (`satisfies typeof import('…')`), rather than listing the two or three members the current test happens to call. The members the test does not touch still have to exist.
 
