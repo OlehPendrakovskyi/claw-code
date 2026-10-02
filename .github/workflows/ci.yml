@@ -53,11 +53,11 @@ jobs:
       - name: Build
         run: pnpm run compile
 
-      # jest directly: `pnpm run test` would repeat compile and lint through pretest.
+      # the runner directly: `pnpm run test` would repeat compile and lint through pretest.
       # A step timeout, unlike the job's, fails the step and keeps its log.
       - name: Test
         timeout-minutes: 10
-        run: pnpm exec jest
+        run: pnpm exec vitest run
 
       - name: License check
         if: runner.os == 'Linux'
