@@ -17,6 +17,7 @@ import { ConversationTurn, EditorContext, ContextType, frameTaggedBlock } from '
 import { handshakeAdapter, resolveProtocolSetting } from '../core/gatewayProtocol/registry';
 import type { GatewayProtocolAdapter } from '../core/gatewayProtocol/adapter';
 import type { SendAttachment, TokenUsage } from '../core/gatewayProtocol/model';
+import { readBoundedAsync } from '../core/readBounded';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 
 /** Shared output channel for chat panel logging. */
@@ -358,37 +359,6 @@ function jsonBytes(text: string): number {
     return Buffer.byteLength(JSON.stringify(text), 'utf8') - 2;
 }
 
-/** Size of each read after the stat-sized first one: those reads only prove
- *  EOF or catch growth since stat(), so they stay small. */
-const READ_FOLLOW_UP_CHUNK_BYTES = 64 * 1024;
-
-/** Read from an opened handle until EOF or the byte budget is exhausted.
- *
- *  A single FileHandle.read() is not guaranteed to fill the requested buffer:
- *  regular files can return a short read before EOF, so a one-shot read can
- *  accept a truncated file or let a file that grew past the cap slip through
- *  (the short result lands under the limit). Loop until EOF or maxBytes + 1
- *  bytes are collected, so callers can reject anything above maxBytes and
- *  otherwise get the byte-faithful contents. The first chunk is sized from
- *  `statSize` so a small file never allocates the whole cap. */
-async function readBounded(handle: fsp.FileHandle, maxBytes: number, statSize: number): Promise<Buffer> {
-    const limit = maxBytes + 1;
-    const chunks: Buffer[] = [];
-    let total = 0;
-    let chunkSize = Math.min(limit, statSize + 1);
-    while (total < limit) {
-        const chunk = Buffer.allocUnsafe(Math.min(chunkSize, limit - total));
-        const { bytesRead } = await handle.read(chunk, 0, chunk.length, total);
-        if (bytesRead === 0) {
-            break;
-        }
-        chunks.push(chunk.subarray(0, bytesRead));
-        total += bytesRead;
-        chunkSize = READ_FOLLOW_UP_CHUNK_BYTES;
-    }
-    return Buffer.concat(chunks, total);
-}
-
 const UNREADABLE_MARKER = '[Could not read file]';
 const AGGREGATE_LIMIT_MARKER = '[Attachment skipped: aggregate attachment size limit reached]';
 const FILE_SIZE_LIMIT_MARKER = '[Attachment skipped: file exceeds size limit]';
@@ -427,7 +397,7 @@ async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
         if (opened.size > maxBytes) {
             throw new AttachmentTooLargeError();
         }
-        const bytes = await readBounded(handle, maxBytes, opened.size);
+        const bytes = await readBoundedAsync(handle, maxBytes, opened.size);
         if (bytes.length > maxBytes) {
             throw new AttachmentTooLargeError();
         }
