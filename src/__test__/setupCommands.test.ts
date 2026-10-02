@@ -17,7 +17,11 @@ async function onPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): 
 
 describe('setup commands', () => {
     describe('isCommandAvailable', () => {
-        beforeEach(() => vi.mocked(execFileAsync).mockReset().mockResolvedValue({ stdout: '', stderr: '' } as never));
+        // Braced on purpose: Vitest runs a function returned from beforeEach as the
+        // test's teardown, and mockResolvedValue returns the mock itself.
+        beforeEach(() => {
+            vi.mocked(execFileAsync).mockReset().mockResolvedValue({ stdout: '', stderr: '' } as never);
+        });
 
         it('probes through /bin/sh, never a sh found on PATH', async () => {
             await expect(onPlatform('linux', () => isCommandAvailable('node'))).resolves.toBe(true);
