@@ -82,6 +82,12 @@ export type HandshakeRejection = {
   staleDeviceToken?: boolean;
 };
 
+/** `error.details.code` for a handshake that negotiated no shared version.
+ *  Defined here, next to the hint, because the version-neutral negotiation in
+ *  registry.ts and the v4 decoder must name the same code: it crosses the wire
+ *  in a rejection either of them can produce. */
+export const PROTOCOL_MISMATCH_CODE = 'PROTOCOL_MISMATCH';
+
 /** What the user can do when client and gateway share no protocol version. */
 export const PROTOCOL_MISMATCH_HINT =
   'The gateway and the extension speak different protocol versions — update the extension or the gateway, or set openclaw.gateway.protocolVersion.';
