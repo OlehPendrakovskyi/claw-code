@@ -1,4 +1,15 @@
-vi.mock('../vscode/commands/shared', () => ({ log: vi.fn(), execFileAsync: vi.fn() }));
+// The factory must cover the whole export surface of the mocked module, not only
+// the members this test calls: `setup.ts` imports `copyToClipboard` and
+// `isOpenClawExecutable` from here too, and Vitest throws `No "x" export is defined`
+// the moment any code path reads one (rule 50). `satisfies` keeps the completeness
+// check honest; the casts are needed because two exports are an output channel and
+// a type-predicate function, neither of which `vi.fn()` can infer.
+vi.mock('../vscode/commands/shared', () => ({
+    log: vi.fn() as unknown as typeof import('../vscode/commands/shared').log,
+    execFileAsync: vi.fn() as unknown as typeof import('../vscode/commands/shared').execFileAsync,
+    copyToClipboard: vi.fn() as unknown as typeof import('../vscode/commands/shared').copyToClipboard,
+    isOpenClawExecutable: vi.fn(() => true) as unknown as typeof import('../vscode/commands/shared').isOpenClawExecutable,
+} satisfies typeof import('../vscode/commands/shared')));
 
 import { replaceEnv } from './helpers/env';
 
