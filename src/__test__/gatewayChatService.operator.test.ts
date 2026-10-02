@@ -21,8 +21,6 @@ import {
     type MockSocket,
 } from './helpers/gatewayV4';
 
-vi.mock('ws', () => ({ default: vi.fn() }));
-
 const APPROVAL_SCOPES = ['operator.read', 'operator.write', 'operator.approvals', 'operator.questions'];
 const CUT = '\n...(truncated)...';
 const LONG_REPLY = `${'word '.repeat(2400)}END`;
