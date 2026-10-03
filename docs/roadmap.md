@@ -83,15 +83,15 @@ Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`
 | Present | Details |
 |---|---|
 | Chat webview | `ChatViewProvider` (sidebar view) + pop out; one active process per message |
-| Transport | `ChatService.spawn('acpx')` — a local CLI process streaming ChatEvent (text / toolCall / usage / done / error) |
-| Slash commands | /explain /fix /review /test /refactor /doc /commit /harden /search — with auto-context (selection, file, diagnostics, gitDiff, gitStaged) |
+| Transport | `chatServiceFactory` selects `gateway \| acpx \| auto`: Gateway WS RPC (`GatewayChatService`, the primary path) with a fallback to the local CLI process (`ChatService.spawn('acpx')`), both streaming ChatEvent (text / toolCall / usage / done / error) |
+| Slash commands | /explain /fix /review /test /refactor /doc /commit /harden /search /plan /compact — with auto-context (selection, file, diagnostics, gitDiff, gitStaged) |
 | IDE context | selection listener, diagnostics listener, @-mentions of files, attachments |
 | Hardening workflow | openclaw.harden commands, access summary |
 | Onboarding | CLI setup/model wizard |
 | Debug panel | chat event inspector |
 | Multipanel | partial (pop out) |
 
-What is missing (the main gaps against the Claude UX): direct Gateway WS transport, agent/session selection, session history/resume, permission modes, plan mode, inline diffs with accept/reject, checkpoints/rollback, auto-context for the open file, focus view, usage indicator.
+What is missing (the main gaps against the Claude UX): agent/session selection, session history/resume, permission modes, plan mode UI, inline diffs with accept/reject, checkpoints/rollback, auto-context for the open file, focus view, usage indicator.
 
 ---
 
@@ -119,7 +119,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 | P0-3 | **Streaming chat with a transcript** | the basic panel UX | Subscribe to session events; reduce events into a UI model (text deltas, toolCall lines, done/error). Reuse the ChatEvent model, but with tool calls as collapsible groups (see P1-5). | **M** | P0-1; deltaCursor for catch-up on reconnect |
 | P0-4 | **Session history + resume** | Session history, resume, AI titles | A "History" button: `sessions.list`/`sessions.preview` → a list with previews and titles; click → `chat.history` to restore the transcript in the webview; continuing → `chat.send` into the same session. | **M** | P0-1..3; "cold" storage status → placeholder |
 | P0-5 | **Auto-context: open file, selection, diagnostics** | attachOpenFile, automatic selection visibility, Option+K @-mention, diagnostic sharing | Partly present already (selection, diagnostics, gitDiff in slashCommands). To build out: (a) auto-insert the open file when `attachOpenFile=true`; (b) @-mentions with a line range `@file#L5-10`; (c) an Option+K/Alt+K keybinding to insert a selection mention. We pack context into the prompt text (the Gateway agent can already read files; we only need a pointer plus a snippet). | **S–M** | low risk |
-| P0-6 | **Slash commands over the new transport** | the `/` menu | SLASH_COMMANDS already exists; redirect them to chat.send, turning them into text prompts with context (as now). Add /plan and a /compact hint. | **S** | P0-3 |
+| P0-6 | **Slash commands over the new transport** | the `/` menu | SLASH_COMMANDS already exists (including /plan and /compact); redirect them to chat.send, turning them into text prompts with context (as now). | **S** | P0-3 |
 
 ### P1 — greatly increases the value (what makes it a product)
 
@@ -142,7 +142,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 | P2-1 | AI titles for new sessions | `sessions.title.prepare` → `displayName` on `sessions.create` | S |
 | P2-2 | Auto-archive/groups in the history list | local categorisation over sessions.list (grouping per workspace folder in VS Code state) | M |
 | P2-3 | Side questions `/btw` | a side panel: a second webview with a separate one-shot chat session that does not write into the main one | M |
-| P2-4 | URI handler `vscode://openknot.openclaw/open?prompt=...&session=***` | registerUriHandler, prompt prefill, resume by sessionKey | S |
+| P2-4 | URI handler `vscode://openknot.claw-code/open?prompt=...&session=***` (the ID must match `publisher.name` in package.json — `openknot.claw-code`; VS Code routes `vscode://<publisher>.<name>/`, so a `openknot.openclaw` authority would never reach this extension) | registerUriHandler, prompt prefill, resume by sessionKey | S |
 | P2-5 | Export conversation / copy response | serialising the transcript to md/txt; a copy button | S |
 | P2-6 | @terminal and background tasks (/tasks) | the Windows/Terminal API to read the active terminal; mapping Gateway background processes (background-process docs) | M–L |
 | P2-7 | Screen reader announcements | aria-live in the webview, a focus-last-message command | M |
@@ -200,7 +200,7 @@ The general case for the product: the Gateway (and the agent's workspace) lives 
 | **B. Paired node exec** | the window is local, the repo is on the Gateway host, Remote is not used | For reading/diffs: `nodes`-invoke through Gateway RPC (dir.list/file.fetch) — for previews/context only; edits go through the agent. The diff is textual (see 5.1.4). |
 | **C. Textual context without a filesystem** | the code is not reachable by the agent through the filesystem (closed environments, no git sources) | The extension inlines text fragments into the prompt (it already can); the agent returns a patch/text, applied manually. No filesystem magic. |
 
-Decision: the MVP is optimised for A (nothing needed — it works out of the box); B is a textual-diff fallback (P1-1); C already exists. All three scenarios are described in the product README, with no tie to specific hardware.
+Decision: the MVP is optimised for A (nothing needed — it works out of the box); B is a textual-diff fallback (P1-1); C already exists. **Documenting all three scenarios in the product README is still outstanding** — the current README has no Remote/SSH, paired-node, NAS or textual-filesystem fallback section, so this item must not be counted as delivered.
 
 ### 5.5 Terminal Bridge — in detail (P1-0)
 
@@ -323,7 +323,7 @@ Technical decisions made once before the code starts, binding for the whole proj
   - `src/__test__/` — tests per module (Vitest).
 - **Separating core/vscode** — testability: the whole runtime (gateway, deduplication, the reducer) is testable without a VS Code head; the vscode layer is thin adapters.
 - **Monoliths are to be reworked immediately, as a priority** (owner's decision): `src/extension.ts` (~72 KB) and `src/chat/getWebviewContent.ts` (~117 KB) are decomposed during the MVP stage, not deferred. The volume scheme above is the target state after the restructuring.
-- **CI** (GitHub Actions, **already exists**: `.github/workflows/ci.yml`): typecheck → oxlint → build → vitest → license-check on ubuntu/windows/macos; building vsce/ovsx on a tag. Catch-early on every PR.
+- **CI** (GitHub Actions, **already exists**: `.github/workflows/ci.yml`): `pnpm install` → **build + vitest on ubuntu/windows/macos**, with **typecheck, oxlint and license-check on Linux only** (those give the same answer on every OS). Triggers: `pull_request` and `push` to `main` — **no tag trigger and no vsce/ovsx publishing yet**; the release workflow below is still to be built. Catch-early on every PR.
 
 ### 9.1.2 Logging (local, without sensitive data)
 
@@ -358,10 +358,10 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 
 ### 9.1.5 CI/CD (GitHub Actions — **CI already exists in the fork**: `.github/workflows/ci.yml`; what still needs building is below)
 
-- **Workflow 1 — CI (already implemented, `pull_request` + `push` to `main`):** `pnpm install --frozen-lockfile` → `typecheck` → `oxlint` → `build` → **`vitest`** → **`license-check`** (see below), across a ubuntu/windows/macos matrix. Still to do: drop the "fast feedback on PR vs the full pipeline on main" split — the steps are currently identical on every OS.
+- **Workflow 1 — CI (already implemented, `pull_request` + `push` to `main`):** `pnpm install --frozen-lockfile` → **`build` + `vitest` on a ubuntu/windows/macos matrix**, plus **`typecheck` + `oxlint` + `license-check` on Linux only** (`ci.yml` gates them on `runner.os == 'Linux'`, since those answers do not vary by OS). Still to do: extend the OS matrix to typecheck/lint if a platform-specific failure ever appears, and add the tag-triggered release workflow.
 - **Workflow 2 — Release (on a `v*` tag):** the full pipeline → build `.vsix` via vsce → publish to the **VS Code Marketplace** and **Open VSX** (2 artifacts) → a GitHub Release with the `.vsix` + an auto-CHANGELOG. The version comes from the git tag, with no manual bump. Publishing/release — owner only (requires the owner's approval; contributors do not publish).
 - **Workflow 3 — a PR-generator sync from upstream** — **not needed** (we do not work with or sync from upstream, §0.4); upstream is only an archive reference for attribution.
-- **License-check**: `license-checker-rseidelsohn` — scanning npm dependencies against an **MIT/Apache-2.0/BSD-2/BSD-3/ISC** allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Dev dependencies go in a separate list. Only the allowlist goes into the prod bundle.
+- **License-check**: `license-checker-rseidelsohn --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense"` — scanning **production** npm dependencies against that allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Note `--production` means dev dependencies are **excluded from the check**, not held to a separate list — the roadmap previously claimed otherwise. Only allowlisted code goes into the prod bundle.
 - **Pre-approved dependencies (owner's decision, 2026-09-25)**: **lodash** (MIT) and **luxon** (MIT) — allowed without separate approval if a task requires them. Both pass the current license-check allowlist.
 - **Dependency proposals**: the assistant may propose other tools/libraries if they meet the licensing requirements (MIT/Apache-2.0/BSD/ISC; fail on copyleft) — the owner reviews each proposal before it is added.
 - **Quality enforcement**: required status checks on main (including license-check) — configured in `.github/workflows/ci.yml` but **not yet enforced**, since `main` has no protection ruleset (see the branch section above); **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
