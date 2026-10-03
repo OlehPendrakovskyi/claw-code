@@ -16,7 +16,6 @@ export default defineConfig({
     resolve: {
         alias: [
             { find: /^vscode$/, replacement: path.resolve(process.cwd(), 'src/__test__/vscode.mock.ts') },
-            { find: /^lodash-es$/, replacement: 'lodash' },
         ],
     },
 });
