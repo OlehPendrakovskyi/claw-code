@@ -1,5 +1,7 @@
 # OpenClaw Extension — Roadmap
 
+> **Superseded.** This file is an old, high-level wishlist (voice chat, planning UX and similar ideas). The authoritative project plan is [`docs/roadmap.md`](docs/roadmap.md); where the two disagree, that document wins. The items below carry no sprint assignment, no estimates and no status — treat them as background, not as active work.
+
 Planned features and architectural directions for the OpenClaw VS Code extension.
 
 ---
