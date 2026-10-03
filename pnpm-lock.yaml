@@ -54,9 +54,6 @@ importers:
       license-checker-rseidelsohn:
         specifier: ^5.0.1
         version: 5.0.1(supports-color@8.1.1)
-      lodash:
-        specifier: ^4.18.1
-        version: 4.18.1
       oxlint:
         specifier: ^1.86.0
         version: 1.86.0
@@ -982,9 +979,6 @@ packages:
 
   lodash.clonedeep@4.5.0:
     resolution: {integrity: sha512-H5ZhCF25riFd9uB5UCkVKo61m3S/xZk1x4wA6yp/L3RFP6Z/eHH1ymQcGLo7J3GMPfm0V/7m1tryHuGVxpqEBQ==}
-
-  lodash@4.18.1:
-    resolution: {integrity: sha512-dMInicTPVE8d1e5otfwmmjlxkZoUpiVLwyeTdUsi/Caj/gfzzblBcCE5sRHV/AsjuCmxWrte2TNGSYuCeCq+0Q==}
 
   lru-cache@10.4.3:
     resolution: {integrity: sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ==}
@@ -2232,8 +2226,6 @@ snapshots:
   lodash-es@4.18.1: {}
 
   lodash.clonedeep@4.5.0: {}
-
-  lodash@4.18.1: {}
 
   lru-cache@10.4.3: {}
 
