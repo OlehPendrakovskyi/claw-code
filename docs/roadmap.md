@@ -184,7 +184,7 @@ Event flow: the agent works on the Gateway (or a paired node). File edits appear
 4. **Accept/Reject for unobserved edits**: if the file is on a NAS and not reachable through the filesystem — degrade to a textual diff (from the toolCall details or a `git diff` requested from the agent) in the chat with accept ("ok")/reject ("revert file X") buttons. An honest fallback with no false UX.
 5. **Commands**: `openclaw.acceptChangeAtCursor` / `rejectChangeAtCursor` — by cursor position in the open diff document (v2).
 
-Risks: event ordering (the edit is applied before we read the "before" state) — closed by pre-reading on the toolCall start event plus a git fallback; an unsynchronised agent on another host — a textual diff fallback.
+Risks: event ordering (the edit is applied before we read the "before" state) — **not** closed by pre-reading on the toolCall start event: that event is not a pre-write barrier, because the Gateway can emit it and complete the write before the extension receives it, so the pre-read on it can still race the write. The "before" state must come either from a snapshot captured before the run or from an acknowledged pre-write protocol (the client applies the edit itself, §5.1 v2); a git HEAD/stash fallback is admissible only when it was captured before the run or the file's cleanliness was verified beforehand. When no such source exists the before-state is reported as unavailable rather than reconstructed. An unsynchronised agent on another host — a textual diff fallback.
 
 ### 5.2 Plan mode — in detail
 
@@ -219,10 +219,10 @@ Mechanics (all the components already exist in the Gateway, nothing to wait for)
 
 Implementation in stages:
 - **MVP+ (optional in the MVP)**: a manual mode — the extension shows a "command request" in the chat, the user runs it themselves, and a button sends the output to the agent.
-- **v1 (full P1-0)**: automatic exec via approvals with an allowlist, output streaming.
+- **v1 (full P1-0)**: automatic exec via approvals bound to the immutable code identity described in §5.5.4 (command + arguments + cwd + workspace + resolved executable path + content digests of the loaded script/config), with persistent approval disabled and the request escalated to Run once whenever that identity cannot be established — not a generic runner-name or command-tuple allowlist, which the detailed design rejects as workspace-controlled execution. Output streaming.
 - **v2**: background tasks (dev servers) in `/tasks`, several parallel terminals, working across multiple workspaces.
 
-Risks: security (allowlist + approvals are mandatory, never "execute everything silently"); the shell integration API differs across VS Code terminals — a fallback to plain output capture; Windows (PowerShell) — tested separately.
+Risks: security (every command requires an explicit decision bound to its exact execution context and code identity, never "execute everything silently", and never a name-based allowlist); the shell integration API differs across VS Code terminals — a fallback to plain output capture; Windows (PowerShell) — tested separately.
 
 **An alternative for scenario B (repo on a NAS, window local)**: the commands are executed by the agent on the NAS itself — no terminal bridge needed, only output. The Bridge covers the "repo on the local machine" scenario (Remote-SSH is still preferable, but the bridge also works without it — via the paired node mechanism).
 
