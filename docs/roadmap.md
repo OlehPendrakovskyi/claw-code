@@ -319,14 +319,14 @@ Technical decisions made once before the code starts, binding for the whole proj
 - **Stack** (owner's decisions): TypeScript **strict**, esbuild (bundling), **Vitest** (owner's decision 2026-10-03: the migration from Jest is complete, PR #28), **oxlint** (owner's decision, the oxc ecosystem; the migration from eslint is complete). pnpm stays. Do not add new runtimes (no root bundler/monorepo on top).
 - **The bundler stays esbuild for now (decision, 2026-09-24).** Faster Rust options were considered (Rolldown 1.2.x/tsdown — the main candidate; oxc-transform). The decision NOT to change now: (1) the speed gain is insignificant at the extension's bundle size — main + webview already build in a fraction of a second; (2) esbuild is already configured in the fork and is CSP-correct for the webview (`content-security-policy` — a flat file); (3) a switch would add risk at the MVP stage with no payoff. **Deferred option**: if the webview build starts slowing the dev loop as the project grows — move to tsdown/Rolldown in one step (a familiar `defineConfig`), a single migration PR.
 - **The main unit of code is a class** (owner's decision): business logic and services are classes with explicit dependencies (DI through the constructor, injecting the logger/client/etc.), not utility functions and not global singleton state. This improves testability (Vitest mocks on a class) and readability. Functions are acceptable as thin cleaning utilities inside core/util, but not as state carriers.
-- **Repository structure** (decomposing the fork's monoliths):
+- **Repository structure — the target layout** (decomposing the fork's monoliths; this is the architecture this plan aims at, not a description of the current tree — see the "current state" note below):
   - `src/extension.ts` — activation/deactivation only (a thin bootstrap).
   - `src/core/` — runtime not bound to VS Code: `gateway/GatewayClient.ts`, `gateway/contract.ts` (protocol types + versions), `gateway/adapters/`, an event dispatcher, a UI-model reducer, the two chat backends (`ChatService` for acpx, `GatewayChatService` for the Gateway), used through their union type.
   - `src/vscode/` — VS Code bindings: commands (the registry), views (webview controllers), config (settings + SecretStorage), terminals (the bridge), diffs/checkpoints, the status bar.
   - `src/webview/` — the webview frontend: views/components, HTML assembly (pulled out of the 117 KB string), the webview↔extension message layer.
   - `src/__test__/` — tests per module (Vitest).
 - **Separating core/vscode** — testability: the whole runtime (gateway, deduplication, the reducer) is testable without a VS Code head; the vscode layer is thin adapters.
-- **Monolith decomposition — done** (owner's decision was to treat it as an immediate priority, not a deferred item; both have since landed — see §2): `src/extension.ts` (~72 KB) is a one-line bootstrap, and `src/chat/getWebviewContent.ts` (~117 KB) is gone, its content having moved into `src/webview/content-js.ts` / `content-css.ts`. The volume scheme above is the state the code is in now.
+- **Monolith decomposition — partially done** (owner's decision was to treat it as an immediate priority, not a deferred item; both of the two named monoliths have since landed — see §2): `src/extension.ts` (~72 KB) is a one-line bootstrap, and `src/chat/getWebviewContent.ts` (~117 KB) is gone, its content having moved into `src/webview/content-js.ts` / `content-css.ts`. The `core/` / `vscode/` / `webview/` top-level split is real and in place, but the **gateway subtree above is still a target**: there is no `src/core/gateway/` directory and no `GatewayClient.ts` yet. The implemented transport is the single module `src/core/gatewayChatService.ts`, and the protocol adapters live under `src/core/gatewayProtocol/` (`adapter.ts`, `registry.ts`, `deviceIdentity.ts`, and the `v4/` versioned schemas).
 - **CI** (GitHub Actions, **already exists**: `.github/workflows/ci.yml`): `pnpm install` → **build + vitest on ubuntu/windows/macos**, with **typecheck, oxlint and license-check on Linux only** (those give the same answer on every OS). Triggers: `pull_request` and `push` to `main` — **no tag trigger and no vsce/ovsx publishing yet**; the release workflow below is still to be built. Catch-early on every PR.
 
 ### 9.1.2 Logging (local, without sensitive data)
@@ -418,20 +418,22 @@ Fully covered:
 
 Not covered:
 - **The module map as an artifact is missing.** §9.1.6 required the result to be "a module-map document + a list of dump files with a plan for splitting them". Neither that document nor a section of this plan exists — to this day there is only the `core/` / `vscode/` / `webview/` split.
-- **Dump files above the threshold were never identified — the measurement exists, the conclusion does not.** The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". A line count gives:
+- **Dump files above the threshold were never identified — the measurement exists, the conclusion does not.** The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". That is two conditions plus a judgement: lines, export count, and whether the exports serve unrelated responsibilities. Measured on 2026-10-03 (`wc -l`, top-level `export` statements):
 
-| File | Lines | Assessment |
-|---|---|---|
-| `src/webview/ChatViewProvider.ts` | 2940 | the largest candidate |
-| `src/webview/content-js.ts` | 2774 | imported TypeScript source: webview script fragments (`TOOL_STATUS_JS` and friends) plus `CONTENT_JS`; hand-written code, a candidate for splitting |
-| `src/core/gatewayChatService.ts` | 2307 | protocol + transport in one module |
-| `src/webview/content-css.ts` | 1276 | checked-in source (its header says: a mechanical extraction of the `<style>` block, verbatim) — not a generated build artifact, but not hand-designed either; a candidate for moving into a separate CSS file |
-| `src/chat/ChatService.ts` | 801 | over the line count, but under the export threshold (7 top-level exports) — so it does not meet the full criterion |
-| `src/webview/viewMessaging.ts` | 781 | above the threshold |
-| `src/vscode/commands/setup.ts` | 579 | candidate |
-| `src/core/gatewayConfig.ts` | 564 | candidate |
+| File | Lines | Top-level exports | Meets the threshold? |
+|---|---|---|---|
+| `src/webview/ChatViewProvider.ts` | 2940 | 2 | **No** — it is one large provider class. It fails the export count outright; its size is a cohesion problem, not a dump of mixed exports |
+| `src/webview/content-js.ts` | 2774 | 5 | **No** — mostly long string payloads (`TOOL_STATUS_JS` and friends), not logic |
+| `src/core/gatewayChatService.ts` | 2307 | 9 | **No** — one service module; 9 exports, under the count |
+| `src/webview/content-css.ts` | 1276 | 1 | **No** — a verbatim CSS extraction (its header says so), one export, not hand-designed |
+| `src/chat/ChatService.ts` | 801 | 7 | **No** — over the line count, under the export threshold |
+| `src/webview/viewMessaging.ts` | 781 | 18 | **Yes** — the exports are genuinely unrelated: conversation history, attachment reading, markdown rendering, file search, editor context, and line slicing all in one module |
+| `src/vscode/commands/setup.ts` | 579 | 8 | **No** — under the export threshold |
+| `src/core/gatewayConfig.ts` | 564 | 19 | **Count only** — 11 of the 19 are thin aliases re-exporting `GatewayConfigService` statics (`getGatewayToken`, `setGatewayToken`, …), so the raw count overstates the mixing; the remaining constants and two classes are one coherent responsibility (gateway settings and credentials). A genuine candidate, but a weaker one than the raw number suggests |
 
 `extension.ts` and `getWebviewContent.ts`, named explicitly, did exit the monolith list; the others grew **after** the task was set, so they never fell into its scope.
+
+So the honest answer to the task's question is that **exactly one file clearly meets the threshold — `src/webview/viewMessaging.ts`** — with `gatewayConfig.ts` a qualified second. Line count alone, which is what the table above would have implied before the export column was added, points at much larger files that do not satisfy the criterion at all.
 
 ### Task 2 — refactoring `accessInfo.ts`: **partially closed**
 
@@ -443,7 +445,7 @@ Not covered:
 
 ### Conclusion
 
-Sprint 1 is **partially** closed: for task 2, waves (b)/(c) and the lodash-paraphrase replacements are done, but wave (a) is not fully met (see above); for task 1, the named monoliths are done, but its **artifact** is not — the module map and the dump-file inventory. The next sensible step: write the module map from the current structure and decide what from the table above goes into the work (the candidates are `gatewayChatService.ts` and `ChatViewProvider.ts`).
+Sprint 1 is **partially** closed: for task 2, waves (b)/(c) and the lodash-paraphrase replacements are done, but wave (a) is not fully met (see above); for task 1, the named monoliths are done, but its **artifact** is not — the module map and the dump-file inventory. The next sensible step: write the module map from the current structure and decide what from the table above goes into the work — on the task's own criterion, `viewMessaging.ts` is the primary candidate and `gatewayConfig.ts` a secondary one. (Ranking by raw line count would instead have named `gatewayChatService.ts` and `ChatViewProvider.ts`; neither meets the threshold, so line count is not the criterion the task specified.)
 
 §9.1.7 (Sprint 3 candidate, `core/markdown.ts`) is not part of Sprint 1 and was not performed — by the owner's decision of 2026-09-26 it is done on the next touch of the files.
 
