@@ -1,4 +1,6 @@
+import type { MockInstance } from 'vitest';
 import { EventEmitter } from 'events';
+import { replaceEnv } from './helpers/env';
 import { Writable } from 'stream';
 import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
@@ -16,10 +18,23 @@ import {
 } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
 
-jest.mock('child_process', () => ({ spawn: jest.fn() }));
+// The factory must cover the whole export surface of the mocked module, not only
+// the members this test calls: `satisfies` keeps that check honest at compile time
+// (rule 50). The casts are needed because `ChildProcess` is a class and the rest
+// are overloaded functions, neither of which `vi.fn()` can infer.
+vi.mock('child_process', () => ({
+    ChildProcess: class {} as unknown as typeof import('child_process').ChildProcess,
+    exec: vi.fn() as unknown as typeof import('child_process').exec,
+    execFile: vi.fn() as unknown as typeof import('child_process').execFile,
+    execFileSync: vi.fn() as unknown as typeof import('child_process').execFileSync,
+    execSync: vi.fn() as unknown as typeof import('child_process').execSync,
+    fork: vi.fn() as unknown as typeof import('child_process').fork,
+    spawn: vi.fn() as unknown as typeof import('child_process').spawn,
+    spawnSync: vi.fn() as unknown as typeof import('child_process').spawnSync,
+} satisfies typeof import('child_process')));
 
-const spawnMock = jest.mocked(spawn);
-const getConfigurationMock = jest.mocked(vscode.workspace.getConfiguration);
+const spawnMock = vi.mocked(spawn);
+const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
 type FakeChild = ChildProcess & { stdin: Writable; stdout: EventEmitter; stderr: EventEmitter; stdinBytes: Buffer[] };
 
@@ -38,7 +53,7 @@ function fakeChild({ spawned = true } = {}): FakeChild {
         stdinBytes,
         stdout: new EventEmitter(),
         stderr: new EventEmitter(),
-        kill: jest.fn(),
+        kill: vi.fn(),
     }) as FakeChild;
 }
 
@@ -52,7 +67,7 @@ type RunOptions = { model?: string; chatType?: string; service?: ChatService; hi
 
 function send(prompt: string, options: RunOptions = {}) {
     const events: ChatEvent[] = [];
-    const onRunComplete = jest.fn();
+    const onRunComplete = vi.fn();
     const service = options.service ?? new ChatService();
     service.sendMessage(prompt, '/tmp', options.model ?? 'codex', options.chatType ?? 'chat',
         e => events.push(e), undefined, onRunComplete, options.history);
@@ -100,16 +115,16 @@ const say = (text: string) => acpUpdate({ sessionUpdate: 'agent_message_chunk', 
 const [SAY_OPEN, SAY_CLOSE] = JSON.stringify(say('\u0000')).split('\\u0000');
 
 describe('ChatService.sendMessage', () => {
-    let killSpy: jest.SpyInstance;
-    let launchSpy: jest.SpyInstance;
-    let projectConfigSpy: jest.SpyInstance;
+    let killSpy: MockInstance;
+    let launchSpy: MockInstance;
+    let projectConfigSpy: MockInstance;
 
     beforeEach(() => {
         spawnMock.mockReset();
         useSettings({});
-        killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-        launchSpy = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ command: 'acpx', args: [] });
-        projectConfigSpy = jest.spyOn(acpxProjectConfig, 'checkProjectConfig').mockReturnValue({ status: 'trusted' });
+        killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+        launchSpy = vi.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ command: 'acpx', args: [] });
+        projectConfigSpy = vi.spyOn(acpxProjectConfig, 'checkProjectConfig').mockReturnValue({ status: 'trusted' });
     });
 
     afterEach(() => {
@@ -117,7 +132,7 @@ describe('ChatService.sendMessage', () => {
         launchSpy.mockRestore();
         projectConfigSpy.mockRestore();
         getConfigurationMock.mockReset();
-        jest.useRealTimers();
+        vi.useRealTimers();
     });
 
     describe('launch', () => {
@@ -200,7 +215,7 @@ describe('ChatService.sendMessage', () => {
             ['win32', 'Path', 'C:\\Windows;.;node_modules\\.bin;C:tools;D:\\node', 'C:\\Windows;D:\\node', { NoDefaultCurrentDirectoryInExePath: '1' }],
         ] as const)('gives acpx on %s a PATH of absolute entries only, so its node and agents never come from the workspace',
             (platform, key, searchPath, expected, guard) => {
-                const env = jest.replaceProperty(process, 'env', { [key]: searchPath, HOME: '/home/u' });
+                const env = replaceEnv({ [key]: searchPath, HOME: '/home/u' });
                 try {
                     withPlatform(platform, () => start());
                     expect(spawnMock.mock.calls[0][2]?.env).toEqual({ [key]: expected, HOME: '/home/u', ...guard });
@@ -210,7 +225,7 @@ describe('ChatService.sendMessage', () => {
             });
 
         it('drops the PATH of acpx when no absolute entry is left, as an empty POSIX PATH searches the cwd', () => {
-            const env = jest.replaceProperty(process, 'env', { PATH: '.:bin', HOME: '/home/u' });
+            const env = replaceEnv({ PATH: '.:bin', HOME: '/home/u' });
             try {
                 withPlatform('linux', () => start());
                 expect(spawnMock.mock.calls[0][2]?.env).toEqual({ HOME: '/home/u' });
@@ -230,7 +245,7 @@ describe('ChatService.sendMessage', () => {
         });
 
         it('runs the resolved Node launch on Windows, not the acpx shim', () => {
-            const resolve = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({
+            const resolve = vi.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({
                 command: 'C:\\nodejs\\node.exe',
                 args: ['C:\\npm\\node_modules\\acpx\\dist\\cli.js'],
             });
@@ -250,7 +265,7 @@ describe('ChatService.sendMessage', () => {
             ['acpx', 'acpx not found'],
             ['node', 'Node.js not found'],
         ] as const)('explains a missing %s without spawning', (missing, message) => {
-            const resolve = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ missing });
+            const resolve = vi.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ missing });
             try {
                 const { events, onRunComplete } = send('hi');
                 expect(spawnMock).not.toHaveBeenCalled();
@@ -499,19 +514,19 @@ describe('ChatService.sendMessage', () => {
         });
 
         it('escalates to SIGKILL when the process outlives the grace period', () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { service } = start();
             service.abort();
-            jest.advanceTimersByTime(ABORT_KILL_GRACE_MS);
+            vi.advanceTimersByTime(ABORT_KILL_GRACE_MS);
             expect(killSpy).toHaveBeenLastCalledWith(-4242, 'SIGKILL');
         });
 
         it('does not escalate once the process has exited', () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { child, service } = start();
             service.abort();
             child.emit('close', null, 'SIGTERM');
-            jest.advanceTimersByTime(ABORT_KILL_GRACE_MS);
+            vi.advanceTimersByTime(ABORT_KILL_GRACE_MS);
             expect(killSpy).toHaveBeenCalledTimes(1);
         });
 
@@ -713,7 +728,7 @@ describe('ChatService.sendMessage', () => {
 
         it('refuses without spawning when the user declines the workspace config', async () => {
             projectConfigSpy.mockReturnValue(unapproved);
-            const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(false);
+            const approval = vi.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(false);
             try {
                 const { events, onRunComplete } = send('hi');
                 await Promise.resolve();
@@ -728,7 +743,7 @@ describe('ChatService.sendMessage', () => {
 
         it('starts once the user approves the workspace config', async () => {
             projectConfigSpy.mockReturnValueOnce(unapproved);
-            const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
+            const approval = vi.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
             try {
                 const child = fakeChild();
                 spawnMock.mockReturnValue(child);
@@ -746,7 +761,7 @@ describe('ChatService.sendMessage', () => {
 
         it('refuses a config that changed between the approval and the spawn', async () => {
             projectConfigSpy.mockReturnValue(unapproved);
-            const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
+            const approval = vi.spyOn(acpxProjectConfig, 'requestProjectConfigApproval').mockResolvedValue(true);
             try {
                 const { events, onRunComplete } = send('hi');
                 await Promise.resolve();
@@ -763,7 +778,7 @@ describe('ChatService.sendMessage', () => {
         it('completes an aborted send once and never spawns after a late approval', async () => {
             projectConfigSpy.mockReturnValue(unapproved);
             let approve: (approved: boolean) => void = () => undefined;
-            const approval = jest.spyOn(acpxProjectConfig, 'requestProjectConfigApproval')
+            const approval = vi.spyOn(acpxProjectConfig, 'requestProjectConfigApproval')
                 .mockReturnValue(new Promise(resolve => { approve = resolve; }));
             try {
                 const { events, onRunComplete, service } = send('hi');

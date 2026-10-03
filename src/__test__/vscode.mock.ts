@@ -1,58 +1,58 @@
 
 
-const createDisposable = () => ({ dispose: jest.fn() });
+const createDisposable = () => ({ dispose: vi.fn() });
 
-const createOutputChannel = jest.fn(() => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-    trace: jest.fn(),
-    appendLine: jest.fn(),
-    append: jest.fn(),
-    show: jest.fn(),
-    hide: jest.fn(),
-    dispose: jest.fn(),
+const createOutputChannel = vi.fn(() => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    appendLine: vi.fn(),
+    append: vi.fn(),
+    show: vi.fn(),
+    hide: vi.fn(),
+    dispose: vi.fn(),
 }));
 
 export const window = {
-    createStatusBarItem: jest.fn(() => ({
-        show: jest.fn(),
-        hide: jest.fn(),
-        dispose: jest.fn(),
+    createStatusBarItem: vi.fn(() => ({
+        show: vi.fn(),
+        hide: vi.fn(),
+        dispose: vi.fn(),
         text: '',
         tooltip: '',
         command: '',
         name: '',
         accessibilityInformation: {},
     })),
-    createTreeView: jest.fn(() => createDisposable()),
-    registerWebviewViewProvider: jest.fn(() => createDisposable()),
-    createWebviewPanel: jest.fn(() => ({
-        reveal: jest.fn(),
-        onDidDispose: jest.fn(() => createDisposable()),
-        dispose: jest.fn(),
+    createTreeView: vi.fn(() => createDisposable()),
+    registerWebviewViewProvider: vi.fn(() => createDisposable()),
+    createWebviewPanel: vi.fn(() => ({
+        reveal: vi.fn(),
+        onDidDispose: vi.fn(() => createDisposable()),
+        dispose: vi.fn(),
         webview: {
             html: '',
             options: {},
             cspSource: 'vscode-webview:',
-            postMessage: jest.fn(),
-            onDidReceiveMessage: jest.fn(() => createDisposable()),
+            postMessage: vi.fn(),
+            onDidReceiveMessage: vi.fn(() => createDisposable()),
         },
     })),
-    onDidCloseTerminal: jest.fn(() => createDisposable()),
-    onDidChangeActiveTextEditor: jest.fn(() => createDisposable()),
-    onDidChangeTextEditorSelection: jest.fn(() => createDisposable()),
-    showInformationMessage: jest.fn(),
-    showErrorMessage: jest.fn(),
-    showWarningMessage: jest.fn(),
-    showQuickPick: jest.fn(),
-    showInputBox: jest.fn(),
-    showOpenDialog: jest.fn(),
-    createTerminal: jest.fn(() => ({
-        show: jest.fn(),
-        sendText: jest.fn(),
-        dispose: jest.fn(),
+    onDidCloseTerminal: vi.fn(() => createDisposable()),
+    onDidChangeActiveTextEditor: vi.fn(() => createDisposable()),
+    onDidChangeTextEditorSelection: vi.fn(() => createDisposable()),
+    showInformationMessage: vi.fn(),
+    showErrorMessage: vi.fn(),
+    showWarningMessage: vi.fn(),
+    showQuickPick: vi.fn(),
+    showInputBox: vi.fn(),
+    showOpenDialog: vi.fn(),
+    createTerminal: vi.fn(() => ({
+        show: vi.fn(),
+        sendText: vi.fn(),
+        dispose: vi.fn(),
     })),
     activeTextEditor: undefined,
     createOutputChannel,
@@ -60,8 +60,8 @@ export const window = {
 };
 
 export const commands = {
-    registerCommand: jest.fn(() => createDisposable()),
-    executeCommand: jest.fn(),
+    registerCommand: vi.fn(() => createDisposable()),
+    executeCommand: vi.fn(),
 };
 
 type MockWorkspaceFolder = { name?: string; uri: { fsPath: string } };
@@ -71,38 +71,38 @@ function workspaceFolderList(): MockWorkspaceFolder[] | undefined {
 }
 
 export const workspace = {
-    getConfiguration: jest.fn(() => ({
-        get: jest.fn((_key: string, defaultValue?: unknown) => defaultValue),
-        update: jest.fn(),
-        inspect: jest.fn(() => undefined),
+    getConfiguration: vi.fn(() => ({
+        get: vi.fn((_key: string, defaultValue?: unknown) => defaultValue),
+        update: vi.fn(),
+        inspect: vi.fn(() => undefined),
     })),
     workspaceFolders: undefined as MockWorkspaceFolder[] | undefined,
     /** The innermost folder holding the uri, like VS Code's. */
-    getWorkspaceFolder: jest.fn((uri: { fsPath: string }): MockWorkspaceFolder | undefined =>
+    getWorkspaceFolder: vi.fn((uri: { fsPath: string }): MockWorkspaceFolder | undefined =>
         [...(workspaceFolderList() ?? [])]
             .filter(folder => uri.fsPath === folder.uri.fsPath || uri.fsPath.startsWith(`${folder.uri.fsPath}/`))
             .sort((a, b) => b.uri.fsPath.length - a.uri.fsPath.length)[0]),
-    onDidChangeConfiguration: jest.fn(() => createDisposable()),
-    onDidGrantWorkspaceTrust: jest.fn(() => createDisposable()),
+    onDidChangeConfiguration: vi.fn(() => createDisposable()),
+    onDidGrantWorkspaceTrust: vi.fn(() => createDisposable()),
     fs: {
-        readFile: jest.fn(),
-        writeFile: jest.fn(),
-        stat: jest.fn(),
-        createDirectory: jest.fn(),
+        readFile: vi.fn(),
+        writeFile: vi.fn(),
+        stat: vi.fn(),
+        createDirectory: vi.fn(),
     },
-    openTextDocument: jest.fn(),
-    findFiles: jest.fn(() => Promise.resolve([])),
-    asRelativePath: jest.fn((p: string) => p),
+    openTextDocument: vi.fn(),
+    findFiles: vi.fn(() => Promise.resolve([])),
+    asRelativePath: vi.fn((p: string) => p),
 };
 
 export const languages = {
-    onDidChangeDiagnostics: jest.fn(() => createDisposable()),
-    getDiagnostics: jest.fn(() => []),
+    onDidChangeDiagnostics: vi.fn(() => createDisposable()),
+    getDiagnostics: vi.fn(() => []),
 };
 
 export const env = {
-    clipboard: { writeText: jest.fn() },
-    openExternal: jest.fn(),
+    clipboard: { writeText: vi.fn() },
+    openExternal: vi.fn(),
 };
 
 export enum FileType {
@@ -141,9 +141,9 @@ export enum ViewColumn {
 }
 
 export class EventEmitter<T> {
-    event = jest.fn();
-    fire = jest.fn();
-    dispose = jest.fn();
+    event = vi.fn();
+    fire = vi.fn();
+    dispose = vi.fn();
 }
 
 export class TreeItem {

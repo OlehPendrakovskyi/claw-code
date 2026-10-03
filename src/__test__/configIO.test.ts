@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
@@ -12,16 +13,16 @@ import {
     writeOpenClawConfigRecord
 } from '../core/configIO';
 
-const readFile = vscode.workspace.fs.readFile as unknown as jest.Mock;
-const writeFile = vscode.workspace.fs.writeFile as unknown as jest.Mock;
-const getConfiguration = vscode.workspace.getConfiguration as unknown as jest.Mock;
+const readFile = vscode.workspace.fs.readFile as unknown as Mock;
+const writeFile = vscode.workspace.fs.writeFile as unknown as Mock;
+const getConfiguration = vscode.workspace.getConfiguration as unknown as Mock;
 
 const encode = (text: string) => new TextEncoder().encode(text);
 
 const mockConfigGet = (value: unknown) => {
     getConfiguration.mockReturnValue({
-        get: jest.fn(() => value),
-        update: jest.fn()
+        get: vi.fn(() => value),
+        update: vi.fn()
     });
 };
 
@@ -92,7 +93,7 @@ describe('getParentAtPath', () => {
 
 describe('getHardeningCommandPrefix', () => {
     afterEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('falls back to openclaw when unset', () => {
@@ -108,7 +109,7 @@ describe('getHardeningCommandPrefix', () => {
 
 describe('getHardeningMode', () => {
     afterEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('accepts the three known modes', () => {
@@ -128,7 +129,7 @@ describe('getHardeningMode', () => {
 
 describe('readOpenClawConfig', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('parses a JSON config file', async () => {
@@ -168,7 +169,7 @@ describe('readOpenClawConfig', () => {
 
 describe('writeOpenClawConfigRecord', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('writes pretty JSON with a trailing newline', async () => {
@@ -184,7 +185,7 @@ describe('writeOpenClawConfigRecord', () => {
 
 describe('loadOpenClawConfigRecord', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     it('returns the record together with its path', async () => {

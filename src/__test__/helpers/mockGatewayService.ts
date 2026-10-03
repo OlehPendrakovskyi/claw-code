@@ -3,7 +3,7 @@
  * history fixtures parsed from schema-validated v4 wire payloads, so they
  * carry exactly the shapes the real client hands the provider.
  *
- * Usage: jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+ * Usage: vi.mock('../core/gatewayChatService', async () => (await vi.importActual<typeof import('./helpers/mockGatewayService')>('./helpers/mockGatewayService')).mockGatewayModule());
  */
 
 import type { ChatEvent } from '../../chat/ChatService';
@@ -18,13 +18,13 @@ class MockGatewayChatService {
     private readonly ownedSessions = new Set<string>();
 
     /** Identity by default; a spec teaches it an alias with mockImplementation. */
-    canonicalSessionKey = jest.fn((sessionKey: string): string => sessionKey);
-    hasOwnedRun = jest.fn((sessionKey: string): boolean => this.ownedSessions.has(this.canonicalSessionKey(sessionKey)));
-    abort = jest.fn((sessionKey: string): void => {
+    canonicalSessionKey = vi.fn((sessionKey: string): string => sessionKey);
+    hasOwnedRun = vi.fn((sessionKey: string): boolean => this.ownedSessions.has(this.canonicalSessionKey(sessionKey)));
+    abort = vi.fn((sessionKey: string): void => {
         this.ownedSessions.delete(this.canonicalSessionKey(sessionKey));
     });
     /** Records the send; its onEvent is wrapped in place so the recorded call still delivers to the provider. */
-    sendMessage = jest.fn((send: GatewaySend): void => {
+    sendMessage = vi.fn((send: GatewaySend): void => {
         const sessionKey = this.canonicalSessionKey(send.sessionKey);
         const deliver = send.onEvent;
         this.ownedSessions.add(sessionKey);
@@ -33,32 +33,32 @@ class MockGatewayChatService {
             deliver(event);
         };
     });
-    removeTranscriptSink = jest.fn();
-    rebindTranscriptSink = jest.fn();
-    clearSessionSink = jest.fn();
-    getGatewayIdentity = jest.fn(() => 'gateway-1');
-    getProtocolVersion = jest.fn(() => 4);
-    getTransportLimits = jest.fn(() => v4Adapter.defaultLimits());
-    attachmentWireBytes = jest.fn((attachment: { name: string; mimeType: string; byteLength: number }) => v4Adapter.attachmentWireBytes(attachment));
-    listSessions = jest.fn(async (): Promise<SessionSummary[]> => []);
-    getHistory = jest.fn(async (_sessionKey: string): Promise<HistorySnapshot | null> => historySnapshot([]));
-    seedHistory = jest.fn();
-    resumeSession = jest.fn();
-    captureSessionState = jest.fn(() => null);
-    restoreSessionState = jest.fn();
-    dispose = jest.fn();
+    removeTranscriptSink = vi.fn();
+    rebindTranscriptSink = vi.fn();
+    clearSessionSink = vi.fn();
+    getGatewayIdentity = vi.fn(() => 'gateway-1');
+    getProtocolVersion = vi.fn(() => 4);
+    getTransportLimits = vi.fn(() => v4Adapter.defaultLimits());
+    attachmentWireBytes = vi.fn((attachment: { name: string; mimeType: string; byteLength: number }) => v4Adapter.attachmentWireBytes(attachment));
+    listSessions = vi.fn(async (): Promise<SessionSummary[]> => []);
+    getHistory = vi.fn(async (_sessionKey: string): Promise<HistorySnapshot | null> => historySnapshot([]));
+    seedHistory = vi.fn();
+    resumeSession = vi.fn();
+    captureSessionState = vi.fn(() => null);
+    restoreSessionState = vi.fn();
+    dispose = vi.fn();
     private readonly promptListeners: PromptListener[] = [];
     private readonly sessionsChangedListeners: Array<(sessionKey: string | null) => void> = [];
-    onApprovalRequest = jest.fn((listener: PromptListener): (() => void) => {
+    onApprovalRequest = vi.fn((listener: PromptListener): (() => void) => {
         this.promptListeners.push(listener);
         return () => undefined;
     });
-    onSessionsChanged = jest.fn((listener: (sessionKey: string | null) => void): (() => void) => {
+    onSessionsChanged = vi.fn((listener: (sessionKey: string | null) => void): (() => void) => {
         this.sessionsChangedListeners.push(listener);
         return () => undefined;
     });
-    resolveApproval = jest.fn(async (_id: string, _decision: ApprovalDecision): Promise<void> => undefined);
-    answerQuestion = jest.fn(async (_id: string, _answers: QuestionAnswers | null): Promise<void> => undefined);
+    resolveApproval = vi.fn(async (_id: string, _decision: ApprovalDecision): Promise<void> => undefined);
+    answerQuestion = vi.fn(async (_id: string, _answers: QuestionAnswers | null): Promise<void> => undefined);
 
     /** Deliver a prompt change to the provider, as the real client's board would. */
     emitPrompt(change: PromptChange): void {

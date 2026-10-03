@@ -5,20 +5,17 @@ import * as path from 'path';
 import { execFileSync } from 'child_process';
 import type * as ProjectConfigModule from '../chat/acpxProjectConfig';
 
-let showWarningMock = jest.mocked(vscode.window.showWarningMessage);
-let showTextDocumentMock = jest.fn();
+let showWarningMock = vi.mocked(vscode.window.showWarningMessage);
+let showTextDocumentMock = vi.fn();
 
 /** A fresh module with its own vscode mock, so session approvals never leak between tests. */
-function freshModule(): typeof ProjectConfigModule {
-    let module: typeof ProjectConfigModule | undefined;
-    jest.isolateModules(() => {
-        const isolatedVscode = jest.requireActual<typeof vscode>('vscode');
-        showWarningMock = jest.mocked(isolatedVscode.window.showWarningMessage);
-        showTextDocumentMock = jest.fn(async () => ({ document: { isDirty: false } }));
-        Object.assign(isolatedVscode.window, { showTextDocument: showTextDocumentMock });
-        module = jest.requireActual('../chat/acpxProjectConfig');
-    });
-    return module!;
+async function freshModule(): Promise<typeof ProjectConfigModule> {
+    vi.resetModules();
+    const isolatedVscode = await vi.importActual<typeof vscode>('vscode');
+    showWarningMock = vi.mocked(isolatedVscode.window.showWarningMessage);
+    showTextDocumentMock = vi.fn(async () => ({ document: { isDirty: false } }));
+    Object.assign(isolatedVscode.window, { showTextDocument: showTextDocumentMock });
+    return await vi.importActual<typeof import('../chat/acpxProjectConfig')>('../chat/acpxProjectConfig');
 }
 
 const posixOnly = process.platform === 'win32' ? it.skip : it;
@@ -33,10 +30,10 @@ describe('acpxProjectConfig', () => {
     let configPath: string;
     let config: typeof ProjectConfigModule;
 
-    beforeEach(() => {
+    beforeEach(async () => {
         workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-acpxrc-'));
         configPath = path.join(workspace, '.acpxrc.json');
-        config = freshModule();
+        config = await freshModule();
     });
 
     afterEach(() => {
@@ -129,7 +126,7 @@ describe('acpxProjectConfig', () => {
             showWarningMock.mockResolvedValue('Allow and Run' as never);
             await config.requestProjectConfigApproval(unapproved());
             expect([...store.values.values()]).toEqual([[expect.stringContaining(workspace)]]);
-            const reloaded = freshModule();
+            const reloaded = await freshModule();
             reloaded.useProjectConfigApprovalStore(store);
             expect(showWarningMock).not.toHaveBeenCalled();
             expect(reloaded.checkProjectConfig(workspace)).toEqual({ status: 'trusted' });

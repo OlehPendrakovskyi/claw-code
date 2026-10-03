@@ -18,6 +18,8 @@ import type { ChatEvent } from '../chat/ChatService';
 import { redactEndpoint, redactPlainSecrets } from './accessInfo/redact';
 import type { ClientHello, GatewayProtocolAdapter, WireRequest } from './gatewayProtocol/adapter';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
+import type { WebSocketFactory, WebSocketLike } from './wsSocket';
+import { loadWsCtor } from './wsSocket';
 import { proveDevice } from './gatewayProtocol/deviceIdentity';
 import type {
   ApprovalDecision,
@@ -66,15 +68,7 @@ export type Logger = {
   error(msg: string): void;
 };
 
-/** Subset of the `ws` WebSocket surface this service relies on. */
-export type WebSocketLike = {
-  send(data: string): void;
-  close(code?: number, reason?: string): void;
-  on(event: string, cb: (...args: never[]) => void): void;
-  removeListener(event: string, cb: (...args: unknown[]) => void): void;
-};
-
-export type WebSocketFactory = (url: string) => WebSocketLike;
+export type { WebSocketLike, WebSocketFactory } from './wsSocket';
 
 export type GatewayChatServiceOptions = {
   /** Gateway URL, e.g. `ws://nas.local:18789`. */
@@ -296,10 +290,9 @@ function oversizedConnectRejection(limitBytes: number): HandshakeRejection {
   };
 }
 
-/** Lazily require `ws` to keep it off the activation path; its CJS entry exports the constructor. */
+/** Open a socket through the real `ws`, loading the package on first use. */
 function defaultWsFactory(url: string): WebSocketLike {
-  const WebSocketCtor = require('ws') as new (url: string) => WebSocketLike;
-  return new WebSocketCtor(url);
+  return new (loadWsCtor())(url);
 }
 
 

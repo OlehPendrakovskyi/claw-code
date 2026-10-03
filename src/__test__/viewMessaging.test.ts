@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -18,14 +19,14 @@ function withBudget(bytes: number, caps: Partial<AttachmentLimits> = {}): Attach
 // The unmocked promises API: the default implementation must bypass the mock
 // below, whose realpath delegates through the swappable wrapper back to this
 // implementation — calling the mocked `fsp.realpath` here would recurse.
-const realFsp: typeof FspType = jest.requireActual('fs').promises;
+const realFsp: typeof FspType = (await vi.importActual<typeof import('fs')>('fs')).promises;
 
 // A controllable realpath wrapper. viewMessaging reads `promises` from 'fs',
 // so that is the object mocked; ESM namespaces are not redefinable, which
-// rules out jest.spyOn. Tests swap `realpathImpl` to simulate path races.
+// rules out vi.spyOn. Tests swap `realpathImpl` to simulate path races.
 let realpathImpl: (p: fs.PathLike) => Promise<string> = (p) => realFsp.realpath(p as string);
-jest.mock('fs', () => {
-    const actual = jest.requireActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs');
     return {
         ...actual,
         promises: {
@@ -216,11 +217,11 @@ describe('viewMessaging', () => {
         // lsof prints a caret ambiguously, so this macOS path is the one /dev/fd decides.
         let caretFile: string;
         const readCaret = () => readAttachments([{ name: 'caret^note.txt', path: caretFile, type: 'file' }]);
-        let lsofSpy: jest.SpyInstance<Promise<string | undefined>, [number]>;
+        let lsofSpy: MockInstance<(fd: number) => Promise<string | undefined>>;
 
         beforeEach(() => {
             // lsof cannot tell unless a test says otherwise.
-            lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockResolvedValue(undefined);
+            lsofSpy = vi.spyOn(lsofFdPath, 'lsofNameForFd').mockResolvedValue(undefined);
             if (process.platform === 'win32') {
                 return;
             }
@@ -502,8 +503,8 @@ describe('viewMessaging', () => {
 
         posixOnly('reads a small attachment without allocating the size cap', async () => {
             const file = writeFixture('small.txt', 'tiny');
-            const alloc = jest.spyOn(Buffer, 'alloc');
-            const allocUnsafe = jest.spyOn(Buffer, 'allocUnsafe');
+            const alloc = vi.spyOn(Buffer, 'alloc');
+            const allocUnsafe = vi.spyOn(Buffer, 'allocUnsafe');
             try {
                 const { prompt } = await readAttachments([{ name: 'small.txt', path: file, type: 'file' }]);
                 expect(prompt).toContain('tiny');
@@ -570,7 +571,7 @@ describe('viewMessaging', () => {
             // The fd check runs after stat on every POSIX system, so the file grows there:
             // through lsof on macOS, through the fd link elsewhere.
             const realLsof = lsofFdPath.lsofNameForFd;
-            const lsofSpy = jest.spyOn(lsofFdPath, 'lsofNameForFd').mockImplementation(async (fd) => {
+            const lsofSpy = vi.spyOn(lsofFdPath, 'lsofNameForFd').mockImplementation(async (fd) => {
                 grow();
                 return realLsof(fd);
             });
@@ -641,7 +642,7 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('charges each gateway image what it adds to the send', async () => {
-            const wireBytes = jest.fn(() => 500);
+            const wireBytes = vi.fn(() => 500);
             const read = (budget: number) =>
                 readAttachments([writeImage('a.png', 300), writeImage('b.png', 300)], { limits: withBudget(budget), attachmentWireBytes: wireBytes });
             expect((await read(1000)).attachments.map((a) => a.name)).toEqual(['a.png', 'b.png']);

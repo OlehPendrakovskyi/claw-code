@@ -1,7 +1,7 @@
 const mockPlatform = { current: 'linux' as NodeJS.Platform };
 
-jest.mock('os', () => {
-    const actual = jest.requireActual('os');
+vi.mock('os', async () => {
+    const actual = await vi.importActual<typeof import('os')>('os');
     return {
         ...actual,
         platform: () => mockPlatform.current
@@ -23,7 +23,7 @@ import {
 type Platform = NodeJS.Platform;
 
 const withPlatform = (platform: Platform, fn: () => void) => {
-    // os.platform() is not configurable in Node 24; drive it through a jest module mock.
+    // os.platform() is not configurable in Node 24; drive it through a module mock.
     const previous = mockPlatform.current;
     mockPlatform.current = platform;
     try {

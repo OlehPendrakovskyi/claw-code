@@ -12,19 +12,19 @@ import {
     renderMarkdown,
 } from '../webview/viewMessaging';
 
-// The renderer loads its parser through a dynamic import jest cannot run, so
-// these tests feed renderMarkdown the HTML shape the renderer emits.
-jest.mock('@create-markdown/preview', () => ({ markdownToHTML: jest.fn() }));
+// The renderer pulls its parser in through a dynamic import. These tests mock
+// that module and feed renderMarkdown the HTML shape the renderer emits.
+vi.mock('@create-markdown/preview', () => ({ markdownToHTML: vi.fn() }));
 
-const markdownToHTMLMock = jest.mocked(markdownToHTML);
-const findFilesMock = jest.mocked(vscode.workspace.findFiles);
+const markdownToHTMLMock = vi.mocked(markdownToHTML);
+const findFilesMock = vi.mocked(vscode.workspace.findFiles);
 
 const webviewUri = (uri: vscode.Uri) => ({ toString: () => `webview:${uri.fsPath}` }) as vscode.Uri;
 
 function fakeWebview() {
     return {
-        postMessage: jest.fn(),
-        asWebviewUri: jest.fn(webviewUri),
+        postMessage: vi.fn(),
+        asWebviewUri: vi.fn(webviewUri),
     };
 }
 
@@ -222,8 +222,8 @@ describe('viewMessaging', () => {
     });
 
     describe('gatherEditorContext', () => {
-        const git = jest.fn(async (args: string): Promise<string> => (args === 'diff' ? 'DIFF' : 'STAGED'));
-        const getDiagnosticsMock = jest.mocked(vscode.languages.getDiagnostics as (uri: vscode.Uri) => vscode.Diagnostic[]);
+        const git = vi.fn(async (args: string): Promise<string> => (args === 'diff' ? 'DIFF' : 'STAGED'));
+        const getDiagnosticsMock = vi.mocked(vscode.languages.getDiagnostics as (uri: vscode.Uri) => vscode.Diagnostic[]);
 
         afterEach(() => {
             setActiveEditor(undefined);
@@ -240,7 +240,7 @@ describe('viewMessaging', () => {
         });
 
         it('describes the active file and prefers the selection', async () => {
-            jest.mocked(vscode.workspace.asRelativePath).mockReturnValueOnce('src/app.ts');
+            vi.mocked(vscode.workspace.asRelativePath).mockReturnValueOnce('src/app.ts');
             setActiveEditor({ text: 'whole file', selectionText: 'picked' });
             expect(await gatherEditorContext('selection', git)).toEqual({
                 filePath: 'src/app.ts', fileName: 'app.ts', languageId: 'typescript', selection: 'picked',

@@ -1,27 +1,28 @@
+import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import type { ChatEvent } from '../chat/ChatService';
 
-const mockResolve = jest.fn();
+const mockResolve = vi.fn();
 const mockFactoryCallbacks: {
     onStatus?: (transport: 'gateway' | 'acpx', connected: boolean, protocolVersion: number | null) => void;
     onInvalidated?: (reason: 'identity' | 'transport') => void;
 } = {};
 
-jest.mock('../webview/chatServiceFactory', () => ({
-    ChatServiceFactory: jest.fn().mockImplementation((_context, onStatus, onInvalidated) => {
+vi.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: vi.fn().mockImplementation(function (_context, onStatus, onInvalidated) {
         mockFactoryCallbacks.onStatus = onStatus;
         mockFactoryCallbacks.onInvalidated = onInvalidated;
-        return { resolve: (...args: unknown[]) => mockResolve(...args), dispose: jest.fn() };
+        return { resolve: (...args: unknown[]) => mockResolve(...args), dispose: vi.fn() };
     }),
 }));
 
-jest.mock('../core/gatewayChatService', () => jest.requireActual('./helpers/mockGatewayService').mockGatewayModule());
+vi.mock('../core/gatewayChatService', async () => (await vi.importActual<typeof import('./helpers/mockGatewayService')>('./helpers/mockGatewayService')).mockGatewayModule());
 
 // Identity realpath keeps sends free of real disk I/O, so flush() is deterministic; the
 // attachment reader's fd check needs the real one.
-jest.mock('fs', () => {
-    const actual = jest.requireActual('fs');
+vi.mock('fs', async () => {
+    const actual = await vi.importActual<typeof import('fs')>('fs');
     const isFdLink = (p: string): boolean => p.startsWith('/proc/') || p.startsWith('/dev/fd/');
     const realpath = async (p: string): Promise<string> => isFdLink(p) ? actual.promises.realpath(p) : p;
     return { ...actual, promises: { ...actual.promises, realpath } };
@@ -59,7 +60,7 @@ type FakeView = {
 };
 
 const { GatewayChatService: MockGatewayChatService } =
-    jest.requireMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
+    await vi.importMock<{ GatewayChatService: new () => GatewayChatService }>('../core/gatewayChatService');
 
 const WARM_ROWS = [
     { key: 'agent:main:main', label: 'Main' },
@@ -83,17 +84,17 @@ function makeWebview(): FakeWebview {
 
 function makeGateway(): GatewayChatService {
     const gateway = new MockGatewayChatService();
-    jest.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(WARM_ROWS));
+    vi.mocked(gateway.listSessions).mockResolvedValue(sessionSummaries(WARM_ROWS));
     return gateway;
 }
 
 function makeMemento(): vscode.Memento {
-    return { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined) };
+    return { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined) };
 }
 
 function makeContext(): vscode.ExtensionContext {
     const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
-        globalState: { ...makeMemento(), setKeysForSync: jest.fn() },
+        globalState: { ...makeMemento(), setKeysForSync: vi.fn() },
         workspaceState: makeMemento(),
     };
     return context as vscode.ExtensionContext;
@@ -102,13 +103,13 @@ function makeContext(): vscode.ExtensionContext {
 function makeProvider(): { provider: ChatViewProvider; sidebar: FakeWebview & { view: FakeView } } {
     const provider = new ChatViewProvider(vscode.Uri.file('/ext'), makeContext());
     const sidebar = makeWebview();
-    const view: FakeView = { webview: sidebar.webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    const view: FakeView = { webview: sidebar.webview, visible: true, show: vi.fn(), onDidDispose: vi.fn() };
     provider.resolveWebviewView(view as vscode.WebviewView, {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
     return { provider, sidebar: { ...sidebar, view } };
 }
 
 // Real setImmediate: the global one is faked.
-const { setImmediate: realSetImmediate } = jest.requireActual<typeof import('timers')>('timers');
+const { setImmediate: realSetImmediate } = await vi.importActual<typeof import('timers')>('timers');
 
 async function flush(): Promise<void> {
     for (let i = 0; i < 10; i++) {
@@ -117,8 +118,8 @@ async function flush(): Promise<void> {
 }
 
 /** The panel the most recent popOut() created through the vscode mock. */
-function lastPopOutPanel(): { webview: { postMessage: jest.Mock } } {
-    const results = jest.mocked(vscode.window.createWebviewPanel).mock.results;
+function lastPopOutPanel(): { webview: { postMessage: Mock } } {
+    const results = vi.mocked(vscode.window.createWebviewPanel).mock.results;
     return results[results.length - 1].value;
 }
 
@@ -141,7 +142,7 @@ function threadOf(webview: FakeWebview, threadId: string): ThreadState {
 
 /** Transcript callback the provider registered for the last resumed session. */
 function lastTranscriptSink(gateway: GatewayChatService): (event: ChatEvent) => void {
-    const calls = jest.mocked(gateway.resumeSession).mock.calls;
+    const calls = vi.mocked(gateway.resumeSession).mock.calls;
     return calls[calls.length - 1][1];
 }
 
@@ -149,16 +150,16 @@ describe('ChatViewProvider', () => {
     let gateway: GatewayChatService;
 
     beforeEach(() => {
-        jest.useFakeTimers();
+        vi.useFakeTimers();
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }];
         gateway = makeGateway();
         mockResolve.mockReset();
         mockResolve.mockResolvedValue({ service: gateway, transport: 'gateway' });
-        jest.mocked(vscode.window.showInformationMessage).mockClear();
+        vi.mocked(vscode.window.showInformationMessage).mockClear();
     });
 
     afterEach(() => {
-        jest.useRealTimers();
+        vi.useRealTimers();
         (vscode.window as { activeTextEditor?: unknown }).activeTextEditor = undefined;
         (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = undefined;
     });
@@ -169,7 +170,7 @@ describe('ChatViewProvider', () => {
             await sidebar.send({ type: 'newSession' });
             expect(lastState(sidebar).activeThreadId).toBe('thread-2');
 
-            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'user', text: 'q', id: 'u1' }]));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'user', text: 'q', id: 'u1' }]));
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
 
@@ -188,7 +189,7 @@ describe('ChatViewProvider', () => {
         it('renders restored assistant rows through the live reply renderer', async () => {
             const { sidebar } = makeProvider();
             const text = '**bold** <img src=x onerror=alert(1)>';
-            jest.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'assistant', text, id: 'a1' }]));
+            vi.mocked(gateway.getHistory).mockResolvedValue(historySnapshot([{ role: 'assistant', text, id: 'a1' }]));
             await sidebar.send({ type: 'openSession', sessionKey: 'agent:coder:main', threadId: 'thread-1' });
             await flush();
 
@@ -228,7 +229,7 @@ describe('ChatViewProvider', () => {
         async function runSink(sidebar: FakeWebview): Promise<(event: ChatEvent) => void> {
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const calls = jest.mocked(gateway.sendMessage).mock.calls;
+            const calls = vi.mocked(gateway.sendMessage).mock.calls;
             return calls[calls.length - 1][0].onEvent;
         }
 
@@ -298,7 +299,7 @@ describe('ChatViewProvider', () => {
         async function sendAndCaptureRunSink(sidebar: FakeWebview): Promise<(event: ChatEvent) => void> {
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
-            const calls = jest.mocked(gateway.sendMessage).mock.calls;
+            const calls = vi.mocked(gateway.sendMessage).mock.calls;
             return calls[calls.length - 1][0].onEvent;
         }
 
@@ -346,7 +347,7 @@ describe('ChatViewProvider', () => {
             const reply = sidebar.posted.find(m => m.type === 'sessionsList');
             expect(reply).toMatchObject({ threadId: 'thread-1', error: undefined });
             expect((reply!.sessions as Array<{ sessionKey: string }>).map(s => s.sessionKey)).toContain('agent:coder:main');
-            expect(jest.mocked(popout.postMessage).mock.calls.some(([m]) => m.type === 'sessionsList')).toBe(false);
+            expect(vi.mocked(popout.postMessage).mock.calls.some(([m]) => m.type === 'sessionsList')).toBe(false);
         });
 
         it('reports an unavailable gateway instead of staying silent', async () => {
@@ -365,7 +366,7 @@ describe('ChatViewProvider', () => {
 
         it('reports a failed sessions.list', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
+            vi.mocked(gateway.listSessions).mockRejectedValue(new Error('rpc down'));
             await sidebar.send({ type: 'requestSessions', threadId: 'thread-1' });
             expect(sidebar.posted.find(m => m.type === 'sessionsList')).toMatchObject({ sessions: [], error: 'Could not load sessions' });
         });
@@ -377,7 +378,7 @@ describe('ChatViewProvider', () => {
                 document: { uri: vscode.Uri.file('/work/a.ts'), languageId: 'typescript', getText: () => 'x' },
                 selection: { isEmpty: true },
             };
-            jest.mocked(vscode.workspace.asRelativePath).mockReturnValue('a.ts');
+            vi.mocked(vscode.workspace.asRelativePath).mockReturnValue('a.ts');
         });
 
         it('reveals the hidden chat view and delivers once its page is ready', async () => {
@@ -401,7 +402,7 @@ describe('ChatViewProvider', () => {
     describe('send failures', () => {
         it('reports a throwing send in the thread', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
+            vi.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
             await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'go' });
             await flush();
             const messages = threadOf(sidebar, 'thread-1').messages;
@@ -411,7 +412,7 @@ describe('ChatViewProvider', () => {
 
         it('adds no failure row to a thread cleared meanwhile', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.sendMessage).mockImplementation(() => {
+            vi.mocked(gateway.sendMessage).mockImplementation(() => {
                 void sidebar.send({ type: 'clearThread', threadId: 'thread-1' });
                 throw new Error('boom');
             });
@@ -422,7 +423,7 @@ describe('ChatViewProvider', () => {
 
         it('reports a throwing slash command instead of rejecting the message handler', async () => {
             const { sidebar } = makeProvider();
-            jest.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
+            vi.mocked(gateway.sendMessage).mockImplementation(() => { throw new Error('boom'); });
             await expect(sidebar.send({ type: 'slashCommand', threadId: 'thread-1', command: 'plan', text: 'x' })).resolves.toBeUndefined();
             await flush();
             const messages = threadOf(sidebar, 'thread-1').messages;
@@ -448,7 +449,7 @@ describe('ChatViewProvider', () => {
             resolves.forEach(resolve => resolve());
             await flush();
 
-            expect(jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt)).toEqual(['second']);
+            expect(vi.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt)).toEqual(['second']);
         });
     });
 
@@ -456,7 +457,7 @@ describe('ChatViewProvider', () => {
         it('sends the prompt once the attachments are read', async () => {
             const dir = makeTempDir('claw-send-');
             const file = path.join(dir, 'note.txt');
-            jest.requireActual<typeof import('fs')>('fs').writeFileSync(file, 'attached body');
+            (await vi.importActual<typeof import('fs')>('fs')).writeFileSync(file, 'attached body');
             try {
                 const { sidebar } = makeProvider();
                 (vscode.workspace as { workspaceFolders?: unknown }).workspaceFolders = [{ uri: vscode.Uri.file('/work') }, { uri: vscode.Uri.file(TEMP_ROOT) }];
@@ -466,12 +467,12 @@ describe('ChatViewProvider', () => {
                 await sidebar.send({ type: 'send', threadId: 'thread-1', text: 'with attachment' });
                 await flush();
 
-                const sent = jest.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
+                const sent = vi.mocked(gateway.sendMessage).mock.calls.map(call => call[0].prompt);
                 expect(sent).toHaveLength(1);
                 expect(sent[0]).toContain('with attachment');
                 expect(sent[0]).toContain('attached body');
             } finally {
-                jest.requireActual<typeof import('fs')>('fs').rmSync(dir, { recursive: true, force: true });
+                (await vi.importActual<typeof import('fs')>('fs')).rmSync(dir, { recursive: true, force: true });
             }
         });
     });
@@ -501,14 +502,14 @@ describe('ChatViewProvider', () => {
         });
 
         it('writes a dimension only when the host accepts it', async () => {
-            const update = jest.fn(async () => undefined);
+            const update = vi.fn(async () => undefined);
             const config: vscode.WorkspaceConfiguration = {
                 get: ((_section: string, defaultValue?: unknown) => defaultValue) as vscode.WorkspaceConfiguration['get'],
                 has: () => false,
                 inspect: () => undefined,
                 update,
             };
-            const getConfiguration = jest.mocked(vscode.workspace.getConfiguration);
+            const getConfiguration = vi.mocked(vscode.workspace.getConfiguration);
             const original = getConfiguration.getMockImplementation();
             getConfiguration.mockImplementation(() => config);
             try {
@@ -521,7 +522,7 @@ describe('ChatViewProvider', () => {
                     ['chat.dimension', '2x3', vscode.ConfigurationTarget.Global],
                 ]);
             } finally {
-                getConfiguration.mockImplementation(original);
+                getConfiguration.mockImplementation(original ?? (() => ({ get: vi.fn() }) as never));
             }
         });
     });
@@ -539,22 +540,22 @@ describe('ChatViewProvider', () => {
 
         it('pushes the slash commands once the webview had time to load', () => {
             const { sidebar } = makeProvider();
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(slashCommandPushes(sidebar)).toHaveLength(1);
         });
 
         it('pushes nothing after the provider is disposed', () => {
             const { provider, sidebar } = makeProvider();
             provider.dispose();
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(slashCommandPushes(sidebar)).toEqual([]);
         });
 
         it('pushes nothing after the view is disposed', () => {
             const { sidebar } = makeProvider();
-            const [onViewDisposed] = jest.mocked(sidebar.view.onDidDispose).mock.calls[0];
+            const [onViewDisposed] = vi.mocked(sidebar.view.onDidDispose).mock.calls[0];
             onViewDisposed();
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(slashCommandPushes(sidebar)).toEqual([]);
         });
     });
@@ -565,7 +566,7 @@ describe('ChatViewProvider', () => {
             mockFactoryCallbacks.onStatus!('gateway', true, 4);
             provider.popOut();
             const popoutPanel = lastPopOutPanel();
-            jest.advanceTimersByTime(100);
+            vi.advanceTimersByTime(100);
             expect(popoutPanel.webview.postMessage).toHaveBeenCalledWith(
                 expect.objectContaining({ type: 'transportStatus', protocolVersion: 4, label: 'gateway v4 · connected' })
             );

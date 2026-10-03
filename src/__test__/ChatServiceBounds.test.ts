@@ -1,3 +1,4 @@
+import type { MockInstance } from 'vitest';
 import { EventEmitter } from 'events';
 import { Writable } from 'stream';
 import * as vscode from 'vscode';
@@ -7,10 +8,10 @@ import * as acpxProjectConfig from '../chat/acpxProjectConfig';
 import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_TAIL_MAX_CHARS, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
 
-jest.mock('child_process', () => ({ spawn: jest.fn() }));
+vi.mock('child_process', () => ({ spawn: vi.fn() }));
 
-const spawnMock = jest.mocked(spawn);
-const getConfigurationMock = jest.mocked(vscode.workspace.getConfiguration);
+const spawnMock = vi.mocked(spawn);
+const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
 type FakeChild = ChildProcess & { stdin: Writable; stdout: EventEmitter; stderr: EventEmitter; stdinBytes: Buffer[] };
 
@@ -28,7 +29,7 @@ function fakeChild(): FakeChild {
         stdinBytes,
         stdout: new EventEmitter(),
         stderr: new EventEmitter(),
-        kill: jest.fn(),
+        kill: vi.fn(),
     }) as FakeChild;
 }
 
@@ -40,7 +41,7 @@ function useSettings(settings: Record<string, unknown>): void {
 
 function send(prompt: string) {
     const events: ChatEvent[] = [];
-    const onRunComplete = jest.fn();
+    const onRunComplete = vi.fn();
     const service = new ChatService();
     service.sendMessage(prompt, '/tmp', 'codex', 'chat', e => events.push(e), undefined, onRunComplete);
     return { events, onRunComplete, service };
@@ -64,16 +65,16 @@ function promptOfWireLength(bytes: number): string {
 }
 
 describe('ChatService buffer and abort bounds', () => {
-    let killSpy: jest.SpyInstance;
-    let launchSpy: jest.SpyInstance;
-    let projectConfigSpy: jest.SpyInstance;
+    let killSpy: MockInstance;
+    let launchSpy: MockInstance;
+    let projectConfigSpy: MockInstance;
 
     beforeEach(() => {
         spawnMock.mockReset();
         useSettings({});
-        killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
-        launchSpy = jest.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ command: 'acpx', args: [] });
-        projectConfigSpy = jest.spyOn(acpxProjectConfig, 'checkProjectConfig').mockReturnValue({ status: 'trusted' });
+        killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+        launchSpy = vi.spyOn(cliLauncher, 'resolveCliLaunch').mockReturnValue({ command: 'acpx', args: [] });
+        projectConfigSpy = vi.spyOn(acpxProjectConfig, 'checkProjectConfig').mockReturnValue({ status: 'trusted' });
     });
 
     afterEach(() => {
@@ -81,7 +82,7 @@ describe('ChatService buffer and abort bounds', () => {
         launchSpy.mockRestore();
         projectConfigSpy.mockRestore();
         getConfigurationMock.mockReset();
-        jest.useRealTimers();
+        vi.useRealTimers();
     });
 
     describe('PROMPT_MAX_BYTES', () => {
@@ -170,24 +171,24 @@ describe('ChatService buffer and abort bounds', () => {
         usePlatform('linux');
 
         it('sends SIGTERM at once and SIGKILL to the process group exactly after the grace period', () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { child, service } = start();
             service.abort();
             expect(killSpy).toHaveBeenCalledTimes(1);
             expect(killSpy).toHaveBeenLastCalledWith(-4242, 'SIGTERM');
-            jest.advanceTimersByTime(ABORT_KILL_GRACE_MS - 1);
+            vi.advanceTimersByTime(ABORT_KILL_GRACE_MS - 1);
             expect(killSpy).toHaveBeenCalledTimes(1);
-            jest.advanceTimersByTime(1);
+            vi.advanceTimersByTime(1);
             expect(killSpy).toHaveBeenLastCalledWith(-4242, 'SIGKILL');
             child.emit('close', null, 'SIGKILL');
         });
 
         it('does not escalate to SIGKILL once the process exited within the grace', () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const { child, service } = start();
             service.abort();
             child.emit('close', null, 'SIGTERM');
-            jest.advanceTimersByTime(ABORT_KILL_GRACE_MS * 2);
+            vi.advanceTimersByTime(ABORT_KILL_GRACE_MS * 2);
             expect(killSpy).toHaveBeenCalledTimes(1);
         });
 

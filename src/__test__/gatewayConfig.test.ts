@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import {
   DEVICE_IDENTITY_SECRET_KEY,
@@ -89,7 +90,7 @@ class SettingsModel {
                 this.values.delete(slot);
             }
         };
-        return { get: jest.fn(), has: jest.fn(), inspect, update } as unknown as vscode.WorkspaceConfiguration;
+        return { get: vi.fn(), has: vi.fn(), inspect, update } as unknown as vscode.WorkspaceConfiguration;
     }
 
     static slot(level: Level, folder: string | undefined, languageId: string | undefined): string {
@@ -157,16 +158,16 @@ const folderA = vscode.Uri.file('/work/a');
 const folderB = vscode.Uri.file('/work/b');
 
 const secrets = (existing?: string) => ({
-    get: jest.fn(async () => existing),
-    store: jest.fn(async () => undefined),
-    delete: jest.fn(async () => undefined),
+    get: vi.fn(async () => existing),
+    store: vi.fn(async () => undefined),
+    delete: vi.fn(async () => undefined),
 });
 
 const makeContext = (secretStore: Pick<vscode.SecretStorage, 'get' | 'store' | 'delete'>) =>
     ({ secrets: secretStore } as unknown as vscode.ExtensionContext);
 
 const useSettings = (model: SettingsModel, folders: vscode.Uri[] = [], api: typeof vscode = vscode) => {
-    (api.workspace.getConfiguration as unknown as jest.Mock).mockImplementation(
+    (api.workspace.getConfiguration as unknown as Mock).mockImplementation(
         (_section: string, scope?: vscode.ConfigurationScope) => model.configuration(scope)
     );
     (api.workspace as { workspaceFolders: unknown }).workspaceFolders = folders.map((uri, index) => ({
@@ -178,7 +179,7 @@ const useSettings = (model: SettingsModel, folders: vscode.Uri[] = [], api: type
 
 describe('GatewayConfigService', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
     });
 
     afterEach(() => {
@@ -392,10 +393,9 @@ describe('GatewayConfigService', () => {
             // leak in from, or out to, other tests.
             let isolatedMigrate: typeof migrateLegacyGatewayToken = migrateLegacyGatewayToken;
             let isolatedVscode: typeof vscode = vscode;
-            jest.isolateModules(() => {
-                isolatedVscode = jest.requireActual('vscode');
-                isolatedMigrate = jest.requireActual('../core/gatewayConfig').migrateLegacyGatewayToken;
-            });
+            vi.resetModules();
+            isolatedVscode = await vi.importActual<typeof vscode>('vscode');
+            isolatedMigrate = (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).migrateLegacyGatewayToken;
             useSettings(model, [], isolatedVscode);
             const store = secrets();
 
@@ -423,7 +423,7 @@ describe('GatewayConfigService', () => {
 
     describe('getGatewaySettings', () => {
         const useRawSettings = (values: Record<string, unknown>) => {
-            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
                 get: (key: string) => values[key],
             } as Pick<vscode.WorkspaceConfiguration, 'get'> as vscode.WorkspaceConfiguration);
         };
@@ -488,9 +488,9 @@ describe('GatewayConfigService', () => {
             const model = new SettingsModel().set('global', 'legacy-token');
             useSettings(model);
             const configuration = model.configuration(undefined);
-            jest.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
                 ...configuration,
-                update: jest.fn(async () => { throw 'EACCES'; }),
+                update: vi.fn(async () => { throw 'EACCES'; }),
             });
             await expect(migrateLegacyGatewayToken(makeContext(secrets()))).resolves.toBe('incomplete');
         });
@@ -499,7 +499,7 @@ describe('GatewayConfigService', () => {
     describe('promptForGatewayToken', () => {
         it('keeps the stored token when the prompt is cancelled', async () => {
             const store = secrets('kept');
-            (vscode.window.showInputBox as jest.Mock).mockResolvedValue(undefined);
+            (vscode.window.showInputBox as Mock).mockResolvedValue(undefined);
             await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(false);
             expect(store.store).not.toHaveBeenCalled();
             expect(store.delete).not.toHaveBeenCalled();
@@ -507,15 +507,15 @@ describe('GatewayConfigService', () => {
 
         it('clears the token when a blank value is entered', async () => {
             const store = secrets('old');
-            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('   ');
+            (vscode.window.showInputBox as Mock).mockResolvedValue('   ');
             await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(true);
             expect(store.delete).toHaveBeenCalled();
             expect(vscode.window.showInformationMessage).toHaveBeenCalledWith('Gateway token cleared.');
         });
 
         it('keeps serializing token writes after one of them fails', async () => {
-            const failing = { ...secrets(), store: jest.fn(async () => { throw new Error('keyring locked'); }) };
-            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('tok');
+            const failing = { ...secrets(), store: vi.fn(async () => { throw new Error('keyring locked'); }) };
+            (vscode.window.showInputBox as Mock).mockResolvedValue('tok');
             await expect(promptForGatewayToken(makeContext(failing))).rejects.toThrow('keyring locked');
             const store = secrets();
             await expect(promptForGatewayToken(makeContext(store))).resolves.toBe(true);
@@ -527,11 +527,11 @@ describe('GatewayConfigService', () => {
             useSettings(model);
             let stored: string | undefined;
             const store = {
-                get: jest.fn(async () => stored),
-                store: jest.fn(async (_key: string, value: string) => { stored = value; }),
-                delete: jest.fn(async () => undefined),
+                get: vi.fn(async () => stored),
+                store: vi.fn(async (_key: string, value: string) => { stored = value; }),
+                delete: vi.fn(async () => undefined),
             };
-            (vscode.window.showInputBox as jest.Mock).mockResolvedValue('typed-token');
+            (vscode.window.showInputBox as Mock).mockResolvedValue('typed-token');
 
             await Promise.all([
                 migrateLegacyGatewayToken(makeContext(store)),
@@ -585,7 +585,7 @@ describe('GatewayConfigService', () => {
         const token = (deviceId: string, value = 'dtok') => ({ deviceId, role: 'operator', token: value, scopes: ['operator.read'] });
 
         afterEach(() => {
-            jest.useRealTimers();
+            vi.useRealTimers();
             (vscode.env as { remoteName?: string }).remoteName = undefined;
         });
 
@@ -662,7 +662,7 @@ describe('GatewayConfigService', () => {
         it('reports an identity reset made elsewhere, not its own writes, and then pairs a new identity', async () => {
             const vault = new MemorySecrets();
             const store = new SecretDeviceCredentialStore(vault);
-            const changes = jest.fn();
+            const changes = vi.fn();
             store.onDidChangeIdentity(changes);
             const original = await store.loadIdentity();
             await store.storeToken('ws://a:1', token(original.deviceId));
@@ -681,14 +681,12 @@ describe('GatewayConfigService', () => {
 
         it('settles every window on one new identity after a reset', async () => {
             const vault = new MemorySecrets();
-            const windows = [0, 1, 2].map(() => {
-                let isolated: typeof import('../core/gatewayConfig') | undefined;
-                jest.isolateModules(() => {
-                    isolated = jest.requireActual('../core/gatewayConfig');
-                });
-                if (!isolated) throw new Error('module did not load');
-                return { module: isolated, store: new isolated.SecretDeviceCredentialStore(vault) };
-            });
+            const windows: Array<{ module: typeof import('../core/gatewayConfig'); store: InstanceType<(typeof import('../core/gatewayConfig'))['SecretDeviceCredentialStore']> }> = [];
+            for (let index = 0; index < 3; index += 1) {
+                vi.resetModules();
+                const isolated = await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig');
+                windows.push({ module: isolated, store: new isolated.SecretDeviceCredentialStore(vault) });
+            }
             const proved: string[][] = windows.map(() => []);
             windows.forEach(({ store }, index) => {
                 store.onDidChangeIdentity(() => void store.loadIdentity().then((identity) => proved[index].push(identity.deviceId)));
@@ -707,25 +705,25 @@ describe('GatewayConfigService', () => {
         });
 
         it('fails a SecretStorage call that never answers instead of wedging later ones', async () => {
-            jest.useFakeTimers();
+            vi.useFakeTimers();
             const vault = new MemorySecrets();
             const store = new SecretDeviceCredentialStore(vault);
             vault.hangOnce.add('get');
             const hung = store.loadIdentity();
             const hungFailed = expect(hung).rejects.toThrow(/did not answer/);
-            await jest.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
             await hungFailed;
             const loading = store.loadIdentity();
-            await jest.advanceTimersByTimeAsync(300);
+            await vi.advanceTimersByTimeAsync(300);
             const identity = await loading;
             await expect(store.loadToken('ws://a:1', identity.deviceId)).resolves.toBeNull();
             vault.hangOnce.add('delete');
             const reset = resetDeviceIdentity(vault);
             const resetFailed = expect(reset).rejects.toThrow(/did not answer/);
-            await jest.advanceTimersByTimeAsync(5000);
+            await vi.advanceTimersByTimeAsync(5000);
             await resetFailed;
             const storing = store.storeToken('ws://a:1', token(identity.deviceId));
-            await jest.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(0);
             await storing;
             expect(await store.loadToken('ws://a:1', identity.deviceId)).toEqual(token(identity.deviceId));
         });

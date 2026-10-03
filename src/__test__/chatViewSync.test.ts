@@ -1,7 +1,8 @@
+import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 
-jest.mock('../webview/chatServiceFactory', () => ({
-    ChatServiceFactory: jest.fn().mockImplementation(() => ({ resolve: jest.fn(), dispose: jest.fn() })),
+vi.mock('../webview/chatServiceFactory', () => ({
+    ChatServiceFactory: vi.fn().mockImplementation(function () { return { resolve: vi.fn(), dispose: vi.fn() }; }),
 }));
 
 import { ChatViewProvider } from '../webview/ChatViewProvider';
@@ -24,9 +25,9 @@ function makeWebview(): { posted: Posted[]; webview: vscode.Webview; send(messag
 }
 
 function makeContext(): vscode.ExtensionContext {
-    const memento: vscode.Memento = { keys: () => [], get: jest.fn(), update: jest.fn(async () => undefined) };
+    const memento: vscode.Memento = { keys: () => [], get: vi.fn(), update: vi.fn(async () => undefined) };
     const context: Pick<vscode.ExtensionContext, 'globalState' | 'workspaceState'> = {
-        globalState: { ...memento, setKeysForSync: jest.fn() },
+        globalState: { ...memento, setKeysForSync: vi.fn() },
         workspaceState: memento,
     };
     return context as vscode.ExtensionContext;
@@ -35,7 +36,7 @@ function makeContext(): vscode.ExtensionContext {
 function makeProvider(): { provider: ChatViewProvider; sidebar: ReturnType<typeof makeWebview> } {
     const provider = new ChatViewProvider(vscode.Uri.file('/ext'), makeContext());
     const sidebar = makeWebview();
-    const view = { webview: sidebar.webview, visible: true, show: jest.fn(), onDidDispose: jest.fn() };
+    const view = { webview: sidebar.webview, visible: true, show: vi.fn(), onDidDispose: vi.fn() };
     provider.resolveWebviewView(view as Partial<vscode.WebviewView> as vscode.WebviewView,
         {} as vscode.WebviewViewResolveContext, {} as vscode.CancellationToken);
     return { provider, sidebar };
@@ -49,11 +50,11 @@ function withSettings(values: Record<string, unknown>): void {
         inspect: () => undefined,
         update: async (key: string, value: unknown) => { values[key] = value; },
     };
-    jest.mocked(vscode.workspace.getConfiguration).mockImplementation(() => configuration);
+    vi.mocked(vscode.workspace.getConfiguration).mockImplementation(() => configuration);
 }
 
 function configurationListener(): ConfigurationListener {
-    const calls = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls;
+    const calls = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.calls;
     return calls[calls.length - 1][0] as ConfigurationListener;
 }
 
@@ -65,16 +66,16 @@ function statesOf(posted: Posted[]): Posted[] {
     return posted.filter(message => message.type === 'state');
 }
 
-function makePanel(): vscode.WebviewPanel & { fireDispose(): void; reveal: jest.Mock } {
+function makePanel(): vscode.WebviewPanel & { fireDispose(): void; reveal: Mock } {
     let onDispose = (): void => undefined;
     const webview = makeWebview().webview;
-    const panel: Partial<vscode.WebviewPanel> & { fireDispose(): void; reveal: jest.Mock } = {
+    const panel: Partial<vscode.WebviewPanel> & { fireDispose(): void; reveal: Mock } = {
         webview,
-        reveal: jest.fn(),
+        reveal: vi.fn(),
         onDidDispose: (listener: () => void) => { onDispose = listener; return { dispose() {} }; },
         fireDispose: () => onDispose(),
     };
-    return panel as vscode.WebviewPanel & { fireDispose(): void; reveal: jest.Mock };
+    return panel as vscode.WebviewPanel & { fireDispose(): void; reveal: Mock };
 }
 
 async function flush(): Promise<void> {
@@ -83,7 +84,7 @@ async function flush(): Promise<void> {
 
 describe('ChatViewProvider view sync', () => {
     beforeEach(() => {
-        jest.clearAllMocks();
+        vi.clearAllMocks();
         withSettings({});
     });
 
@@ -102,7 +103,7 @@ describe('ChatViewProvider view sync', () => {
 
         it('stops listening once disposed', () => {
             const { provider } = makeProvider();
-            const results = jest.mocked(vscode.workspace.onDidChangeConfiguration).mock.results;
+            const results = vi.mocked(vscode.workspace.onDidChangeConfiguration).mock.results;
             const subscription = results[results.length - 1].value;
             provider.dispose();
             expect(subscription.dispose).toHaveBeenCalled();

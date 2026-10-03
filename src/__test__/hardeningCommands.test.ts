@@ -1,16 +1,18 @@
-jest.mock('../vscode/commands/shared', () => ({
-    execFileAsync: jest.fn(),
-    isOpenClawExecutable: jest.fn((executable: string) => executable === 'openclaw' || executable === 'openclaw.exe')
+import { replaceEnv } from './helpers/env';
+
+vi.mock('../vscode/commands/shared', () => ({
+    execFileAsync: vi.fn(),
+    isOpenClawExecutable: vi.fn((executable: string) => executable === 'openclaw' || executable === 'openclaw.exe')
 }));
-jest.mock('../vscode/commands/setup', () => ({ isCommandAvailable: jest.fn(async () => true), showMissingNodeMessage: jest.fn(), runSetupFlow: jest.fn() }));
-jest.mock('../vscode/commands/terminals', () => ({ getHardeningTerminal: jest.fn(), getOverviewProvider: jest.fn(() => undefined) }));
-jest.mock('../vscode/config', () => ({ openHardeningSettings: jest.fn(), getDashboardUrl: jest.fn(() => 'http://127.0.0.1:18789') }));
-jest.mock('../core/configIO', () => ({
-    ...jest.requireActual('../core/configIO'),
-    getHardeningCommandPrefix: jest.fn(() => 'openclaw'),
-    getHardeningMode: jest.fn(() => 'terminal'),
-    getOpenClawConfigPath: jest.fn(() => '/home/u/.openclaw/openclaw.json'),
-    readOpenClawConfig: jest.fn(async () => ({ config: {} })),
+vi.mock('../vscode/commands/setup', () => ({ isCommandAvailable: vi.fn(async () => true), showMissingNodeMessage: vi.fn(), runSetupFlow: vi.fn() }));
+vi.mock('../vscode/commands/terminals', () => ({ getHardeningTerminal: vi.fn(), getOverviewProvider: vi.fn(() => undefined) }));
+vi.mock('../vscode/config', () => ({ openHardeningSettings: vi.fn(), getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789') }));
+vi.mock('../core/configIO', async () => ({
+    ...await vi.importActual<typeof import('../core/configIO')>('../core/configIO'),
+    getHardeningCommandPrefix: vi.fn(() => 'openclaw'),
+    getHardeningMode: vi.fn(() => 'terminal'),
+    getOpenClawConfigPath: vi.fn(() => '/home/u/.openclaw/openclaw.json'),
+    readOpenClawConfig: vi.fn(async () => ({ config: {} })),
 }));
 
 import * as vscode from 'vscode';
@@ -24,14 +26,14 @@ describe('hardening commands', () => {
     describe('showHardeningAccessSummary', () => {
         beforeEach(() => {
             Object.assign(vscode.workspace, { isTrusted: true });
-            Object.assign(vscode.window, { showTextDocument: jest.fn() });
-            jest.mocked(vscode.workspace.openTextDocument).mockResolvedValue({} as never);
-            jest.mocked(execFileAsync).mockReset().mockResolvedValue({ stdout: '', stderr: '' } as never);
-            jest.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw');
+            Object.assign(vscode.window, { showTextDocument: vi.fn() });
+            vi.mocked(vscode.workspace.openTextDocument).mockResolvedValue({} as never);
+            vi.mocked(execFileAsync).mockReset().mockResolvedValue({ stdout: '', stderr: '' } as never);
+            vi.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw');
         });
 
         async function summarizeWith(env: NodeJS.ProcessEnv): Promise<void> {
-            const replaced = jest.replaceProperty(process, 'env', env);
+            const replaced = replaceEnv(env);
             try {
                 await showHardeningAccessSummary();
             } finally {
@@ -41,7 +43,7 @@ describe('hardening commands', () => {
 
         // `sh` stands in for the CLI: /bin/sh exists on every POSIX machine, so the lookup needs no fixture files.
         posixOnly('runs the status check by absolute path, with only the absolute PATH entries', async () => {
-            jest.mocked(getHardeningCommandPrefix).mockReturnValue('sh');
+            vi.mocked(getHardeningCommandPrefix).mockReturnValue('sh');
             await summarizeWith({ PATH: '.:node_modules/.bin:/bin', HOME: '/home/u' });
             expect(execFileAsync).toHaveBeenCalledWith('/bin/sh', ['status', '--all'], expect.objectContaining({ env: { PATH: '/bin', HOME: '/home/u' } }));
         });
