@@ -77,13 +77,13 @@ Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`
 
 - `src/extension.ts` — a **one-line bootstrap**: the ~72 KB monolith was already decomposed, and activation now lives in `src/vscode/`.
 - `src/chat/getWebviewContent.ts` — **the file is gone**: the ~117 KB UI monolith was already moved into `src/webview/content-js.ts` / `content-css.ts`.
-- `ChatService.ts` is an interface abstraction with a spawn implementation; on top of it `chatServiceFactory` selects `gateway | acpx | auto` (acpx is the fallback when the Gateway is unreachable within a short timeout).
+- `ChatService.ts` is the concrete acpx (local CLI) implementation — there is no separate transport interface; `chatServiceFactory` selects `gateway | acpx | auto` and hands callers one of two classes (`ChatService | GatewayChatService`) (acpx is the fallback when the Gateway is unreachable within a short timeout).
 - Token/settings are centralised in `src/core/gatewayConfig.ts` (settings + SecretStorage).
 
 | Present | Details |
 |---|---|
 | Chat webview | `ChatViewProvider` (sidebar view) + pop out; one active process per message |
-| Transport | `chatServiceFactory` selects `gateway \| acpx \| auto`: Gateway WS RPC (`GatewayChatService`, the primary path) with a fallback to the local CLI process (`ChatService.spawn('acpx')`), both streaming ChatEvent (text / toolCall / usage / done / error) |
+| Transport | `chatServiceFactory` selects `gateway \| acpx \| auto`: Gateway WS RPC (`GatewayChatService`, the primary path) with a fallback to the local CLI process (`new ChatService()`, which spawns acpx per message), both streaming ChatEvent (text / toolCall / usage / done / error) |
 | Slash commands | /explain /fix /review /test /refactor /doc /commit /harden /search /plan /compact — with auto-context (selection, file, diagnostics, gitDiff, gitStaged) |
 | IDE context | selection listener, diagnostics listener, @-mentions of files, attachments |
 | Hardening workflow | openclaw.harden commands, access summary |
@@ -114,7 +114,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 
 | # | Feature | Taken from the Claude UX | Implementation on the openknot stack | Estimate | Dependencies / risks |
 |---|---|---|---|---|---|
-| P0-1 | **Gateway WS transport** | n/a (architectural) | New `src/gateway/GatewayClient.ts`: WS to `ws://nas:18789`, handshake per protocol.md (`role=operator`), token from settings (secret storage, not plaintext settings), auto-reconnect with backoff, discovery via `hello-ok.features.methods`. `ChatService` stays an interface; add a `GatewayChatService` implementation (the spawn implementation is kept as fallback). | **M** | The protocol is documented; risk: protocol versions → mitigation: contract.ts + discovery |
+| P0-1 | **Gateway WS transport** | n/a (architectural) | New `src/gateway/GatewayClient.ts`: WS to `ws://nas:18789`, handshake per protocol.md (`role=operator`), token from settings (secret storage, not plaintext settings), auto-reconnect with backoff, discovery via `hello-ok.features.methods`. `GatewayChatService` is a sibling concrete implementation next to `ChatService` (the acpx implementation, kept as fallback); callers type the backend as the `ChatService | GatewayChatService` union. | **M** | The protocol is documented; risk: protocol versions → mitigation: contract.ts + discovery |
 | P0-2 | **Agent selector + session binding** | "sessions/account" in Claude ≈ model selection | A picker in the webview and palette: `sessions.list` → filter to agents' main sessions → choose → all sends carry that `sessionKey`/`agentId`. Show the hasActiveRun indicator. | **M** | P0-1; `sessions.list` semantics are complex (snapshots/ownership) — take a minimal subset |
 | P0-3 | **Streaming chat with a transcript** | the basic panel UX | Subscribe to session events; reduce events into a UI model (text deltas, toolCall lines, done/error). Reuse the ChatEvent model, but with tool calls as collapsible groups (see P1-5). | **M** | P0-1; deltaCursor for catch-up on reconnect |
 | P0-4 | **Session history + resume** | Session history, resume, AI titles | A "History" button: `sessions.list`/`sessions.preview` → a list with previews and titles; click → `chat.history` to restore the transcript in the webview; continuing → `chat.send` into the same session. | **M** | P0-1..3; "cold" storage status → placeholder |
@@ -317,7 +317,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 - **The main unit of code is a class** (owner's decision): business logic and services are classes with explicit dependencies (DI through the constructor, injecting the logger/client/etc.), not utility functions and not global singleton state. This improves testability (Vitest mocks on a class) and readability. Functions are acceptable as thin cleaning utilities inside core/util, but not as state carriers.
 - **Repository structure** (decomposing the fork's monoliths):
   - `src/extension.ts` — activation/deactivation only (a thin bootstrap).
-  - `src/core/` — runtime not bound to VS Code: `gateway/GatewayClient.ts`, `gateway/contract.ts` (protocol types + versions), `gateway/adapters/`, an event dispatcher, a UI-model reducer, a transport interface (`ChatService`/`GatewayChatService`).
+  - `src/core/` — runtime not bound to VS Code: `gateway/GatewayClient.ts`, `gateway/contract.ts` (protocol types + versions), `gateway/adapters/`, an event dispatcher, a UI-model reducer, the two chat backends (`ChatService` for acpx, `GatewayChatService` for the Gateway), used through their union type.
   - `src/vscode/` — VS Code bindings: commands (the registry), views (webview controllers), config (settings + SecretStorage), terminals (the bridge), diffs/checkpoints, the status bar.
   - `src/webview/` — the webview frontend: views/components, HTML assembly (pulled out of the 117 KB string), the webview↔extension message layer.
   - `src/__test__/` — tests per module (Vitest).
