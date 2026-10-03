@@ -241,7 +241,7 @@ Contents: P0-1..P0-6 (WS transport with a fallback to the old acpx, agent select
 - Tests: unit tests for GatewayClient (mock WS), the event reducer, contract adapters.
 
 ### v1 (≈ +3–4 weeks) — "editor integration"
-Contents: **P1-0 (terminal bridge: approvals + allowlist + output streaming)**, P1-1 (inline diffs MVP: a diff view, accept/reject at the file level, a textual fallback for a NAS), P1-2 (Manual/Edit automatically modes at the prompt+UI level), P1-3 (full plan mode: the plan as an md document, approve), P1-4 (checkpoints: git-based for local repos, rewind code), P1-7 (multipanel with indicators).
+Contents: **P1-0 (terminal bridge: approvals bound to the immutable code identity of §5.5.4 + output streaming; persistent approval is disabled and the request escalated to Run once wherever that identity cannot be established — not a generic runner-name or command-tuple allowlist)**, P1-1 (inline diffs MVP: a diff view, accept/reject at the file level, a textual fallback for a NAS), P1-2 (Manual/Edit automatically modes at the prompt+UI level), P1-3 (full plan mode: the plan as an md document, approve), P1-4 (checkpoints: git-based for local repos, rewind code), P1-7 (multipanel with indicators).
 **Readiness criteria:**
 - An agent edit in a local repo shows a diff; reject returns the file to its previous state.
 - Plan mode: a full plan→edit the plan→approve→execute cycle within one session.
