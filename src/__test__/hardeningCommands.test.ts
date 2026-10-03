@@ -2,11 +2,11 @@ import { replaceEnv } from './helpers/env';
 
 vi.mock('../vscode/commands/shared', () => ({
     execFileAsync: vi.fn(),
-    isOpenClawExecutable: vi.fn((executable: string) => executable === 'openclaw' || executable === 'openclaw.exe')
-}));
-vi.mock('../vscode/commands/setup', () => ({ isCommandAvailable: vi.fn(async () => true), showMissingNodeMessage: vi.fn(), runSetupFlow: vi.fn() }));
-vi.mock('../vscode/commands/terminals', () => ({ getHardeningTerminal: vi.fn(), getOverviewProvider: vi.fn(() => undefined) }));
-vi.mock('../vscode/config', () => ({ openHardeningSettings: vi.fn(), getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789') }));
+    isOpenClawExecutable: vi.fn((executable: string) => executable === 'openclaw' || executable === 'openclaw.exe') as unknown as typeof import('../vscode/commands/shared').isOpenClawExecutable
+} satisfies Partial<typeof import('../vscode/commands/shared')>));
+vi.mock('../vscode/commands/setup', () => ({ isCommandAvailable: vi.fn(async () => true), showMissingNodeMessage: vi.fn(), runSetupFlow: vi.fn() } satisfies Partial<typeof import('../vscode/commands/setup')>));
+vi.mock('../vscode/commands/terminals', () => ({ getHardeningTerminal: vi.fn(), getOverviewProvider: vi.fn(() => undefined) } satisfies Partial<typeof import('../vscode/commands/terminals')>));
+vi.mock('../vscode/config', () => ({ openHardeningSettings: vi.fn(), getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789') } satisfies Partial<typeof import('../vscode/config')>));
 vi.mock('../core/configIO', async () => ({
     ...await vi.importActual<typeof import('../core/configIO')>('../core/configIO'),
     getHardeningCommandPrefix: vi.fn(() => 'openclaw'),

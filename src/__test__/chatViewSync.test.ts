@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 
 vi.mock('../webview/chatServiceFactory', () => ({
     ChatServiceFactory: vi.fn().mockImplementation(function () { return { resolve: vi.fn(), dispose: vi.fn() }; }),
-}));
+} satisfies Partial<typeof import('../webview/chatServiceFactory')>));
 
 import { ChatViewProvider } from '../webview/ChatViewProvider';
 

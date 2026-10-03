@@ -50,19 +50,21 @@ vi.mock('../core/gatewayChatService', () => ({
             resetDeviceIdentity: mockResetDeviceIdentity,
         };
     }),
-}));
+} satisfies Partial<typeof import('../core/gatewayChatService')>));
 
 vi.mock('../webview/viewMessaging', () => ({
-    log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
-}));
+    // `vi.fn()` cannot infer an OutputChannel's accessors, so the structural stub
+    // needs the cast rule 50 documents for non-inferable export shapes.
+    log: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() } as unknown as typeof import('../webview/viewMessaging').log,
+} satisfies Partial<typeof import('../webview/viewMessaging')>));
 
 vi.mock('../chat/ChatService', () => ({
     // Use `this`-based construction (no returned object literal) so
     // `existing instanceof ChatService` in the factory stays true.
     ChatService: vi.fn(function (this: { kind: string }) {
         this.kind = 'acpx-mock';
-    }),
-}));
+    }) as unknown as typeof import('../chat/ChatService').ChatService,
+} satisfies Partial<typeof import('../chat/ChatService')>));
 
 import { ChatServiceFactory } from '../webview/chatServiceFactory';
 import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken } from '../core/gatewayConfig';

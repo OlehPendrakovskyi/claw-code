@@ -3,7 +3,7 @@ import { copyInstallCommand, openDashboard, openDocs, openNodeDocs, openOnboardD
 import { getDashboardUrl } from '../vscode/config';
 import { OPENCLAW_NPM_INSTALL } from '../core/setupOptions';
 
-vi.mock('../vscode/config', () => ({ getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789/') }));
+vi.mock('../vscode/config', () => ({ getDashboardUrl: vi.fn(() => 'http://127.0.0.1:18789/') } satisfies Partial<typeof import('../vscode/config')>));
 
 const openExternal = vi.mocked(vscode.env.openExternal);
 const showErrorMessage = vi.mocked(vscode.window.showErrorMessage);
