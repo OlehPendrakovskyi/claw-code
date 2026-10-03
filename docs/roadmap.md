@@ -2,6 +2,8 @@
 
 > **Status on 2026-10-03.** Sprint 1 is partially closed — see §9.1.6 and the "Sprint 1 audit" section at the end of this document. The runner is Vitest and the linter is oxlint; CI is green on ubuntu/windows/macos.
 
+> **Relationship to the root `ROADMAP.md`.** This document is the authoritative project plan. The root `ROADMAP.md` is an older, high-level wishlist (voice chat, planning UX, and similar ideas that predate the §9 architecture decisions); where the two disagree, this document wins. The root file is kept as background, not as a second source of truth — its items have no sprint assignment, no estimates and no status here.
+
 > **The name is a working title.** "Claude for OpenClaw" is used only inside the team to discuss UX goals. Before the public release, replace it: "Claude" is an Anthropic trademark, and using another product's trademark in the name is misleading and legally risky. Never use the word `claude` as an identifier (namespace, commands, settings) in code or configuration. Publish under a neutral name.
 
 **Release name candidates** (theme: "a companion for OpenClaw inside the editor"): **`Claw Code` — primary candidate (owner's choice, 2026-09-24)**, then `OpenClaw Companion`, `OpenClaw Studio`, `OpenClaw IDE`, `Clawside`. Before publishing: check availability on the VS Code Marketplace / Open VSX / npm and confirm there are no trademark conflicts.
@@ -91,7 +93,9 @@ Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`
 | Debug panel | chat event inspector |
 | Multipanel | partial (pop out) |
 
-What is missing (the main gaps against the Claude UX): agent/session selection, session history/resume, permission modes, plan mode UI, inline diffs with accept/reject, checkpoints/rollback, auto-context for the open file, focus view, usage indicator.
+What is missing (the main gaps against the Claude UX): permission modes, plan mode UI, inline diffs with accept/reject, checkpoints/rollback, focus view.
+
+Already implemented since the plan was written, and therefore **not** gaps: agent/session selection (command-palette `AgentPicker`, `ChatViewProvider.ts:2032`), session history restore and restart resume (`seedHistory` / `resumeSessionForThread`, `ChatViewProvider.ts:2721-2737`), auto-context for the open file (setting `openclaw.chat.attachOpenFile`, `ChatViewProvider.ts:1062`) and the usage indicator (`renderUsageIndicator`, `content-js.ts:987`).
 
 ---
 
@@ -332,7 +336,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 - **Destination is unified per environment** (owner's decision, 2026-09-24):
   - **CI**: write to a log file (e.g. `logs/claw-code.log`) — needed for pipeline diagnostics; CI has no tokens/secrets.
   - **Production (VS Code on the user's machine)**: *no writing to disk by default* — only the VS Code Output Channel ("Claw Code"), at warn+ (debug only with `OPENCLAW_DEBUG=1`/a dev setting). The file-log mechanism exists (the same logger is reused), but in production it is off by default and never contains sensitive data. Just two destination configurations of one logger class (CI env / runtime).
-- **Debug isolation**: a separate dev gateway (see §10) — the agents' working memory is not polluted with debug events.
+- **Debug isolation**: a separate dev gateway — the agents' working memory is not polluted with debug events. (No such gateway is documented in this plan; the personal-context section that used to carry it was excluded — see §10.)
 - **Errors** — stable codes (a `LogEvent` enum), with a context bag of safe fields only (sessionKey, iteration, event type), without stack traces leaking into the UI.
 
 ### 9.1.3 Code quality and deduplication
@@ -348,7 +352,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 A standalone project (the owner's repository); upstream OpenKnots is not pulled and not synced (see §0.4) — one repository, one PR flow. Upstream is only an archive/legal reference (MIT + we keep the thanks); cherry-picking from it is not planned.
 
 **Branches/triggers:**
-- `main` protection is the target, not the current state: `main` carries **no branch protection today** (verified 2026-10-03 — `branches/main/protection` returns `Branch not protected`), so no status check is actually enforced on merge. Adding ruleset protection with the required checks below is outstanding setup work, not a done item. The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so required reviews = 1 cannot be enabled immediately: with a single maintainer that blocks merging unless a ruleset bypass is configured. Start without required reviews (or with an explicit owner bypass) and tighten it once other maintainers/contributors appear (2 reviews for other people's PRs).
+- `main` protection is **in place via a ruleset, not the classic branch-protection API** (re-audited 2026-10-03): `branches/main/protection` still returns `Branch not protected`, but the active `main-branch-protection` ruleset does enforce the checks below. What the ruleset requires: required status check `ci` with the strict (up-to-date-branch) policy, `required_approving_review_count: 1`, required thread resolution, dismissal of stale reviews on push, and allowed merge methods merge/squash/rebase. It carries a `RepositoryRole` bypass (`always`), so the owner can merge without an external approval. The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so the `1`-approval requirement is satisfied only through that owner bypass today; tighten it (2 reviews for other people's PRs, and reconsider the bypass) once other maintainers/contributors appear.
 - `dev` as a pre-release branch is optional at the start (the MVP can go straight to main through a PR).
 - Branch naming: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
 - **Conventional Commits** (semver derived from messages automatically).
@@ -364,8 +368,8 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 - **License-check**: `license-checker-rseidelsohn --production --onlyAllow "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;CC0-1.0;Unlicense"` — scanning **production** npm dependencies against that allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Note `--production` means dev dependencies are **excluded from the check**, not held to a separate list — the roadmap previously claimed otherwise. Only allowlisted code goes into the prod bundle.
 - **Pre-approved dependencies (owner's decision, 2026-09-25)**: **lodash** (MIT) and **luxon** (MIT) — allowed without separate approval if a task requires them. Both pass the current license-check allowlist.
 - **Dependency proposals**: the assistant may propose other tools/libraries if they meet the licensing requirements (MIT/Apache-2.0/BSD/ISC; fail on copyleft) — the owner reviews each proposal before it is added.
-- **Quality enforcement**: required status checks on main (including license-check) — configured in `.github/workflows/ci.yml` but **not yet enforced**, since `main` has no protection ruleset (see the branch section above); **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
-- **Secrets in CI**: OVSX_TOKEN and the like — through GitHub Secrets, never in code/logs; CI has no sensitive data (which is why the file log is safe — §9.1.2). Check for accidental secrets in the diff.
+- **Quality enforcement**: required status checks on main — the `main-branch-protection` ruleset requires the aggregate `ci` check, and `ci.yml:66-75` fails unless every OS in the matrix passed, so license-check and the ubuntu/windows/macos legs all gate the merge; **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
+- **Secrets in CI**: OVSX_TOKEN and the like — through GitHub Secrets, never in code or logs. The release job handles publishing secrets, so **every CI job's log is sensitive by default**: no job may dump environment values or protocol payloads, and the file log (§9.1.2) is safe only because the red lines above are enforced, not because it runs in CI. Check for accidental secrets in the diff.
 
 ### 9.1.6 Sprint 1: refactoring "dump files" + architecture analysis (included in Sprint 1, owner's decision 2026-09-25)
 
