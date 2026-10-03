@@ -397,10 +397,10 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 
 ### 9.1.7 Sprint 3 candidate: a shared markdown/text utility module (owner's proposal, 2026-09-26)
 
-**Facts**: there is no duplication today — `renderMarkdown`/`escapeHtml`/`escapeGlob` live only in `webview/viewMessaging.ts`; `accessInfo/format.ts` is markdown report generation (domain formatting, not rendering). But both layers work with markdown.
+**Facts**: duplication today is limited to HTML escaping, and it is two different implementations — `webview/viewMessaging.ts` uses lodash's `escape` (re-exported locally as `escapeHtml`) only as a fallback inside `renderMarkdown`, while `webview/content-js.ts` (the webview-side script) has its own `escapeHtml`. There is no `escapeGlob` in the repository. `accessInfo/format.ts` is markdown report generation (domain formatting, not rendering). But both layers work with markdown.
 
 **Plan (S). Owner's decision 2026-09-26: do it on the next touch of these files, do not allocate a separate sprint:**
-- Move out `core/markdown.ts` (or `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitize + the escapeHtml fallback), `escapeHtml`, `escapeGlob` — pure text/markdown utilities with no vscode dependency.
+- Move out `core/markdown.ts` (or `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitize + the escaping fallback) and the link-safety helpers it depends on — pure text/markdown utilities with no vscode dependency. Decide at that point whether the lodash `escape` fallback stays or becomes a local helper; do not treat the webview's `content-js.ts` `escapeHtml` as part of this move (that script is injected into the webview as source and cannot import from `core/`).
 - `viewMessaging.ts` imports from there; do NOT move `accessInfo/format.ts` (that is a domain report; moving it would create a new mini-dump).
 - If accessInfo ever needs HTML escaping — take it from `core/markdown.ts`.
 - Sprint 3 leftovers from the Architect's review: `core/frames.ts` (parseFrame + mappers from gatewayChatService/contract), splitting the accessInfo tests per submodule.
