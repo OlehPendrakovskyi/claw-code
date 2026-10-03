@@ -326,7 +326,7 @@ Technical decisions made once before the code starts, binding for the whole proj
   - `src/webview/` — the webview frontend: views/components, HTML assembly (pulled out of the 117 KB string), the webview↔extension message layer.
   - `src/__test__/` — tests per module (Vitest).
 - **Separating core/vscode** — testability: the whole runtime (gateway, deduplication, the reducer) is testable without a VS Code head; the vscode layer is thin adapters.
-- **Monoliths are to be reworked immediately, as a priority** (owner's decision): `src/extension.ts` (~72 KB) and `src/chat/getWebviewContent.ts` (~117 KB) are decomposed during the MVP stage, not deferred. The volume scheme above is the target state after the restructuring.
+- **Monolith decomposition — done** (owner's decision was to treat it as an immediate priority, not a deferred item; both have since landed — see §2): `src/extension.ts` (~72 KB) is a one-line bootstrap, and `src/chat/getWebviewContent.ts` (~117 KB) is gone, its content having moved into `src/webview/content-js.ts` / `content-css.ts`. The volume scheme above is the state the code is in now.
 - **CI** (GitHub Actions, **already exists**: `.github/workflows/ci.yml`): `pnpm install` → **build + vitest on ubuntu/windows/macos**, with **typecheck, oxlint and license-check on Linux only** (those give the same answer on every OS). Triggers: `pull_request` and `push` to `main` — **no tag trigger and no vsce/ovsx publishing yet**; the release workflow below is still to be built. Catch-early on every PR.
 
 ### 9.1.2 Logging (local, without sensitive data)
@@ -426,7 +426,7 @@ Not covered:
 | `src/webview/content-js.ts` | 2774 | imported TypeScript source: webview script fragments (`TOOL_STATUS_JS` and friends) plus `CONTENT_JS`; hand-written code, a candidate for splitting |
 | `src/core/gatewayChatService.ts` | 2307 | protocol + transport in one module |
 | `src/webview/content-css.ts` | 1276 | checked-in source (its header says: a mechanical extraction of the `<style>` block, verbatim) — not a generated build artifact, but not hand-designed either; a candidate for moving into a separate CSS file |
-| `src/chat/ChatService.ts` | 801 | above the threshold |
+| `src/chat/ChatService.ts` | 801 | over the line count, but under the export threshold (7 top-level exports) — so it does not meet the full criterion |
 | `src/webview/viewMessaging.ts` | 781 | above the threshold |
 | `src/vscode/commands/setup.ts` | 579 | candidate |
 | `src/core/gatewayConfig.ts` | 564 | candidate |
