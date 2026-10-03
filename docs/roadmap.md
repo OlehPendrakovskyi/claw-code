@@ -73,12 +73,12 @@ Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude
 
 ## 2. Current state of the openknot extension
 
-Fork stack: **TypeScript strict (ES2020, CommonJS)**, esbuild bundling, vitest tests (plus a vscode mock), oxlint lint, pnpm for packages; publishing via vsce/ovsx. The scalability problems described below are what the restructuring addresses (§11):
+Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`, `target: ES2022`, `lib: ES2020`), esbuild bundling (its output is CommonJS), vitest tests (plus a vscode mock), oxlint lint, pnpm for packages; publishing via vsce/ovsx. The scalability problems described below are what the restructuring addresses (§11):
 
-- `src/extension.ts` — a **~72 KB monolith**: activation, the command registry, all wiring, hardening. → decompose into modules/domains.
-- `src/chat/getWebviewContent.ts` — **~117 KB**: the entire UI in one template string; no dedicated webview controller. → split into views plus a message controller.
-- `ChatService.ts` is already an interface abstraction (a spawn implementation exists) → the transport is replaceable without rewriting the UI.
-- Token/settings are not centralised (to verify: whether this moves into a dedicated config layer).
+- `src/extension.ts` — a **one-line bootstrap**: the ~72 KB monolith was already decomposed, and activation now lives in `src/vscode/`.
+- `src/chat/getWebviewContent.ts` — **the file is gone**: the ~117 KB UI monolith was already moved into `src/webview/content-js.ts` / `content-css.ts`.
+- `ChatService.ts` is an interface abstraction with a spawn implementation; on top of it `chatServiceFactory` selects `gateway | acpx | auto` (acpx is the fallback when the Gateway is unreachable within a short timeout).
+- Token/settings are centralised in `src/core/gatewayConfig.ts` (settings + SecretStorage).
 
 | Present | Details |
 |---|---|
@@ -97,7 +97,7 @@ What is missing (the main gaps against the Claude UX): direct Gateway WS transpo
 
 ## 3. Target architecture (approved)
 
-- **Transport**: a direct WebSocket connection to the OpenClaw Gateway (port 18789, token, handshake `role=operator`). No local CLI/spawn.
+- **Transport**: a direct WebSocket connection to the OpenClaw Gateway (port 18789, token, handshake `role=operator`) is the primary path. The local CLI transport (acpx) is **not removed**: it stays as a fallback (see §0.3, P0-1 and the MVP criterion), with `chatServiceFactory` choosing `gateway | acpx | auto`.
 - **Agent selector**: `sessions.list` → `chat.send` into the chosen agent's session → per-agent memory via memory-lancedb.
 - Protocol: `/app/docs/gateway/protocol.md` plus `protocol/*.md` (transport, handshake, rpc-methods, rpc-session-control, auth). The reference client is the webchat UI in `/app/dist`.
 - **The protocol is not frozen** → minimise coupling: build a thin `GatewayClient` that discovers capabilities through `hello-ok.features.methods`, route all methods and fields through a single adapter layer, version our expectations in one file (`src/gateway/contract.ts`), and handle events additively (unknown event types are ignored rather than crashing the UI).
@@ -152,7 +152,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 
 | Claude feature | Why we skip it |
 |---|---|
-| **Bundled CLI / terminal mode** | Our architecture is WS to the Gateway; a local CLI contradicts the approved decision; the terminal mode is niche |
+| **Bundled CLI / terminal mode** | We will **not bundle our own CLI** into the extension — terminal mode is niche. This does not mean dropping the existing external acpx transport: it remains the fallback (§0.3, P0-1) |
 | **Login/Anthropic accounts, Claude-format permission rules storage, `~/.claude/settings.json`** | Authentication is a Gateway token; permission rules belong to Gateway policy, not the extension |
 | **MCP configuration from the extension** | MCP lives on the Gateway/agents; manage it from the Control UI. Duplicating the UI means maintaining two sources of truth |
 | **Claude in Chrome (`@browser`)** | OpenClaw has its own browser tool on the Gateway; the extension only needs to mention it in prompts |
@@ -175,7 +175,7 @@ Event flow: the agent works on the Gateway (or a paired node). File edits appear
    - local workspace: relative path → `workspace.rootPath`;
    - NAS/paired node: see §5.4.
 3. **Diff rendering**: `vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title)`, where left is the `openclawOriginal:` content provider (holding the "before" content; the source is (a) reading the file before the apply event, (b) or, if we are late, git HEAD/stash), and right is the real/proposed file.
-   - MVP: the agent writes the file directly → a diff of "HEAD vs working copy", accept = mark reviewed, reject = `git checkout -- file` (or restore from the snapshot).
+   - MVP: the agent writes the file directly → a diff of "HEAD vs working copy", accept = mark reviewed, reject = restoring the **exact pre-agent snapshot** (the file contents read before the apply event). `git checkout -- file` is not a valid reject: it restores HEAD and would destroy uncommitted user edits that existed before the agent started; only fall back to HEAD if the file's cleanliness was verified beforehand.
    - v2: pre-apply — in Manual mode the agent returns proposed content in the toolCall details → the extension applies it itself (the edit happens on the client — works only for local repos), per-change accept/reject buttons in the diff (TextDocumentContentProvider + decorations).
 4. **Accept/Reject for unobserved edits**: if the file is on a NAS and not reachable through the filesystem — degrade to a textual diff (from the toolCall details or a `git diff` requested from the agent) in the chat with accept ("ok")/reject ("revert file X") buttons. An honest fallback with no false UX.
 5. **Commands**: `openclaw.acceptChangeAtCursor` / `rejectChangeAtCursor` — by cursor position in the open diff document (v2).
@@ -188,7 +188,7 @@ State in the UI: `plan | execute`. Entry: a mode button, `/plan [task]`. Sending
 
 ### 5.3 Checkpoints/rollback — in detail
 
-The unit is a "wave of edits" between toolCall lulls within one run. For local git repos: before each run with file effects — `git stash create`/a temp commit (configurable: we do NOT change "leave repo clean" by default — we use `git stash create` without touching the index and store the SHA in the session's checkpoint registry). Rewind: `git checkout <stash> -- .` or restoring specific files. Non-git folders: shadow copies under `~/.openclaw/vscode-checkpoints/`. On a NAS: git operations are performed by the agent at the extension's request (the prompt protocol) or via node exec — if a paired node exists, the second option is more reliable (v2).
+The unit is a "wave of edits" between toolCall lulls within one run. For local git repos: before each run with file effects — take a snapshot (configurable: by default we use `git stash create` without touching the index and store the SHA in the session's checkpoint registry). Rewind: `git checkout <stash> -- .` or restoring specific files. **`git stash create` does not cover untracked files**, and `git checkout <stash> -- .` does not remove files created after the snapshot — so the checkpoint registry must also store the set of untracked/new/deleted paths, otherwise the rewind is incomplete. Non-git folders: shadow copies under `~/.openclaw/vscode-checkpoints/`. On a NAS: git operations are performed by the agent at the extension's request (the prompt protocol) or via node exec — if a paired node exists, the second option is more reliable (v2).
 
 ### 5.4 Where the project files live: gateway vs the local machine (the universal breakdown)
 
@@ -210,7 +210,7 @@ Mechanics (all the components already exist in the Gateway, nothing to wait for)
 1. **Executor registration**: on connecting, the extension declares itself as a node/client role with exec capability (the same protocol the OpenClaw desktop nodes use; see protocol/handshake — caps/commands/permissions).
 2. **Agent request**: standard exec through the Gateway with `exec-approvals` — the agent initiates, the Gateway routes to our "node" client.
 3. **Execution in the VS Code terminal**: `window.createTerminal` (plus the shell integration API for structured output). The user sees the command and the output in real time — the same transparency as Claude Code.
-4. **Approval UX**: a popup/indicator "the agent wants to run: …" with Run once / Always allow (a per-command allowlist: pytest, npm test, rg, dotnet test, tsc) / Deny. Deny returns a refusal to the agent — it adapts.
+4. **Approval UX**: a popup/indicator "the agent wants to run: …" with Run once / Always allow / Deny. **Always allow is scoped to the exact execution context — command + arguments + working directory + workspace — not to a runner-name allowlist**: an allowlist by name (`pytest`, `npm test`, `tsc`) is unsafe, because those commands execute workspace-controlled scripts and can run arbitrary code. Deny returns a refusal to the agent — it adapts.
 5. **Returning output**: stdout/stderr streams to the agent as the tool result; long outputs are truncated with the tail kept (like tokenjuice).
 
 Implementation in stages:
@@ -323,7 +323,7 @@ Technical decisions made once before the code starts, binding for the whole proj
   - `src/__test__/` — tests per module (Vitest).
 - **Separating core/vscode** — testability: the whole runtime (gateway, deduplication, the reducer) is testable without a VS Code head; the vscode layer is thin adapters.
 - **Monoliths are to be reworked immediately, as a priority** (owner's decision): `src/extension.ts` (~72 KB) and `src/chat/getWebviewContent.ts` (~117 KB) are decomposed during the MVP stage, not deferred. The volume scheme above is the target state after the restructuring.
-- **CI** (GitHub Actions): typecheck → oxlint → vitest → building vsce/ovsx on a tag. Catch-early, PR-critical.
+- **CI** (GitHub Actions, **already exists**: `.github/workflows/ci.yml`): typecheck → oxlint → build → vitest → license-check on ubuntu/windows/macos; building vsce/ovsx on a tag. Catch-early on every PR.
 
 ### 9.1.2 Logging (local, without sensitive data)
 
@@ -348,7 +348,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 A standalone project (the owner's repository); upstream OpenKnots is not pulled and not synced (see §0.4) — one repository, one PR flow. Upstream is only an archive/legal reference (MIT + we keep the thanks); cherry-picking from it is not planned.
 
 **Branches/triggers:**
-- `main` is protected: required status checks (CI is mandatory always). The review gate at the start: **the owner is the sole maintainer and approver**; enable required reviews immediately (1 approve) to build the habit without blocking yourself (GitHub allows self-approval of one's own PR). Once other maintainers/contributors appear — tighten it (2 reviews for other people's PRs).
+- `main` is protected: required status checks (CI is mandatory always). The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so required reviews = 1 cannot be enabled immediately: with a single maintainer that blocks merging unless a ruleset bypass is configured. Start without required reviews (or with an explicit owner bypass) and tighten it once other maintainers/contributors appear (2 reviews for other people's PRs).
 - `dev` as a pre-release branch is optional at the start (the MVP can go straight to main through a PR).
 - Branch naming: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
 - **Conventional Commits** (semver derived from messages automatically).
@@ -356,10 +356,10 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 - **Mandatory checks in a PR**: typecheck → oxlint → vitest → build → license-check.
 - CHANGELOG: automatic (release-please) or manual by category.
 
-### 9.1.5 CI/CD (GitHub Actions, designed from scratch — the fork has no CI)
+### 9.1.5 CI/CD (GitHub Actions — **CI already exists in the fork**: `.github/workflows/ci.yml`; what still needs building is below)
 
-- **Workflow 1 — CI (push + PR):** `pnpm install` → `typecheck` → `oxlint` → `vitest` → `build` → **`license-check`** (see below). On PR branches — fast feedback (oxlint+vitest); on main — the full pipeline plus the package build.
-- **Workflow 2 — Release (on a `v*` tag):** the full pipeline → build `.vsix` via vsce → publish to the **VS Code Marketplace** and **Open VSX** (2 artifacts) → a GitHub Release with the `.vsix` + an auto-CHANGELOG. The version comes from the git tag, with no manual bump. Publishing/release — owner only (trial approval, not contributors).
+- **Workflow 1 — CI (already implemented, `pull_request` + `push` to `main`):** `pnpm install --frozen-lockfile` → `typecheck` → `oxlint` → `build` → **`vitest`** → **`license-check`** (see below), across a ubuntu/windows/macos matrix. Still to do: drop the "fast feedback on PR vs the full pipeline on main" split — the steps are currently identical on every OS.
+- **Workflow 2 — Release (on a `v*` tag):** the full pipeline → build `.vsix` via vsce → publish to the **VS Code Marketplace** and **Open VSX** (2 artifacts) → a GitHub Release with the `.vsix` + an auto-CHANGELOG. The version comes from the git tag, with no manual bump. Publishing/release — owner only (requires the owner's approval; contributors do not publish).
 - **Workflow 3 — a PR-generator sync from upstream** — **not needed** (we do not work with or sync from upstream, §0.4); upstream is only an archive reference for attribution.
 - **License-check**: `license-checker-rseidelsohn` — scanning npm dependencies against an **MIT/Apache-2.0/BSD-2/BSD-3/ISC** allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Dev dependencies go in a separate list. Only the allowlist goes into the prod bundle.
 - **Pre-approved dependencies (owner's decision, 2026-09-25)**: **lodash** (MIT) and **luxon** (MIT) — allowed without separate approval if a task requires them. Both pass the current license-check allowlist.
@@ -414,14 +414,14 @@ Fully covered:
 
 Not covered:
 - **The module map as an artifact is missing.** §9.1.6 required the result to be "a module-map document + a list of dump files with a plan for splitting them". Neither that document nor a section of this plan exists — to this day there is only the `core/` / `vscode/` / `webview/` split.
-- **Dump files below the threshold were never identified.** The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". A line count gives:
+- **Dump files above the threshold were never identified — the measurement exists, the conclusion does not.** The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". A line count gives:
 
 | File | Lines | Assessment |
 |---|---|---|
 | `src/webview/ChatViewProvider.ts` | 2940 | the largest candidate |
-| `src/webview/content-js.ts` | 2774 | generated UI, not hand-written code |
+| `src/webview/content-js.ts` | 2774 | imported TypeScript source: webview script fragments (`TOOL_STATUS_JS` and friends) plus `CONTENT_JS`; hand-written code, a candidate for splitting |
 | `src/core/gatewayChatService.ts` | 2307 | protocol + transport in one module |
-| `src/webview/content-css.ts` | 1276 | generated UI |
+| `src/webview/content-css.ts` | 1276 | checked-in source (its header says: a mechanical extraction of the `<style>` block, verbatim) — not a generated build artifact, but not hand-designed either; a candidate for moving into a separate CSS file |
 | `src/chat/ChatService.ts` | 801 | above the threshold |
 | `src/webview/viewMessaging.ts` | 781 | above the threshold |
 | `src/vscode/commands/setup.ts` | 579 | candidate |
@@ -429,17 +429,17 @@ Not covered:
 
 `extension.ts` and `getWebviewContent.ts`, named explicitly, did exit the monolith list; the others grew **after** the task was set, so they never fell into its scope.
 
-### Task 2 — refactoring `accessInfo.ts`: **closed**
+### Task 2 — refactoring `accessInfo.ts`: **partially closed**
 
 - The `src/core/accessInfo.ts` monolith is **gone**; the directory `src/core/accessInfo/` contains `redact.ts`, `extract.ts`, `format.ts`, `util.ts`, `types.ts`, `index.ts`.
-- Wave (a) — extract + lodash replacements: `extract.ts` imports `compact, get, map` from `lodash-es`; `util.ts` — `sortBy, uniq`. Own lodash paraphrases removed.
+- Wave (a) — extract + lodash replacements: `extract.ts` imports `compact, get, map` from `lodash-es`; `util.ts` — `sortBy, uniq`. **But** §9.1.6 also required replacing `asString`, `getEnvVarFromRecord` and `getFilePathFromRecord` — all three **still live** in `src/core/accessInfo/util.ts:9-57`. Only the lodash paraphrases for `compact/get/map` and `sortBy/uniq` were removed; the hand-written `asString`/`getEnvVarFromRecord`/`getFilePathFromRecord` remain, so the requirement is not fully met — a deliberate departure, not a completed task.
 - Wave (b) — splitting by module: done, with the re-export living in `index.ts`.
 - Wave (c) — deleting the shim file: the shim is gone, the public surface moved into the directory with a barrel.
 - Imports are not fully migrated: 4 sites import the `accessInfo` barrel, 4 import submodules directly. The plan explicitly permits this ("re-exports are preserved until the imports are migrated, without breaking PRs"), but it means the migration is not finished as a formality.
 
 ### Conclusion
 
-Sprint 1 is closed for task 2 and for the named monoliths of task 1. What is **not** closed is the artifact of task 1 — the module map and the dump-file inventory. The next sensible step: write the module map from the current structure and decide what from the table above goes into the work (the candidates are `gatewayChatService.ts` and `ChatViewProvider.ts`).
+Sprint 1 is **partially** closed: for task 2, waves (b)/(c) and the lodash-paraphrase replacements are done, but wave (a) is not fully met (see above); for task 1, the named monoliths are done, but its **artifact** is not — the module map and the dump-file inventory. The next sensible step: write the module map from the current structure and decide what from the table above goes into the work (the candidates are `gatewayChatService.ts` and `ChatViewProvider.ts`).
 
 §9.1.7 (Sprint 3 candidate, `core/markdown.ts`) is not part of Sprint 1 and was not performed — by the owner's decision of 2026-09-26 it is done on the next touch of the files.
 
