@@ -348,7 +348,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 A standalone project (the owner's repository); upstream OpenKnots is not pulled and not synced (see §0.4) — one repository, one PR flow. Upstream is only an archive/legal reference (MIT + we keep the thanks); cherry-picking from it is not planned.
 
 **Branches/triggers:**
-- `main` is protected: required status checks (CI is mandatory always). The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so required reviews = 1 cannot be enabled immediately: with a single maintainer that blocks merging unless a ruleset bypass is configured. Start without required reviews (or with an explicit owner bypass) and tighten it once other maintainers/contributors appear (2 reviews for other people's PRs).
+- `main` protection is the target, not the current state: `main` carries **no branch protection today** (verified 2026-10-03 — `branches/main/protection` returns `Branch not protected`), so no status check is actually enforced on merge. Adding ruleset protection with the required checks below is outstanding setup work, not a done item. The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so required reviews = 1 cannot be enabled immediately: with a single maintainer that blocks merging unless a ruleset bypass is configured. Start without required reviews (or with an explicit owner bypass) and tighten it once other maintainers/contributors appear (2 reviews for other people's PRs).
 - `dev` as a pre-release branch is optional at the start (the MVP can go straight to main through a PR).
 - Branch naming: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
 - **Conventional Commits** (semver derived from messages automatically).
@@ -364,7 +364,7 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 - **License-check**: `license-checker-rseidelsohn` — scanning npm dependencies against an **MIT/Apache-2.0/BSD-2/BSD-3/ISC** allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Dev dependencies go in a separate list. Only the allowlist goes into the prod bundle.
 - **Pre-approved dependencies (owner's decision, 2026-09-25)**: **lodash** (MIT) and **luxon** (MIT) — allowed without separate approval if a task requires them. Both pass the current license-check allowlist.
 - **Dependency proposals**: the assistant may propose other tools/libraries if they meet the licensing requirements (MIT/Apache-2.0/BSD/ISC; fail on copyleft) — the owner reviews each proposal before it is added.
-- **Quality enforcement**: required status checks on main (including license-check); **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
+- **Quality enforcement**: required status checks on main (including license-check) — configured in `.github/workflows/ci.yml` but **not yet enforced**, since `main` has no protection ruleset (see the branch section above); **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
 - **Secrets in CI**: OVSX_TOKEN and the like — through GitHub Secrets, never in code/logs; CI has no sensitive data (which is why the file log is safe — §9.1.2). Check for accidental secrets in the diff.
 
 ### 9.1.6 Sprint 1: refactoring "dump files" + architecture analysis (included in Sprint 1, owner's decision 2026-09-25)
