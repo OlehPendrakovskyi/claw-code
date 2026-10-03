@@ -1,453 +1,450 @@
-# «Claude for OpenClaw» — план доработки openknot/openclaw-extension
+# "Claude for OpenClaw" — improvement plan for openknot/openclaw-extension
 
-> **Название — рабочее.** «Claude for OpenClaw» используется только внутри команды для коммуникации о целях UX. Перед публичным релизом заменить: «Claude» — товарный знак Anthropic, использование в названии чужого продукта вводит в заблуждение и юридически рискованно. В коде/настройках не использовать слово claude как идентификатор (namespace, команды, настройки). Публикация под нейтральным именем.
+> **Status on 2026-10-03.** Sprint 1 is partially closed — see §9.1.6 and the "Sprint 1 audit" section at the end of this document. The runner is Vitest and the linter is oxlint; CI is green on ubuntu/windows/macos.
 
-**Кандидаты названия для релиза** (тема: «спутник/компаньон для OpenClaw в редакторе»): **`Claw Code` — первичный кандидат (выбор владельца, 2026-09-24)**, далее `OpenClaw Companion`, `OpenClaw Studio`, `OpenClaw IDE`, `Clawside`. Перед публикацией: проверить занятость в VS Code Marketplace / Open VSX / npm и отсутствие трейдмарк-конфликтов.
+> **The name is a working title.** "Claude for OpenClaw" is used only inside the team to discuss UX goals. Before the public release, replace it: "Claude" is an Anthropic trademark, and using another product's trademark in the name is misleading and legally risky. Never use the word `claude` as an identifier (namespace, commands, settings) in code or configuration. Publish under a neutral name.
 
-Дата: 2026-09-24. Основа: официальные docs VS Code-расширения Claude Code (code.claude.com/docs/en/vs-code + связанные страницы: checkpoints, permission modes, sessions, MCP, deep links) и аудит кода форка (`/home/node/.openclaw/workspace/oss/openclaw-extension`, MIT, ~7800 строк TS).
+**Release name candidates** (theme: "a companion for OpenClaw inside the editor"): **`Claw Code` — primary candidate (owner's choice, 2026-09-24)**, then `OpenClaw Companion`, `OpenClaw Studio`, `OpenClaw IDE`, `Clawside`. Before publishing: check availability on the VS Code Marketplace / Open VSX / npm and confirm there are no trademark conflicts.
 
-> **Статус на 2026-10-03.** Спринт 1 закрыт частично — см. §9.1.6 и раздел «Аудит спринта 1»
-> в конце документа. Раннер — Vitest (§9.1.1 обновлён), CI зелёный на ubuntu/windows/macos.
+Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude Code (code.claude.com/docs/en/vs-code plus related pages: checkpoints, permission modes, sessions, MCP, deep links) and an audit of the fork's code (`/home/node/.openclaw/workspace/oss/openclaw-extension`, MIT, ~7800 lines of TypeScript).
 
-**Статус проекта: COMMUNITY.** Форк позиционируется как публичный продукт для всех пользователей OpenClaw (не персональная доработка под одного владельца). Все требования ниже учитывают это: универсальность сетапов (локальный CLI / Docker-шлюз на NAS / удалённый сервер), локальность данных, отсутствие телеметрии, совместимость и PR-стратегия. Публикация: fork-репозиторий + сборки в VS Code Marketplace и Open VSX + пакет расширения в ClawHub, где это применимо.
+**Project status: COMMUNITY.** The fork is positioned as a public product for all OpenClaw users (not a one-owner customization). Every requirement below accounts for that: universality of setups (local CLI / Docker gateway on a NAS / remote server), data locality, no telemetry, compatibility and PR strategy. Publication: fork repository plus builds for the VS Code Marketplace and Open VSX, plus the extension package on ClawHub where applicable.
 
-## 0. Комьюнити-требования (сквозные)
+## 0. Cross-cutting community requirements
 
-1. **Zero-config подключение**: онбординг-флоу «введи ws://url + токен» — как минимум; обнаружение gateway по локальной сети (Bonjour-адресация, отключаемая в env — OPENCLAW_DISABLE_BONJOUR у владельца включена, но у других может быть включена).
-2. **Приватность по умолчанию**: токен в SecretStorage; ничего не покидает машину, кроме WS-соединения с шлюзом пользователя; телеметрии нет.
-3. **Двойной транспорт** (gateway-ws | cli) — работает у тех, кто сидит на локальном CLI, и у тех, кто на Docker-шлюзе: снимает барьер входа для существующих пользователей openknot-расширения.
-4. **PR-стратегия**: самостоятельный проект (репозиторий владельца), апстрим OpenKnots **полностью не тянем и не синхронизируемся** — больше 90% кода будет переписано, cherry-pick стал бы источником конфликтов, а не экономии. Upstream остаётся только как **юридический/архивный референс** (не активный remote для мержа). При первом коммите форка — явно сохранить **MIT copyright-нотис исходного проекта** (openknots/openclaw-extension, автор Val Alexander) и указать **благодарность за основу** в README/CHANGELOG: лицензия и атрибуция переживают ребрендинг в Claw Code, весь новый код — наш.
-5. **i18n-нейтральность**: строки UI на английском (комьюнити-стандарт), готовность к локализации (строки в одном модуле).
-6. **Документация**: README с README с ключевыми сценариями (подключение к Docker-шлюзу, выбор агента, терминальный мост), CHANGELOG, семантическое версионирование.
-7. **Лицензия**: сохраняем MIT upstream + явно указываем происхождение и отличия форка.
+1. **Zero-config connection**: an onboarding flow of "enter ws://url + token" at minimum; gateway discovery over the local network (Bonjour addressing, disableable via env — the owner has `OPENCLAW_DISABLE_BONJOUR` set, but others may have it enabled).
+2. **Private by default**: token in SecretStorage; nothing leaves the machine except the WebSocket connection to the user's own gateway; no telemetry.
+3. **Dual transport** (gateway-ws | cli) — works both for people on a local CLI and for those on a Docker gateway: removes the entry barrier for existing users of the openknot extension.
+4. **PR strategy**: standalone project (owner's repository); upstream OpenKnots is **not pulled and not synced** — over 90% of the code will be rewritten, so cherry-picking would become a source of conflicts rather than a saving. Upstream remains only as a **legal/archive reference** (not an active merge remote). At the fork's first commit, explicitly preserve the **MIT copyright notice of the original project** (openknots/openclaw-extension, author Val Alexander) and state **gratitude for the original** in the README/CHANGELOG: the licence and attribution survive the rebranding to Claw Code; all new code is ours.
+5. **i18n neutrality**: UI strings in English (the community standard), with readiness for localization (strings gathered in one module).
+6. **Documentation**: README covering the key scenarios (connecting to a Docker gateway, choosing an agent, the terminal bridge), CHANGELOG, semantic versioning.
+7. **Licence**: retain the upstream MIT and explicitly state the fork's origin and differences.
 
 ---
 
-## 1. Что умеет Claude Code VS Code extension (полный список фич)
+## 1. What the Claude Code VS Code extension does (full feature list)
 
-### 1.1 Чат и промпт-бокс
-- Графический чат-панель (sidebar / editor tab / отдельное окно), мультипанельные параллельные сессии, цветные индикаторы на вкладках (синий = ждёт permission, оранжевый = завершилось в фоне).
-- Session history: поиск, переименование, архивация (авто-архив после 14 дней неактивности), восстановление, сессии в именованных группах.
-- AI-генерированные заголовки сессий.
-- Продолжение прерванной после reload сессии (continueAfterReload).
-- Slash-меню (по `/`): команды, attach файлов, смена модели, extended thinking, MCP, hooks, permissions, memory, output styles, экспорт.
-- Смена модели и effort mid-session; `/model`, `/status`.
-- Вложения: перетаскивание с Shift, буфер, `@`-упоминания файлов и `@file.ts#5-10` (файл+диапазон строк), `@terminal:name` (вывод терминала), `@browser`.
-- Side questions `/btw` (боковая панель без попадания в контекст основной сессии).
-- Копирование ответа, `/export`, `/copy`.
-- Индикатор заполнения контекстного окна + авто-compact (`/compact`).
-- Focus view — свернуть tool calls/thinking, оставить только промпты/ответы.
+### 1.1 Chat and the prompt box
+- A graphical chat panel (sidebar / editor tab / separate window), multi-panel parallel sessions, coloured indicators on tabs (blue = awaiting permission, orange = finished in the background).
+- Session history: search, rename, archive (auto-archive after 14 days of inactivity), restore, sessions in named groups.
+- AI-generated session titles.
+- Resuming a session interrupted by a reload (continueAfterReload).
+- Slash menu (on `/`): commands, file attachments, model switching, extended thinking, MCP, hooks, permissions, memory, output styles, export.
+- Switching model and effort mid-session; `/model`, `/status`.
+- Attachments: drag and drop with Shift, clipboard, `@` file mentions including `@file.ts#5-10` (file plus line range), `@terminal:name` (terminal output), `@browser`.
+- Side questions via `/btw` (a side panel that does not enter the main session's context).
+- Copying a response, `/export`, `/copy`.
+- Context-window fill indicator and auto-compact (`/compact`).
+- Focus view — collapse tool calls/thinking, leaving only prompts and responses.
 
-### 1.2 Permissions и режимы
-- Permission modes в индикаторе промпт-бокса: **Auto** (классификатор решает), **Manual** (спрашивать на правки/команды), **Plan** (описать план, ждать одобрения), **Edit automatically**.
-- В Manual: side-by-side diff перед правкой, accept/reject, правка предложенного контента прямо в diff-view перед accept, per-change accept/reject (кнопки под каждым изменением, до 100 изменений), команды Accept/Reject Change at Cursor + контекстное меню редактора.
-- Перманентные правила разрешений (Allow/Ask/Deny, скоупы user/project/local).
+### 1.2 Permissions and modes
+- Permission modes in the prompt box indicator: **Auto** (a classifier decides), **Manual** (ask for edits/commands), **Plan** (describe a plan, wait for approval), **Edit automatically**.
+- In Manual: side-by-side diff before an edit, accept/reject, editing the proposed content directly in the diff view before accepting, per-change accept/reject (buttons under each change, up to 100 changes), Accept/Reject Change at Cursor commands plus the editor context menu.
+- Persistent permission rules (Allow/Ask/Deny, with user/project/local scopes).
 
 ### 1.3 Plan mode
-- Переключение режимом или `/plan`, `/plan <task>`, `/plan open`.
-- План открывается как полный Markdown-документ в редакторе — можно комментировать инлайн до старта работ.
+- Switching via mode or `/plan`, `/plan <task>`, `/plan open`.
+- The plan opens as a full Markdown document in the editor — commentable inline before the work starts.
 
-### 1.4 Диффы, checkpoints, откат
-- Inline-диффы в редакторе и в панели, auto-accept режим.
-- **Checkpoints**: на каждое сообщение — rewind-кнопка с тремя опциями: fork conversation / rewind code only / fork+rewind.
-- Автосохранение файлов перед чтением/записью агентом (autosave).
+### 1.4 Diffs, checkpoints, rollback
+- Inline diffs in the editor and in the panel, auto-accept mode.
+- **Checkpoints**: a rewind button on every message with three options: fork conversation / rewind code only / fork + rewind.
+- Autosave of files before the agent reads or writes them.
 
-### 1.5 Контекст IDE
-- Claude видит выделение автоматически; `Option+K` вставляет @-mention выделения.
-- attachOpenFile — открытый файл автоматически в контексте.
-- Обмен diagnostics (проблемы линтера) с CLI; respectGitIgnore для поиска файлов; git diff/staged в контекст.
-- Автоактивация Python-окружения.
+### 1.5 IDE context
+- Claude sees the selection automatically; `Option+K` inserts an @-mention of the selection.
+- attachOpenFile — the open file enters the context automatically.
+- Exchange of diagnostics (linter problems) with the CLI; respectGitIgnore for file search; git diff/staged in context.
+- Automatic Python environment activation.
 
-### 1.6 Клавиатура и команды
-- `Cmd+Esc` toggle фокус редактор↔чат; `Cmd+Shift+Esc` новая вкладка; `Option+K` @-mention; Cmd+N новая сессия; Cmd+Shift+T reopen closed session; Focus last message (a11y).
-- Полная поддержка screen reader (объявление реплаев, tool steps, permission-промптов, статусов).
-- URI handler `vscode://anthropic.claude-code/open?prompt=...&session=...` — запуск сессий из скриптов.
+### 1.6 Keyboard and commands
+- `Cmd+Esc` toggles focus editor↔chat; `Cmd+Shift+Esc` opens a new tab; `Option+K` @-mention; Cmd+N new session; Cmd+Shift+T reopen closed session; Focus last message (accessibility).
+- Full screen reader support (announcing replies, tool steps, permission prompts, statuses).
+- URI handler `vscode://anthropic.claude-code/open?prompt=...&session=***` — launching sessions from scripts.
 
-### 1.7 Экосистема и прочее
-- MCP-менеджмент UI (`/mcp`), плагины и маркетплейсы (`/plugins`, install-plugin deep link).
-- Subagents с live-прогресс-строками; `/tasks` — карта фоновых задач (dev-серверы и пр.).
-- Мультикорневые workspace, группы сессий per-workspace.
-- `/usage` — учёт расхода/лимитов с атрибуцией.
-- Chrome-интеграция (`@browser`).
+### 1.7 Ecosystem and the rest
+- MCP management UI (`/mcp`), plugins and marketplaces (`/plugins`, install-plugin deep link).
+- Subagents with live progress lines; `/tasks` — a map of background tasks (dev servers and the like).
+- Multi-root workspaces, per-workspace session groups.
+- `/usage` — spend and limit accounting with attribution.
+- Chrome integration (`@browser`).
 
 ---
 
-## 2. Текущее состояние openknot-расширения
+## 2. Current state of the openknot extension
 
-Стек форка: **TypeScript strict (ES2020, CommonJS)**, сборка esbuild, тесты vitest (+ мок vscode), линт eslint, пакеты через pnpm; публикация vsce/ovsx. Актуальные дыры масштабируемости, которые чинит реструктуризация (§11):
+Fork stack: **TypeScript strict (ES2020, CommonJS)**, esbuild bundling, vitest tests (plus a vscode mock), oxlint lint, pnpm for packages; publishing via vsce/ovsx. The scalability problems described below are what the restructuring addresses (§11):
 
-- `src/extension.ts` — **~72 КБ монолит**: активация, командный реестр, все подключения, харденинг. → декомпозиция по модулям/доменам.
-- `src/chat/getWebviewContent.ts` — **~117 КБ**: весь UI в одном темплейт-строке; вебвью-контроллер не выделен. → разбить на представления + контроллер сообщений.
-- `ChatService.ts` уже интерфейс-абстракция (spawn-реализация есть) → транспорт подменяем, не переписывая UI.
-- Токен/настройки не централизованы (проверить: перенос волить в dedicated config-слой).
+- `src/extension.ts` — a **~72 KB monolith**: activation, the command registry, all wiring, hardening. → decompose into modules/domains.
+- `src/chat/getWebviewContent.ts` — **~117 KB**: the entire UI in one template string; no dedicated webview controller. → split into views plus a message controller.
+- `ChatService.ts` is already an interface abstraction (a spawn implementation exists) → the transport is replaceable without rewriting the UI.
+- Token/settings are not centralised (to verify: whether this moves into a dedicated config layer).
 
-| Есть | Детали |
+| Present | Details |
 |---|---|
-| Чат-вебвью | `ChatViewProvider` (sidebar view) + pop out; один активный процесс на сообщение |
-| Транспорт | `ChatService.spawn('acpx')` — локальный CLI-процесс, стримит ChatEvent (text / toolCall / usage / done / error) |
-| Slash-команды | /explain /fix /review /test /refactor /doc /commit /harden /search — с автоконтекстом (selection, file, diagnostics, gitDiff, gitStaged) |
-| Контекст IDE | selection listener, diagnostics listener, @-упоминания файлов, вложения |
-| Hardening-воркфлоу | команды openclaw.harden, access summary |
-| Онбординг | CLI setup/model wizard |
-| Debug panel | инспектор событий чата |
-| Мультипан | частично (pop out) |
+| Chat webview | `ChatViewProvider` (sidebar view) + pop out; one active process per message |
+| Transport | `ChatService.spawn('acpx')` — a local CLI process streaming ChatEvent (text / toolCall / usage / done / error) |
+| Slash commands | /explain /fix /review /test /refactor /doc /commit /harden /search — with auto-context (selection, file, diagnostics, gitDiff, gitStaged) |
+| IDE context | selection listener, diagnostics listener, @-mentions of files, attachments |
+| Hardening workflow | openclaw.harden commands, access summary |
+| Onboarding | CLI setup/model wizard |
+| Debug panel | chat event inspector |
+| Multipanel | partial (pop out) |
 
-Чего нет (главные разрывы против Claude UX): прямого Gateway WS-транспорта, выбора агента/сессии, session history/резюма, permission-модов, plan mode, inline-диффов с accept/reject, checkpoints/rollback, автоконтекста открытого файла, Focus view, usage-индикатора.
-
----
-
-## 3. Целевая архитектура (утверждена)
-
-- **Транспорт**: прямое WS-подключение к OpenClaw Gateway (порт 18789, токен, handshake `role=operator`). Никакого локального CLI/spawn.
-- **Агент-селектор**: `sessions.list` → `chat.send` в сессию выбранного агента → per-agent память memory-lancedb.
-- Протокол: `/app/docs/gateway/protocol.md` + `protocol/*.md` (transport, handshake, rpc-methods, rpc-session-control, auth). Референс клиента — webchat UI в `/app/dist`.
-- **Протокол не заморожен** → минимизируем связанность: строим тонкий `GatewayClient` с discovery через `hello-ok.features.methods`, все методы и поля через один слой адаптеров, версионируем наши ожидания в одном файле (`src/gateway/contract.ts`), события обрабатываем аддитивно (unknown event types игнорируются, не роняют UI).
-
-Ключевые RPC: `sessions.list` (+`sessions.subscribe`), `sessions.create`, `chat.send` (queueMode), `chat.history` (+deltaCursor catch-up), `chat.abort`, `sessions.abort`, `sessions.patch`, событие `session.message` (deltaText, toolCall-строки), `session.approval` (опционально с includeApprovals).
+What is missing (the main gaps against the Claude UX): direct Gateway WS transport, agent/session selection, session history/resume, permission modes, plan mode, inline diffs with accept/reject, checkpoints/rollback, auto-context for the open file, focus view, usage indicator.
 
 ---
 
-## 4. Карта фич по приоритетам
+## 3. Target architecture (approved)
 
-Легенда трудозатрат: S ≈ часы–1 день, M ≈ 2–4 дня, L ≈ неделя+.
+- **Transport**: a direct WebSocket connection to the OpenClaw Gateway (port 18789, token, handshake `role=operator`). No local CLI/spawn.
+- **Agent selector**: `sessions.list` → `chat.send` into the chosen agent's session → per-agent memory via memory-lancedb.
+- Protocol: `/app/docs/gateway/protocol.md` plus `protocol/*.md` (transport, handshake, rpc-methods, rpc-session-control, auth). The reference client is the webchat UI in `/app/dist`.
+- **The protocol is not frozen** → minimise coupling: build a thin `GatewayClient` that discovers capabilities through `hello-ok.features.methods`, route all methods and fields through a single adapter layer, version our expectations in one file (`src/gateway/contract.ts`), and handle events additively (unknown event types are ignored rather than crashing the UI).
 
-### P0 — must-have (без этого расширение не «Claude-like» и не полезно)
+Key RPCs: `sessions.list` (+`sessions.subscribe`), `sessions.create`, `chat.send` (queueMode), `chat.history` (+deltaCursor catch-up), `chat.abort`, `sessions.abort`, `sessions.patch`, the `session.message` event (deltaText, toolCall lines), `session.approval` (optionally with includeApprovals).
 
-| # | Фича | Берём из Claude UX | Реализация на стеке openknot | Оценка | Зависимости / риски |
+---
+
+## 4. Feature map by priority
+
+Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
+
+### P0 — must-have (without these the extension is neither "Claude-like" nor useful)
+
+| # | Feature | Taken from the Claude UX | Implementation on the openknot stack | Estimate | Dependencies / risks |
 |---|---|---|---|---|---|
-| P0-1 | **Gateway WS-транспорт** | n/a (архитектурное) | Новый `src/gateway/GatewayClient.ts`: WS к `ws://nas:18789`, handshake по protocol.md (`role=operator`), токен из настроек (secret storage, не plaintext settings), авто-reconnect c backoff, discovery `hello-ok.features.methods`. `ChatService` остаётся интерфейсом, добавляем реализацию `GatewayChatService` (spawn-реализация сохраняется как fallback). | **M** | Протокол докуменентирован; риск: версии протокола → mitigation: contract.ts + discovery |
-| P0-2 | **Агент-селектор + привязка сессии** | «сессии/аккаунт» в Claude ≈ выбор модели | Пикер в вебвью и палитре: `sessions.list` → фильтр по main-сессиям агентов → выбор → все отправки `chat.send` с этим `sessionKey`/`agentId`. Отображение hasActiveRun-индикатора. | **M** | P0-1; sessions.list семантика сложная (snapshots/ownership) — берём минимальный сабсет |
-| P0-3 | **Стриминговый чат с транскриптом** | базовый UX панели | Подписка на события сессии; редьюсер события → UI-модель (текст-дельты, toolCall-строки, done/error). Повторяем модель ChatEvent, но с поддержкой tool calls как раскрывающихся групп (см. P1-5). | **M** | P0-1; deltaCursor для catch-up при реконнекте |
-| P0-4 | **Session history + resume** | Session history, resume, AI titles | Кнопка «История»: `sessions.list`/`sessions.preview` → список с превью и заголовками; клик → `chat.history` для восстановления транскрипта в вебвью; продолжение — `chat.send` в ту же сессию. | **M** | P0-1..3; «cold» storage status → placeholder |
-| P0-5 | **Автоконтекст: открытый файл, выделение, diagnostics** | attachOpenFile, авто-видимость выделения, Option+K @-mention, diagnostic sharing | Уже частично есть (selection, diagnostics, gitDiff в slashCommands). Доработать: (а) авто-вставка открытого файла при `attachOpenFile=true`; (б) @-mention с диапазоном строк `@file#L5-10`; (в) кнопка Option+K/Alt+K (keybinding) для вставки упоминания выделения. Контекст пакуем в текст промпта (Gateway-агент уже умеет читать файлы, нам нужен только указатель+сниппет). | **S–M** | низкий риск |
-| P0-6 | **Slash-команды поверх нового транспорта** | `/`-меню | SLASH_COMMANDS уже есть; перенаправить в chat.send, превратив в текстовые промпты с контекстом (как сейчас). Добавить /plan, /compact-подсказку. | **S** | P0-3 |
+| P0-1 | **Gateway WS transport** | n/a (architectural) | New `src/gateway/GatewayClient.ts`: WS to `ws://nas:18789`, handshake per protocol.md (`role=operator`), token from settings (secret storage, not plaintext settings), auto-reconnect with backoff, discovery via `hello-ok.features.methods`. `ChatService` stays an interface; add a `GatewayChatService` implementation (the spawn implementation is kept as fallback). | **M** | The protocol is documented; risk: protocol versions → mitigation: contract.ts + discovery |
+| P0-2 | **Agent selector + session binding** | "sessions/account" in Claude ≈ model selection | A picker in the webview and palette: `sessions.list` → filter to agents' main sessions → choose → all sends carry that `sessionKey`/`agentId`. Show the hasActiveRun indicator. | **M** | P0-1; `sessions.list` semantics are complex (snapshots/ownership) — take a minimal subset |
+| P0-3 | **Streaming chat with a transcript** | the basic panel UX | Subscribe to session events; reduce events into a UI model (text deltas, toolCall lines, done/error). Reuse the ChatEvent model, but with tool calls as collapsible groups (see P1-5). | **M** | P0-1; deltaCursor for catch-up on reconnect |
+| P0-4 | **Session history + resume** | Session history, resume, AI titles | A "History" button: `sessions.list`/`sessions.preview` → a list with previews and titles; click → `chat.history` to restore the transcript in the webview; continuing → `chat.send` into the same session. | **M** | P0-1..3; "cold" storage status → placeholder |
+| P0-5 | **Auto-context: open file, selection, diagnostics** | attachOpenFile, automatic selection visibility, Option+K @-mention, diagnostic sharing | Partly present already (selection, diagnostics, gitDiff in slashCommands). To build out: (a) auto-insert the open file when `attachOpenFile=true`; (b) @-mentions with a line range `@file#L5-10`; (c) an Option+K/Alt+K keybinding to insert a selection mention. We pack context into the prompt text (the Gateway agent can already read files; we only need a pointer plus a snippet). | **S–M** | low risk |
+| P0-6 | **Slash commands over the new transport** | the `/` menu | SLASH_COMMANDS already exists; redirect them to chat.send, turning them into text prompts with context (as now). Add /plan and a /compact hint. | **S** | P0-3 |
 
-### P1 — сильно повышает ценность (то, что делает «Claude for OpenClaw» продуктом)
+### P1 — greatly increases the value (what makes it a product)
 
-| # | Фича | Берём из Claude UX | Реализация | Оценка | Зависимости / риски |
+| # | Feature | Taken from the Claude UX | Implementation | Estimate | Dependencies / risks |
 |---|---|---|---|---|---|
-| P1-0 | **Терминальный мост (Terminal Bridge)** — агент запрашивает запуск команд в терминале VS Code | эквивалент локального exec у Claude Code | Расширение подключается к Gateway как **client/node role** (официальная механика: node host через WS). Агент вызывает exec (tests, scripts, rg) через штатный exec-approvals механизм Gateway; расширение получает запрос, исполняет в терминале VS Code (`window.createTerminal` + shell integration API), вывод стримится агенту. Цикл замыкается: правка → тест → фикс. Approval: показ команды пользователю + allowlist (`pytest`, `npm test`, `rg`, `dotnet test` — без подтверждения). | **M–L** | Ключевая фича для «агент живёт на Gateway, проект на локальной машине». Зависит от P0-1. Детали: §5.5 |
-| P1-1 | **Inline-диффы с accept/reject** | Manual mode, per-change review, Accept/Reject at Cursor | Механика (см. §5.1): из toolCall-событий агента извлекаем файловые правки; предложенную-версию показываем `vscode.diff` (OriginalContentProvider для «было»), accept = применение к диску/запись, reject = игнор. MVP-упрощение: **agent уже применил правку на Gateway-хосте** → работаем с уже изменённым файлом: сохраняем pre-edit снапшот (по событию toolCall «write начат» или из git), diff-вид, accept = оставить, reject = восстановить снапшот. Per-change кнопки — v2. | **L** | Ключевой риск: правки происходят на стороне Gateway/агента, не в VS Code. Для локальных репо файлы доступны напрямую; для NAS — см. §5.4 |
-| P1-2 | **Permission-режимы (Manual / Edit automatically)** | индикатор режима в промпт-боксе | Флаг в UI → передаётся в промпт-контекст (инструкция агенту «не пиши файлы, покажи план правок») + мягкое ограничение через tool policy Gateway, если доступно. Полноценный серверный enforcement — вопрос к Gateway, на MVP: prompt-level + acceptance-перемещение через P1-1. | **M** | Enforcement со стороны агента не гарантирован — задаём ожидания честно в UI |
-| P1-3 | **Plan mode** | `/plan`, план как Markdown-документ, инлайн-комментарии | Режим чата «plan»: отправляем задачу с системной инструкцией «составь план, не меняй файлы»; результат — Markdown. Кнопка «Открыть план в редакторе»: создаём untitled/`plan-<ts>.md` в workspace, пользователь комментирует/правит, кнопка «Approve plan» отправляет документ (или дельты) обратно как утверждение в chat.send, режим переключается в edit. | **M** | P0-3; низкий риск |
-| P1-4 | **Checkpoints / откат правок** | rewind-кнопка на сообщении: fork / rewind code / fork+rewind | Для локальных репо: git — хук до/после каждой «волны» правок (событие toolCall с файлами) → тегированные коммиты/stash или in-memory snapshots. Rewind = `git checkout` снапшота. Fork conversation = новая Gateway-сессия с скопированной историей (продумать; MVP: только «rewind code», fork — v2). | **L** | Зависит от P1-1; для NAS-репо — git работает там же, команды через агент или node exec |
-| P1-5 | **Tool-call группы + Focus view** | раскрывающиеся шаги инструментов, Ctrl+Alt+F | Рендер toolCall-событий как коллапсируемых строк; toggle «скрыть активность инструментов» в вебвью (persist в settings). | **S–M** | P0-3 |
-| P1-6 | **Abort / interrupt / steer** | (неявно в UX) | Кнопка stop → `sessions.abort`/`chat.abort`; новое сообщение при активном ранне → `chat.send queueMode:"steer"` (обновить статус в UI «перебиваю»). | **S** | P0-3 |
-| P1-7 | **Мультипанельные параллельные сессии + индикаторы** | Open in New Tab/Window, цветные точки вкладок | Один ChatViewProvider-класс, инстансы на сессию (webview-views в editor tabs). Точка на вкладке при pending/завершении. | **M** | P0-2, P0-3 |
-| P1-8 | **Usage/токены-индикатор** | индикатор контекста | `usage`-события уже в модели ChatEvent; показываем totalTokens + грубую оценку контекста. `/usage` Gateway-метод для детализации (опционально). | **S** | P0-3 |
+| P1-0 | **Terminal Bridge** — the agent asks to run commands in a VS Code terminal | equivalent to Claude Code's local exec | The extension connects to the Gateway as a **client/node role** (official mechanism: node host over WS). The agent calls exec (tests, scripts, rg) through the Gateway's standard exec-approvals mechanism; the extension receives the request, executes it in a VS Code terminal (`window.createTerminal` + shell integration API), and the output streams back to the agent. The loop closes: edit → test → fix. Approval: show the command to the user + an allowlist (`pytest`, `npm test`, `rg`, `dotnet test` — without confirmation). | **M–L** | The key feature for "the agent lives on the Gateway, the project lives on the local machine". Depends on P0-1. Details: §5.5 |
+| P1-1 | **Inline diffs with accept/reject** | Manual mode, per-change review, Accept/Reject at Cursor | Mechanism (see §5.1): extract file edits from the agent's toolCall events; show the proposed version via `vscode.diff` (an OriginalContentProvider for the "before" state), accept = apply to disk/commit, reject = ignore. MVP simplification: **the agent already applied the edit on the Gateway host** → work with the already-changed file: keep a pre-edit snapshot (from a toolCall "write started" event or from git), show a diff view, accept = keep, reject = restore the snapshot. Per-change buttons — v2. | **L** | The main risk: edits happen on the Gateway/agent side, not in VS Code. For local repos the files are directly accessible; for a NAS see §5.4 |
+| P1-2 | **Permission modes (Manual / Edit automatically)** | a mode indicator in the prompt box | A UI flag → passed into the prompt context (an instruction to the agent "do not write files, show the plan of changes") plus a soft restriction via the Gateway's tool policy, if available. Full server-side enforcement is a question for the Gateway; on the MVP: prompt-level + movement of acceptance through P1-1. | **M** | Agent-side enforcement is not guaranteed — we set honest expectations in the UI |
+| P1-3 | **Plan mode** | `/plan`, the plan as a Markdown document, inline comments | A chat mode "plan": send the task with a system instruction "compose a plan, do not change files"; the result is Markdown. Buttons under the plan: "Open the plan in the editor" (an untitled/`plan-<ts>.md` in the workspace, which the user comments on/edits) and "Approve plan" (sends the document, or its diff, back as approval via chat.send; the mode switches to edit). | **M** | P0-3; low risk |
+| P1-4 | **Checkpoints / rollback of edits** | a rewind button on a message: fork / rewind code / fork+rewind | For local git repos: a git hook before/after each "wave" of edits (a toolCall event carrying files) → tagged commits/stash, or in-memory snapshots. Rewind = `git checkout` the snapshot. Fork conversation = a new Gateway session with the history copied (to be worked out; MVP: "rewind code" only, fork is v2). | **L** | Depends on P1-1; for NAS repos git runs in the same place, with commands issued by the agent or via node exec |
+| P1-5 | **Tool-call groups + Focus view** | collapsible tool steps, Ctrl+Alt+F | Render toolCall events as collapsible rows; a toggle in the webview to hide tool activity (persisted in settings). | **S–M** | P0-3 |
+| P1-6 | **Abort / interrupt / steer** | (implicit in the UX) | A stop button → `sessions.abort`/`chat.abort`; a new message while a run is active → `chat.send queueMode:"steer"` (with the UI status updated to "interrupting"). | **S** | P0-3 |
+| P1-7 | **Multi-panel parallel sessions + indicators** | Open in New Tab/Window, coloured tab dots | One ChatViewProvider class, instances per session (webview views in editor tabs). A dot on the tab when pending/finished. | **M** | P0-2, P0-3 |
+| P1-8 | **Usage/token indicator** | a context indicator | `usage` events are already in the ChatEvent model; show totalTokens plus a rough context estimate. The Gateway's `/usage` method for detail (optional). | **S** | P0-3 |
 
-### P2 — nice-to-have
+### P2 — nice to have
 
-| # | Фича | Реализация | Оценка |
+| # | Feature | Implementation | Estimate |
 |---|---|---|---|
-| P2-1 | AI-заголовки новых сессий | `sessions.title.prepare` → `displayName` при `sessions.create` | S |
-| P2-2 | Auto-archive/группы истории в списке | локальная категоризация поверх sessions.list (grouping per workspace folder в VS Code state) | M |
-| P2-3 | Side questions `/btw` | боковая панель второго webview с отдельным одноразовым чатом-сессией, не пишущим в основную | M |
-| P2-4 | URI handler `vscode://openknot.openclaw/open?prompt=...&session=...` | registerUriHandler, предзаполнение промпта, resume по sessionKey | S |
-| P2-5 | Export conversation / copy response | сериализация транскрипта в md/txt; кнопка copy | S |
-| P2-6 | @terminal и фоновые задачи (/tasks) | Windows/Terminal API для чтения активного терминала; map фоновых процессов Gateway (background-process docs) | M–L |
-| P2-7 | Screen reader-анонсы | aria-live в вебвью, focus last message команда | M |
-| P2-8 | MCP/плагин-менеджмент | делегировать Gateway (плагины уже на Gateway); UI — только просмотр | L, опционально |
+| P2-1 | AI titles for new sessions | `sessions.title.prepare` → `displayName` on `sessions.create` | S |
+| P2-2 | Auto-archive/groups in the history list | local categorisation over sessions.list (grouping per workspace folder in VS Code state) | M |
+| P2-3 | Side questions `/btw` | a side panel: a second webview with a separate one-shot chat session that does not write into the main one | M |
+| P2-4 | URI handler `vscode://openknot.openclaw/open?prompt=...&session=***` | registerUriHandler, prompt prefill, resume by sessionKey | S |
+| P2-5 | Export conversation / copy response | serialising the transcript to md/txt; a copy button | S |
+| P2-6 | @terminal and background tasks (/tasks) | the Windows/Terminal API to read the active terminal; mapping Gateway background processes (background-process docs) | M–L |
+| P2-7 | Screen reader announcements | aria-live in the webview, a focus-last-message command | M |
+| P2-8 | MCP/plugin management | delegate to the Gateway (plugins already live on the Gateway); the UI is view-only | L, optional |
 
-### Explicitly out of scope (не дублируем — и почему)
+### Explicitly out of scope (we do not duplicate — and why)
 
-| Фича Claude | Почему не делаем |
+| Claude feature | Why we skip it |
 |---|---|
-| **Bundled CLI / terminal mode** | Наша архитектура — WS к Gateway, локальный CLI противоречит утверждённому решению; терминальный режим — нишевый |
-| **Login/Anthropic-аккаунты, permission rules storage Claude-формата, `~/.claude/settings.json`** | Аутентификация — токен Gateway; правила пермишенов — домен Gateway-политики, не расширения |
-| **MCP-конфигурация из расширения** | MCP живёт на Gateway/агентах; управлять из Control UI. Дублирование UI — поддержка двух источников правды |
-| **Claude in Chrome (`@browser`)** | OpenClaw имеет собственный browser-инструмент на Gateway; расширению достаточно упоминать его в промптах |
-| **Usage-бары Claude-подписок, prompt cache clock** | Специфика Anthropic-биллинга; у нас модельный роутинг Gateway |
-| **Cloud sessions (claude.ai Web tab)** | Эквивалент — sessions.dispatch/placement Gateway; это отдельная функция шлюза, не расширения (UI-обёртка опционально в v3) |
-| **Plugins/marketplaces UI** | ClawHub/плагины OpenClaw управляются на Gateway; никакого локального маркетплейса в IDE |
-| **auto memory UI Claude** | Память уже реализована (memory-lancedb per agent); UI раскрытия памяти — возможно в далёкой перспективе, но не в рамках этого плана |
-| **Python-окружение активация, useTerminal, claudeProcessWrapper (spawn-наследие)** | Автоактивация окружений и обёртки spawn-архитектуры уходят вместе с ней. НЕ путать с **Terminal Bridge (P1-0)**: там терминал VS Code — исполнитель запросов агента через Gateway exec-approvals, новая фича, а не наследие |
+| **Bundled CLI / terminal mode** | Our architecture is WS to the Gateway; a local CLI contradicts the approved decision; the terminal mode is niche |
+| **Login/Anthropic accounts, Claude-format permission rules storage, `~/.claude/settings.json`** | Authentication is a Gateway token; permission rules belong to Gateway policy, not the extension |
+| **MCP configuration from the extension** | MCP lives on the Gateway/agents; manage it from the Control UI. Duplicating the UI means maintaining two sources of truth |
+| **Claude in Chrome (`@browser`)** | OpenClaw has its own browser tool on the Gateway; the extension only needs to mention it in prompts |
+| **Claude subscription usage bars, prompt cache clock** | Specifics of Anthropic billing; we have the Gateway's model routing |
+| **Cloud sessions (claude.ai Web tab)** | The equivalent is the Gateway's sessions.dispatch/placement; that is a gateway feature, not an extension one (a UI wrapper is optional in v3) |
+| **Plugins/marketplace UI** | ClawHub/OpenClaw plugins are managed on the Gateway; no local marketplace in the IDE |
+| **Claude's auto memory UI** | Memory is already implemented (memory-lancedb per agent); a memory-reveal UI is possible far in the future, but not within this plan |
+| **Python environment activation, useTerminal, claudeProcessWrapper (spawn leftovers)** | Environment activation and spawn-architecture wrappers go away with it. Do NOT confuse this with the **Terminal Bridge (P1-0)**: there the VS Code terminal executes agent requests through Gateway exec-approvals, which is a new feature, not a leftover |
 
 ---
 
-## 5. Особые механики
+## 5. Specific mechanics
 
-### 5.1 Inline-диффы (accept/reject) — детально
+### 5.1 Inline diffs (accept/reject) — in detail
 
-Поток событий: агент работает на Gateway (или paired node). Правки файлов проявляются как **toolCall-события** в стриме сессии (write/edit/exec инструментов). Расширение:
+Event flow: the agent works on the Gateway (or a paired node). File edits appear as **toolCall events** in the session stream (the write/edit/apply_patch class of tools). The extension:
 
-1. **Перехват**: в редьюсере событий распознаём toolCall с файловым эффектом (`write`/`edit`/`apply_patch`-класс; конкретные имена инструментов берём из discovery/agent runtime, держим маппер в contract.ts).
-2. **Локализация файла**: 
-   - локальный workspace: относительный путь → `workspace.rootPath`;
-   - NAS/paired node: см. §5.4.
-3. **Diff-рендер**: `vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title)`, где left — `openclawOriginal:` content provider (хранит содержимое «до»; источник: (а) чтение файла до события применения, (б) если опоздали — из git HEAD/stash), right — реальный/предлагаемый файл. 
-   - MVP: агент пишет файл напрямую → diff «HEAD vs рабочая копия», accept = mark reviewed, reject = `git checkout -- file` (или восстановление из снапшота).
-   - v2: пред-применение — агент в Manual-режиме возвращает proposed content в toolCall-details → расширение применяет само (правка происходит на клиенте — работает только для локальных репо), per-change accept/reject кнопки в diff (TextDocumentContentProvider + декорации).
-4. **Accept/Reject при ненаблюдаемых правках**: если файл на NAS и недоступен по ФС — деградация: показываем textual diff (из toolCall details / `git diff`, запрошенного у агента) в чате с кнопками accept(комментарий «ок»)/reject(«откати файл X» в чат). Честный fallback без ложного UX.
-5. **Команды**: `openclaw.acceptChangeAtCursor` / `rejectChangeAtCursor` — по позиции курсора в открытом diff-документе (v2).
+1. **Interception**: in the event reducer, recognise a toolCall with a file effect (the `write`/`edit`/`apply_patch` class; concrete tool names come from discovery/the agent runtime, and the mapper lives in contract.ts).
+2. **File location**:
+   - local workspace: relative path → `workspace.rootPath`;
+   - NAS/paired node: see §5.4.
+3. **Diff rendering**: `vscode.commands.executeCommand('vscode.diff', leftUri, rightUri, title)`, where left is the `openclawOriginal:` content provider (holding the "before" content; the source is (a) reading the file before the apply event, (b) or, if we are late, git HEAD/stash), and right is the real/proposed file.
+   - MVP: the agent writes the file directly → a diff of "HEAD vs working copy", accept = mark reviewed, reject = `git checkout -- file` (or restore from the snapshot).
+   - v2: pre-apply — in Manual mode the agent returns proposed content in the toolCall details → the extension applies it itself (the edit happens on the client — works only for local repos), per-change accept/reject buttons in the diff (TextDocumentContentProvider + decorations).
+4. **Accept/Reject for unobserved edits**: if the file is on a NAS and not reachable through the filesystem — degrade to a textual diff (from the toolCall details or a `git diff` requested from the agent) in the chat with accept ("ok")/reject ("revert file X") buttons. An honest fallback with no false UX.
+5. **Commands**: `openclaw.acceptChangeAtCursor` / `rejectChangeAtCursor` — by cursor position in the open diff document (v2).
 
-Риски: порядок событий (правка применена раньше, чем мы прочитали «до») — закрываем pre-read по событию начала toolCall + git-фоллбек; несинхронизированный агент на другом хосте — textual diff fallback.
+Risks: event ordering (the edit is applied before we read the "before" state) — closed by pre-reading on the toolCall start event plus a git fallback; an unsynchronised agent on another host — a textual diff fallback.
 
-### 5.2 Plan mode — детально
+### 5.2 Plan mode — in detail
 
-Состояние в UI: `plan | execute`. Вход: кнопка режима, `/plan [task]`. Отправка: system-инструкция + промпт; агент отвечает планом (Markdown). Кнопки под планом: «Открыть в редакторе» (untitled md в workspace,Comments инлайн), «Approve» (отправляет: «план утверждён, выполни; правки пользователя: <diff/комментарии>»), «Отмена». После approve — режим execute, продолжение той же сессии. Resume: если сессия кончилась в plan — восстанавливаем режим (последнее сообщение-план распознаём по метке/структуре).
+State in the UI: `plan | execute`. Entry: a mode button, `/plan [task]`. Sending: a system instruction plus the prompt; the agent replies with a plan (Markdown). Buttons under the plan: "Open in the editor" (an untitled md in the workspace, with inline comments), "Approve" (sends: "the plan is approved, execute it; user edits: <diff/comments>"), "Cancel". After approval — the mode switches to execute and the same session continues. Resume: if a session ended in plan — restore the mode (the last message being a plan is recognised by its marker/structure).
 
-### 5.3 Checkpoints/откат — детально
+### 5.3 Checkpoints/rollback — in detail
 
-Единица = «волна правок» между toolCall-затишьями в одном ране. Для локальных git-репо: перед каждым раном с файловыми эффектами — `git stash create`/temp commit (конфигурируемо: «leave repo clean» по умолчанию НЕ меняем — используем `git stash create` без изменения индекса, храним SHA в реестре чекпоинтов сессии). Rewind: `git checkout <stash> -- .` или restore конкретных файлов. Не-git папки: теневые копии в `~/.openclaw/vscode-checkpoints/`. На NAS: git-операции выполняет агент по запросу расширения (промптовый протокол) или через node exec, если paired node — второй вариант надёжнее (v2).
+The unit is a "wave of edits" between toolCall lulls within one run. For local git repos: before each run with file effects — `git stash create`/a temp commit (configurable: we do NOT change "leave repo clean" by default — we use `git stash create` without touching the index and store the SHA in the session's checkpoint registry). Rewind: `git checkout <stash> -- .` or restoring specific files. Non-git folders: shadow copies under `~/.openclaw/vscode-checkpoints/`. On a NAS: git operations are performed by the agent at the extension's request (the prompt protocol) or via node exec — if a paired node exists, the second option is more reliable (v2).
 
-### 5.4 Где живут файлы проекта: шлюз vs локальная машина (универсальный разбор)
+### 5.4 Where the project files live: gateway vs the local machine (the universal breakdown)
 
-Общий случай для продукта: Gateway (и workspace агента) живёт на одном хосте (Docker-сервер, NAS, VPS), а VS Code пользователя — на другом. Файлы проекта могут быть рядом с Gateway, на машине с VS Code, или отсутствовать в ФС (чаты по вставкам). Варианты:
+The general case for the product: the Gateway (and the agent's workspace) lives on one host (Docker server, NAS, VPS), while the user's VS Code is on another. The project files may sit next to the Gateway, on the machine with VS Code, or be absent from the filesystem entirely (chats via paste). Options:
 
-| Вариант | Когда | Механика |
+| Option | When | Mechanics |
 |---|---|---|
-| **A. Репо рядом с Gateway + VS Code Remote (SSH/WSL/Tunnel)** | основной для кода | Remote открывает папку там же, где живёт репо агента — все файлы «локальны» для окна; диффы/чекпоинты работают штатно. Рекомендуемый путь для кода. |
-| **B. Paired node exec** | окно локально, репо на хосте Gateway, Remote не используется | Для чтения/диффов: `nodes`-invoke через Gateway RPC (dir.list/file.fetch) — только для превью/контекста; правки — через агента. Дифф текстовый (см. 5.1.4). |
-| **C. Текстовый контекст без ФС** | код недоступен агенту по ФС (закрытые среды, нет git-исходников) | Расширение вкладывает фрагменты текста в промпт (уже умеет); агент возвращает патч/текст, применяется вручную. Никакой ФС-магии. |
+| **A. Repo next to the Gateway + VS Code Remote (SSH/WSL/Tunnel)** | the main path for code | Remote opens the folder in the same place the agent's repo lives — all files are "local" to the window; diffs/checkpoints work as usual. The recommended path for code. |
+| **B. Paired node exec** | the window is local, the repo is on the Gateway host, Remote is not used | For reading/diffs: `nodes`-invoke through Gateway RPC (dir.list/file.fetch) — for previews/context only; edits go through the agent. The diff is textual (see 5.1.4). |
+| **C. Textual context without a filesystem** | the code is not reachable by the agent through the filesystem (closed environments, no git sources) | The extension inlines text fragments into the prompt (it already can); the agent returns a patch/text, applied manually. No filesystem magic. |
 
-Решение: MVP оптимизируем под A (ничего не нужно — работает из коробки); B — textual-diff fallback (P1-1); C — уже есть. В README продукта описываются все три сценария, без привязки к конкретному железу.
+Decision: the MVP is optimised for A (nothing needed — it works out of the box); B is a textual-diff fallback (P1-1); C already exists. All three scenarios are described in the product README, with no tie to specific hardware.
 
-### 5.5 Terminal Bridge — детально (P1-0)
+### 5.5 Terminal Bridge — in detail (P1-0)
 
-Задача: агент (на Gateway) должен уметь запускать команды на машине пользователя — тесты, проектные скрипты, `rg`/поиск по кодовой базе, сборка — и получать вывод. Без этого агент на Gateway «слеп и безрук» относительно локального проекта.
+The problem: the agent (on the Gateway) must be able to run commands on the user's machine — tests, project scripts, `rg`/codebase search, builds — and get the output. Without this, an agent on the Gateway is "blind and handless" with respect to a local project.
 
-Механика (все компоненты уже есть в Gateway, ничего ждать не нужно):
-1. **Регистрация исполнителя**: расширение при подключении объявляет себя node/client-роли с exec-возможностью (тот же протокол, что используют десктопные ноды OpenClaw; см. protocol/handshake — caps/commands/permissions).
-2. **Запрос от агента**: штатный exec через Gateway с `exec-approvals` — агент инициирует, Gateway роутит на наш «node»-клиент.
-3. **Исполнение в терминале VS Code**: `window.createTerminal` (+ shell integration API для структурированного вывода). Пользователь видит команду и вывод в реальном времени — прозрачность как у Claude Code.
-4. **Approval-UX**: попап/индикатор «агент хочет выполнить: …» с кнопками Run once / Always allow (per-command allowlist: pytest, npm test, rg, dotnet test, tsc) / Deny. Deny возвращает агенту отказ — он адаптируется.
-5. **Возврат вывода**: stdout/stderr стримится агенту как tool result; длинные выводы усекаются с хвостом (как tokenjuice).
+Mechanics (all the components already exist in the Gateway, nothing to wait for):
+1. **Executor registration**: on connecting, the extension declares itself as a node/client role with exec capability (the same protocol the OpenClaw desktop nodes use; see protocol/handshake — caps/commands/permissions).
+2. **Agent request**: standard exec through the Gateway with `exec-approvals` — the agent initiates, the Gateway routes to our "node" client.
+3. **Execution in the VS Code terminal**: `window.createTerminal` (plus the shell integration API for structured output). The user sees the command and the output in real time — the same transparency as Claude Code.
+4. **Approval UX**: a popup/indicator "the agent wants to run: …" with Run once / Always allow (a per-command allowlist: pytest, npm test, rg, dotnet test, tsc) / Deny. Deny returns a refusal to the agent — it adapts.
+5. **Returning output**: stdout/stderr streams to the agent as the tool result; long outputs are truncated with the tail kept (like tokenjuice).
 
-Реализация по этапам:
-- **MVP+ (опционально в MVP)**: ручной режим — расширение показывает «запрос команды» в чате, пользователь запускает сам, кнопка «отправить вывод агенту».
-- **v1 (P1-0 полный)**: автоматический exec через approvals с allowlist, вывод стримится.
-- **v2**: фоновые задачи (dev-серверы) в `/tasks`, несколько параллельных терминалов, работа с несколькими workspace.
+Implementation in stages:
+- **MVP+ (optional in the MVP)**: a manual mode — the extension shows a "command request" in the chat, the user runs it themselves, and a button sends the output to the agent.
+- **v1 (full P1-0)**: automatic exec via approvals with an allowlist, output streaming.
+- **v2**: background tasks (dev servers) in `/tasks`, several parallel terminals, working across multiple workspaces.
 
-Риски: безопасность (allowlist + approvals обязательны, никаких «выполняй всё молча»); shell integration API различается между терминалами VS Code — fallback на plain output capture; Windows (PowerShell) — тестируем отдельно.
+Risks: security (allowlist + approvals are mandatory, never "execute everything silently"); the shell integration API differs across VS Code terminals — a fallback to plain output capture; Windows (PowerShell) — tested separately.
 
-**Альтернатива для сценария B (репо на NAS, окно локально):** команды исполняет сам агент на NAS — терминальный мост не нужен, нужен только вывод. Bridge закрывает сценарий «репо на локальной машине» (Remote-SSH всё же предпочтительнее, но bridge работает и без него — через paired node механику).
-
----
-
-## 6. Роадмап: MVP → v1 → v2
-
-### MVP (≈ 2–3 недели) — «полезный чат к Gateway»
-Состав: P0-1..P0-6 (WS-транспорт с fallback на старый acpx, агент-селектор, стриминг, история+resume, автоконтекст-доработки, slash-команды), P1-6 (abort/steer), P1-8 (usage), P1-5 (tool-call группы, без Focus view можно MVP+).
-**Критерии готовности:**
-- Подключение к Gateway по токену с reconnect; токен в SecretStorage.
-- Выбор агента в UI; сообщение уходит в его сессию; ответ стримится; tool calls видны группами; stop работает.
-- История: список сессий с превью, клик восстанавливает транскрипт (включая cold-плейсхолдер), продолжение работает после перезапуска окна (catch-up по deltaCursor).
-- Slash-команды работают на новом транспорте; выделение/открытый файл/diagnostics попадают в контекст.
-- Старый acpx-транспорт выбирается, если Gateway недоступен (fallback-переключатель в настройках).
-- Тесты: unit на GatewayClient (mock WS), редьюсер событий, contract-адаптеры.
-
-### v1 (≈ +3–4 недели) — «редакторская интеграция»
-Состав: **P1-0 (терминальный мост: approvals + allowlist + стриминг вывода)**, P1-1 (inline-диффы MVP: diff-вид, accept/reject на уровне файла, textual fallback для NAS), P1-2 (режимы Manual/Edit automatically на уровне промпта+UI), P1-3 (plan mode полный: план как md-документ, approve), P1-4 (чекпоинты: git-based для локальных репо, rewind code), P1-7 (мультипан с индикаторами).
-**Критерии готовности:**
-- Правка агентом в локальном репо показывает diff; reject возвращает файл к состоянию «до».
-- Plan mode: полный цикл plan→редактировать план→approve→execute в одной сессии.
-- Чекпоинт-кнопка на сообщении откатывает файлы к состоянию до рана (git-репо).
-- Две параллельные сессии в разных вкладках с индикацией активности.
-
-### v2 (≈ +2–4 недели) — «полировка и экосистема»
-Состав: per-change accept/reject, P2-1 (AI titles), P2-2 (группы/автоархив), P2-3 (/btw), P2-4 (URI handler), P2-5 (export/copy), P2-7 (a11y), Focus view toggle, NAS-чекпоинты через node exec, если подключён paired node, `/tasks`-карта фоновых задач (P2-6 частично).
-**Критерии готовности:**
-- Per-change ревью в diff (до 100 изменений), Accept/Reject at Cursor.
-- Заголовки сессий генерируются; группы истории сохраняются per-workspace.
-- Deep link открывает вкладку с предзаполненным промптом.
-- Webview проходит базовый screen reader-обход (aria-live, focus last message).
+**An alternative for scenario B (repo on a NAS, window local)**: the commands are executed by the agent on the NAS itself — no terminal bridge needed, only output. The Bridge covers the "repo on the local machine" scenario (Remote-SSH is still preferable, but the bridge also works without it — via the paired node mechanism).
 
 ---
 
-## 7. Сводная таблица приоритетов
+## 6. Roadmap: MVP → v1 → v2
 
-| Приоритет | Фич | Оценка суммарно |
+### MVP (≈ 2–3 weeks) — "a useful chat to the Gateway"
+Contents: P0-1..P0-6 (WS transport with a fallback to the old acpx, agent selector, streaming, history+resume, auto-context build-outs, slash commands), P1-6 (abort/steer), P1-8 (usage), P1-5 (tool-call groups, focus view can wait for MVP+).
+**Readiness criteria:**
+- Connecting to the Gateway by token with reconnect; the token in SecretStorage.
+- Choosing an agent in the UI; a message goes to its session; the reply streams; tool calls are visible as groups; stop works.
+- History: a session list with previews, clicking restores the transcript (including the cold placeholder), continuing works after a window restart (catch-up by deltaCursor).
+- Slash commands work on the new transport; the selection/open file/diagnostics reach the context.
+- The old acpx transport is selectable if the Gateway is unavailable (a fallback switch in settings).
+- Tests: unit tests for GatewayClient (mock WS), the event reducer, contract adapters.
+
+### v1 (≈ +3–4 weeks) — "editor integration"
+Contents: **P1-0 (terminal bridge: approvals + allowlist + output streaming)**, P1-1 (inline diffs MVP: a diff view, accept/reject at the file level, a textual fallback for a NAS), P1-2 (Manual/Edit automatically modes at the prompt+UI level), P1-3 (full plan mode: the plan as an md document, approve), P1-4 (checkpoints: git-based for local repos, rewind code), P1-7 (multipanel with indicators).
+**Readiness criteria:**
+- An agent edit in a local repo shows a diff; reject returns the file to its previous state.
+- Plan mode: a full plan→edit the plan→approve→execute cycle within one session.
+- The checkpoint button on a message returns files to their pre-run state (git repo).
+- Two parallel sessions in different tabs with activity indication.
+
+### v2 (≈ +2–4 weeks) — "polish and ecosystem"
+Contents: per-change accept/reject, P2-1 (AI titles), P2-2 (groups/auto-archive), P2-3 (/btw), P2-4 (URI handler), P2-5 (export/copy), P2-7 (a11y), the focus view toggle, NAS checkpoints via node exec if a paired node is connected, a `/tasks` map of background tasks (P2-6 partly).
+**Readiness criteria:**
+- Per-change review in the diff (up to 100 changes), Accept/Reject at Cursor.
+- Session titles are generated; history groups persist per workspace.
+- A deep link opens a tab with a prefilled prompt.
+- The webview passes a basic screen reader walkthrough (aria-live, focus last message).
+
+---
+
+## 7. Summary priority table
+
+| Priority | Features | Total estimate |
 |---|---|---|
-| P0 | Транспорт WS, агент-селектор, стриминг, история/resume, автоконтекст, slash | ~2–3 нед |
-| P1 | **Терминальный мост**, диффы, permission-режимы, plan mode, чекпоинты, мультипан, abort/steer, usage, focus view | ~3–4 нед |
-| P2 | Titles, группы, /btw, deep links, export, a11y, /tasks | ~2–3 нед |
-| out of scope | CLI-бандл, Anthropic-аккаунты, MCP-UI, Chrome, cloud-таб, плагин-маркетплейс, memory-UI | — |
+| P0 | WS transport, agent selector, streaming, history/resume, auto-context, slash | ~2–3 weeks |
+| P1 | **Terminal bridge**, diffs, permission modes, plan mode, checkpoints, multipanel, abort/steer, usage, focus view | ~3–4 weeks |
+| P2 | Titles, groups, /btw, deep links, export, a11y, /tasks | ~2–3 weeks |
+| out of scope | Bundled CLI, Anthropic accounts, MCP UI, Chrome, cloud tab, plugin marketplace, memory UI | — |
 
-## 8. Главные риски (сводка)
+## 8. Main risks (summary)
 
-1. **Незамороженный протокол Gateway** → контрактный слой `contract.ts`, discovery, аддитивная обработка событий. Держать один файл диффом при обновлении протокола.
-2. **Правки файлов вне процесса VS Code** → MVP через git/снапшоты + textual fallback; Remote-SSH путь закрывает 80% сценариев.
-3. **Сложная семантика sessions.list** (snapshots, ownership, activeRunIds) → использовать минимальный сабсет: список main-сессий агентов + hasActiveRun; не пытаться воспроизводить всю модель видимости.
-4. **Permission-enforcement на клиенте ненадёжен** → честный UI: режимы как инструкции агенту + server-side policy, если/когда Gateway её откроет.
+1. **The Gateway protocol is not frozen** → a contract layer `contract.ts`, discovery, additive event handling. Keep one file as the diff when the protocol changes.
+2. **File edits happen outside the VS Code process** → MVP via git/snapshots plus a textual fallback; the Remote-SSH path covers 80% of scenarios.
+3. **Complex `sessions.list` semantics** (snapshots, ownership, activeRunIds) → use a minimal subset: a list of agents' main sessions + hasActiveRun; do not try to reproduce the entire visibility model.
+4. **Client-side permission enforcement is unreliable** → honest UI: the modes are instructions to the agent plus server-side policy, if/when the Gateway exposes it.
 
-## 9. Дополнения ревью 2026-09-24 (продуктивность)
+## 9. Review additions 2026-09-24 (productivity)
 
-Пробелы, найденные при втором ревью (сверх терминального моста P1-0):
+Gaps found at the second review (beyond the terminal bridge P1-0):
 
-| # | Фича | Зачем | Приоритет | Оценка |
+| # | Feature | Why | Priority | Estimate |
 |---|---|---|---|---|
-| A-1 | **Смена модели mid-session** (`/model`) | Для кодинга: быстрая модель на рутину, сильная на архитектуру; Claude умеет | P1 | S |
-| A-2 | **Вставка изображений/скриншотов** (paste из буфера, drag&drop) | Скриншот бага в UI → фикс; Claude поддерживает | P1 | S |
-| A-3 | **Набор keybindings**: `Cmd+Esc` (фокус редактор↔чат), `Cmd+Shift+Esc` (новая вкладка), `Cmd+N` | Скорость работы, паритет Claude UX | P1 | S |
-| A-4 | **Уведомление о завершении фона** (OS notification + цветная точка на вкладке) | Долгие задачи: ушёл из вкладки — вернулся по нотификации | P1 | S (точки — часть P1-7) |
-| A-5 | **Gitignore-aware @-поиск файлов** | @-меню не предлагает node_modules/билды/артефакты | P0-5 дополнение | S |
-| A-6 | **Multi-root workspace awareness** | Репо клиента + общие библиотеки в одном окне; в контекст указывать корень файла | P1 | S–M |
-| A-7 | **Индикатор контекстного окна + подсказка /compact** | Предупреждать до переполнения, а не после | P1-8 дополнение | S |
-| A-8 | **Privacy: без телеметрии, токен только в SecretStorage** | обязательное требование комьюнити-продукта (см. §0.2) | сквозное | — |
-| A-9 | **Git worktree на агента** (v3) | Параллельные агенты в одном репо без конфликтов | P3/идея | M |
-| A-10 | **Профили агентов под задачи** (кодинг/ревью/доменные) | Быстрый старт сессии с нужным агентом + slash-набором; доменно-специфичные тонкости — в профили пользователя, не в ядро | P2 | S |
-| A-11 | **Project Rules Ingester — встроенная подгрузка правил/скилов проекта** | Проекты несут знания в стандартизированных файлах (AGENTS.md, CLAUDE.md, .cursor/rules, .github/copilot-instructions.md, CONTRIBUTING, docs/adr). Ингестер сканирует репо по конфигурируемому каталогу паттернов и публикует правила в memory-wiki с провенансом (файл+строки) и биндингом к проекту; recall при старте сессии по ключу. Это часть плагина (не отдельный продукт), усиливает всех агентов Gateway и предоставляет слэш-команду /conventions в расширении. | P1 | M–L |
+| A-1 | **Mid-session model switching** (`/model`) | For coding: a fast model for routine work, a strong one for architecture; Claude can | P1 | S |
+| A-2 | **Inserting images/screenshots** (paste from the clipboard, drag & drop) | A UI bug screenshot → the fix; Claude supports it | P1 | S |
+| A-3 | **Keybinding set**: `Cmd+Esc` (editor↔chat focus), `Cmd+Shift+Esc` (new tab), `Cmd+N` | Working speed, Claude UX parity | P1 | S |
+| A-4 | **Notification on background completion** (OS notification + a coloured dot on the tab) | Long tasks: you left the tab → you come back via a notification | P1 | S (the dots are part of P1-7) |
+| A-5 | **Gitignore-aware @ file search** | The @-menu must not offer node_modules/builds/artifacts | a P0-5 addition | S |
+| A-6 | **Multi-root workspace awareness** | The client's repo plus shared libraries in one window; indicate the file's root in the context | P1 | S–M |
+| A-7 | **Context-window indicator + a /compact hint** | Warn before overflow, not after | a P1-8 addition | S |
+| A-8 | **Privacy: no telemetry, the token only in SecretStorage** | a mandatory community-product requirement (see §0.2) | cross-cutting | — |
+| A-9 | **Git worktree for the agent** (v3) | Parallel agents in one repo without conflicts | P3/idea | M |
+| A-10 | **Agent profiles per task type** (coding/review/domain) | Starting a session with the right agent + slash set quickly; domain-specific nuances belong in user profiles, not in the core | P2 | S |
+| A-11 | **Project Rules Ingester — built-in loading of project rules/skills** | Projects carry knowledge in standardised files (AGENTS.md, CLAUDE.md, .cursor/rules, .github/copilot-instructions.md, CONTRIBUTING, docs/adr). The ingester scans the repo by a configurable directory pattern set and publishes the rules to memory-wiki with provenance (file + lines) and a project binding; recall at session start by key. This is part of the plugin (not a separate product), strengthens every Gateway agent, and provides the `/conventions` slash command in the extension. | P1 | M–L |
 
-#### A-11 Project Rules Ingester — дизайн
+#### A-11 Project Rules Ingester — design
 
-**Биндинг проекта (иерархия):**
-1. **Git remote URL** (нормализованный origin) — первичный ключ; переживает переименования, работает при клоне в другое место.
-2. **Явный алиас** (`project: <имя>`) — ручной override, обязателен для non-git проектов (проприетарные конфигурации, legacy-репо).
-3. **Путь/имя папки** — fallback при отсутствии git.
-Recall: на старте сессии/при выборе агента расширение определяет ключ (git remote из workspace → alias из настроек → путь) и подаёт найденные правила в контекст.
+**Project binding (hierarchy):**
+1. **Git remote URL** (normalised origin) — the primary key; it survives renames and works when the repo is cloned elsewhere.
+2. **An explicit alias** (`project: <name>`) — a manual override, required for non-git projects (proprietary configurations, legacy repos).
+3. **Path/folder name** — a fallback when there is no git.
+Recall: at session start or on agent selection the extension determines the key (git remote from the workspace → an alias from settings → the path) and supplies the found rules to the context.
 
-**Каталог форматов (конфигурируемый, не зашитый):** AGENTS.md, CLAUDE.md/.claude/*.md, .cursor/rules/*.mdc, .github/copilot-instructions.md, .windsurfrules, .clinerules, CONTRIBUTING.md, docs/adr/*.md, README#Architecture; пользовательские globs. Экстракция — честная копия текста с провенансом (LLM-сжатие — опция, raw хранится всегда).
+**The format catalogue (configurable, not hardcoded):** AGENTS.md, CLAUDE.md/.claude/*.md, .cursor/rules/*.mdc, .github/copilot-instructions.md, .windsurfrules, .clinerules, CONTRIBUTING.md, docs/adr/*.md, README#Architecture; custom globs. Extraction is a faithful copy of the text with provenance (LLM compression is an option, the raw text is always stored).
 
-**Жизненный цикл:** ингест по запросу (/conventions ingest) или при первом касании репо → wiki-синтез с метаданными project → «отпечаток» (hash файлов) → при изменении: diff-предложение обновления, не молча. Экспорт обратно (opt-in): выгрузка правил из wiki в AGENTS.md репо — делает проект полезным для любых агентов (Cursor, Claude), сильный аргумент для комьюнити.
+**Lifecycle:** ingest on request (/conventions ingest) or on first contact with the repo → wiki synthesis with project metadata → a "fingerprint" (a hash of the files) → on change: a proposed update diff, never silent. Export back (opt-in): writing rules from the wiki back into the repo's AGENTS.md — this makes the project useful for any agent (Cursor, Claude), a strong argument for the community.
 
-**Приватность (обязательное для комьюнити):** всё локально (memory-wiki vault пользователя); корпоративные правила никуда не утекают; телеметрии нет.
+**Privacy (mandatory for the community):** everything is local (the user's memory-wiki vault); corporate rules do not leak anywhere; no telemetry.
 
-**Слэш-команды расширения:** `/conventions` (показать/обновить правила проекта), `/conventions ingest` (сканировать текущий workspace).
+**Extension slash commands:** `/conventions` (show/update the project rules), `/conventions ingest` (scan the current workspace).
 
-Примечание по специфичным форматам: доменные форматы (например, .bsl-файлы, проприетарные LSP-серверы) — в **пользовательские конфиги/профили** (A-10), не в ядро продукта. Ядро формато-агностично; терминальный мост + текстовый контекст (§5.4 C) в любом случае закрывают цикл «код → вопрос → правка».
+A note on specific formats: domain-specific formats (for example .bsl files, proprietary LSP servers) belong in **user configs/profiles** (A-10), not in the product core. The core is format-agnostic; the terminal bridge plus textual context (§5.4 C) closes the "code → question → edit" loop regardless.
 
-## 9.1 Архитектурный фундамент: инфраструктура, логирование, качество кода
+## 9.1 Architectural foundation: infrastructure, logging, code quality
 
-Технические решения, принимаемые однократно до старта кода и действующие на весь проект (комьюнити-продукт → универсальность, локальность, поддерживаемость).
+Technical decisions made once before the code starts, binding for the whole project (community product → universality, locality, maintainability).
 
-### 9.1.1 Инфраструктура проекта
+### 9.1.1 Project infrastructure
 
-- **Стек** (решения владельца, 2026-09-24): TypeScript **strict**, esbuild (сборка), **Vitest** (решение владельца, 2026-10-03: миграция с Jest выполнена, PR #28), eslint **→ заменяем на oxlint** (oxc-экосистема). pnpm остаётся. Новых рантаймов не добавлять (никакого корневого бандлера/монорепо поверх).
-- **Бандлер: esbuild остаётся на старте (решение, 2026-09-24).** Рассмотрены более быстрые Rust-варианты (Rolldown 1.2.x/tsdown — основной кандидат; oxc-transform). Решение НЕ менять сейчас: (1) выигрыш скорости несущественен на размере бандла расширения/main+webview — он и так доли секунды; (2) esbuild уже настроен в форке и CSP-корректен для webview (`content-security-policy` — плоский файл); (3) смена добавит риск на старте MVP без профита. **Отложенная опция**: если webview-сборка начнёт тормозить dev-цикл по мере роста — переходим на tsdown/Rolldown одним шагом (привычный `defineConfig`), это одиночный миграционный PR.
-- **Основная рабочая единица кода — классы** (решение владельца): бизнес-логика и сервисы — классы с явной зависимостью (DI через конструктор, инжекция logger/client/etc.), а не функции-утилиты и не глобальный singleton-состояние. Это улучшает тестируемость (Vitest-моки на класс) и читаемость. Функции допустимы как тонкие чистящие утилиты внутри core/util, но не как носители состояния.
-- **Структура репозитория** (декомпозиция монолитов форка):
-  - `src/extension.ts` — только активация/деактивация (тонкий bootstrap).
-  - `src/core/` — рантайм, не привязанный к VS Code: `gateway/GatewayClient.ts`, `gateway/contract.ts` (типы+версии протокола), `gateway/adapters/`, диспетчер событий, редьюсер UI-модели, transport-интерфейс (`ChatService`/`GatewayChatService`).
-  - `src/vscode/` — VS Code-привязка: commands (реестр), views (webview-контроллеры), config (настройки+SecretStorage), terminals (мост), diffs/checkpoints, statusbar.
-  - `src/webview/` — фронтенд вебвью: представления/компоненты, HTML-сборка (вынести из 117КБ-строки), слой сообщений webview↔extension.
-  - `src/__test__/` — тесты по модулям (Vitest).
-- **Разделение core/vscode** — тестируемость: весь рантайм (gateway, дедупликация, редьюсер) тестируется без головы VS Code; vscode-слой — тонкие адаптеры.
-- **Монолиты — перерабатывать сразу, приоритетно** (решение владельца): `src/extension.ts` (~72КБ) и `src/chat/getWebviewContent.ts` (~117КБ) декомпозируются на этапе MVP, а не откладываются. Объемная схема выше — целевое состояние после реструктуризации.
-- **CI** (GitHub Actions): typecheck → oxlint → vitest → сборка vsce/ovsx на тег. Catch-early, федеральные PR.
+- **Stack** (owner's decisions): TypeScript **strict**, esbuild (bundling), **Vitest** (owner's decision 2026-10-03: the migration from Jest is complete, PR #28), **oxlint** (owner's decision, the oxc ecosystem; the migration from eslint is complete). pnpm stays. Do not add new runtimes (no root bundler/monorepo on top).
+- **The bundler stays esbuild for now (decision, 2026-09-24).** Faster Rust options were considered (Rolldown 1.2.x/tsdown — the main candidate; oxc-transform). The decision NOT to change now: (1) the speed gain is insignificant at the extension's bundle size — main + webview already build in a fraction of a second; (2) esbuild is already configured in the fork and is CSP-correct for the webview (`content-security-policy` — a flat file); (3) a switch would add risk at the MVP stage with no payoff. **Deferred option**: if the webview build starts slowing the dev loop as the project grows — move to tsdown/Rolldown in one step (a familiar `defineConfig`), a single migration PR.
+- **The main unit of code is a class** (owner's decision): business logic and services are classes with explicit dependencies (DI through the constructor, injecting the logger/client/etc.), not utility functions and not global singleton state. This improves testability (Vitest mocks on a class) and readability. Functions are acceptable as thin cleaning utilities inside core/util, but not as state carriers.
+- **Repository structure** (decomposing the fork's monoliths):
+  - `src/extension.ts` — activation/deactivation only (a thin bootstrap).
+  - `src/core/` — runtime not bound to VS Code: `gateway/GatewayClient.ts`, `gateway/contract.ts` (protocol types + versions), `gateway/adapters/`, an event dispatcher, a UI-model reducer, a transport interface (`ChatService`/`GatewayChatService`).
+  - `src/vscode/` — VS Code bindings: commands (the registry), views (webview controllers), config (settings + SecretStorage), terminals (the bridge), diffs/checkpoints, the status bar.
+  - `src/webview/` — the webview frontend: views/components, HTML assembly (pulled out of the 117 KB string), the webview↔extension message layer.
+  - `src/__test__/` — tests per module (Vitest).
+- **Separating core/vscode** — testability: the whole runtime (gateway, deduplication, the reducer) is testable without a VS Code head; the vscode layer is thin adapters.
+- **Monoliths are to be reworked immediately, as a priority** (owner's decision): `src/extension.ts` (~72 KB) and `src/chat/getWebviewContent.ts` (~117 KB) are decomposed during the MVP stage, not deferred. The volume scheme above is the target state after the restructuring.
+- **CI** (GitHub Actions): typecheck → oxlint → vitest → building vsce/ovsx on a tag. Catch-early, PR-critical.
 
-### 9.1.2 Логирование (локальное, без чувствительных данных)
+### 9.1.2 Logging (local, without sensitive data)
 
-- **Уровни**: debug / info / warn / error. Потоки в диспетчере событий (события RPC → лог) и в transport (WS lifecycle: connect/reconnect/backoff/auth).
-- **Красные линии**: никогда не логировать токен, ключи, содержимое промптов, тела файлов. В лог WS-заголовков — только статусы (connect/error/reconnect/N), не payload. Названия файлов — можно, содержимое — нет.
-- **Destination — объединяем по среде** (решение владельца, 2026-09-24):
-  - **CI**: запись в лог-файл (напр. `logs/claw-code.log`) — нужен для диагностики пайплайна; в CI токенов/секретов нет.
-  - **Продакшен (VS Code у пользователя)**: *никакой записи на диск по умолчанию* — только Output Channel VS Code («Claw Code»), уровень warn+ (debug — только при `OPENCLAW_DEBUG=1`/настройке dev). Механизм файл-лога существует (переиспользуем тот же logger), но в проде выключен по умолчанию и никогда не содержит чувствительных данных. Просто две конфигурации destination у одного logger-класса (CI env / runtime).
-- **Изоляция отладки**: отдельный dev-шлюз (см. §10) — рабочая память агентов не засоряется отладочными событиями.
-- **Ошибки** — стабильные коды (enum `LogEvent`), контекст-мешок только безопасных полей (sessionKey, iteration, event-type), без стек-трейсов цепляемых в UI.
+- **Levels**: debug / info / warn / error. Two streams: in the event dispatcher (RPC → log) and in the transport (WS lifecycle: connect/reconnect/backoff/auth).
+- **Red lines**: never log the token, keys, prompt bodies, file contents. In the WS-header log — only statuses (connect/error/reconnect/N), never payloads. File names are fine, contents are not.
+- **Destination is unified per environment** (owner's decision, 2026-09-24):
+  - **CI**: write to a log file (e.g. `logs/claw-code.log`) — needed for pipeline diagnostics; CI has no tokens/secrets.
+  - **Production (VS Code on the user's machine)**: *no writing to disk by default* — only the VS Code Output Channel ("Claw Code"), at warn+ (debug only with `OPENCLAW_DEBUG=1`/a dev setting). The file-log mechanism exists (the same logger is reused), but in production it is off by default and never contains sensitive data. Just two destination configurations of one logger class (CI env / runtime).
+- **Debug isolation**: a separate dev gateway (see §10) — the agents' working memory is not polluted with debug events.
+- **Errors** — stable codes (a `LogEvent` enum), with a context bag of safe fields only (sessionKey, iteration, event type), without stack traces leaking into the UI.
 
-### 9.1.3 Качество кода и дедупликация
+### 9.1.3 Code quality and deduplication
 
-- **Линт/типы**: oxlint + `strict` TS (`noImplicitAny`, `strictNullChecks`) — держать включёнными в CI.
-- **Дедупликация**: один источник правды для протокольных типов — `contract.ts`; адаптеры сводят RPC-методы/поля (риски версий протокола). RPC-вызовы проходят через единый dispatch; события — через **один чистый редьюсер** (решение владельца: чистый `(state, event) => newState`, без побочных эффектов; UI-апдейты — отдельно после). Утилиты (diff, авто-контекст, connection backoff) — в `core/util`, переиспользуемы.
-- **Читаемость**: основные единицы — классы (см. 9.1.1); domain-модули с явными именами; webview — по представлениям; длинные функции разбивать; типы рядом с использованием.
-- **Логирование вместо console.log**: единый logger-класс (решение владельца), инжектится в сервисы (удобно тестировать моком).
-- **Тесты**: Vitest — unit на core-редьюсер (чистая функция), gateway-адаптеры (мок WS), дедупликацию; интеграционный smoke — против локального dev-шлюза с фейк-токеном, без реального агента.
+- **Lint/types**: oxlint + `strict` TS (`noImplicitAny`, `strictNullChecks`) — keep them enabled in CI.
+- **Deduplication**: one source of truth for protocol types — `contract.ts`; adapters funnel RPC methods/fields (mitigating protocol version risk). RPC calls go through a single dispatch; events go through **one pure reducer** (owner's decision: a pure `(state, event) => newState`, no side effects; UI updates happen separately afterwards). Utilities (diff, auto-context, connection backoff) live in `core/util` and are reusable.
+- **Readability**: the main units are classes (see 9.1.1); domain modules with explicit names; the webview split into views; long functions broken up; types next to their use site.
+- **Logging instead of console.log**: a single logger class (owner's decision), injected into services (convenient to mock in tests).
+- **Tests**: Vitest — unit tests for the core reducer (a pure function), gateway adapters (mock WS), deduplication; an integration smoke test against a local dev gateway with a fake token, with no real agent.
 
-### 9.1.4 PR-политика (комьюнити)
+### 9.1.4 PR policy (community)
 
-Самостоятельный проект (репозиторий владельца), апстрим OpenKnots не тянем и не синхронизируемся (см. §0.4) — один репозиторий, один контур PR. Upstream — только архивный/юридический референс (MIT + благодарность сохраняем); cherry-pick из него не планируем.
+A standalone project (the owner's repository); upstream OpenKnots is not pulled and not synced (see §0.4) — one repository, one PR flow. Upstream is only an archive/legal reference (MIT + we keep the thanks); cherry-picking from it is not planned.
 
-**Ветки/тридж:**
-- `main` защищена: required status checks (CI обязательны всегда). Ревью-гейт на старте: **владелец — единственный мейнтейнер и апрувер**; required reviews включить сразу (1 approve), чтобы выработать привычку, не блокируя себя (GitHub допускает авто-апрув своего PR). Когда появятся другие мейнтейнеры/контрибьюторы — ужесточить (2 ревью для чужих PR).
-- `dev` пред-релизная ветка — опциональна на старте (MVP можно напрямую в main через PR).
-- Нейминг веток: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
-- **Conventional Commits** (семвер автоматический из сообщений).
-- **Подпись коммитов**: для владельца — **обязательна, GPG-ключ + GitHub Verified** (золотой стандарт, выбор владельца 2026-09-24): ключ сгенерировать один раз, добавить публичный в GitHub, git настраивается подписывать коммиты/теги автоматически; коммиты в `main` и релизы — `Verified`. Для контрибьюторов — **рекомендательная, не гейтящая** (жёсткий блок подписи отпугнул бы новичков до первого PR).
-- **Обязательные проверки в PR**: typecheck → oxlint → vitest → сборка → license-check.
-- CHANGELOG: автоматический (release-please) или вручную по категориям.
+**Branches/triggers:**
+- `main` is protected: required status checks (CI is mandatory always). The review gate at the start: **the owner is the sole maintainer and approver**; enable required reviews immediately (1 approve) to build the habit without blocking yourself (GitHub allows self-approval of one's own PR). Once other maintainers/contributors appear — tighten it (2 reviews for other people's PRs).
+- `dev` as a pre-release branch is optional at the start (the MVP can go straight to main through a PR).
+- Branch naming: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
+- **Conventional Commits** (semver derived from messages automatically).
+- **Commit signing**: for the owner — **mandatory, a GPG key + GitHub Verified** (the gold standard, the owner's choice 2026-09-24): generate the key once, add the public one to GitHub, configure git to sign commits/tags automatically; commits in `main` and releases are `Verified`. For contributors — **recommended, not gating** (a hard signing requirement would scare newcomers away before their first PR).
+- **Mandatory checks in a PR**: typecheck → oxlint → vitest → build → license-check.
+- CHANGELOG: automatic (release-please) or manual by category.
 
-### 9.1.5 CI/CD (GitHub Actions, проектируем с нуля — в форке CI нет)
+### 9.1.5 CI/CD (GitHub Actions, designed from scratch — the fork has no CI)
 
-- **Workflow 1 — CI (push + PR):** `pnpm install` → `typecheck` → `oxlint` → `vitest` → `build` → **`license-check`** (см. ниже). На PR-ветках — быстрый фидбек (oxlint+vitest); на main — полный пайплайн + сборка пакета.
-- **Workflow 2 — Release (на тег `v*`):** полный пайплайн → сборка `.vsix` через vsce → публикация в **VS Code Marketplace** и **Open VSX** (2 артефакта) → GitHub Release с `.vsix` + авто-CHANGELOG. Версия берётся из git-тега, без ручного бампа. Публикация/релиз — только владелец (тренал-апрув, не контрибьюторы).
-- **Workflow 3 — синк-генератор PR из апстрима** — **не нужен** (с апстримом не работаем и не синхронизируемся, §0.4); upstream — только архивный референс для атрибуции.
-- **License-check**: `license-checker-rseidelsohn` — скан npm-зависимостей против allowlist **MIT/Apache-2.0/BSD-2/BSD-3/ISC**; явный allow конкретных исключений; **fail на copyleft** (GPL/AGPL/LGPL) и на неопределённые лицензии. Dev-зависимости в отдельном списке. В prod-бандл идёт только allowlist.
-- **Предодобренные зависимости (решение владельца, 2026-09-25)**: **lodash** (MIT) и **luxon** (MIT) — разрешено использовать без дополнительного согласования, если задача их требует. Оба проходят текущий allowlist license-check.
-- **Предложение зависимостей**: ассистент может предлагать другие инструменты/библиотеки, если они проходят лицензионные требования (MIT/Apache-2.0/BSD/ISC; fail на copyleft) — каждое предложение рассматривает владелец перед добавлением.
-- **Качество-enforcement:** required status checks на main (в т.ч. license-check); **Dependabot** для зависимостей; **CodeQL** security scan (бесплатно для public-репо).
-- **Секреты в CI**: OVSX_TOKEN и т.п. — через GitHub Secrets, никогда в коде/логах; в CI нет чувствительных данных (поэтому файл-лог безопасен — §9.1.2). Проверка на случайные секреты в diff.
+- **Workflow 1 — CI (push + PR):** `pnpm install` → `typecheck` → `oxlint` → `vitest` → `build` → **`license-check`** (see below). On PR branches — fast feedback (oxlint+vitest); on main — the full pipeline plus the package build.
+- **Workflow 2 — Release (on a `v*` tag):** the full pipeline → build `.vsix` via vsce → publish to the **VS Code Marketplace** and **Open VSX** (2 artifacts) → a GitHub Release with the `.vsix` + an auto-CHANGELOG. The version comes from the git tag, with no manual bump. Publishing/release — owner only (trial approval, not contributors).
+- **Workflow 3 — a PR-generator sync from upstream** — **not needed** (we do not work with or sync from upstream, §0.4); upstream is only an archive reference for attribution.
+- **License-check**: `license-checker-rseidelsohn` — scanning npm dependencies against an **MIT/Apache-2.0/BSD-2/BSD-3/ISC** allowlist; an explicit allowance for specific exceptions; **fail on copyleft** (GPL/AGPL/LGPL) and on undefined licenses. Dev dependencies go in a separate list. Only the allowlist goes into the prod bundle.
+- **Pre-approved dependencies (owner's decision, 2026-09-25)**: **lodash** (MIT) and **luxon** (MIT) — allowed without separate approval if a task requires them. Both pass the current license-check allowlist.
+- **Dependency proposals**: the assistant may propose other tools/libraries if they meet the licensing requirements (MIT/Apache-2.0/BSD/ISC; fail on copyleft) — the owner reviews each proposal before it is added.
+- **Quality enforcement**: required status checks on main (including license-check); **Dependabot** for dependencies; **CodeQL** security scan (free for public repos).
+- **Secrets in CI**: OVSX_TOKEN and the like — through GitHub Secrets, never in code/logs; CI has no sensitive data (which is why the file log is safe — §9.1.2). Check for accidental secrets in the diff.
 
-### 9.1.6 Sprint 1: рефакторинг «файлов-свалок» + анализ архитектуры (включено в Sprint 1, решение владельца 2026-09-25)
+### 9.1.6 Sprint 1: refactoring "dump files" + architecture analysis (included in Sprint 1, owner's decision 2026-09-25)
 
-**Принцип владельца**: в проекте не должно быть «файлов-свалок» — крупные multi-purpose модули делятся по назначению. Разрешены **namespace-и** для красивой организации кода (решение владельца 2026-09-25).
+**Owner's principle**: the project must not have "dump files" — large multi-purpose modules get split by purpose. Namespaces are allowed for tidying up code organisation (owner's decision 2026-09-25).
 
-**Задача 1 — Анализ и планирование архитектуры** (первые дни спринта, до кода):
-- Ревизия всех модулей `src/` (core/, vscode/, webview/, overview/, chat/) на предмет «свалок»: файлы >300 строк с >10 экспортами разного назначения.
-- Целевая структура: модули по ответственности, namespace/баррели для публичных поверхностей, классы+DI для stateful-частей.
-- Результат: документ-модуль-карта (в план, раздел §3 дополнение) + список файлов-свалок с планом разделения.
-- Явные кандидаты: `src/core/accessInfo.ts` (~416 строк, 20+ exported-функций).
+**Task 1 — Architecture analysis and planning** (the first days of the sprint, before code):
+- Review every module under `src/` (core/, vscode/, webview/, overview/, chat/) for "dumps": files over 300 lines with more than 10 exports of differing purposes.
+- Target structure: modules by responsibility, namespaces/barrels for public surfaces, classes + DI for stateful parts.
+- Result: a module-map document (into the plan, an addition to §3) + a list of dump files with a plan for splitting them.
+- Explicit candidates: `src/core/accessInfo.ts` (~416 lines, 20+ exported functions).
 
-**Задача 2 — Рефакторинг accessInfo.ts** (после задачи 1, по её карте):
+**Task 2 — Refactoring accessInfo.ts** (after task 1, per its map):
 
-**Файл**: `src/core/accessInfo.ts` (~416 строк, 20+ exported-функций) — вырос в свалку утилит в одном модуле. План рефакторинга:
+**File**: `src/core/accessInfo.ts` (~416 lines, 20+ exported functions) — it grew into a utility dump in a single module. The refactoring plan:
 
-1. **Разделить на модули по назначению** (основная работа, не lodash):
-   - `core/redact.ts` — `redactEndpoint`, `redactPlainSecrets` (security-утилиты, самодостаточные + тестируемые)
+1. **Split into modules by purpose** (the main work, not lodash):
+   - `core/redact.ts` — `redactEndpoint`, `redactPlainSecrets` (security utilities, self-contained and testable)
    - `core/extract.ts` — `extractAccessInfoFromConfig`, `extractAccessInfoFromCli`, `extractMcpServers`, `extractTools`, `scanAccessInfo`
    - `core/format.ts` — `formatAccessSummaryShort`, `formatAccessSummaryMarkdown`, `formatList`, `formatNamedEntry`, `summarizeKeySources`
-   - `core/util.ts` — мелкие предикаты/хелперы: `isRecord`, `asString`, `isUrl`, `looksLikePath`, `uniqueList`, `isKeyIndicator`, `extractEnvVarName`, `getEnvVarFromRecord`, `getFilePathFromRecord`, `createEmptyAccessInfo`
-2. **lodash-замены** (предодобрен, MIT): `uniqueList` → `_.uniq`, `asString` → `_.toString`/`isString`, `getEnvVarFromRecord`/`getFilePathFromRecord`/`extractMcpServers` → `_.get`/`_.pick`/`_.map` комбинации. Чистые пересказы lodash — утилита ради утилиты.
-3. **Правила при рефакторинге**: описания функций — на уровне функций (USER.md директива), без пер-строчных комментариев; классы+DI для модулей с состоянием; ре-экспорт из `accessInfo.ts` сохраняется до миграции импортов (без ломающих PR).
-4. **Оценка**: S (пол-спринта), можно волнами: (а) extract в core/redact.ts + lodash-замены; (б) разъезд format/extract/util с ре-экспортами; (в) удаление shim-файла.
+   - `core/util.ts` — small predicates/helpers: `isRecord`, `asString`, `isUrl`, `looksLikePath`, `uniqueList`, `isKeyIndicator`, `extractEnvVarName`, `getEnvVarFromRecord`, `getFilePathFromRecord`, `createEmptyAccessInfo`
+2. **lodash replacements** (pre-approved, MIT): `uniqueList` → `_.uniq`, `asString` → `_.toString`/`isString`, `getEnvVarFromRecord`/`getFilePathFromRecord`/`extractMcpServers` → `_.get`/`_.pick`/`_.map` combinations. Pure lodash paraphrases are a utility for its own sake.
+3. **Rules during the refactoring**: function descriptions at the function level (a USER.md directive), no per-line comments; classes + DI for modules with state; re-exports from `accessInfo.ts` are preserved until the imports are migrated (without breaking PRs).
+4. **Estimate**: S (half a sprint), possible in waves: (a) extract into core/redact.ts + lodash replacements; (b) the divergence of format/extract/util with re-exports; (c) deleting the shim file.
 
-### 9.1.7 Sprint 3-кандидат: общий модуль markdown/текстовых утилит (предложение владельца, 2026-09-26)
+### 9.1.7 Sprint 3 candidate: a shared markdown/text utility module (owner's proposal, 2026-09-26)
 
-**Факты**: дублирования сейчас нет — `renderMarkdown`/`escapeHtml`/`escapeGlob` живут только в `webview/viewMessaging.ts`; `accessInfo/format.ts` — генерация markdown-отчётов (domain-форматирование, не рендеринг). Но оба слоя работают с markdown.
+**Facts**: there is no duplication today — `renderMarkdown`/`escapeHtml`/`escapeGlob` live only in `webview/viewMessaging.ts`; `accessInfo/format.ts` is markdown report generation (domain formatting, not rendering). But both layers work with markdown.
 
-**План (S). Решение владельца 2026-09-26: делать при следующем касании этих файлов, отдельный спринт не выделять:**
-- Вынести `core/markdown.ts` (или `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitize + escapeHtml-fallback), `escapeHtml`, `escapeGlob` — чистые text/markdown-утилиты без vscode-зависимостей.
-- `viewMessaging.ts` импортирует оттуда; `accessInfo/format.ts` НЕ переносить (это domain-отчёт, перемещение создаст новую мини-свалку).
-- Если accessInfo понадобится HTML-экранирование — брать из `core/markdown.ts`.
-- Остатки Sprint 3 из ревизии Архитектора: `core/frames.ts` (parseFrame + мапперы из gatewayChatService/contract), разъезд тестов accessInfo на подмодули.
-
----
-
-## 10. Персональный контекст владельца
-
-Исходный раздел исключён из репозитория намеренно: он сам помечен как «не часть продукта»
-и содержит данные конкретной машины (NAS, порты, проприетарные конфигурации 1С).
-Полная версия живёт вне репозитория.
+**Plan (S). Owner's decision 2026-09-26: do it on the next touch of these files, do not allocate a separate sprint:**
+- Move out `core/markdown.ts` (or `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitize + the escapeHtml fallback), `escapeHtml`, `escapeGlob` — pure text/markdown utilities with no vscode dependency.
+- `viewMessaging.ts` imports from there; do NOT move `accessInfo/format.ts` (that is a domain report; moving it would create a new mini-dump).
+- If accessInfo ever needs HTML escaping — take it from `core/markdown.ts`.
+- Sprint 3 leftovers from the Architect's review: `core/frames.ts` (parseFrame + mappers from gatewayChatService/contract), splitting the accessInfo tests per submodule.
 
 ---
 
-## Аудит спринта 1 (проверка по коду, 2026-10-03)
+## Sprint 1 audit (checked against the code, 2026-10-03)
 
-Сверка §9.1.6 с фактическим состоянием репозитория, а не с планом.
+§9.1.6 checked against the repository's actual state, not against the plan.
 
-### Задача 1 — анализ и планирование архитектуры: **частично**
+### Task 1 — architecture analysis and planning: **partial**
 
-Целиком закрыто:
-- `src/extension.ts` — **1 строка, 58 байт**. Монолит ~72 КБ декомпозирован.
-- `src/chat/getWebviewContent.ts` — **файла нет**. Монолит ~117 КБ вынесен в `src/webview/content-js.ts` / `content-css.ts`.
+Fully covered:
+- `src/extension.ts` — **1 line, 58 bytes**. The ~72 KB monolith was decomposed.
+- `src/chat/getWebviewContent.ts` — **the file is gone**. The ~117 KB monolith was moved into `src/webview/content-js.ts` / `content-css.ts`.
 
-Не закрыто:
-- **Модуль-карта как артефакт отсутствует.** §9.1.6 требовал результатом «документ-модуль-карту + список файлов-свалок с планом разделения». Ни такого документа, ни раздела в этом плане нет — до сих пор присутствует только разделение на `core/` / `vscode/` / `webview/`.
-- **Файлы-свалки ниже порога не выявлены.** Порог задачи — «>300 строк с >10 экспортами разного назначения». Построчный замер даёт:
+Not covered:
+- **The module map as an artifact is missing.** §9.1.6 required the result to be "a module-map document + a list of dump files with a plan for splitting them". Neither that document nor a section of this plan exists — to this day there is only the `core/` / `vscode/` / `webview/` split.
+- **Dump files below the threshold were never identified.** The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". A line count gives:
 
-| Файл | Строк | Оценка |
+| File | Lines | Assessment |
 |---|---|---|
-| `src/webview/ChatViewProvider.ts` | 2940 | самый крупный кандидат |
-| `src/webview/content-js.ts` | 2774 | сгенерированный UI, не ручной код |
-| `src/core/gatewayChatService.ts` | 2307 | протокол + транспорт в одном модуле |
-| `src/webview/content-css.ts` | 1276 | сгенерированный UI |
-| `src/chat/ChatService.ts` | 801 | выше порога |
-| `src/webview/viewMessaging.ts` | 781 | выше порога |
-| `src/vscode/commands/setup.ts` | 579 | кандидат |
-| `src/core/gatewayConfig.ts` | 564 | кандидат |
+| `src/webview/ChatViewProvider.ts` | 2940 | the largest candidate |
+| `src/webview/content-js.ts` | 2774 | generated UI, not hand-written code |
+| `src/core/gatewayChatService.ts` | 2307 | protocol + transport in one module |
+| `src/webview/content-css.ts` | 1276 | generated UI |
+| `src/chat/ChatService.ts` | 801 | above the threshold |
+| `src/webview/viewMessaging.ts` | 781 | above the threshold |
+| `src/vscode/commands/setup.ts` | 579 | candidate |
+| `src/core/gatewayConfig.ts` | 564 | candidate |
 
-`extension.ts` и `getWebviewContent.ts`, названные явно, из монолитов вышли; остальные выросли уже **после** постановки задачи, поэтому в её скоуп и не попадали.
+`extension.ts` and `getWebviewContent.ts`, named explicitly, did exit the monolith list; the others grew **after** the task was set, so they never fell into its scope.
 
-### Задача 2 — рефакторинг `accessInfo.ts`: **закрыта**
+### Task 2 — refactoring `accessInfo.ts`: **closed**
 
-- Монолита `src/core/accessInfo.ts` **нет**; каталог `src/core/accessInfo/` содержит `redact.ts`, `extract.ts`, `format.ts`, `util.ts`, `types.ts`, `index.ts`.
-- Пункт (а) — extract + lodash-замены: `extract.ts` импортирует `compact, get, map` из `lodash-es`; `util.ts` — `sortBy, uniq`. Собственные пересказы lodash удалены.
-- Пункт (б) — разъезд по модулям: выполнен, ре-экспорт живёт в `index.ts`.
-- Пункт (в) — удаление shim-файла: shim убран, публичная поверхность переехала в каталог с баррелом.
-- Импорты мигрированы не полностью: 4 места импортируют баррел `accessInfo`, 4 — подмодули напрямую. Это допустимо планом («ре-экспорт сохраняется до миграции импортов, без ломающих PR»), но означает, что миграция не завершена как косметика.
+- The `src/core/accessInfo.ts` monolith is **gone**; the directory `src/core/accessInfo/` contains `redact.ts`, `extract.ts`, `format.ts`, `util.ts`, `types.ts`, `index.ts`.
+- Wave (a) — extract + lodash replacements: `extract.ts` imports `compact, get, map` from `lodash-es`; `util.ts` — `sortBy, uniq`. Own lodash paraphrases removed.
+- Wave (b) — splitting by module: done, with the re-export living in `index.ts`.
+- Wave (c) — deleting the shim file: the shim is gone, the public surface moved into the directory with a barrel.
+- Imports are not fully migrated: 4 sites import the `accessInfo` barrel, 4 import submodules directly. The plan explicitly permits this ("re-exports are preserved until the imports are migrated, without breaking PRs"), but it means the migration is not finished as a formality.
 
-### Вывод
+### Conclusion
 
-Спринт 1 закрыт по задаче 2 и по названным монолитам задачи 1. Не закрыт **артефакт задачи 1** — модуль-карта и перечень свалок. Следующий логичный шаг: оформить модуль-карту по факту нынешней структуры и решить, что из таблицы выше берётся в работу (кандидаты — `gatewayChatService.ts` и `ChatViewProvider.ts`).
+Sprint 1 is closed for task 2 and for the named monoliths of task 1. What is **not** closed is the artifact of task 1 — the module map and the dump-file inventory. The next sensible step: write the module map from the current structure and decide what from the table above goes into the work (the candidates are `gatewayChatService.ts` and `ChatViewProvider.ts`).
 
-Раздел §9.1.7 (Sprint 3-кандидат, `core/markdown.ts`) не входит в спринт 1 и не выполнялся — по решению владельца от 2026-09-26 делается при следующем касании файлов.
+§9.1.7 (Sprint 3 candidate, `core/markdown.ts`) is not part of Sprint 1 and was not performed — by the owner's decision of 2026-09-26 it is done on the next touch of the files.
+
+---
+
+## 10. Owner's personal context (not part of the product)
+
+The original section is intentionally excluded from the repository: it is itself marked "not part of the product" and contains data about a specific machine (a NAS, ports, proprietary 1C configurations). The full version lives outside the repository.
