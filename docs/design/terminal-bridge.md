@@ -26,16 +26,16 @@ Every component exists in the Gateway already: the node-host role and the exec-a
 
 ### Execution and output
 
-- **T9.** Commands run in a visible VS Code terminal (`window.createTerminal` plus the shell integration API for structured output). The user sees the command and its output in real time.
+- **T9.** Commands run in a visible VS Code terminal. The user sees the command and its output in real time.
 - **T10.** stdout/stderr stream back to the agent as the tool result. Long output is truncated with the **tail** kept.
-- **T11.** Where shell integration is unavailable, fall back to plain output capture. Windows (PowerShell) is tested separately.
+- **T11.** Output capture must be implementable without relying on shell integration, because VS Code exposes a terminal's output (`TerminalShellExecution.read()`) only through it. The bridge therefore runs each command as an **extension-owned process** and mirrors its output into a visible terminal through a `Pseudoterminal` (`window.createTerminal({ pty })`); the process's own stdout/stderr feed T10. Shell integration may add structure (exit codes, command boundaries) where it is available, but is never required. Windows (PowerShell) is tested separately before P1-0 ships.
 
 ## Mechanism
 
 1. **Executor registration.** On connect, the extension opens the node-role socket (T1) and declares exec capability (caps/commands/permissions, per the protocol's handshake docs).
 2. **Agent request.** The agent calls exec through the Gateway's standard exec-approvals; the Gateway routes it to the extension's node.
 3. **Approval UX.** A prompt or indicator "the agent wants to run: …" with Run once / Always allow / Deny, applying T3–T8.
-4. **Execution** per T9–T11, with output returned per T10.
+4. **Execution** in an extension-owned process mirrored into a pseudoterminal, per T9–T11, with output returned per T10.
 
 ## Stages
 

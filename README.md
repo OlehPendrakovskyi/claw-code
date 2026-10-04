@@ -62,7 +62,9 @@ A VS Code companion for [OpenClaw](https://docs.openclaw.ai). Chat with the agen
 
 ## Install
 
-Until the first Marketplace / Open VSX release, build and install from source:
+Until the first Marketplace / Open VSX release, build and install from source. You need **git**, **Node.js 24** (the version CI builds with) and **pnpm** (`corepack enable` provides it), and the `code` or `cursor` command on your `PATH`.
+
+On Linux, macOS, or Windows with Git Bash or WSL:
 
 ```sh
 git clone https://github.com/OlehPendrakovskyi/claw-code.git
@@ -72,6 +74,15 @@ scripts/install-local.sh
 ```
 
 The script compiles the extension, packages a `.vsix` and installs it into `cursor` or `code`, whichever is on your `PATH`. Then reload the window.
+
+In PowerShell, or any shell without Bash, run the same steps by hand:
+
+```sh
+pnpm install
+pnpm run compile
+pnpm dlx @vscode/vsce package --no-dependencies -o claw-code.vsix
+code --install-extension claw-code.vsix --force
+```
 
 ## Connect to your Gateway
 
@@ -143,7 +154,8 @@ Settings that run commands, carry the token or change what the agent may do are 
 
 ## Privacy
 
-- No telemetry. Claw Code talks only to the Gateway you configure.
+- No telemetry. On the Gateway transport, Claw Code talks only to the Gateway you configure.
+- On the acpx fallback, your prompts and attached context go to whichever agent and model provider your local `acpx` is configured to use.
 - The Gateway token and device identity live in VS Code's SecretStorage.
 
 ## Troubleshooting
@@ -159,6 +171,8 @@ Settings that run commands, carry the token or change what the agent may do are 
 Logs are in the **Output** panel under the OpenClaw channels.
 
 ## Development
+
+Prerequisites: git, Node.js 24 and pnpm, as for [Install](#install).
 
 ```sh
 pnpm install

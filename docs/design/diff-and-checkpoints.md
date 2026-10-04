@@ -48,8 +48,8 @@ These are the binding rules. Each is stated once here; the roadmap and other doc
 
 ### Checkpoints
 
-- **C1.** Before each run with file effects, take a snapshot; the checkpoint unit is a wave.
-- **C2.** Git snapshot: `git stash create` (it does not touch the index), with the SHA stored in the session's checkpoint registry. On a clean tree it prints nothing and exits 0, so the checkpoint always records an explicit baseline instead: the HEAD commit, or the index tree from `git write-tree` when the index differs from HEAD. With an unborn HEAD (fresh `git init`) `git write-tree` still records the current index (the empty tree before the first commit), so every git repository has a baseline and needs no shadow copy.
+- **C1.** Take the snapshot **before every run that can edit files** — any run whose mode or agent permits writes — not when the first file-effect toolCall arrives: by then the write has already happened (B2). A run that ends without file effects simply discards its snapshot. Within a run, the checkpoint unit is a wave.
+- **C2.** Git snapshot: `git stash create` (it does not touch the index), with the SHA stored in the session's checkpoint registry. On a clean tree it prints nothing and exits 0, so the checkpoint always records an explicit baseline instead: the HEAD commit, or the index tree from `git write-tree` when the index differs from HEAD. With an unborn HEAD (fresh `git init`) `git stash create` cannot run and `git write-tree` records only the **index** (the empty tree when nothing is staged). A file staged and then edited again before the first commit has worktree bytes that neither captures, so in an unborn repository the checkpoint additionally shadow-copies (as in C6) every tracked path whose worktree contents differ from the index. With that addition every git repository has a complete baseline.
 - **C3.** Preserve the pre-run **index tree** and restore index and worktree separately. `git checkout <stash> -- .` updates both and turns pre-existing unstaged edits into staged ones.
 - **C4.** Rewind touches only the agent's paths — `git checkout <snapshot> -- <agent-touched paths>`, never `-- .` — and each path goes through R2 against the per-path post-wave contents the checkpoint recorded at wave close (A1–A3).
 - **C5.** `git stash create` does not cover untracked files, and a checkout does not remove files created after the snapshot. The checkpoint therefore also records the set of untracked / new / deleted paths **and** the contents plus mode and mtime of pre-run untracked files, tracks the files the run creates, and restores them under the same R2 guard.
@@ -58,6 +58,7 @@ These are the binding rules. Each is stated once here; the roadmap and other doc
 
 ## Mechanism
 
+0. **Pre-run snapshot.** When a run that can edit files starts, take the checkpoint per C1–C6 before sending the prompt.
 1. **Interception.** The event reducer recognises a toolCall with a file effect (the `write` / `edit` / `apply_patch` class). Concrete tool names come from discovery and the agent runtime; the mapping lives in the protocol contract layer.
 2. **Location.** Resolve per P1–P4. A file on a NAS that the window cannot reach goes to step 5.
 3. **Rendering.** `vscode.diff` with the left side served by an `openclawOriginal:` content provider holding the before-state (B1–B3) and the right side the working file.

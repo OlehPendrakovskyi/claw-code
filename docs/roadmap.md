@@ -30,7 +30,7 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b
 ## 2. Community requirements
 
 1. **Zero-config connection.** At minimum, "enter the gateway URL + token" onboarding; later, gateway discovery on the local network (Bonjour), which users can disable via env (`OPENCLAW_DISABLE_BONJOUR`). **Transport security:** plaintext `ws://` is acceptable only for a loopback host. A non-loopback gateway must use `wss://` or a secure tunnel, because the token travels in the `auth` object of the first `connect` RPC. Today `GatewayConfigService.sendsTokenInCleartext` classifies the URL and `ChatServiceFactory.warnIfCleartext` (`chatServiceFactory.ts:164,302-309`) shows a one-off warning and connects anyway — enforcement is **SEC-1**.
-2. **Private by default.** The token is kept in SecretStorage; nothing leaves the machine except the WebSocket to the user's own gateway; no telemetry. Logging red lines: [engineering.md §3](engineering.md#3-logging).
+2. **Private by default.** The token is kept in SecretStorage; no telemetry. On the Gateway transport nothing leaves the machine except the WebSocket to the user's own gateway. On the acpx transport, prompts and attached context go to whatever agent and model provider the local CLI is configured with — the extension does not control that path, and the README says so. Logging red lines: [engineering.md §3](engineering.md#3-logging).
 3. **Dual transport.** Gateway WebSocket (primary) and the local acpx CLI (fallback), selected by `openclaw.gateway.transport` (`gateway | acpx | auto`). The acpx path keeps existing users of the original extension working.
 4. **Standalone project.** One repository, one PR flow — [engineering.md §5](engineering.md#5-pr-policy).
 5. **English UI, ready for localisation.** UI strings gathered in one module.
@@ -91,6 +91,8 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | ENG-3 | Decide the transport layout: keep `gatewayChatService.ts` + `gatewayProtocol/`, or move to the `core/gateway/GatewayClient.ts` target | v1 | Open decision | — | [engineering.md §2](engineering.md#2-code-structure) |
 | ENG-4 | CodeQL scanning | R0 | Todo | S | |
 | ENG-5 | Module map and splitting plan (Sprint 1 task 1 artifact) | v1 | Partial | S | Top-level layout is in [engineering.md §2](engineering.md#current-layout) |
+| ENG-7 | Move the VS Code-bound modules out of `core/` (`configIO.ts`, `gatewayConfig.ts`) or record them as exceptions | v1 | Todo | S | [engineering.md §2](engineering.md#2-code-structure) |
+| ENG-8 | Manual test plan for the Gateway-era features (the upstream `TESTING.md` was removed with the old docs) | R0 | Todo | S | |
 | ENG-6 | Finish `accessInfo`: replace or keep (and record why) `asString` / `getEnvVarFromRecord` / `getFilePathFromRecord`; migrate imports to one style | v1 | Partial | S | [Sprint 1 audit](audits/2026-10-03-sprint1.md) |
 
 ### P0 — the MVP: a useful chat to the Gateway
@@ -155,7 +157,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | Milestone | Scope | Estimate | Exit criteria |
 | --- | --- | --- | --- |
 | **MVP** — chat to the Gateway | P0-1…P0-6, P1-8 | Shipped in 0.2.x, except the P0-5 build-outs | Connect by token with reconnect; choose an agent; replies stream; tool calls grouped; stop works; history restores, including after a window restart; slash commands and context work on both transports; acpx selectable when the Gateway is down; unit tests for the transport (mock WS), reducer and adapters |
-| **R0** — public release | REL-1…REL-6, SEC-1, SEC-2, ENG-4, P0-5 build-outs | ≈ 1–2 weeks | Installs from the VS Code Marketplace and Open VSX under the owner's publisher; README covers topologies A–C; remote `ws://` is blocked or confirmed; no prompt text in any log; CI, licence check and CodeQL green |
+| **R0** — public release | REL-1…REL-6, SEC-1, SEC-2, ENG-4, ENG-8, P0-5 build-outs | ≈ 1–2 weeks | Installs from the VS Code Marketplace and Open VSX under the owner's publisher; README covers topologies A–C; remote `ws://` is blocked or confirmed; no prompt text in any log; CI, licence check and CodeQL green |
 | **v1** — editor integration | P1-0, P1-3 first (high value, contained risk); then P1-1, P1-2, P1-4, P1-6 steering, P1-7, A-1…A-7, ENG-1, ENG-2, ENG-3 | ≈ 6–8 weeks | An agent edit in a local repo shows a correct diff (or says the before-state is unavailable); every run records a checkpoint; plan → edit → approve → execute in one session; the agent runs an approved command locally and reads its output; two sessions run in parallel tabs with status dots |
 | **v1.x** — undo | P1-1b, P1-4b | ≈ 2 weeks | Reject and Rewind restore the pre-run state, and refuse with a force option when the user has edited the file since |
 | **v2** — polish and ecosystem | P2-1…P2-7, P1-1c, P1-5 focus view, A-10, C-1, NAS checkpoints via node exec, `/tasks` | ≈ 3–4 weeks | Per-change review with Accept/Reject at cursor; generated session titles; history groups persist per workspace; a deep link opens a tab with a prefilled prompt; the webview passes a screen-reader walkthrough |
@@ -170,7 +172,7 @@ Each milestone also requires: CI green on all three OSes, CHANGELOG updated, and
 | VS Code forks (VSCodium, Cursor, …) | Target, via Open VSX | Not yet tested; to be checked during R0 |
 | OpenClaw Gateway protocol | v4 (OpenClaw 2026.9.x) | `openclaw.gateway.protocolVersion`; new versions are added as adapters |
 | acpx fallback | `acpx` on `PATH` | |
-| Operating systems | Linux, macOS, Windows | All three in the CI matrix; Terminal Bridge on Windows tested separately (PowerShell) |
+| Operating systems | Linux, macOS, Windows | All three in the CI matrix. When P1-0 ships, the Terminal Bridge must be tested on Windows (PowerShell) as a release requirement |
 | Remote | SSH, WSL, Tunnel | Topology A |
 
 ## 9. Out of scope

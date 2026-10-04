@@ -24,14 +24,14 @@ No new runtimes, and no root bundler or monorepo layer on top.
 - **The main unit of code is a class** (owner's decision): services and business logic are classes with explicit constructor-injected dependencies (logger, client, …), not utility functions and not global singletons. Plain functions are acceptable as small stateless helpers.
 - **Namespaces are allowed** for organising code (decision 2026-09-25).
 - **No "dump files"**: a module over 300 lines with more than 10 exports serving unrelated purposes gets split by responsibility. The current candidates are in the [Sprint 1 audit](audits/2026-10-03-sprint1.md).
-- **`core/` stays independent of VS Code**, so the runtime (gateway, deduplication, reducer) is testable without a VS Code host; `vscode/` is thin adapters.
+- **`core/` is meant to be independent of VS Code**, so the runtime (gateway, deduplication, reducer) is testable without a VS Code host; `vscode/` is thin adapters. Two exceptions exist today: `core/configIO.ts` and `core/gatewayConfig.ts` import `vscode` (the latter handles SecretStorage directly). Moving them, or keeping them as recorded exceptions, is **ENG-7**.
 
 ### Current layout
 
 | Path | Contents |
 | --- | --- |
 | `src/extension.ts` | One-line bootstrap; activation lives in `src/vscode/` |
-| `src/core/` | Runtime without VS Code: `gatewayChatService.ts` (the Gateway transport), `gatewayProtocol/` (`adapter.ts`, `registry.ts`, `deviceIdentity.ts`, versioned `v4/` schemas), `gatewayConfig.ts` (settings + SecretStorage), `accessInfo/`, helpers |
+| `src/core/` | Runtime without VS Code: `gatewayChatService.ts` (the Gateway transport), `gatewayProtocol/` (`adapter.ts`, `registry.ts`, `deviceIdentity.ts`, versioned `v4/` schemas), `gatewayConfig.ts` (settings + SecretStorage — imports `vscode`, see ENG-7), `accessInfo/`, helpers |
 | `src/chat/` | `ChatService.ts` — the acpx (local CLI) backend |
 | `src/vscode/` | Activation, command registry, config |
 | `src/webview/` | `ChatViewProvider.ts`, the webview script and styles (`content-js.ts`, `content-css.ts`), webview↔extension messaging, `chatServiceFactory.ts` |
