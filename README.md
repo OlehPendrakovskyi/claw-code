@@ -79,6 +79,8 @@ The script compiles the extension, packages a `.vsix` and installs it into `curs
 In PowerShell, or any shell without Bash, run the same steps by hand:
 
 ```sh
+git clone https://github.com/OlehPendrakovskyi/claw-code.git
+cd claw-code
 pnpm install
 pnpm run compile
 pnpm dlx @vscode/vsce package --no-dependencies -o claw-code.vsix
