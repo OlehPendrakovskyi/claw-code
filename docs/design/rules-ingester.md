@@ -10,7 +10,7 @@ Projects carry their conventions in standard files — `AGENTS.md`, `CLAUDE.md`,
 
 The project key is resolved in this order:
 
-1. **Git remote URL** (normalised `origin`) — the primary key; it survives renames and works when the repo is cloned elsewhere.
+1. **Git remote, as a credential-free canonical key** — the primary key; it works when the repository is cloned to another folder or machine. The raw remote URL is never stored or sent, because it can carry credentials (`https://user:token@host/repo.git`). The key is derived as: drop the userinfo, query and fragment; reduce `ssh://` and scp-style (`git@host:owner/repo`) forms to the same `host/owner/repo` shape; lower-case the host; strip a trailing `.git`. The result is, for example, `github.com/owner/repo`. A URL-derived key does **not** survive a repository rename or transfer; where rename stability matters, the user can opt in to an immutable repository ID provided by the host (for example GitHub's repository node ID), and the alias below remains the manual way to re-attach rules to a renamed repository.
 2. **Explicit alias** (`project: <name>`) — a manual override, required for non-git projects (proprietary configurations, legacy repos).
 3. **Path / folder name** — the fallback when there is no git.
 

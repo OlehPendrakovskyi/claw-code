@@ -66,11 +66,11 @@ The Gateway and the agent's workspace often live on one host (Docker server, NAS
 
 | Topology | When | What works |
 | --- | --- | --- |
-| **A. Repo next to the Gateway, opened with VS Code Remote (SSH / WSL / Tunnel)** | The recommended path for code | Files are local to the window; diffs and checkpoints work normally |
-| **B. Repo on the Gateway host, window local, no Remote** | Remote is not an option | Reads and previews via a paired node (`dir.list` / `file.fetch` through Gateway RPC); edits go through the agent; diffs are textual |
+| **A. Repo next to the Gateway, opened with VS Code Remote (SSH / WSL / Tunnel)** | The recommended path for code | Files are local to the window, so chat context and attachments work today; diffs and checkpoints will work here once P1-1 and P1-4 ship |
+| **B. Repo on the Gateway host, window local, no Remote** | Remote is not an option | Today: the agent edits files on the Gateway host and the window sees them only as chat text. Planned: reads and previews via a paired node (`dir.list` / `file.fetch` through Gateway RPC) and textual diffs (P1-1) |
 | **C. No shared filesystem** | Closed environments, code the agent cannot reach | The extension inlines text into the prompt (already supported); the agent returns a patch or text, applied by hand |
 
-Topology A is optimised for and needs nothing extra; B is the textual-diff fallback of P1-1; C already works. The README documents all three.
+Topology A is the one optimised for and needs nothing extra; B gets the paired-node reads and textual-diff fallback of P1-1; C already works. The README documents all three.
 
 ## 6. Feature status
 

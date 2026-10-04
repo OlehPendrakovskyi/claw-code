@@ -113,7 +113,7 @@ The first time, the Gateway may ask you to approve this device (pairing). Approv
 | --- | --- |
 | OpenClaw: Open Chat | Focus the chat view |
 | OpenClaw: Pop Out Chat | Move the chat into an editor tab |
-| OpenClaw: New Chat Session | Start a new conversation |
+| OpenClaw: New Chat Session | Open a new blank thread in the panel. On the Gateway it uses the default session, so it continues that session's context; pick another session with **Pick Agent Session** for separate context |
 | OpenClaw: Pick Agent Session | Choose the Gateway agent session to talk to |
 | OpenClaw: Connect to Gateway | Save the Gateway token and connect |
 | OpenClaw: Reset Gateway Device Identity | Forget this device's pairing and create a new identity |
