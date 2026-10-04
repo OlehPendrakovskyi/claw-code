@@ -10,20 +10,19 @@ describe('errorMessage', () => {
         expect(errorMessage({ message: 'socket hang up', code: 'ECONNRESET' })).toBe('socket hang up');
     });
 
-    it('serialises any other object instead of rendering [object Object]', () => {
-        expect(errorMessage({ code: 'EACCES', path: '/x' })).toBe('{"code":"EACCES","path":"/x"}');
+    it('describes any other object by its keys, never its values', () => {
+        const message = errorMessage({ code: 'EACCES', token: 'abc123' });
+        expect(message).toBe('Non-Error value (keys: code, token)');
+        expect(message).not.toContain('abc123');
     });
 
-    it('caps a large serialised value', () => {
-        const message = errorMessage({ data: 'x'.repeat(1000) });
-        expect(message.length).toBe(301);
-        expect(message.endsWith('…')).toBe(true);
+    it('caps the listed keys', () => {
+        const many = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i]));
+        expect(errorMessage(many)).toBe('Non-Error value (keys: k0, k1, k2, k3, k4, k5, k6, k7, … 2 more)');
     });
 
-    it('falls back to String() for values JSON cannot represent', () => {
-        const cyclic: Record<string, unknown> = {};
-        cyclic.self = cyclic;
-        expect(errorMessage(cyclic)).toBe('[object Object]');
+    it('handles empty objects and primitives', () => {
+        expect(errorMessage({})).toBe('Non-Error value');
         expect(errorMessage(undefined)).toBe('undefined');
         expect(errorMessage(42)).toBe('42');
     });

@@ -552,6 +552,24 @@
             "file": "src/__test__/c.test.ts",
             "line": "const mkdtempSync = (p: string) => p; mkdtempSync('/tmp/x-');",
             "expect": null
+        },
+        {
+            "name": "R36: exec member assigned from a require expression",
+            "file": "src/b.ts",
+            "line": "const run = require('child_process').exec;",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec member assigned from a namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.exec; run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile member assigned from a namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.execFile; run(file, args);",
+            "expect": null
         }
     ]
 }

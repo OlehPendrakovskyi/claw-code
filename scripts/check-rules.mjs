@@ -58,6 +58,15 @@ function moduleBindings(source, moduleName) {
                 }
             }
         }
+        // `const run = cp.exec` or `const run = require('child_process').exec`: a member taken from the module.
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+            const member = unwrap(node.initializer);
+            const object = memberObject(member);
+            if (object !== undefined && lastName(member) !== undefined &&
+                ((ts.isIdentifier(unwrap(object)) && namespaces.has(unwrap(object).text)) || pattern.test(loadedModule(object) ?? ''))) {
+                members.set(node.name.text, lastName(member));
+            }
+        }
         const loaded = node.initializer ? unwrap(node.initializer) : undefined;
         if (ts.isVariableDeclaration(node) && loaded && ts.isCallExpression(loaded) &&
             ((ts.isIdentifier(loaded.expression) && loaded.expression.text === 'require') || loaded.expression.kind === ts.SyntaxKind.ImportKeyword) &&
@@ -331,7 +340,8 @@ const CHECKS = [
             // undefined: `true`, a shell path such as '/bin/bash', or a variable.
             (isShellOption(node) && isSpawnOptions(node.parent, context)) ||
             SHELL_EXECUTORS.has(calledExport(node, context.childProcess) ?? '') ||
-            importsShellExecutor(node),
+            importsShellExecutor(node) ||
+            (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && SHELL_EXECUTORS.has(context.childProcess.members.get(node.name.text) ?? '')),
     },
     {
         rule: 'R43',

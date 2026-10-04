@@ -2,16 +2,16 @@
  * Error handling utilities for Claw Code.
  */
 
-/** Longest message produced for a value that is not an Error, so a large thrown object stays readable. */
-const MAX_NON_ERROR_LENGTH = 300;
+/** At most this many key names are listed for a non-Error value. */
+const MAX_LISTED_KEYS = 8;
 
 /**
  * Extract a readable message from an unknown error value.
  *
- * An Error gives its `.message` and a string is returned as is. A record with a string `message`
- * gives that message. Any other value is serialised as JSON, capped at MAX_NON_ERROR_LENGTH
- * characters, rather than rendered as `[object Object]`. Callers that show the result to a user
- * or a log still redact it.
+ * An Error gives its `.message` and a string is returned as is; so does the string `message` of a
+ * record that carries one. Any other object is described by its key names only, never its values
+ * (`Non-Error value (keys: code, path)`), because callers log and show this text and a thrown
+ * object can hold credentials or prompt text. Other values use String().
  */
 export function errorMessage(err: unknown): string {
   if (err instanceof Error) {
@@ -25,14 +25,10 @@ export function errorMessage(err: unknown): string {
     if (typeof message === 'string' && message.length > 0) {
       return message;
     }
-    try {
-      const json = JSON.stringify(err);
-      if (json !== undefined) {
-        return json.length > MAX_NON_ERROR_LENGTH ? `${json.slice(0, MAX_NON_ERROR_LENGTH)}…` : json;
-      }
-    } catch {
-      // A cyclic or otherwise unserialisable value falls through to String().
-    }
+    const keys = Object.keys(err);
+    const listed = keys.slice(0, MAX_LISTED_KEYS).join(', ');
+    const more = keys.length > MAX_LISTED_KEYS ? `, … ${keys.length - MAX_LISTED_KEYS} more` : '';
+    return keys.length > 0 ? `Non-Error value (keys: ${listed}${more})` : 'Non-Error value';
   }
   return String(err);
 }
