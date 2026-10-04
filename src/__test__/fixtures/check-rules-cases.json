@@ -420,6 +420,42 @@
             "file": "src/b.ts",
             "line": "spawn(cmd, args, { shell: false });",
             "expect": null
+        },
+        {
+            "name": "R10: replace keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(prompt.replace(/\\s+/g, ' '));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: replaceAll keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(`p=${text.replaceAll('\\n', ' ')}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: split keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(prompt.split(' '));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: an imported logger under another name",
+            "file": "src/a.ts",
+            "line": "import { log as out } from './shared'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a boolean about the text",
+            "file": "src/a.ts",
+            "line": "log.info(`slash=${text.startsWith('/')}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: an imported non-logger",
+            "file": "src/a.ts",
+            "line": "import { panel as out } from './view'; out.info(prompt);",
+            "expect": null
         }
     ]
 }

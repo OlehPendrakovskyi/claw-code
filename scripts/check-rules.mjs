@@ -23,8 +23,9 @@ const TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
 
 /** Names whose value is prompt or payload text, and must not reach a log call. */
 const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', 'payload', 'chunk', 'frame']);
-/** Methods that return a piece of their receiver's text: `text.slice(0, 80)` is still text. */
-const TEXT_PRESERVING = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toString', 'toLowerCase', 'toUpperCase']);
+/** Methods whose result is a boolean or a number, not text. Any other method called on a text value
+ *  (`slice`, `replace`, `split`, `padEnd`, …) is treated as still carrying text. */
+const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search', 'charCodeAt', 'codePointAt', 'localeCompare', 'test']);
 /** Logging methods, on a receiver that is a logger (`log`, `logger`, `this.logger`, `console`, …). */
 const LOG_METHODS = new Set(['info', 'warn', 'error', 'debug', 'trace', 'append', 'appendLine', 'log']);
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
@@ -160,7 +161,7 @@ function carriesText(node) {
             if (method === 'stringify' && lastName(object) === 'JSON') {
                 return true;
             }
-            if (TEXT_PRESERVING.has(method ?? '') && carriesText(object)) {
+            if (method !== undefined && !NON_TEXT_RESULT.has(method) && carriesText(object)) {
                 return true;
             }
         }
@@ -209,6 +210,22 @@ function outputChannelBindings(source) {
     return names;
 }
 
+/** Local names of imported loggers: `import { log as out } from './shared'` makes `out` a logger. */
+function importedLoggers(source) {
+    const names = new Set();
+    for (const statement of source.statements) {
+        const bindings = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : undefined;
+        if (bindings && ts.isNamedImports(bindings)) {
+            for (const element of bindings.elements) {
+                if (LOGGER_NAME.test((element.propertyName ?? element.name).text)) {
+                    names.add(element.name.text);
+                }
+            }
+        }
+    }
+    return names;
+}
+
 function isLogCall(node, context) {
     if (!ts.isCallExpression(node)) {
         return false;
@@ -216,7 +233,7 @@ function isLogCall(node, context) {
     const receiver = memberObject(node.expression);
     const receiverName = receiver === undefined ? undefined : lastName(receiver);
     return receiverName !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') &&
-        (LOGGER_NAME.test(receiverName) || context.outputChannels.has(receiverName));
+        (LOGGER_NAME.test(receiverName) || context.outputChannels.has(receiverName) || context.loggers.has(receiverName));
 }
 
 const CHECKS = [
@@ -292,6 +309,7 @@ for (const file of walk(SRC)) {
         fs: moduleBindings(source, 'fs'),
         fsPromises: moduleBindings(source, 'fs/promises'),
         outputChannels: outputChannelBindings(source),
+        loggers: importedLoggers(source),
     };
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
     const visit = node => {
