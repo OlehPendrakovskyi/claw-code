@@ -33,7 +33,7 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b
 2. **Private by default.** The token is kept in SecretStorage; no telemetry. On the Gateway transport nothing leaves the machine except the WebSocket to the user's own gateway. On the acpx transport, prompts and attached context go to whatever agent and model provider the local CLI is configured with — the extension does not control that path, and the README says so. Logging red lines: [engineering.md §3](engineering.md#3-logging).
 3. **Dual transport.** Gateway WebSocket (primary) and the local acpx CLI (fallback), selected by `openclaw.gateway.transport` (`gateway | acpx | auto`). The acpx path keeps existing users of the original extension working.
 4. **Standalone project.** One repository, one PR flow — [engineering.md §5](engineering.md#5-pr-policy).
-5. **English UI, ready for localisation.** UI strings gathered in one module.
+5. **English UI, ready for localisation.** UI strings gathered in one place for translation. Not yet true: strings are spread across `package.json`, `content-js.ts` and the extension-host modules. The migration is **ENG-14**.
 6. **Documentation.** A README covering the key scenarios (Gateway connection, the three topologies of §5, choosing an agent, and the Terminal Bridge once it ships), a CHANGELOG, and semantic versioning.
 7. **Licence.** Keep the upstream MIT notice and attribution, and state the fork's origin in the README and CHANGELOG.
 
@@ -102,6 +102,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | ENG-11 | `core/markdown.ts`: move `renderMarkdown` and its link-safety helpers out of `viewMessaging.ts` | On next touch | Todo | S | [Refactoring backlog](engineering.md#refactoring-backlog); owner's decision 2026-09-26 |
 | ENG-12 | `core/frames.ts`: move `parseFrame` and the frame mappers out of `gatewayChatService.ts` | v1 | Todo | S | [Refactoring backlog](engineering.md#refactoring-backlog) |
 | ENG-13 | Split the accessInfo tests per submodule | v1 | Todo | S | [Refactoring backlog](engineering.md#refactoring-backlog) |
+| ENG-14 | Localisation readiness: move `package.json` strings to `package.nls.json`, and host and webview UI strings to `vscode.l10n` bundles (none exist today) | v2 | Todo | M | §2 requirement 5 |
 | ENG-6 | Finish `accessInfo`: replace or keep (and record why) `asString` / `getEnvVarFromRecord` / `getFilePathFromRecord`; migrate imports to one style | v1 | Partial | S | [Sprint 1 audit](audits/2026-10-03-sprint1.md) |
 
 ### P0 — the MVP: a useful chat to the Gateway
@@ -169,7 +170,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | **R0** — public release | REL-1…REL-7, SEC-1, SEC-2, SEC-3, ENG-4, ENG-8, P0-5 build-outs | ≈ 1–2 weeks | Installs from the VS Code Marketplace and Open VSX under the owner's publisher; README covers topologies A–C; remote `ws://` is blocked or confirmed; no prompt text in any log; CI, licence check and CodeQL green |
 | **v1** — editor integration | P1-0, P1-3 first (high value, contained risk); then P1-1, P1-2, P1-4, P1-6 steering, P1-7, A-1…A-7, ENG-1, ENG-2, ENG-3, ENG-5, ENG-6, ENG-7, ENG-9, ENG-10, ENG-12, ENG-13; ENG-11 whenever `viewMessaging.ts` is next touched | ≈ 6–8 weeks | An agent edit in a local repo shows a correct diff (or says the before-state is unavailable); every edit-capable run records a checkpoint, or is clearly marked before it starts as having none (design C6b); plan → edit → approve → execute in one session; the agent runs an approved command locally and reads its output; two sessions run in parallel tabs with status dots |
 | **v1.x** — undo | P1-1b, P1-4b | ≈ 2 weeks | Reject and Rewind restore modified files to the pre-run state, and refuse with a force option when the user has edited the file since. Files the agent created or deleted are listed as not restored until a safe handle-relative create/delete primitive exists (design P5) |
-| **v2** — polish and ecosystem | P2-1…P2-7, P1-1c, P1-5 focus view, A-10, C-1, NAS checkpoints via node exec, `/tasks` | ≈ 3–4 weeks | Per-change review with Accept/Reject at cursor; generated session titles; history groups persist per workspace; a deep link opens a tab with a prefilled prompt; the webview passes a screen-reader walkthrough |
+| **v2** — polish and ecosystem | P2-1…P2-7, P1-1c, P1-5 focus view, A-10, C-1, ENG-14, NAS checkpoints via node exec, `/tasks` | ≈ 3–4 weeks | Per-change review with Accept/Reject at cursor; generated session titles; history groups persist per workspace; a deep link opens a tab with a prefilled prompt; the webview passes a screen-reader walkthrough |
 
 Each milestone also requires: CI green on all three OSes, CHANGELOG updated, and the §6 table current.
 
