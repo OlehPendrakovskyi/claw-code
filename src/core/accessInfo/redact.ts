@@ -1,6 +1,8 @@
+/** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
+const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|secret|credential|access_key|signature)/i;
+
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
-    const sensitiveParam = /(api_?key|api-key|key|token|password|secret|credential|access_key|signature)/i;
     try {
         const url = new URL(endpoint);
         let redacted = false;
@@ -13,7 +15,7 @@ export function redactEndpoint(endpoint: string): string {
             redacted = true;
         }
         for (const key of [...url.searchParams.keys()]) {
-            if (sensitiveParam.test(key)) {
+            if (SENSITIVE_PARAM.test(key)) {
                 url.searchParams.set(key, '***');
                 redacted = true;
             }
@@ -40,6 +42,8 @@ const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
 const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
 /** The userinfo of a URL, `scheme://user:pass@`, matched without parsing. */
 const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@\s]+@/i;
+/** A query parameter whose name matches SENSITIVE_PARAM, matched without parsing. */
+const URL_SENSITIVE_QUERY = new RegExp(`([?&][^=&#\\s]*${SENSITIVE_PARAM.source}[^=&#\\s]*=)[^&#\\s]*`, 'gi');
 
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
@@ -49,8 +53,9 @@ export function redactText(text: string): string {
         // Prose around a URL ends it with `]`, `)`, `.` and the like, which would make it unparsable.
         const url = match.replace(TRAILING_DELIMITERS, '');
         const redacted = redactEndpoint(url);
-        // An unparsable URL comes back unchanged: still mask any `user:pass@`, so this fails toward hiding.
-        const safe = redacted === url ? url.replace(URL_USERINFO, '$1***@') : redacted;
+        // An unparsable URL comes back unchanged: still mask its `user:pass@` and sensitive query
+        // values without parsing, so this fails toward hiding.
+        const safe = redacted === url ? url.replace(URL_USERINFO, '$1***@').replace(URL_SENSITIVE_QUERY, '$1***') : redacted;
         return safe + match.slice(url.length);
     }));
 }

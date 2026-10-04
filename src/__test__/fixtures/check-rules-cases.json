@@ -234,6 +234,60 @@
             "file": "src/__test__/d.test.ts",
             "line": "afterEach(() =>\n    vi.useRealTimers());",
             "expect": "R54"
+        },
+        {
+            "name": "R36: quoted shell option",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { \"shell\": true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec through a namespace import",
+            "file": "src/b.ts",
+            "line": "import * as childProcess from 'node:child_process'; childProcess.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync through a default import",
+            "file": "src/b.ts",
+            "line": "import cp from 'child_process'; cp.execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec through require",
+            "file": "src/b.ts",
+            "line": "const cp = require('child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: renamed exec through destructured require",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = require('child_process'); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile through a namespace import",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; cp.execFile(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: exec on an unrelated object",
+            "file": "src/b.ts",
+            "line": "const match = pattern.exec(text);",
+            "expect": null
+        },
+        {
+            "name": "R43: aliased tmpdir import",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { tmpdir as systemTmpdir } from 'node:os'; const dir = systemTmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: tmpdir through a namespace import with another name",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as system from 'os'; const dir = system.tmpdir();",
+            "expect": "R43"
         }
     ]
 }
