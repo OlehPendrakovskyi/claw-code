@@ -27,7 +27,7 @@ const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', '
 const TEXT_PRESERVING = new Set(['slice', 'substring', 'substr', 'trim', 'trimStart', 'trimEnd', 'toString', 'toLowerCase', 'toUpperCase']);
 /** Logging methods, on a receiver that is a logger (`log`, `logger`, `this.logger`, `console`, …). */
 const LOG_METHODS = new Set(['info', 'warn', 'error', 'debug', 'trace', 'append', 'appendLine', 'log']);
-const LOGGER_NAME = /^(?:log|logger|console|\w*Log|\w*Logger)$/;
+const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 const SHELL_EXECUTORS = new Set(['exec', 'execSync']);
 
@@ -53,9 +53,10 @@ function moduleBindings(source, moduleName) {
                 }
             }
         }
-        if (ts.isVariableDeclaration(node) && node.initializer && ts.isCallExpression(node.initializer) &&
-            ts.isIdentifier(node.initializer.expression) && node.initializer.expression.text === 'require' &&
-            node.initializer.arguments.length === 1 && isModule(node.initializer.arguments[0])) {
+        const loaded = node.initializer && ts.isAwaitExpression(node.initializer) ? node.initializer.expression : node.initializer;
+        if (ts.isVariableDeclaration(node) && loaded && ts.isCallExpression(loaded) &&
+            ((ts.isIdentifier(loaded.expression) && loaded.expression.text === 'require') || loaded.expression.kind === ts.SyntaxKind.ImportKeyword) &&
+            loaded.arguments.length >= 1 && isModule(loaded.arguments[0])) {
             if (ts.isIdentifier(node.name)) {
                 namespaces.add(node.name.text);
             } else if (ts.isObjectBindingPattern(node.name)) {
@@ -144,6 +145,13 @@ function carriesText(node) {
         }
         return node.arguments.some(carriesText);
     }
+    if (ts.isPropertyAssignment(node)) {
+        // `{ text: text.length }`: a plain key is a label, not a value; a computed key is a value.
+        return carriesText(node.initializer) || (ts.isComputedPropertyName(node.name) && carriesText(node.name.expression));
+    }
+    if (ts.isShorthandPropertyAssignment(node)) {
+        return TEXT_NAMES.has(node.name.text);
+    }
     let found = false;
     ts.forEachChild(node, child => {
         found ||= carriesText(child);
@@ -151,12 +159,31 @@ function carriesText(node) {
     return found;
 }
 
-function isLogCall(node) {
+/** Names bound to `….createOutputChannel(…)` in a file, whatever they are called (`const out = …`). */
+function outputChannelBindings(source) {
+    const names = new Set();
+    const visit = node => {
+        if ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && node.initializer &&
+            ts.isCallExpression(node.initializer) && lastName(node.initializer.expression) === 'createOutputChannel') {
+            const name = lastName(node.name);
+            if (name !== undefined) {
+                names.add(name);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return names;
+}
+
+function isLogCall(node, context) {
     if (!ts.isCallExpression(node)) {
         return false;
     }
     const receiver = memberObject(node.expression);
-    return receiver !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') && LOGGER_NAME.test(lastName(receiver) ?? '');
+    const receiverName = receiver === undefined ? undefined : lastName(receiver);
+    return receiverName !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') &&
+        (LOGGER_NAME.test(receiverName) || context.outputChannels.has(receiverName));
 }
 
 const CHECKS = [
@@ -164,7 +191,7 @@ const CHECKS = [
         rule: 'R10',
         scope: 'source',
         message: 'log call writes prompt or payload text; log ids, counts or lengths instead',
-        test: node => isLogCall(node) && node.arguments.some(carriesText),
+        test: (node, context) => isLogCall(node, context) && node.arguments.some(carriesText),
     },
     {
         rule: 'R36',
@@ -188,7 +215,8 @@ const CHECKS = [
                 return true;
             }
             const first = node.arguments[0];
-            return (callee === 'mkdtemp' || callee === 'mkdtempSync') && first !== undefined &&
+            const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
+            return (makesTemp(callee) || makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) && first !== undefined &&
                 (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && first.text.startsWith('/tmp');
         },
     },
@@ -222,7 +250,14 @@ for (const file of walk(SRC)) {
     const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
     const checks = CHECKS.filter(check => check.scope === scope);
     const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
-    const context = { file, childProcess: moduleBindings(source, 'child_process'), os: moduleBindings(source, 'os') };
+    const context = {
+        file,
+        childProcess: moduleBindings(source, 'child_process'),
+        os: moduleBindings(source, 'os'),
+        fs: moduleBindings(source, 'fs'),
+        fsPromises: moduleBindings(source, 'fs/promises'),
+        outputChannels: outputChannelBindings(source),
+    };
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
     const visit = node => {
         for (const check of checks) {

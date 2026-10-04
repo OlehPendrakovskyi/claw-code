@@ -430,6 +430,10 @@ describe('redactText', () => {
         expect(redactText('bad https://alice:secret@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });
 
+    it('masks a password containing @ when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:p@ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
+
     it('redacts adjacent URLs one by one', () => {
         expect(redactText('https://public.example/a,https://alice:secret@private.example/b')).toBe(
             'https://public.example/a,https://***:***@private.example/b'

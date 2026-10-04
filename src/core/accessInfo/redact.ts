@@ -41,8 +41,9 @@ export function redactPlainSecrets(text: string): string {
 const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/(?:(?![a-z][a-z0-9+.-]*:\/\/)[^\s"'<>])+/gi;
 /** Punctuation and closing brackets that end a sentence or a bracketed URL rather than belong to it. */
 const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
-/** The userinfo of a URL, `scheme://user:pass@`, matched without parsing. */
-const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#@\s]+@/i;
+/** The userinfo of a URL, `scheme://user:pass@`, matched without parsing: up to the last `@` of the
+ *  authority, since a raw `@` may appear inside the password. */
+const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/i;
 /** A query parameter whose name matches SENSITIVE_PARAM, matched without parsing. */
 const URL_SENSITIVE_QUERY = new RegExp(`([?&][^=&#\\s]*${SENSITIVE_PARAM.source}[^=&#\\s]*=)[^&#\\s]*`, 'gi');
 

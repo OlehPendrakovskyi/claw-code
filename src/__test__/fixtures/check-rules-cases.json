@@ -312,6 +312,54 @@
             "file": "src/a.ts",
             "line": "const key = 'text'; log.info(request[key]);",
             "expect": null
+        },
+        {
+            "name": "R10: output channel receiver",
+            "file": "src/a.ts",
+            "line": "outputChannel.appendLine(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a createOutputChannel binding under any name",
+            "file": "src/a.ts",
+            "line": "const out = vscode.window.createOutputChannel('x'); out.appendLine(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: shorthand property carries the value",
+            "file": "src/a.ts",
+            "line": "log.info({ text });",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a structured length under a text key",
+            "file": "src/a.ts",
+            "line": "log.info({ text: text.length });",
+            "expect": null
+        },
+        {
+            "name": "R36: exec through an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "const cp = await import('node:child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec destructured from a dynamic import",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = await import('child_process'); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: aliased mkdtempSync import",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { mkdtempSync as makeTemp } from 'node:fs'; makeTemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: mkdtemp through fs/promises namespace",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fsp from 'fs/promises'; await fsp.mkdtemp('/tmp/x-');",
+            "expect": "R43"
         }
     ]
 }
