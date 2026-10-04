@@ -456,6 +456,30 @@
             "file": "src/a.ts",
             "line": "import { panel as out } from './view'; out.info(prompt);",
             "expect": null
+        },
+        {
+            "name": "R36: require behind a type assertion",
+            "file": "src/b.ts",
+            "line": "const cp = require('child_process') as typeof import('child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: dynamic import behind satisfies and await",
+            "file": "src/b.ts",
+            "line": "const cp = (await import('node:child_process')) satisfies object; cp.execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: /tmp in a template literal head",
+            "file": "src/__test__/c.test.ts",
+            "line": "fs.mkdtempSync(`/tmp/openclaw-${id}-`);",
+            "expect": "R43"
+        },
+        {
+            "name": "R43 clean: a template under the canonical root",
+            "file": "src/__test__/c.test.ts",
+            "line": "fs.mkdtempSync(`${TEMP_ROOT}/openclaw-${id}-`);",
+            "expect": null
         }
     ]
 }

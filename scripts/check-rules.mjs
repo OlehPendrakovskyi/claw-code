@@ -54,7 +54,7 @@ function moduleBindings(source, moduleName) {
                 }
             }
         }
-        const loaded = node.initializer && ts.isAwaitExpression(node.initializer) ? node.initializer.expression : node.initializer;
+        const loaded = node.initializer ? unwrap(node.initializer) : undefined;
         if (ts.isVariableDeclaration(node) && loaded && ts.isCallExpression(loaded) &&
             ((ts.isIdentifier(loaded.expression) && loaded.expression.text === 'require') || loaded.expression.kind === ts.SyntaxKind.ImportKeyword) &&
             loaded.arguments.length >= 1 && isModule(loaded.arguments[0])) {
@@ -131,11 +131,19 @@ function lastName(node) {
     return undefined;
 }
 
-/** The module a `require('m')` or `import('m')` expression loads, through `await` and parentheses. */
-function loadedModule(node) {
-    while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node)) {
+/** The expression under wrappers that do not change the value: parentheses, `await`, and
+ *  TypeScript's `as`, `satisfies`, `<T>` and `!`. */
+function unwrap(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node) || ts.isAsExpression(node) ||
+        ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) {
         node = node.expression;
     }
+    return node;
+}
+
+/** The module a `require('m')` or `import('m')` expression loads, through any unwrap()-able wrapper. */
+function loadedModule(node) {
+    node = unwrap(node);
     if (!ts.isCallExpression(node) || node.arguments.length < 1) {
         return undefined;
     }
@@ -184,6 +192,10 @@ function carriesText(node) {
 /** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
 function containsTmpLiteral(node) {
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && /^\/tmp(?:\/|$)/.test(node.text)) {
+        return true;
+    }
+    // A template such as /tmp/x-${id}: its literal prefix is the template's head.
+    if (ts.isTemplateExpression(node) && /^\/tmp(?:\/|$)/.test(node.head.text)) {
         return true;
     }
     let found = false;
