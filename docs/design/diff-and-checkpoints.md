@@ -31,7 +31,7 @@ Out of scope, stated so the guarantees are not read as wider than they are:
 - **The user's own Git configuration.** Hooks are disabled for checkpoint commands (C2a), but clean/process filters configured by the user run as they would for any `git add`. A cloned repository cannot set them: `.git/config` is not cloned. A repository whose `.git` directory came from elsewhere is an untrusted workspace, and checkpoints run only in a trusted workspace (VS Code Workspace Trust).
 - **An object-ID push the user types deliberately** (C2a).
 
-The network is not involved: checkpoints are local, and the store is a local bare repository.
+The checkpoint transport does not use the network: snapshots move only between the user's repository and a local bare store. Programs the user's Git configuration runs during capture and restore are a different matter. A trusted smudge or clean filter, such as Git LFS fetching objects during a Rewind (C4b), may reach the network, as it would for any checkout. That traffic belongs to the user's configured tools, under the same trust as above.
 
 ## Invariants
 
