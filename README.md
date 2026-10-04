@@ -83,7 +83,7 @@ git clone https://github.com/OlehPendrakovskyi/claw-code.git
 cd claw-code
 pnpm install
 pnpm run compile
-pnpm dlx @vscode/vsce package --no-dependencies -o claw-code.vsix
+pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o claw-code.vsix
 code --install-extension claw-code.vsix --force   # or: cursor --install-extension claw-code.vsix --force
 ```
 
