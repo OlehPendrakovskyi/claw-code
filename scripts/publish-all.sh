@@ -2,6 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Pinned packaging and publishing tools (roadmap REL-7). `vsce` alone would resolve the
+# deprecated `vsce` package, not `@vscode/vsce`.
+VSCE="@vscode/vsce@4.0.0"
+OVSX="ovsx@1.2.0"
 X_CMD="npx --yes"
 
 if command -v bun >/dev/null 2>&1; then
@@ -33,13 +37,13 @@ VERSION="$(node -p "require('./package.json').version")"
 VSIX_PATH="out/openclaw-extension-${VERSION}.vsix"
 
 echo "Packaging VSIX to ${VSIX_PATH}..."
-${X_CMD} @vscode/vsce package --no-dependencies -o "${VSIX_PATH}"
+${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX_PATH}"
 
 echo "Publishing to VS Code Marketplace (vsce)..."
-${X_CMD} vsce publish --packagePath "${VSIX_PATH}" -p "${VSCE_PAT}"
+${X_CMD} "${VSCE}" publish --packagePath "${VSIX_PATH}" -p "${VSCE_PAT}"
 
 echo "Publishing to Open VSX (ovsx)..."
-${X_CMD} ovsx publish --packagePath "${VSIX_PATH}" -p "${OVSX_TOKEN}"
+${X_CMD} "${OVSX}" publish --packagePath "${VSIX_PATH}" -p "${OVSX_TOKEN}"
 
 EXT_NAME="$(node -p "require('./package.json').name")"
 PUBLISHER="$(node -p "require('./package.json').publisher")"

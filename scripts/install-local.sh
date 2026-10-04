@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
+# Pinned so a source install runs the same packager every time (roadmap REL-7).
+VSCE="@vscode/vsce@4.0.0"
 X_CMD="npx --yes"
 if command -v bun >/dev/null 2>&1; then
   X_CMD="bunx"
@@ -16,7 +18,7 @@ VERSION="$(node -p "require('./package.json').version")"
 VSIX="openclaw-extension-${VERSION}.vsix"
 
 echo "Packaging ${VSIX}..."
-${X_CMD} @vscode/vsce package --no-dependencies -o "${VSIX}"
+${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX}"
 
 IDE="cursor"
 if ! command -v cursor >/dev/null 2>&1; then
