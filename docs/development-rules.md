@@ -8,7 +8,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 - **Grouped by topic, not by date.** Position in the file carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project and are the portable part of this file; *claw-code* rules apply to this repository. A General rule's principle carries over as written, but its examples, file paths, issue references and Check line are this repository's and must be adapted when the rule is copied elsewhere.
-- **Check** says how a rule is verified: the compiler, the linter, CI, a test, or the review checklist at the end of this file. Mechanical checks live in `scripts/check-rules.mjs`; the PR template (`.github/pull_request_template.md`) carries the review items; `AGENTS.md` points coding agents here.
+- **Check** says how a rule is verified: the compiler, the linter, CI, a test, or the review checklist at the end of this file. Mechanical checks live in `scripts/check-rules.mjs`, which parses the code and catches the ordinary ways a rule is broken (any local name, import style, dot or literal-key access) but not deliberate obfuscation, which is review's job; the PR template (`.github/pull_request_template.md`) carries the review items; `AGENTS.md` points coding agents here.
 
 | Topic | Rules |
 | --- | --- |

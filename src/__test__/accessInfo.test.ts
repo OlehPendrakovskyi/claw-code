@@ -430,6 +430,12 @@ describe('redactText', () => {
         expect(redactText('bad https://alice:secret@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });
 
+    it('redacts adjacent URLs one by one', () => {
+        expect(redactText('https://public.example/a,https://alice:secret@private.example/b')).toBe(
+            'https://public.example/a,https://***:***@private.example/b'
+        );
+    });
+
     it('still masks sensitive query values when the URL cannot be parsed', () => {
         expect(redactText('bad https://[not-a-host/x?signature=grant-access&page=2&key=zz')).toBe(
             'bad https://[not-a-host/x?signature=***&page=2&key=***'

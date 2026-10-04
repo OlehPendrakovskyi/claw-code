@@ -288,6 +288,30 @@
             "file": "src/__test__/c.test.ts",
             "line": "import * as system from 'os'; const dir = system.tmpdir();",
             "expect": "R43"
+        },
+        {
+            "name": "R10: literal-key access to prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(request['text']);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: literal-key logger method",
+            "file": "src/a.ts",
+            "line": "log['info'](prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R36: exec through literal-key access",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; cp['exec'](cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10 out of scope: a key held in a variable",
+            "file": "src/a.ts",
+            "line": "const key = 'text'; log.info(request[key]);",
+            "expect": null
         }
     ]
 }

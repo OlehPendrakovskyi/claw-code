@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { redactEndpoint, redactPlainSecrets } from './redact.js';
+import { redactEndpoint, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -42,11 +42,11 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     if (configError) {
-        lines.push(`Config issue: ${redactPlainSecrets(configError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
+        lines.push(`Config issue: ${redactText(configError)}`);
         lines.push('');
     }
     if (cliError) {
-        lines.push(`CLI issue: ${redactPlainSecrets(cliError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
+        lines.push(`CLI issue: ${redactText(cliError)}`);
         lines.push('');
     }
 
@@ -85,7 +85,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('## CLI status --all output');
     if (cliOutput) {
         lines.push('```');
-        lines.push(redactPlainSecrets(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))).trim());
+        lines.push(redactText(cliOutput).trim());
         lines.push('```');
     } else {
         lines.push('No CLI output captured.');

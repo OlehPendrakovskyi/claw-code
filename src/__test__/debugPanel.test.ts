@@ -41,10 +41,11 @@ describe('openDebugChatPanel', () => {
 
             onMessage({ type: 'send', text: 'my private prompt', clientId: 'debug-1' });
             onMessage('not a record');
+            onMessage({ type: 'my private prompt\u001b[2J' });
 
             const logged = info.mock.calls.map(call => String(call[0]));
             expect(logged).toContain('[DebugPanel] message from webview: type=send');
-            expect(logged).toContain('[DebugPanel] message from webview: type=unknown');
+            expect(logged.filter(line => line === '[DebugPanel] message from webview: type=unknown')).toHaveLength(2);
             expect(logged.join('\n')).not.toContain('my private prompt');
         });
     });

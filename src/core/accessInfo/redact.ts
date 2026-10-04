@@ -36,8 +36,9 @@ export function redactPlainSecrets(text: string): string {
         .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
 }
 
-/** A URL of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) inside free-form text. */
-const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+/** A URL of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) inside free-form text.
+ *  A match ends where another `scheme://` begins, so adjacent URLs (`a,https://…`) are redacted one by one. */
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/(?:(?![a-z][a-z0-9+.-]*:\/\/)[^\s"'<>])+/gi;
 /** Punctuation and closing brackets that end a sentence or a bracketed URL rather than belong to it. */
 const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
 /** The userinfo of a URL, `scheme://user:pass@`, matched without parsing. */

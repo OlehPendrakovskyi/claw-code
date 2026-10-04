@@ -4,8 +4,13 @@
  * the rule it enforces. Files are parsed with the TypeScript compiler (syntax
  * only, no type information), so a call or import split across lines is seen
  * like any other; what a check cannot know is a value's meaning, so R10 judges
- * by name (`text`, `prompt`, …) and the review checklist still applies. A
- * finding prints `file:line  [rule] message` and the script exits non-zero.
+ * by name (`text`, `prompt`, …) and the review checklist still applies.
+ *
+ * Scope: these checks catch the ordinary ways a rule is broken — under any
+ * local name, import style, dot or literal-key access. They do not try to
+ * defeat deliberate obfuscation (a method name held in a variable, a value
+ * renamed before it is logged, code built at run time); that is review's job.
+ * A finding prints `file:line  [rule] message` and the script exits non-zero.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -94,13 +99,15 @@ function calledExport(node, bindings) {
     if (ts.isIdentifier(callee)) {
         return bindings.members.get(callee.text);
     }
-    if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression) && bindings.namespaces.has(callee.expression.text)) {
-        return callee.name.text;
+    const object = memberObject(callee);
+    if (object !== undefined && ts.isIdentifier(object) && bindings.namespaces.has(object.text)) {
+        return lastName(callee);
     }
     return undefined;
 }
 
-/** The last name of `a`, `a.b`, `a?.b` or a quoted property name; undefined for anything else. */
+/** The last name of `a`, `a.b`, `a?.b`, `a['b']` or a quoted property name; undefined for anything
+ *  else, such as a computed key held in a variable (out of scope: see the header). */
 function lastName(node) {
     if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
         return node.text;
@@ -108,21 +115,30 @@ function lastName(node) {
     if (ts.isPropertyAccessExpression(node)) {
         return node.name.text;
     }
+    if (ts.isElementAccessExpression(node)) {
+        return lastName(node.argumentExpression);
+    }
     return undefined;
+}
+
+/** The object a member is read from: `a` in `a.b` and `a['b']`. */
+function memberObject(node) {
+    return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ? node.expression : undefined;
 }
 
 /** Whether an expression inside a log call's arguments carries prompt or payload text. */
 function carriesText(node) {
-    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
+    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
         return TEXT_NAMES.has(lastName(node) ?? '');
     }
     if (ts.isCallExpression(node)) {
-        const callee = node.expression;
-        if (ts.isPropertyAccessExpression(callee)) {
-            if (callee.name.text === 'stringify' && lastName(callee.expression) === 'JSON') {
+        const method = lastName(node.expression);
+        const object = memberObject(node.expression);
+        if (object !== undefined) {
+            if (method === 'stringify' && lastName(object) === 'JSON') {
                 return true;
             }
-            if (TEXT_PRESERVING.has(callee.name.text) && carriesText(callee.expression)) {
+            if (TEXT_PRESERVING.has(method ?? '') && carriesText(object)) {
                 return true;
             }
         }
@@ -136,11 +152,11 @@ function carriesText(node) {
 }
 
 function isLogCall(node) {
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) {
+    if (!ts.isCallExpression(node)) {
         return false;
     }
-    const { name, expression: receiver } = node.expression;
-    return LOG_METHODS.has(name.text) && LOGGER_NAME.test(lastName(receiver) ?? '');
+    const receiver = memberObject(node.expression);
+    return receiver !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') && LOGGER_NAME.test(lastName(receiver) ?? '');
 }
 
 const CHECKS = [

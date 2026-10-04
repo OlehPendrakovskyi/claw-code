@@ -7,7 +7,7 @@ import {
     isRecord,
     mergeAccessInfo,
     redactEndpoint,
-    redactPlainSecrets,
+    redactText,
     uniqSorted,
     type AccessSummary
 } from '../../core/accessInfo';
@@ -138,7 +138,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
         return { output: output.length > 0 ? output : undefined };
     } catch (error) {
         const message = errorMessage(error);
-        return { error: redactPlainSecrets(message.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))) };
+        return { error: redactText(message) };
     }
 }
 
