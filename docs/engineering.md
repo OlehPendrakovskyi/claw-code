@@ -64,13 +64,13 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 - Reusable utilities (diff, auto-context, backoff) live in `core/`.
 - Readability: domain modules with explicit names, the webview split into views, long functions broken up, types next to their use.
 - No `console.log`: use the injected logger (§3).
-- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent. Tests exercise interleavings, not just the happy path ([development-rules.md](development-rules.md), rule 7).
+- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent (not written yet: **ENG-10**). Tests exercise interleavings, not just the happy path ([development-rules.md](development-rules.md), rule 7).
 
 ### Refactoring backlog
 
-- **`core/markdown.ts`** (owner's proposal 2026-09-26; do it on the next touch of these files, no dedicated sprint). Move `renderMarkdown` (markdown → HTML, sanitise, escaping fallback) and its link-safety helpers out of `webview/viewMessaging.ts` into a VS Code-free module and import it from there. Decide then whether the lodash `escape` fallback stays. Do not touch `content-js.ts`'s own `escapeHtml`: that script is injected into the webview as source and cannot import from `core/`. Do not move `accessInfo/format.ts` either — it is domain report formatting, and moving it would create a new mini-dump.
-- **`core/frames.ts`**: `parseFrame` and the frame mappers out of `gatewayChatService.ts`.
-- Split the accessInfo tests per submodule.
+- **`core/markdown.ts`** (**ENG-11**; owner's proposal 2026-09-26; do it on the next touch of these files, no dedicated sprint). Move `renderMarkdown` (markdown → HTML, sanitise, escaping fallback) and its link-safety helpers out of `webview/viewMessaging.ts` into a VS Code-free module and import it from there. Decide then whether the lodash `escape` fallback stays. Do not touch `content-js.ts`'s own `escapeHtml`: that script is injected into the webview as source and cannot import from `core/`. Do not move `accessInfo/format.ts` either — it is domain report formatting, and moving it would create a new mini-dump.
+- **`core/frames.ts`** (**ENG-12**): `parseFrame` and the frame mappers out of `gatewayChatService.ts`.
+- Split the accessInfo tests per submodule (**ENG-13**).
 - The dump-file splits from the Sprint 1 audit: `viewMessaging.ts`, `slashCommands.ts`, and possibly `gatewayConfig.ts` (**ENG-2**).
 
 ## 5. PR policy

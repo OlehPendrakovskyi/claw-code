@@ -33,9 +33,10 @@ Every component exists in the Gateway already: the node-host role and the exec-a
 ## Mechanism
 
 1. **Executor registration.** On connect, the extension opens the node-role socket (T1) and declares exec capability (caps/commands/permissions, per the protocol's handshake docs).
-2. **Agent request.** The agent calls exec through the Gateway's standard exec-approvals; the Gateway routes it to the extension's node.
-3. **Approval UX.** A prompt or indicator "the agent wants to run: …" with Run once / Always allow / Deny, applying T3–T8.
-4. **Execution** in an extension-owned process mirrored into a pseudoterminal, per T9–T11, with output returned per T10.
+2. **Node binding.** Registering a node does not make the Gateway route exec to it: unless the session's exec host is set to a node, a request may run on the Gateway or its sandbox instead, and with several executable nodes the target must be named. When the user enables the bridge for a session, the extension records the node ID the Gateway assigned and binds the session to it, through the Gateway's exec-host and node-selection settings for that session. Reported names: `tools.exec.host=node`, `tools.exec.node`, or `/exec host=node`; these are to be confirmed against the Gateway docs. If the node reconnects with a new ID, the binding is updated. When the bridge is disabled, the window closes or the node is unpaired, the binding is removed, so the session does not keep pointing at a node that is gone. The UI shows which session is bound to this window's node.
+3. **Agent request.** The agent calls exec through the Gateway's standard exec-approvals; the Gateway routes it to the extension's node.
+4. **Approval UX.** A prompt or indicator "the agent wants to run: …" with Run once / Always allow / Deny, applying T3–T8.
+5. **Execution** in an extension-owned process mirrored into a pseudoterminal, per T9–T11, with output returned per T10.
 
 ## Stages
 
@@ -53,4 +54,5 @@ The bridge serves the "repo on the local machine" case. When the repo sits next 
 
 1. Which files a command "loads" (T6) — how far to follow `package.json` scripts, config files and imports before declaring the identity unresolvable (T8).
 2. Where the immutable snapshots of T7 live, and how they are garbage-collected.
-3. How a node-role pairing request is presented to the user alongside the existing operator pairing flow.
+3. The Gateway's exact exec-host and node-selection settings for binding a session to this node (step 2), and whether they can be set per session from an operator connection.
+4. How a node-role pairing request is presented to the user alongside the existing operator pairing flow.
