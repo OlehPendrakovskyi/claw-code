@@ -64,7 +64,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 - Reusable utilities (diff, auto-context, backoff) live in `core/`.
 - Readability: domain modules with explicit names, the webview split into views, long functions broken up, types next to their use.
 - No `console.log`: use the injected logger (§3).
-- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent (not written yet: **ENG-10**). Tests exercise interleavings, not just the happy path ([development-rules.md](development-rules.md), rule 7).
+- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent (not written yet: **ENG-10**). Tests exercise interleavings, not just the happy path ([development-rules.md](development-rules.md#testing), R7).
 
 ### Refactoring backlog
 

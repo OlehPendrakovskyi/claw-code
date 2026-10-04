@@ -10,6 +10,7 @@ Semantic Versioning.
 
 ### Docs
 
+- Reorganise `docs/development-rules.md` by topic with stable rule IDs (R1–R55 keep their numbers; the former "claw-code specifics" become S1–S6), add strength, scope and a check to each rule, correct stale references, and add rules R56–R60 from the roadmap review.
 - Add a new README for Claw Code, replacing the upstream extension's README removed earlier.
 - Restructure the roadmap: one feature status table and milestones in `docs/roadmap.md` (including the R0 public-release milestone and the owner-controlled publisher requirement), design documents under `docs/design/`, the engineering foundation in `docs/engineering.md`, and the Sprint 1 audit under `docs/audits/`.
 
