@@ -24,6 +24,13 @@ Configurable, not hard-coded: `AGENTS.md`, `CLAUDE.md` / `.claude/*.md`, `.curso
 
 Extraction is a faithful copy of the text with provenance (file + lines). LLM compression is optional; the raw text is always stored.
 
+**File access.** The catalogue entries and custom globs are patterns chosen by the repository, so every match is untrusted input and is read under the same rules as attachments:
+
+- the canonical-path containment of P2 and the operation-time handle check of P3 in [the diff design](diff-and-checkpoints.md#path-resolution-and-containment), with development rule R6;
+- globs are evaluated inside the workspace folder only, never follow a symlink or junction out of it, and reject any pattern containing `..` or an absolute path;
+- only regular files are read (no FIFOs, devices or directories), each capped in size, and the total upload capped per ingest;
+- a file that fails any check is skipped and listed in the ingest preview as not uploaded, never read with a weaker check.
+
 Domain-specific formats (for example `.bsl` files or proprietary LSP servers) belong in user profiles (A-10), not in the core. The core is format-agnostic.
 
 ## Lifecycle
