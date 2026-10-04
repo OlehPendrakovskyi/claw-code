@@ -94,7 +94,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* the `ChatService*.test.ts` suites (ACP output, stdin blocks, exit codes).
 
 **R32. Limits are measured in the form the transport actually reads.** *General, MUST.* The prompt budget is computed over the JSON-escaped payload (not raw text); per-file/per-image/frame limits come from the gateway's `hello-ok.policy`, not invented constants; the Windows argv budget uses worst-case quoting, NUL → one-byte substitute.
-*Check:* `ChatServiceBounds.test.ts` (prompt and argv budgets).
+*Check:* `ChatServiceBounds.test.ts` covers the encoded prompt budget. There is no argv budget to test today: the prompt reaches acpx on stdin (`exec --file -`), so the Windows argv clause is a review item for any future change that passes a payload on a command line.
 
 **R37. Foreign-payload mapping is alias-tolerant, complete, and numerically validated.** *General, MUST.* One canonical mapper per direction; do not duplicate it (mapping drift). Read each semantic alias group completely (`input`, `inputTokens`, `promptTokens`, `input_tokens`, `prompt_tokens` for prompt tokens; `output`, `outputTokens`, `completionTokens`, `output_tokens`, `completion_tokens` for completion tokens; `totalTokens`, `total`, `total_tokens` for total). Complementary counters are never aliases of each other. Numbers are validated per R13. (PR #1: snake_case + duplicate mapper; PR #11: usage; PR #12: NaN.)
 *Check:* review checklist; usage-mapping tests in `gatewayProtocolV4.test.ts` and `ChatViewProvider.test.ts`.
@@ -187,7 +187,7 @@ Basis: PR #16 turned a copied Windows job into a ubuntu/windows/macos matrix and
 *Check:* review checklist; the Windows and macOS CI legs.
 
 **R45. Paths shown to a user are normalised to forward slashes on every OS.** *General, MUST.* A `relativePath` compared against a query typed as `src/app` must be `path.relative(...).split(path.sep).join('/')` — otherwise it matches on POSIX and fails on Windows, which is a product bug (file search), not just a test concern.
-*Check:* `viewMessaging.test.ts` file-search tests, on the Windows CI leg.
+*Check:* the `handleFileSearch` tests in `viewMessagingHandlers.test.ts`, on the Windows CI leg.
 
 ## Documentation, claims and registries
 
