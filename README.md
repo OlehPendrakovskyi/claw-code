@@ -1,229 +1,193 @@
-![OpenClaw hero](assets/images/readme.png)
+![Claw Code](assets/images/readme.png)
 
 # Claw Code
 
-A full-featured VS Code companion for [OpenClaw](https://docs.openclaw.ai) — chat with any codebase, run security hardening, manage tools, and connect to the OpenClaw gateway, all from the sidebar.
+A VS Code companion for [OpenClaw](https://docs.openclaw.ai). Chat with the agents on your OpenClaw Gateway from the editor, with your code as context, and manage, set up and harden OpenClaw from the sidebar.
 
-## Screenshots
-
-### Single Chat
-
-![Single chat thread](assets/images/single-chat.png)
-
-The sidebar chat view supports file mentions, attachments, and streamed responses in a focused single-thread layout.
-
-### Slash Commands
-
-![Slash command picker](assets/images/slash-commands.png)
-
-Type `/` in the composer to open command shortcuts like `/explain`, `/fix`, `/review`, `/test`, and more.
-
-### Multi-Thread Layout
-
-![Multi-thread chat view](assets/images/multi-thread.png)
-
-OpenClaw can split the chat into multiple panes so you can work on separate threads side by side.
+> **Pre-release.** Claw Code is not yet published to the VS Code Marketplace or Open VSX. Install it from source (see [Install](#install)). Plans and status: [docs/roadmap.md](docs/roadmap.md).
 
 ## Features
 
-### Chat Panel
+### Chat with Gateway agents
 
-An AI chat interface lives in the OpenClaw sidebar. Each message spawns an ephemeral `acpx exec` session scoped to your workspace — no persistent state, no cleanup.
+- **Gateway transport.** Connects straight to the OpenClaw Gateway over WebSocket, reconnects with backoff, and catches up on missed messages after a reconnect or a window restart. When the Gateway is unreachable it can fall back to the local `acpx` CLI.
+- **Agent and session picker.** Choose an agent's session; every message goes to it, and an indicator shows when a run is already active.
+- **History and resume.** Reopen earlier sessions and keep going where you left off.
+- **Streaming replies** with tool calls grouped into collapsible steps. A setting hides finished groups.
+- **Stop** a running reply at any time.
+- **Several threads at once** in a grid (`1x1` up to `4x4`), each with its own composer and status, or popped out into an editor tab.
+- **Usage gauge** showing tokens used against the model's context window.
+- **Export** a conversation to Markdown or JSON.
 
-- **Slash commands** — type `/` to open the autocomplete dropdown, then pick a command:
+![Single chat thread](assets/images/single-chat.png)
 
-  | Command | What it does | Context injected |
-  |---------|-------------|-----------------|
-  | `/explain` | Explain code or a concept | Active selection or file |
-  | `/fix` | Find and fix issues | Diagnostics + code |
-  | `/review` | Code review | Git diff |
-  | `/test` | Generate tests | Active selection or file |
-  | `/refactor` | Suggest improvements | Active selection or file |
-  | `/doc` | Generate documentation | Active selection or file |
-  | `/commit` | Draft a commit message | Staged changes |
-  | `/harden` | Security analysis | Full file content |
-  | `/search` | Search the codebase | None (free-form query) |
+### Editor context
 
-- **`@`-mention files** — type `@` in the input to search and attach workspace files as context. Supports keyboard navigation, mouse selection, and shows open tabs when the query is empty.
-- **File attachments** — click the `+` button to attach any file via the system file picker. Attached files appear as removable pills below the input.
-- **Recommendation chips** — context-aware quick-action suggestions that update as you change editors, selections, and diagnostics. Shown before the first message.
-- **Streaming responses** — assistant text streams in incrementally with tool-call badges showing which files the agent reads or modifies.
-- **Pop-out** — move the chat into a standalone editor panel with full conversation transfer.
-- **Onboarding carousel** — a three-slide walkthrough shown on first use, covering codebase chat, security hardening, and setup tips. Persisted in `globalState` so it only appears once.
+- **`@`-mentions** to attach workspace files, including line ranges such as `@src/app.ts#L5-10`.
+- **Insert selection** as a mention with `Alt+K` (`Cmd+Alt+K` on macOS).
+- **Attach the open file** automatically to every normal message (`openclaw.chat.attachOpenFile`). Slash commands add their own context instead (see the table below).
+- **Attachments** via the `+` button or drag and drop, including images.
+- **Slash commands** that add the right context for the task:
 
-### Status Bar
+| Command | Purpose | Context added |
+| --- | --- | --- |
+| `/explain` | Explain code or a concept | Selection or file |
+| `/fix` | Find and fix problems | Diagnostics and code |
+| `/review` | Review changes | Git diff |
+| `/test` | Write tests | Selection or file |
+| `/refactor` | Suggest improvements | Selection or file |
+| `/doc` | Write documentation | Selection or file |
+| `/commit` | Draft a commit message | Staged changes |
+| `/harden` | Security review | File contents |
+| `/plan` | Plan the work before changing anything | None (your task) |
+| `/compact` | Summarise the conversation so far | The transcript |
+| `/search` | Search the codebase | Your query |
 
-- **Connection indicator** — shows idle, connecting, connected, and error states at a glance.
-- **One-click connect** — runs your configured OpenClaw command in a dedicated terminal.
-- **Terminal reuse** — keeps a single terminal session for quick reconnects.
-- **Auto-connect** — optionally run the command on startup.
+![Slash command picker](assets/images/slash-commands.png)
 
-### Overview Panel
+### OpenClaw tools
 
-The OpenClaw activity bar container includes an Overview tree with five sections:
+- **Overview** in the activity bar: getting started, operations (status, doctor, update, dashboard, config), hardening, installed tools (enable, disable, uninstall) and help.
+- **Security hardening**: run `openclaw security audit`, with fix and deep scans, and get a plain-language **access summary** of MCP servers, tools, key sources, endpoints and local files.
+- **Guided setup** and a **model setup wizard** when the OpenClaw CLI is missing or not configured yet.
+- **Status bar** connection indicator with one-click connect.
 
-| Section | What's inside |
-|---------|--------------|
-| **Getting Started** | Connect, Setup, Model Setup Wizard |
-| **Operate** | Status check, Doctor, Update, Reconfigure, Dashboard, Config file |
-| **Hardening** | Run hardening workflow, Access summary, Security docs |
-| **Tools** | List tools from `~/.openclaw/openclaw.json`, enable/disable, uninstall |
-| **Help** | Docs link, Refresh view |
+![Multi-thread chat view](assets/images/multi-thread.png)
 
-### Security Hardening
+## Requirements
 
-Run **OpenClaw: Harden** from the Command Palette or the Overview tree to execute `openclaw security audit`, `--fix`, and `--deep` in sequence. The hardening mode is configurable (full, audit only, or audit + fix).
+- VS Code **1.105** or newer.
+- A chat backend — either or both of:
+  - an **OpenClaw Gateway** you can reach — on this machine, on a server or NAS, or in Docker — and its token (the primary path; see the [OpenClaw docs](https://docs.openclaw.ai), `openclaw onboard --install-daemon`);
+  - [`acpx`](https://www.npmjs.com/package/acpx) on your `PATH`, for the local CLI transport. With `openclaw.gateway.transport` set to `acpx` no Gateway is needed; with `auto` (the default) acpx is the fallback when the Gateway is unreachable.
 
-The **Access Summary** generates a plain-English Markdown report of MCP servers, tools, API key sources, network endpoints, and local files detected from your config and CLI output.
+## Install
 
-### Model Setup Wizard
+Until the first Marketplace / Open VSX release, build and install from source. You need **git**, **Node.js 24** (the version CI builds with) and **pnpm** (`corepack enable` provides it), and the `code` or `cursor` command on your `PATH`.
 
-Run **OpenClaw: Model Setup Wizard** to:
+On Linux, macOS, or Windows with Git Bash or WSL:
 
-1. Run the onboarding wizard (`openclaw onboard`)
-2. Pick a provider (OpenAI, Anthropic, Google Gemini, Ollama, Local Pi RPC, or custom)
-3. Open your config and auth profile files
-4. Verify health with `openclaw doctor` and `openclaw gateway status`
-
-### Guided Setup
-
-If the CLI is missing, the extension offers install actions automatically. You can also run **OpenClaw: Setup** from the Command Palette to:
-
-- Install via the platform-specific shell script (macOS/Linux) or PowerShell script (Windows)
-- Install Node.js (Homebrew, winget, or apt)
-- Install via npm
-- Open the installation docs
-
-Legacy CLI names (`molt`, `clawdbot`) are detected and the extension prompts to migrate.
-
-## Quick Start
-
-### 1. Install Node.js
-
-Download from [nodejs.org](https://nodejs.org) — Node 24 recommended (Node 22.16+ also supported).
-
-Verify: `node -v` shows `v22.16` or newer.
-
-### 2. Install OpenClaw
-
-```
-npm install -g openclaw@latest
+```sh
+git clone https://github.com/OlehPendrakovskyi/claw-code.git
+cd claw-code
+pnpm install
+scripts/install-local.sh
 ```
 
-Verify: `openclaw --help`
+The script compiles the extension, packages a `.vsix` and installs it into `cursor` or `code`, whichever is on your `PATH`. Then reload the window.
 
-### 3. Install acpx (for Chat)
+In PowerShell, or any shell without Bash, run the same steps by hand:
 
-```
-npm install -g acpx
-```
-
-### 4. Onboard and start the Gateway
-
-```
-openclaw onboard --install-daemon
-```
-
-Verify the Gateway is running:
-
-```
-openclaw gateway status
-openclaw dashboard
+```sh
+git clone https://github.com/OlehPendrakovskyi/claw-code.git
+cd claw-code
+pnpm install
+pnpm run compile
+pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o claw-code.vsix
+code --install-extension claw-code.vsix --force   # or: cursor --install-extension claw-code.vsix --force
 ```
 
-### 5. Log in to a channel (optional)
+## Connect to your Gateway
 
-```
-openclaw channels login
-```
+1. Set the Gateway address in **Settings → OpenClaw → Gateway: Url** (`openclaw.gateway.url`, default `ws://127.0.0.1:18789`).
+2. Run **OpenClaw: Connect to Gateway** from the Command Palette and paste the Gateway token. It is stored in VS Code's SecretStorage, never in `settings.json`.
+3. Open the **OpenClaw** view in the activity bar, pick an agent with **OpenClaw: Pick Agent Session**, and start chatting.
 
-### 6. Use the extension
+The first time, the Gateway may ask you to approve this device (pairing). Approve it on the Gateway, for example in the OpenClaw Control UI. **OpenClaw: Reset Gateway Device Identity** starts over with a new identity.
 
-- Click the **OpenClaw** status bar item to connect.
-- Open the **OpenClaw** sidebar to chat, browse the overview, or run hardening.
+**Use `wss://` for anything that is not on this machine.** The token is sent when the connection opens, so plain `ws://` to a NAS or server sends it unencrypted over the network. Claw Code warns you when that happens. Use `wss://`, or a secure tunnel such as SSH port forwarding, Tailscale or WireGuard.
+
+### Where your code lives
+
+| Setup | Recommended approach |
+| --- | --- |
+| **The repository is on the Gateway host** (server, NAS, Docker) | Open it with VS Code **Remote** (SSH, WSL or Tunnel), so the editor and the agent see the same files. This is the best-supported setup |
+| **The repository is on the Gateway host, but your window is local** | Chat works and the agent edits files on the Gateway host; the editor sees those changes only as text in the chat |
+| **The agent cannot reach your code** | Attach files and selections to the prompt; apply the agent's patch yourself |
+
+### Local CLI fallback
+
+`openclaw.gateway.transport` decides the chat backend: `gateway`, `acpx` (local CLI), or `auto` (the default: the Gateway when reachable, otherwise acpx). With acpx, `openclaw.chat.agent` and `openclaw.chat.permissions` choose the agent and what it may do.
 
 ## Commands
 
 | Command | Description |
-|---------|------------|
-| `OpenClaw: Connect` | Run your configured CLI command in a terminal |
-| `OpenClaw: Setup` | Guided install for Node.js and OpenClaw |
-| `OpenClaw: Model Setup Wizard` | Onboarding + provider selection |
-| `OpenClaw: Harden` | Run security hardening workflow |
-| `OpenClaw: Hardening Access Summary` | Generate a plain-English access report |
-| `OpenClaw: Open Chat` | Focus the Chat view in the sidebar |
-| `OpenClaw: Pop Out Chat` | Move chat into a standalone editor panel |
-| `OpenClaw: New Chat Session` | Clear conversation and start fresh |
+| --- | --- |
+| OpenClaw: Open Chat | Focus the chat view |
+| OpenClaw: Pop Out Chat | Move the chat into an editor tab |
+| OpenClaw: New Chat Session | Open a new blank thread in the panel. On the Gateway it uses the default session, so it continues that session's context; pick another session with **Pick Agent Session** for separate context |
+| OpenClaw: Pick Agent Session | Choose the Gateway agent session to talk to |
+| OpenClaw: Connect to Gateway | Save the Gateway token and connect |
+| OpenClaw: Reset Gateway Device Identity | Forget this device's pairing and create a new identity |
+| OpenClaw: Insert Selection Mention | Add the selection to the prompt (`Alt+K` / `Cmd+Alt+K`) |
+| OpenClaw: Connect | Run the configured OpenClaw CLI command in a terminal |
+| OpenClaw: Setup | Guided install of OpenClaw and its prerequisites |
+| OpenClaw: Model Setup Wizard | Onboarding and model provider selection |
+| OpenClaw: Harden | Run the security hardening workflow |
+| OpenClaw: Hardening Access Summary | Show what OpenClaw can access |
+| OpenClaw: Debug Chat Panel | Inspect chat events |
 
-## Configuration
+## Settings
 
 | Setting | Default | Description |
-|---------|---------|------------|
-| `openclaw.autoConnect` | `false` | Automatically connect on startup |
-| `openclaw.command` | `openclaw status` | Command to run when connecting |
-| `openclaw.hardening.mode` | `full` | Hardening workflow: `full`, `audit`, or `auditFix` |
+| --- | --- | --- |
+| `openclaw.gateway.url` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
+| `openclaw.gateway.transport` | `auto` | `gateway`, `acpx`, or `auto` |
+| `openclaw.gateway.protocolVersion` | `auto` | Gateway protocol version to offer; keep `auto` unless the Gateway reports a mismatch |
+| `openclaw.chat.attachOpenFile` | `false` | Attach the active file to every normal message (not to slash commands) |
+| `openclaw.chat.systemPrompt` | empty | Text added in front of every message |
+| `openclaw.chat.dimension` | `1x1` | Thread grid: `1x1`, `2x2`, `2x3`, `3x3`, `4x4` |
+| `openclaw.chat.collapseCompleted` | `true` | Collapse finished threads in the `1x1` view |
+| `openclaw.chat.hideToolActivity` | `false` | Hide finished tool-call groups |
+| `openclaw.chat.dynamicSubject` | `true` | Name threads from their content |
+| `openclaw.chat.contextMax` | `0` | Context window size for the usage gauge (`0` = from the model name) |
+| `openclaw.chat.source` | empty | Source label on each chat pane |
+| `openclaw.chat.agent` | `codex` | Agent for the acpx fallback |
+| `openclaw.chat.models` | `codex`, `claude`, `opencode` | Models offered in the composer picker |
+| `openclaw.chat.permissions` | `approve-reads` | acpx permissions: `approve-reads`, `approve-all`, `deny-all` |
+| `openclaw.command` | `openclaw status` | Command run by **OpenClaw: Connect** |
+| `openclaw.autoConnect` | `false` | Run that command on startup |
+| `openclaw.hardening.mode` | `full` | `full`, `audit`, or `auditFix` |
 | `openclaw.hardening.command` | `openclaw` | Command prefix for hardening |
-| `openclaw.chat.agent` | `codex` | Agent for chat sessions (any `acpx` agent: `codex`, `gemini`, `opencode`, etc.) |
-| `openclaw.chat.permissions` | `approve-reads` | Permission mode: `approve-reads`, `approve-all`, or `deny-all` |
+| `openclaw.dashboardUrl` | `http://127.0.0.1:18789/` | Dashboard opened from the Overview |
 
-### Windows + WSL
+Settings that run commands, carry the token or change what the agent may do are user-level only: a workspace cannot set them.
 
-Set `openclaw.command` to `wsl openclaw status` and `openclaw.hardening.command` to `wsl openclaw`.
+**Windows with WSL:** set `openclaw.command` to `wsl openclaw status` and `openclaw.hardening.command` to `wsl openclaw`.
+
+## Privacy
+
+- No telemetry. On the Gateway transport, Claw Code talks only to the Gateway you configure.
+- On the acpx fallback, your prompts and attached context go to whichever agent and model provider your local `acpx` is configured to use.
+- The Gateway token and device identity live in VS Code's SecretStorage.
 
 ## Troubleshooting
 
-### "command not found: openclaw"
+| Problem | Try |
+| --- | --- |
+| Cannot connect to the Gateway | `openclaw gateway status`; check `openclaw.gateway.url`; re-run **OpenClaw: Connect to Gateway** |
+| Connected, but runs wait for approval | Approve the device or the request in the OpenClaw Control UI |
+| Protocol mismatch on connect | Update OpenClaw, or set `openclaw.gateway.protocolVersion` explicitly |
+| `openclaw: command not found` | `npm install -g openclaw@latest`, restart VS Code, or run **OpenClaw: Setup** |
+| `acpx not found` (fallback only) | `npm install -g acpx` |
 
-- Reinstall: `npm install -g openclaw@latest`
-- Restart your terminal or VS Code
-- Or run **OpenClaw: Setup** for the guided installer
-
-### Legacy CLI name (molt or clawdbot)
-
-Update to `openclaw`:
-
-- Recommended: `curl -fsSL https://openclaw.ai/install.sh | bash`
-- npm: `npm install -g openclaw@latest`
-- Then run: `openclaw doctor`
-
-See [update docs](https://docs.openclaw.ai/install/updating) for full guidance.
-
-### "node: command not found" or Node too old
-
-Install from [nodejs.org](https://nodejs.org/) — Node 24 recommended (Node 22.16+ also supported). Verify with `node -v`.
-
-### "acpx not found"
-
-The Chat panel requires `acpx` installed globally:
-
-```
-npm install -g acpx
-```
-
-### Gateway not running
-
-- Check: `openclaw gateway status`
-- Restart: `openclaw gateway restart`
-- Dashboard: `openclaw dashboard`
-
-### No status bar item
-
-- Ensure you are in the Extension Development Host when testing
-- Check the Output panel for extension logs
+Logs are in the **Output** panel under the OpenClaw channels.
 
 ## Development
 
-1. Install dependencies: `pnpm install`
-2. Compile: `pnpm run compile`
-3. Press **F5** to launch the Extension Development Host
-4. Publish (prepublish + VSCE + Open VSX): `pnpm run publish:all`
+Prerequisites: git, Node.js 24 and pnpm, as for [Install](#install).
 
-Before pushing, run the same gates CI runs: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test`, `pnpm run compile`, `pnpm run license:check`. CI exercises the test suite on Ubuntu, Windows and macOS (see [TESTING.md](./TESTING.md#continuous-integration)).
+```sh
+pnpm install
+pnpm run watch       # rebuild on change; press F5 to launch the Extension Development Host
+```
 
-## License
+Before pushing, run the same gates as CI, in its order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. CI runs on Linux, Windows and macOS.
 
-[MIT](./LICENSE)
+Project documents: [roadmap](docs/roadmap.md), [engineering foundation](docs/engineering.md), [development rules](docs/development-rules.md).
 
-## Acknowledgments
+## Licence and acknowledgements
 
-Claw Code is a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) © Val Alexander / OpenKnot AI. Many thanks for the original work.
+[MIT](LICENSE).
+
+Claw Code began as a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) © OpenKnot AI / Val Alexander, and continues as an independent project. Many thanks for the original work.
