@@ -179,7 +179,7 @@ pnpm install
 pnpm run watch       # rebuild on change; press F5 to launch the Extension Development Host
 ```
 
-Before pushing, run the same gates as CI: `pnpm run typecheck`, `pnpm run lint`, `pnpm run test`, `pnpm run compile`, `pnpm run license:check`. CI runs on Linux, Windows and macOS.
+Before pushing, run the same gates as CI, in its order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. CI runs on Linux, Windows and macOS.
 
 Project documents: [roadmap](docs/roadmap.md), [engineering foundation](docs/engineering.md), [development rules](docs/development-rules.md).
 

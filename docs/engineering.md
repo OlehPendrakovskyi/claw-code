@@ -60,7 +60,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 
 - oxlint and strict TypeScript stay on in CI.
 - **One source of truth for protocol types** — the versioned schemas in `gatewayProtocol/`; all RPC methods and fields go through the adapter layer, which keeps a protocol change to one place.
-- RPC calls go through a single dispatch; events go through **one pure reducer** `(state, event) => newState` with no side effects; UI updates happen afterwards.
+- **Target:** RPC calls go through a single dispatch, and events go through **one pure reducer** `(state, event) => newState` with no side effects, with UI updates applied afterwards. **Today** only streamed run text has such a reducer (`core/gatewayRunText.ts`); other events mutate state and trigger side effects directly in `GatewayChatService.applyRunEvent` and `ChatViewProvider.processChatEvent`. Moving to the target is **ENG-9**.
 - Reusable utilities (diff, auto-context, backoff) live in `core/`.
 - Readability: domain modules with explicit names, the webview split into views, long functions broken up, types next to their use.
 - No `console.log`: use the injected logger (§3).
@@ -82,7 +82,7 @@ A standalone project with one repository and one PR flow. Upstream (openknots/op
 - Branch prefixes: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
 - **Conventional Commits**; semver is derived from them.
 - **Commit signing**: mandatory for the owner (GPG, GitHub "Verified" on `main` commits and release tags — decision 2026-09-24); recommended but not required for contributors.
-- Required checks: typecheck → oxlint → vitest → build → license-check.
+- Required checks, in the order `ci.yml` runs them: typecheck → oxlint → build → vitest → license-check.
 - CHANGELOG: release-please or manual by category, Keep a Changelog format.
 
 ## 6. CI/CD

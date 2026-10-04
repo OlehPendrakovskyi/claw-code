@@ -8,7 +8,7 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b
 
 | Document | Contents |
 | --- | --- |
-| [design/diff-and-checkpoints.md](design/diff-and-checkpoints.md) | P1-1 and P1-4: inline diffs, reject, checkpoints — invariants and mechanism |
+| [design/diff-and-checkpoints.md](design/diff-and-checkpoints.md) | P1-1, P1-1b, P1-1c, P1-4, P1-4b: diff view, Reject, per-change review, checkpoints, Rewind — invariants and mechanism |
 | [design/terminal-bridge.md](design/terminal-bridge.md) | P1-0: agent-requested commands in a VS Code terminal |
 | [design/rules-ingester.md](design/rules-ingester.md) | A-11: project rules into memory-wiki |
 | [engineering.md](engineering.md) | Stack, code structure, logging, code quality, PR policy, CI/CD |
@@ -53,7 +53,8 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b
 
 - **Transport.** A direct WebSocket to the OpenClaw Gateway (default port 18789, token auth, handshake `role=operator`) is the primary path, implemented by `GatewayChatService` (`src/core/gatewayChatService.ts`) over versioned protocol adapters (`src/core/gatewayProtocol/`, currently v4). `ChatService` (acpx) is the fallback. `chatServiceFactory` picks the backend; callers use the `ChatService | GatewayChatService` union.
 - **Agent selection.** `sessions.list` → the chosen agent's main session → every send carries its `sessionKey`. Per-agent memory is the Gateway's (memory-lancedb).
-- **Key RPCs.** `sessions.list` (+ `sessions.subscribe`), `sessions.preview`, `sessions.create`, `chat.send` (no client-side `queueMode`; the session's stored queue mode decides start-or-steer), `chat.history` (+ `deltaCursor` catch-up), `chat.abort`, `sessions.abort`, `sessions.patch`, the `session.message` event (text deltas, toolCall lines) and `session.approval` (optionally with `includeApprovals`).
+- **RPCs and events in use** (the v4 contract, `src/core/gatewayProtocol/v4/schema.ts`): `connect`, `chat.send` (no client-side `queueMode`; the session's stored queue mode decides start-or-steer), `chat.abort`, `chat.history` (+ `deltaCursor` catch-up), `sessions.list`, `sessions.subscribe`, `sessions.messages.subscribe` / `unsubscribe`, and approvals and questions through `exec.approval.*`, `plugin.approval.*` and `question.*` (list / resolve). Events: `session.message` (text deltas), `session.tool` (tool-call lifecycle), `sessions.changed`, `chat`, `agent`, the `*.requested` / `*.resolved` approval and question events, `tick` and `shutdown`.
+- **Planned, not in the v4 contract yet:** `sessions.preview` (history previews), `sessions.create` and `sessions.title.prepare` (P2-1), `sessions.patch` (A-1 model switching; P1-6 steering via the stored queue mode) and `sessions.abort`. Each is added to the contract, behind capability discovery, by the item that needs it.
 - **The protocol is not frozen,** so coupling is kept low: capabilities come from `hello-ok.features.methods`, all methods and fields go through one adapter layer with versioned schemas, and events are handled additively (unknown event types are ignored, never crash the UI).
 - Protocol references: the Gateway's `docs/gateway/protocol.md` and `protocol/*.md` (transport, handshake, rpc-methods, rpc-session-control, auth); the reference client is the Gateway's webchat UI.
 - Code layout: [engineering.md §2](engineering.md#2-code-structure).
@@ -93,6 +94,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | ENG-5 | Module map and splitting plan (Sprint 1 task 1 artifact) | v1 | Partial | S | Top-level layout is in [engineering.md §2](engineering.md#current-layout) |
 | ENG-7 | Move the VS Code-bound modules out of `core/` (`configIO.ts`, `gatewayConfig.ts`) or record them as exceptions | v1 | Todo | S | [engineering.md §2](engineering.md#2-code-structure) |
 | ENG-8 | Manual test plan for the Gateway-era features (the upstream `TESTING.md` was removed with the old docs) | R0 | Todo | S | |
+| ENG-9 | One pure event reducer `(state, event) => newState` in place of the direct mutation in `applyRunEvent` / `processChatEvent` | v1 | Todo | M | [engineering.md §4](engineering.md#4-code-quality) |
 | ENG-6 | Finish `accessInfo`: replace or keep (and record why) `asString` / `getEnvVarFromRecord` / `getFilePathFromRecord`; migrate imports to one style | v1 | Partial | S | [Sprint 1 audit](audits/2026-10-03-sprint1.md) |
 
 ### P0 — the MVP: a useful chat to the Gateway

@@ -1,6 +1,6 @@
 # Design: inline diffs, reject and checkpoints
 
-Covers roadmap items **P1-1** (inline diffs with accept/reject) and **P1-4** (checkpoints / rewind). Status: design, not implemented. Back to the [roadmap](../roadmap.md).
+Covers roadmap items **P1-1** (diff view and Accept), **P1-1b** (Reject, v1.x), **P1-1c** (per-change review, v2), **P1-4** (recording checkpoints) and **P1-4b** (Rewind, v1.x). Status: design, not implemented. Back to the [roadmap](../roadmap.md).
 
 ## Problem
 
@@ -51,14 +51,16 @@ These are the binding rules. Each is stated once here; the roadmap and other doc
 - **C1.** Take the snapshot **before every run that can edit files** — any run whose mode or agent permits writes — not when the first file-effect toolCall arrives: by then the write has already happened (B2). A run that ends without file effects simply discards its snapshot. Within a run, the checkpoint unit is a wave.
 - **C2.** Git snapshot: `git stash create` (it does not touch the index), with the SHA stored in the session's checkpoint registry. On a clean tree it prints nothing and exits 0, so the checkpoint always records an explicit baseline instead: the HEAD commit, or the index tree from `git write-tree` when the index differs from HEAD. With an unborn HEAD (fresh `git init`) `git stash create` cannot run and `git write-tree` records only the **index** (the empty tree when nothing is staged). A file staged and then edited again before the first commit has worktree bytes that neither captures, so in an unborn repository the checkpoint additionally shadow-copies (as in C6) every tracked path whose worktree contents differ from the index. With that addition every git repository has a complete baseline.
 - **C3.** Preserve the pre-run **index tree** and restore index and worktree separately. `git checkout <stash> -- .` updates both and turns pre-existing unstaged edits into staged ones.
-- **C4.** Rewind touches only the agent's paths — `git checkout <snapshot> -- <agent-touched paths>`, never `-- .` — and each path goes through R2 against the per-path post-wave contents the checkpoint recorded at wave close (A1–A3).
+- **C4.** Rewind touches only the agent's paths, never the whole tree, and restores the **worktree and the index separately** per C3 — never with `git checkout <snapshot> -- <paths>`, which writes one version into both and collapses a path's distinct staged and unstaged pre-run versions. For each path: (a) the worktree bytes come from the snapshot's worktree tree (the `git stash create` commit itself, or the shadow copy of C2/C5) and are written through the verified handle of P4, after the R2 check against the per-path post-wave contents recorded at wave close (A1–A3); (b) the index entry comes from the recorded pre-run index tree (the stash's index parent `<stash>^2`, or the `git write-tree` / HEAD baseline of C2) via `git restore --staged --source=<index tree> -- <path>`, which removes the entry when the path was not in that tree. A path refused under R2 is left untouched in both the worktree and the index.
 - **C5.** `git stash create` does not cover untracked files, and a checkout does not remove files created after the snapshot. The checkpoint therefore also records the set of untracked / new / deleted paths **and** the contents plus mode and mtime of pre-run untracked files, tracks the files the run creates, and restores them under the same R2 guard.
 - **C6.** Non-git folders use shadow copies under `~/.openclaw/vscode-checkpoints/`.
+- **C6a. Resource bounds.** Every shadow copy (C2 unborn repositories, C5 untracked files, C6 non-git folders) goes into a content-addressed store, so an unchanged file is stored once however many checkpoints reference it, and each checkpoint copies only files whose size, mtime or hash changed since the previous one. The store is bounded by configurable limits — total bytes and file count per checkpoint, a per-file size ceiling, and exclusions (`.gitignore` rules where present, plus build and dependency directories such as `node_modules`, `dist`, `out`) — and by retention: the last N checkpoints per session and a maximum age, with unreferenced blobs garbage-collected when a checkpoint is dropped or its session is closed.
+- **C6b. Failure behaviour.** If a checkpoint would exceed a limit, or the disk lacks space, no partial checkpoint is recorded. The run still starts, but the UI marks it as having **no checkpoint** — Rewind is unavailable for it and the user is told why before the run begins, with the option to cancel. An excluded or oversized file is listed as not covered by the checkpoint and is never silently restored or deleted by a rewind.
 - **C7.** Repositories on a NAS (see the deployment topologies in the [roadmap](../roadmap.md#5-deployment-topologies)) are checkpointed by the agent at the extension's request, or via node exec when a paired node exists (preferred) — v2.
 
 ## Mechanism
 
-0. **Pre-run snapshot.** When a run that can edit files starts, take the checkpoint per C1–C6 before sending the prompt.
+0. **Pre-run snapshot.** When a run that can edit files starts, take the checkpoint per C1–C6b before sending the prompt.
 1. **Interception.** The event reducer recognises a toolCall with a file effect (the `write` / `edit` / `apply_patch` class). Concrete tool names come from discovery and the agent runtime; the mapping lives in the protocol contract layer.
 2. **Location.** Resolve per P1–P4. A file on a NAS that the window cannot reach goes to step 5.
 3. **Rendering.** `vscode.diff` with the left side served by an `openclawOriginal:` content provider holding the before-state (B1–B3) and the right side the working file.
@@ -75,7 +77,7 @@ These are the binding rules. Each is stated once here; the roadmap and other doc
 
 | Stage | Ships |
 | --- | --- |
-| v1 | Diff view with before-state per B1–B3, Accept, the textual fallback, and git checkpoints recorded per C1–C6 |
+| v1 | Diff view with before-state per B1–B3, Accept, the textual fallback, and git checkpoints recorded per C1–C6b |
 | v1.x | Reject and Rewind as the explicit conflict/force flow (R2–R3) |
 | Blocked on R4 | Automatic, unprompted restore |
 | v2 | Pre-apply, per-change review, Accept/Reject at cursor, conversation fork, NAS checkpoints (C7) |
@@ -84,4 +86,5 @@ These are the binding rules. Each is stated once here; the roadmap and other doc
 
 1. **Compare-and-swap (R4).** Is there any conditional-write primitive on Linux, macOS and Windows that can be conditioned on the destination's version? Until there is, automatic restore stays off.
 2. **Agent-attributable bytes (A1).** Does the Gateway's toolCall result carry the written bytes or a hash? If not, request it upstream — without it every baseline is ambiguous.
-3. **File-effect tool names.** Which tool names and argument shapes the contract layer must map, per agent runtime.
+3. **Checkpoint limits.** The default values for C6a (bytes, file count, per-file ceiling, retention N and age).
+4. **File-effect tool names.** Which tool names and argument shapes the contract layer must map, per agent runtime.
