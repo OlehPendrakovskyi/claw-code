@@ -8,6 +8,11 @@ Semantic Versioning.
 
 ## Unreleased
 
+### Docs
+
+- Add a new README for Claw Code, replacing the upstream extension's README removed earlier.
+- Restructure the roadmap: one feature status table and milestones in `docs/roadmap.md` (including the R0 public-release milestone and the owner-controlled publisher requirement), design documents under `docs/design/`, the engineering foundation in `docs/engineering.md`, and the Sprint 1 audit under `docs/audits/`.
+
 ## 0.2.1
 
 ### Added
