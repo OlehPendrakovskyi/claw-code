@@ -70,7 +70,7 @@ function moduleBindings(source, moduleName) {
         ts.forEachChild(node, visit);
     };
     visit(source);
-    return { namespaces, members };
+    return { pattern, namespaces, members };
 }
 
 /** An import or `require` destructuring of `exec`/`execSync` from child_process, under any local name. */
@@ -104,6 +104,11 @@ function calledExport(node, bindings) {
     if (object !== undefined && ts.isIdentifier(object) && bindings.namespaces.has(object.text)) {
         return lastName(callee);
     }
+    // `require('child_process').exec(…)`, `(await import('node:child_process')).execSync(…)`.
+    const loaded = object === undefined ? undefined : loadedModule(object);
+    if (loaded !== undefined && bindings.pattern.test(loaded)) {
+        return lastName(callee);
+    }
     return undefined;
 }
 
@@ -119,7 +124,23 @@ function lastName(node) {
     if (ts.isElementAccessExpression(node)) {
         return lastName(node.argumentExpression);
     }
+    if (ts.isComputedPropertyName(node) || ts.isParenthesizedExpression(node)) {
+        return lastName(node.expression);
+    }
     return undefined;
+}
+
+/** The module a `require('m')` or `import('m')` expression loads, through `await` and parentheses. */
+function loadedModule(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node)) {
+        node = node.expression;
+    }
+    if (!ts.isCallExpression(node) || node.arguments.length < 1) {
+        return undefined;
+    }
+    const isLoader = (ts.isIdentifier(node.expression) && node.expression.text === 'require') || node.expression.kind === ts.SyntaxKind.ImportKeyword;
+    const [specifier] = node.arguments;
+    return isLoader && (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier)) ? specifier.text : undefined;
 }
 
 /** The object a member is read from: `a` in `a.b` and `a['b']`. */
@@ -155,6 +176,18 @@ function carriesText(node) {
     let found = false;
     ts.forEachChild(node, child => {
         found ||= carriesText(child);
+    });
+    return found;
+}
+
+/** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
+function containsTmpLiteral(node) {
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && /^\/tmp(?:\/|$)/.test(node.text)) {
+        return true;
+    }
+    let found = false;
+    ts.forEachChild(node, child => {
+        found ||= containsTmpLiteral(child);
     });
     return found;
 }
@@ -216,8 +249,8 @@ const CHECKS = [
             }
             const first = node.arguments[0];
             const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
-            return (makesTemp(callee) || makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) && first !== undefined &&
-                (ts.isStringLiteral(first) || ts.isNoSubstitutionTemplateLiteral(first)) && first.text.startsWith('/tmp');
+            return (makesTemp(callee) || makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) &&
+                first !== undefined && containsTmpLiteral(first);
         },
     },
     {

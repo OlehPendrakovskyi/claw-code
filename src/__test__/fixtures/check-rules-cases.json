@@ -360,6 +360,42 @@
             "file": "src/__test__/c.test.ts",
             "line": "import * as fsp from 'fs/promises'; await fsp.mkdtemp('/tmp/x-');",
             "expect": "R43"
+        },
+        {
+            "name": "R36: computed literal shell key",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { ['shell']: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec on a require expression",
+            "file": "src/b.ts",
+            "line": "require('child_process').exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync on an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "(await import('node:child_process')).execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile on a require expression",
+            "file": "src/b.ts",
+            "line": "require('child_process').execFile(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R43: /tmp inside path.join",
+            "file": "src/__test__/c.test.ts",
+            "line": "fs.mkdtempSync(path.join('/tmp', 'x-'));",
+            "expect": "R43"
+        },
+        {
+            "name": "R43 clean: a path merely containing tmp",
+            "file": "src/__test__/c.test.ts",
+            "line": "fs.mkdtempSync(path.join(TEMP_ROOT, 'tmpfiles-'));",
+            "expect": null
         }
     ]
 }
