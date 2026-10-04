@@ -278,9 +278,32 @@ function isSpawnOptions(object, context) {
     return ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) && context.spawnOptionNames.has(node.parent.name.text);
 }
 
-/** Identifiers a file passes to spawn calls (candidate option variables). */
+/** Identifiers a file passes to spawn calls (candidate option variables), closed over composition:
+ *  `const options = { ...base }` or `const options = base` makes `base` an options source too. */
 function spawnArgumentNames(source, context) {
     const names = new Set();
+    // What each variable's object is built from: spread sources and plain aliases.
+    const sources = new Map();
+    const collect = node => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+            const value = unwrap(node.initializer);
+            const from = [];
+            if (ts.isIdentifier(value)) {
+                from.push(value.text);
+            } else if (ts.isObjectLiteralExpression(value)) {
+                for (const property of value.properties) {
+                    if (ts.isSpreadAssignment(property) && ts.isIdentifier(unwrap(property.expression))) {
+                        from.push(unwrap(property.expression).text);
+                    }
+                }
+            }
+            if (from.length > 0) {
+                sources.set(node.name.text, from);
+            }
+        }
+        ts.forEachChild(node, collect);
+    };
+    collect(source);
     const visit = node => {
         if (isSpawnCall(node, context)) {
             for (const argument of node.arguments) {
@@ -300,6 +323,16 @@ function spawnArgumentNames(source, context) {
         ts.forEachChild(node, visit);
     };
     visit(source);
+    // Fixed point: every source of an options variable is an options variable as well.
+    const pending = [...names];
+    while (pending.length > 0) {
+        for (const from of sources.get(pending.pop()) ?? []) {
+            if (!names.has(from)) {
+                names.add(from);
+                pending.push(from);
+            }
+        }
+    }
     return names;
 }
 

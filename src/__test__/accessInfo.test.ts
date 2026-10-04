@@ -446,6 +446,10 @@ describe('redactText', () => {
         expect(redactText('endpoint_https://alice:secret@host.example/x')).toBe('endpoint_https://***:***@host.example/x');
     });
 
+    it('masks plain-text key and signature values outside URLs', () => {
+        expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=*** signature=*** page=2');
+    });
+
     it('masks punctuation that belongs to a sensitive query value', () => {
         expect(redactText('GET https://api.example/?signature=!!!')).toBe('GET https://api.example/?signature=***');
     });
@@ -457,8 +461,10 @@ describe('redactText', () => {
     });
 
     it('still masks sensitive query values when the URL cannot be parsed', () => {
+        // The plain-text pass then also recognises `signature=` and, as with `api_key=` above, treats
+        // the rest of the token as its value: it errs toward hiding.
         expect(redactText('bad https://[not-a-host/x?signature=grant-access&page=2&key=zz')).toBe(
-            'bad https://[not-a-host/x?signature=***&page=2&key=***'
+            'bad https://[not-a-host/x?signature=***'
         );
     });
 });

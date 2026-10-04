@@ -588,6 +588,24 @@
             "file": "src/a.ts",
             "line": "log.info(`secret=${/secret/.test(text)}`);",
             "expect": null
+        },
+        {
+            "name": "R36: shell option composed through a spread chain",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; const options = { ...base }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shell option through an alias",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: '/bin/sh' }; const options = base; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a spread chain that never reaches spawn",
+            "file": "src/b.ts",
+            "line": "const base = { shell: 'zsh' }; const profile = { ...base };",
+            "expect": null
         }
     ]
 }
