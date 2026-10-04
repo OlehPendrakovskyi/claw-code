@@ -429,7 +429,7 @@ describe('setup flows', () => {
             expect(JSON.stringify(logError.mock.calls)).not.toContain('secret');
         });
 
-        it('reports a thrown plain object by its keys, without its values', async () => {
+        it('reports a thrown plain object generically, taking nothing from it', async () => {
             setAvailable('node', 'openclaw');
             terminals.openclaw.show.mockImplementationOnce(() => {
                 // A non-Error throw, as some APIs do.
@@ -439,7 +439,7 @@ describe('setup flows', () => {
 
             await connect();
 
-            expect(errorMessage).toHaveBeenCalledWith('Failed to connect: Non-Error value (keys: code, detail)');
+            expect(errorMessage).toHaveBeenCalledWith('Failed to connect: Non-Error value (object)');
         });
 
         it('reports a failure with secrets redacted and resets the in-flight guard', async () => {

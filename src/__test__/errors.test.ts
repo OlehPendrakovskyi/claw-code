@@ -6,25 +6,17 @@ describe('errorMessage', () => {
         expect(errorMessage('plain failure')).toBe('plain failure');
     });
 
-    it('does not trust a record\'s message field either', () => {
-        const message = errorMessage({ message: 'token=secret', code: 'E1' });
-        expect(message).toBe('Non-Error value (keys: message, code)');
-        expect(message).not.toContain('secret');
+    it('takes nothing from a non-Error object: no values, no message field, no key names', () => {
+        for (const thrown of [{ token: 'abc123' }, { message: 'token=secret' }, { 'token=sk-secret': 1 }, { ['x'.repeat(10_000)]: 1 }]) {
+            expect(errorMessage(thrown)).toBe('Non-Error value (object)');
+        }
     });
 
-    it('describes any other object by its keys, never its values', () => {
-        const message = errorMessage({ code: 'EACCES', token: 'abc123' });
-        expect(message).toBe('Non-Error value (keys: code, token)');
-        expect(message).not.toContain('abc123');
+    it('says when the thrown value is an array', () => {
+        expect(errorMessage(['token=secret'])).toBe('Non-Error value (array)');
     });
 
-    it('caps the listed keys', () => {
-        const many = Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, i]));
-        expect(errorMessage(many)).toBe('Non-Error value (keys: k0, k1, k2, k3, k4, k5, k6, k7, … 2 more)');
-    });
-
-    it('handles empty objects and primitives', () => {
-        expect(errorMessage({})).toBe('Non-Error value');
+    it('uses String() for other values', () => {
         expect(errorMessage(undefined)).toBe('undefined');
         expect(errorMessage(42)).toBe('42');
     });

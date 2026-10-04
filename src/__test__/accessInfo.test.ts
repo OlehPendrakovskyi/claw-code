@@ -446,6 +446,10 @@ describe('redactText', () => {
         expect(redactText('endpoint_https://alice:secret@host.example/x')).toBe('endpoint_https://***:***@host.example/x');
     });
 
+    it('masks punctuation that belongs to a sensitive query value', () => {
+        expect(redactText('GET https://api.example/?signature=!!!')).toBe('GET https://api.example/?signature=***');
+    });
+
     it('redacts adjacent URLs one by one', () => {
         expect(redactText('https://public.example/a,https://alice:secret@private.example/b')).toBe(
             'https://public.example/a,https://***:***@private.example/b'

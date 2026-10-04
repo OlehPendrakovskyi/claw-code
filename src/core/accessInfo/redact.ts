@@ -67,12 +67,20 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
     return redactPlainSecrets(text.replace(URL_IN_TEXT, match => {
-        // Prose around a URL ends it with `]`, `)`, `.` and the like, which would make it unparsable.
+        // 1. The whole match, so punctuation that belongs to a credential (`signature=!!!`) is masked with it.
+        const whole = redactEndpoint(match);
+        if (whole !== match) {
+            return whole;
+        }
+        // 2. Prose may end a URL with `]`, `)`, `.` and the like, which can make it unparsable:
+        //    retry without them and put them back.
         const url = match.replace(TRAILING_DELIMITERS, '');
-        const redacted = redactEndpoint(url);
-        // An unparsable URL comes back unchanged: still mask its `user:pass@` and sensitive query
-        // values without parsing, so this fails toward hiding.
-        const safe = redacted === url ? maskSensitiveQuery(url.replace(URL_USERINFO, '$1***@')) : redacted;
-        return safe + match.slice(url.length);
+        const trimmed = url === match ? match : redactEndpoint(url);
+        if (trimmed !== url) {
+            return trimmed + match.slice(url.length);
+        }
+        // 3. Still unparsable or unchanged: mask `user:pass@` and sensitive query values without
+        //    parsing, over the whole match, so this fails toward hiding.
+        return maskSensitiveQuery(match.replace(URL_USERINFO, '$1***@'));
     }));
 }
