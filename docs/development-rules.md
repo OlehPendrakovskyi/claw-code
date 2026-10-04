@@ -82,22 +82,30 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* the `gatewayProtocolV4*` test suites.
 
 **R26. Protocol versioning goes through an adapter + negotiation.** *claw-code, MUST.* A version-neutral model, `GatewayProtocolAdapter`, a v4 adapter; registration negotiates the version from a setting (`openclaw.gateway.protocolVersion: auto | 4`); an unsupported version yields a clear permanent error; the negotiated version is visible in the status badge and logs.
+*Check:* `gatewayProtocolV4.test.ts` (version negotiation).
 
 **R27. Handshake uses the server's closed enums.** *claw-code, MUST.* Client id/mode only from the gateway's permitted values (for example `gateway-client/backend`); failures are classified by `error.details.code` exactly as the server sends them (`AUTH_*`, `DEVICE_AUTH_*`, `PAIRING_REQUIRED`, `PROTOCOL_MISMATCH`); credential/protocol failures stop reconnecting with a clear message, rate-limit/unavailability is backed off while respecting `retryAfterMs`; `hello-ok.policy` is parsed and clamps client limits.
+*Check:* `gatewayProtocolV4.errors.test.ts` (failure classification and reconnect policy).
 
 **R15. Parse foreign configs per the product's specification, not guesswork.** *General, MUST.* Discovery/migration for chained language-override keys (`[ts][js]`) must rely on the product's actual semantics (VS Code `overrideIdentifiersFromKey` — indexing under each identifier), otherwise the guard misses valid data.
+*Check:* `gatewayConfig.test.ts` (language-override migration).
 
 **R29. Third-party CLI agents are described by their real behaviour, not guesses.** *claw-code, MUST.* For acpx: the real output format (ACP JSON-RPC from `--format json`), stdin `exec --file -` (the prompt as one explicit ACP text block — a leading `[` is parsed as content blocks), exit 5 = denied permission after a response (a normal completion with a notice), JSON-RPC ids are attributed by direction (an agent-side error ≠ a failed prompt), images are ACP image blocks, not temp files.
+*Check:* the `ChatService*.test.ts` suites (ACP output, stdin blocks, exit codes).
 
 **R32. Limits are measured in the form the transport actually reads.** *General, MUST.* The prompt budget is computed over the JSON-escaped payload (not raw text); per-file/per-image/frame limits come from the gateway's `hello-ok.policy`, not invented constants; the Windows argv budget uses worst-case quoting, NUL → one-byte substitute.
+*Check:* `ChatServiceBounds.test.ts` (prompt and argv budgets).
 
 **R37. Foreign-payload mapping is alias-tolerant, complete, and numerically validated.** *General, MUST.* One canonical mapper per direction; do not duplicate it (mapping drift). Read each semantic alias group completely (`input`, `inputTokens`, `promptTokens`, `input_tokens`, `prompt_tokens` for prompt tokens; `output`, `outputTokens`, `completionTokens`, `output_tokens`, `completion_tokens` for completion tokens; `totalTokens`, `total`, `total_tokens` for total). Complementary counters are never aliases of each other. Numbers are validated per R13. (PR #1: snake_case + duplicate mapper; PR #11: usage; PR #12: NaN.)
+*Check:* review checklist; usage-mapping tests in `gatewayProtocolV4.test.ts` and `ChatViewProvider.test.ts`.
 
 **R39. Structural validators distinguish absent from malformed where the difference is security- or data-bearing.** *General, MUST.* An array arriving where a record is expected, `null` where a field is optional, and a truncated object are distinct failure modes. The canonical reader pattern in this codebase normalises malformed payloads to safe defaults (`readRecord` → `EMPTY_RECORD`, readers → `null`) and drops the row — the right default for render paths. Where a security or data-integrity decision is made (path segments, secrets, sinks), the validator branches on the distinction instead of lumping it into one bucket that either drops valid data or accepts garbage. (PR #1, #8.)
+*Check:* review checklist.
 
 ## Untrusted input, secrets and the webview
 
 **R5. Untrusted input is validated at every trust boundary.** *General, MUST.* Semantically (not just shape), and re-validated after each await when the data is externally controllable.
+*Check:* review checklist; validation tests at each boundary (`gatewayProtocolV4*`, `viewMessagingHandlers.test.ts`).
 
 **R13. `Number(x) || fallback` is not validation.** *General, MUST.* `NaN` is falsy, so `NaN || fallback` selects the fallback rather than letting `NaN` pass. The real failure modes are the opposite: a valid `0` also selects the fallback, while truthy invalid values such as `Infinity` and negative numbers pass unchecked. Validate numbers from untrusted input with a `Number.isFinite(v) && v >= 0`-style helper — in this codebase `readNonNegativeInteger` / `readPositiveInteger` in `src/core/typeGuards.ts` — never with `||`.
 *Check:* review checklist.
@@ -115,10 +123,13 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist; `searchPath` / `cliLauncher` tests.
 
 **R31. Sensitive settings are user-scope only.** *claw-code, MUST.* A legacy token is never accepted from workspace settings; devices are identified per host via device identity (pairing); secrets live in robust credential storage; a workspace `.acpxrc.json` (which can override the agent command) executes only after explicit approval of that exact file (per folder + content hash).
+*Check:* `gatewayConfig.test.ts` and `acpxProjectConfig.test.ts`.
 
 **S3. Config and SecretStorage.** *claw-code, MUST.* The token lives only in SecretStorage; migration iterates ALL targets (user/workspace/folder × normal/language × Code/Code-OSS/VSCodium/Insiders + nested `.code-workspace`); per-folder updates in multi-root; the scope comes from `@types/vscode` — `{languageId, uri?}` (there is no `folderUri` field); tri-state migration result, retry incomplete, never cache failure; deprecated settings are registered in `package.json`.
+*Check:* `gatewayConfig.test.ts` (migration targets and scopes).
 
 **S4. Webview.** *claw-code, MUST.* Only `createElement`/`textContent` (no `innerHTML` with data); interactive rows are buttons (a11y); session keys from the webview are validated against the `sessions.list` allowlist (awaited); `emitState` after every await that changes rendering.
+*Check:* `contentJs.test.ts` and `ChatViewProvider.sessions.test.ts` (session-key allowlist).
 
 ## Filesystem and paths
 
@@ -128,6 +139,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 **S5. Paths/attachments.** Merged into R6.
 
 **R46. A platform-specific OS facility is a first-class code path — absolute binary, and an honest residual limit.** *General, MUST.* macOS cannot read the full path behind a descriptor through `/dev/fd` (it echoes its own path), so the full path comes from `lsof` run **by absolute path** (`/usr/sbin/lsof` — never a PATH lookup, same class as R30/R36), with a short timeout and a retry back-off so a stalled tool costs one timeout, not one per attachment; `lsof`'s escaped output (`\\`, `\t`, `\xHH`) is decoded before comparison. The gate is fail-closed exactly where the tool can tell: when the expected path is unambiguous to `lsof` (no caret/control character), any mismatch or missing answer rejects. Where `lsof` prints the name ambiguously (a caret or control character), the check falls back to `/dev/fd`, which only proves the basename — a same-named file in another directory can still pass, and that residual limit is documented in the code rather than claimed as full identity proof.
+*Check:* `lsofFdPath.test.ts`.
 
 ## Testing
 
@@ -141,16 +153,22 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist.
 
 **R12. Platform-dependent test setup goes inside a guarded hook.** *General, MUST.* `mkfifo` and other POSIX-only operations in `beforeEach` run before `it.skip`, so the test fails on Windows. Guard fixture setup/teardown with the same `process.platform` condition as the test itself.
+*Check:* the Windows CI leg, where setup that runs before a skip fails.
 
 **R44. Platform pinning covers OS-independent branches; OS-specific fixtures stay skipped.** *General, SHOULD.* Two situations, two tools. (a) A branch whose *setup* runs anywhere but whose logic asserts one OS (POSIX process-group signals, a `/proc`/`/dev/fd` path the spec stubs itself) **pins `process.platform`** for the enclosing `describe` with a save/restore hook (`helpers/platform.usePlatform`), so it runs on every runner. (b) A test whose *fixture or read path genuinely needs that OS's filesystem* (`mkfifo` a FIFO, read a real `/proc/self/fd` link) stays `posixOnly`-skipped on Windows, with its setup guarded per R12. Classify each case by whether the OS-specificity is real or only asserted.
+*Check:* review; the CI matrix (R40) runs every pinned branch on all three OSes.
 
 **R50. A module mock's factory returns every export the code under test reaches, transitively.** *General, MUST.* Vitest throws at access to a missing mocked export (`No "x" export is defined on the "y" mock`), but only once something reads that name — and the name it reads is whatever the module's own internals reach, not just what the test file names. Check the factory against the transitive reach of the code under test: walk the mocked module's consumers, not the test's own call sites. The cheap safe form is to return the whole export surface and assert it (`satisfies typeof import('…')`); a partial mock must still cover everything reachable, including the module's own `require`/dynamic-import edges. A mock that intercepts a name nothing reaches is worse than none: it reads as isolation that is not there.
+*Check:* Vitest fails at access to a missing mocked export; review checks each factory against the transitive imports of the code under test.
 
 **R51. A deprecated alias is not a removal.** *General, MUST.* Keeping `jest.SpyInstance`-shaped names alive next to the canonical ones means two spellings of one concept, and a runner swap turns the spare one into a type error at every use site. When canonicalising a name, migrate every call site in the same pass and delete the alias; a `@deprecated` JSDoc tag does not make a duplicate definition safe.
+*Check:* typecheck after the rename; review greps for the old name.
 
 **R53. `await` binds to the member access, not to the call.** *General, MUST.* `await resolveOnWindows(...).args` awaits the property of a promise, which is `undefined`, so the assertion fails with a plausible-looking diff and no error at the call. When a call becomes async, every `.field` on its result needs parens: `(await resolveOnWindows(...)).args`. Grep the whole diff for `await <call>(…).<prop>`; this is silent, not a build error.
+*Check:* review — grep the diff for `await <call>(…).<prop>`.
 
 **R54. A test hook's return value is an instruction, not a leftover.** *General, MUST.* `beforeEach(() => spy.mockReset().mockResolvedValue(…))` returns the mock itself. Vitest runs a **returned function** as the test's teardown, so the same line calls the mock once more after every test, and the damage lands on whichever test that extra call breaks — it reads as an unrelated or flaky failure. Write hooks that perform work with braces, so they return nothing; where the value is wanted, assign it to a named local. Audit the whole suite for expression-bodied hooks, not just the one that failed: `beforeEach(() => vi.useFakeTimers())` returns the `vi` object, not a function — harmless by accident, not by design.
+*Check:* review checklist.
 
 ## Cross-platform and CI
 
@@ -169,6 +187,7 @@ Basis: PR #16 turned a copied Windows job into a ubuntu/windows/macos matrix and
 *Check:* review checklist; the Windows and macOS CI legs.
 
 **R45. Paths shown to a user are normalised to forward slashes on every OS.** *General, MUST.* A `relativePath` compared against a query typed as `src/app` must be `path.relative(...).split(path.sep).join('/')` — otherwise it matches on POSIX and fails on Windows, which is a product bug (file search), not just a test concern.
+*Check:* `viewMessaging.test.ts` file-search tests, on the Windows CI leg.
 
 ## Documentation, claims and registries
 
@@ -178,6 +197,7 @@ The refactor phases (PRs #17, #20, #21, #26) produced bookkeeping faults rather 
 *Check:* review checklist.
 
 **R52. A shared reader's two entry points are two contracts.** *General, MUST.* Extracting one loop behind two wrappers (sync and async) produces wrappers whose *documented* guarantees differ, and the cheaper one is usually wrong: a sync wrapper that sizes one buffer from a prior `stat` reads short when the file grows below the cap, while the async loop reports the over-cap condition. Doc comments and regression tests state the difference per entry point — R47 one level up.
+*Check:* regression tests per entry point (`readBounded.test.ts`).
 
 **R48. A registry is a list of facts, and every entry is checked in both directions.** *General, MUST.* A constants registry that replaces scattered literals is a second source of truth, and it rots the moment a registration moves. Repair it with a two-way diff, not a read-through: every entry is grepped to a real registration, and every registration is either in the registry or in a documented exclusion. Entries that belong to another registry are named in that registry's comment as an explicit scope statement, so the next reader can tell a decision from an omission. Here the registries partition by declaration: `COMMANDS` holds the ids `package.json` declares, `INTERNAL_COMMANDS` the ones the host registers without declaring. (PR #20: one finding covered four `INTERNAL_COMMANDS` ids nothing registered.)
 *Check:* review checklist.
@@ -200,17 +220,22 @@ The refactor phases (PRs #17, #20, #21, #26) produced bookkeeping faults rather 
 *Check:* the PR author counts rounds per section.
 
 **R9. Small focused PRs.** *General, SHOULD.* A large PR (12 commits, concurrency core) means hours of review and churn. Ship the concurrency core as a separate PR with its own design.
+*Check:* review — a reviewer asks for a split when a PR mixes unrelated concerns.
 
 **R19. Every review round is a bug class, not a line.** *General, MUST.* After a finding, grep the whole diff (and then the codebase) for the same class, and fix similar valid spots in the same commit. After the PR, run a separate codebase-wide pass, with a PR immediately following the current one.
+*Check:* the PR author's thread reply names the sibling spots checked or fixed (R60).
 
 **R20. Rules are a living document.** *General, MUST.* Every technical PR, after its review cycle, adds or amends a declarative rule here (not "we fixed X" but "always do Y"). It goes under the right topic with the next free ID, never renumbering existing ones. The *General* rules are the portable part: they are copied to other projects as written.
+*Check:* review — a PR that went through a review cycle adds or amends a rule here.
 
 **R21. GitHub language is English.** *General, MUST.* All communication on GitHub (code comments, JSDoc, PR titles, descriptions, threads, summary comments, review bodies) is English-only, for any project, by owner decision (2026-09-29: for claw-code unconditionally, regardless of community-project status). It does not apply to internal chats or memory, and applies to new content only: existing Russian comments are not rewritten. Repository documentation is included: every new repository document is written in English.
+*Check:* review.
 
 **R60. Copilot review protocol.** *General, MUST.* Verify every finding against HEAD (review snapshots are often stale). Reply in every thread with what was done and the fixing commit, then resolve it. Read each review overview's **Open** and **Previously missed** sections as well as the inline threads. "Previously missed" findings have no thread, so answer them in one PR comment per review, finding by finding (valid → fixed in `<sha>`; invalid → the evidence). A finding that needs a code or dependency change outside the PR's scope is tracked (roadmap ID or issue), not silently dropped. Stop rule: a round that produces no commits ends the loop.
 *Check:* zero unresolved threads, and a disposition comment for every review with "Previously missed" items.
 
 **S6. Repository process.** *claw-code, MUST.* Explicit branch fetch (refspec hygiene, `git remote prune`); rebase onto the remote tip before pushing (verify with `ls-remote`); Conventional Commits; run the CI gates before every commit, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. Run the test runner directly as CI does: `pnpm run test` would repeat compile and lint through `pretest`. Diagnose hangs explicitly rather than force-terminating runs. Copilot reviews follow R60.
+*Check:* `.github/workflows/ci.yml` runs the same gates in the same order.
 
 **R55. Removing a tool is only complete when nothing names it.** *General, MUST.* After removing a tool, search the whole repository for its name — config, scripts, workflows, docs, and `/// <reference types="…" />` directives (which keep a removed package's types alive and hide the removal from `tsc`) — and change every invocation, not only the source that used it. Verify by running what CI runs, not what you just typed. (The Jest → Vitest migration went green locally while a CI step and a package script still named the old binary.)
 *Check:* review checklist.
