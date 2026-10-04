@@ -57,8 +57,9 @@ A VS Code companion for [OpenClaw](https://docs.openclaw.ai). Chat with the agen
 ## Requirements
 
 - VS Code **1.105** or newer.
-- An **OpenClaw Gateway** you can reach — on this machine, on a server or NAS, or in Docker — and its token. See the [OpenClaw docs](https://docs.openclaw.ai) to install one (`openclaw onboard --install-daemon`).
-- Optional: [`acpx`](https://www.npmjs.com/package/acpx) on your `PATH` for the local CLI fallback.
+- A chat backend — either or both of:
+  - an **OpenClaw Gateway** you can reach — on this machine, on a server or NAS, or in Docker — and its token (the primary path; see the [OpenClaw docs](https://docs.openclaw.ai), `openclaw onboard --install-daemon`);
+  - [`acpx`](https://www.npmjs.com/package/acpx) on your `PATH`, for the local CLI transport. With `openclaw.gateway.transport` set to `acpx` no Gateway is needed; with `auto` (the default) acpx is the fallback when the Gateway is unreachable.
 
 ## Install
 
