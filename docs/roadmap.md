@@ -7,7 +7,7 @@
 
 Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude Code (code.claude.com/docs/en/vs-code plus related pages: checkpoints, permission modes, sessions, MCP, deep links) and an audit of the fork's code (a local checkout of `openknots/openclaw-extension`, MIT, ~7800 lines of TypeScript).
 
-**Project status: COMMUNITY.** The fork is positioned as a public product for all OpenClaw users (not a one-owner customization). Every requirement below accounts for that: universality of setups (local CLI / Docker gateway on a NAS / remote server), data locality, no telemetry, compatibility and PR strategy. Publication: fork repository plus builds for the VS Code Marketplace and Open VSX, plus the extension package on ClawHub where applicable.
+**Project status: COMMUNITY.** The fork is positioned as a public product for all OpenClaw users (not a one-owner customisation). Every requirement below accounts for that: universality of setups (local CLI / Docker gateway on a NAS / remote server), data locality, no telemetry, compatibility and PR strategy. Publication: fork repository plus builds for the VS Code Marketplace and Open VSX, plus the extension package on ClawHub where applicable.
 
 ## 0. Cross-cutting community requirements
 
@@ -15,7 +15,7 @@ Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude
 2. **Private by default**: token in SecretStorage; nothing leaves the machine except the WebSocket connection to the user's own gateway; no telemetry.
 3. **Dual transport** (gateway-ws | cli) — works both for people on a local CLI and for those on a Docker gateway: removes the entry barrier for existing users of the openknot extension.
 4. **PR strategy**: standalone project (owner's repository); upstream OpenKnots is **not pulled and not synced** — over 90% of the code will be rewritten, so cherry-picking would become a source of conflicts rather than a saving. Upstream remains only as a **legal/archive reference** (not an active merge remote). At the fork's first commit, explicitly preserve the **MIT copyright notice of the original project** (openknots/openclaw-extension, author Val Alexander) and state **gratitude for the original** in the README/CHANGELOG: the license and attribution survive the rebranding to Claw Code; all new code is ours.
-5. **i18n neutrality**: UI strings in English (the community standard), with readiness for localization (strings gathered in one module).
+5. **i18n neutrality**: UI strings in English (the community standard), with readiness for localisation (strings gathered in one module).
 6. **Documentation**: README covering the key scenarios (connecting to a Docker gateway, choosing an agent, the terminal bridge), CHANGELOG, semantic versioning.
 7. **License**: retain the upstream MIT and explicitly state the fork's origin and differences.
 
@@ -79,12 +79,12 @@ Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude
 
 ## 2. Current state of the openknot extension
 
-Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`, `target: ES2022`, `lib: ES2020`), esbuild bundling (its output is CommonJS), vitest tests (plus a vscode mock), oxlint lint, pnpm for packages; publishing via vsce/ovsx. The scalability problems described below are what the restructuring addresses (§11):
+Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`, `target: ES2022`, `lib: ES2020`), esbuild bundling (its output is CommonJS), vitest tests (plus a vscode mock), oxlint lint, pnpm for packages; publishing via vsce/ovsx. The scalability problems described below are what the restructuring addresses (§9.1.1):
 
 - `src/extension.ts` — a **one-line bootstrap**: the ~72 KB monolith was already decomposed, and activation now lives in `src/vscode/`.
 - `src/chat/getWebviewContent.ts` — **the file is gone**: the ~117 KB UI monolith was already moved into `src/webview/content-js.ts` / `content-css.ts`.
 - `ChatService.ts` is the concrete acpx (local CLI) implementation — there is no separate transport interface; `chatServiceFactory` selects `gateway | acpx | auto` and hands callers one of two classes (`ChatService | GatewayChatService`) (acpx is the fallback when the Gateway is unreachable within a short timeout).
-- Token/settings are centralized in `src/core/gatewayConfig.ts` (settings + SecretStorage).
+- Token/settings are centralised in `src/core/gatewayConfig.ts` (settings + SecretStorage).
 
 | Present | Details |
 | --- | --- |
@@ -121,8 +121,8 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 ### P0 — must-have (without these the extension is neither "Claude-like" nor useful)
 
 | # | Feature | Taken from the Claude UX | Implementation on the openknot stack | Estimate | Dependencies / risks |
-|---|---|---|---|---|---|
-| P0-1 | **Gateway WS transport** | n/a (architectural) | New `src/core/gateway/GatewayClient.ts`: WS to the configured gateway (`wss://nas:18789` as the LAN example — a non-loopback host must use `wss://`), handshake per protocol.md (`role=operator`), token from settings (secret storage, not plaintext settings), auto-reconnect with backoff, discovery via `hello-ok.features.methods`. Transport security follows the implemented rule in `GatewayConfigService.sendsTokenInCleartext`: plaintext `ws://` is allowed only for a loopback host; any non-loopback gateway must use `wss://` or sit behind a secure tunnel, because the token crosses the network in the first `connect` RPC's `auth` object. The client warns once per URL today; requiring `wss://` for remote hosts is the target. `GatewayChatService` is a sibling concrete implementation next to `ChatService` (the acpx implementation, kept as fallback); callers type the backend as the `ChatService | GatewayChatService` union. | **M** | The protocol is documented; risk: protocol versions → mitigation: contract.ts + discovery |
+| --- | --- | --- | --- | --- | --- |
+| P0-1 | **Gateway WS transport** | n/a (architectural) | New `src/core/gateway/GatewayClient.ts`: WS to the configured gateway (`wss://nas:18789` as the LAN example — a non-loopback host must use `wss://`), handshake per protocol.md (`role=operator`), token from settings (secret storage, not plaintext settings), auto-reconnect with backoff, discovery via `hello-ok.features.methods`. Transport security follows the implemented rule in `GatewayConfigService.sendsTokenInCleartext`: plaintext `ws://` is allowed only for a loopback host; any non-loopback gateway must use `wss://` or sit behind a secure tunnel, because the token crosses the network in the first `connect` RPC's `auth` object. The client warns once per URL today; requiring `wss://` for remote hosts is the target. `GatewayChatService` is a sibling concrete implementation next to `ChatService` (the acpx implementation, kept as fallback); callers type the backend as the `ChatService \| GatewayChatService` union. | **M** | The protocol is documented; risk: protocol versions → mitigation: contract.ts + discovery |
 | P0-2 | **Agent selector + session binding** | "sessions/account" in Claude ≈ model selection | A picker in the webview and palette: `sessions.list` → filter to agents' main sessions → choose → all sends carry that `sessionKey`/`agentId`. Show the hasActiveRun indicator. | **M** | P0-1; `sessions.list` semantics are complex (snapshots/ownership) — take a minimal subset |
 | P0-3 | **Streaming chat with a transcript** | the basic panel UX | Subscribe to session events; reduce events into a UI model (text deltas, toolCall lines, done/error). Reuse the ChatEvent model, but with tool calls as collapsible groups (see P1-5). | **M** | P0-1; deltaCursor for catch-up on reconnect |
 | P0-4 | **Session history + resume** | Session history, resume, AI titles | A "History" button: `sessions.list`/`sessions.preview` → a list with previews and titles; click → `chat.history` to restore the transcript in the webview; continuing → `chat.send` into the same session. | **M** | P0-1..3; "cold" storage status → placeholder |
@@ -132,7 +132,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 ### P1 — greatly increases the value (what makes it a product)
 
 | # | Feature | Taken from the Claude UX | Implementation | Estimate | Dependencies / risks |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | P1-0 | **Terminal Bridge** — the agent asks to run commands in a VS Code terminal | equivalent to Claude Code's local exec | The extension opens a **second WebSocket to the Gateway as a node role** (official mechanism: node host over WS) for exec hosting. It must be a separate connection, not the P0-1 chat socket: the Gateway handshake negotiates exactly one role per connection, the chat socket is `role=operator` (chat RPCs need the operator scopes, e.g. `operator.approvals`), and switching it to `role=node` would drop them. The node-role socket carries its own pairing/auth, device identity and reconnect lifecycle. The agent calls exec (tests, scripts, rg) through the Gateway's standard exec-approvals mechanism; the extension receives the request, executes it in a VS Code terminal (`window.createTerminal` + shell integration API), and the output streams back to the agent. The loop closes: edit → test → fix. Approval: show the command to the user; "Always allow" is scoped to the exact execution context of §5.5.4 (command + arguments + working directory + workspace + the resolved executable path and content digests of the script/config the command loads), never to a bare runner name or to the command tuple alone, since that tuple can execute changed workspace code; where that code identity cannot be established, persistent approval is disabled and the request is escalated to Run once — see §5.5. | **M–L** | The key feature for "the agent lives on the Gateway, the project lives on the local machine". Depends on P0-1. Details: §5.5 |
 | P1-1 | **Inline diffs with accept/reject** | Manual mode, per-change review, Accept/Reject at Cursor | Mechanism (see §5.1): extract file edits from the agent's toolCall events; show the proposed version via `vscode.diff` (an OriginalContentProvider for the "before" state), accept = apply to disk/commit, reject = ignore. MVP simplification: **the agent already applied the edit on the Gateway host** → work with the already-changed file: keep a pre-edit snapshot (from a toolCall "write started" event or from git), show a diff view, accept = keep, reject = restore the snapshot. Per-change buttons — v2. | **L** | The main risk: edits happen on the Gateway/agent side, not in VS Code. For local repos the files are directly accessible; for a NAS see §5.4 |
 | P1-2 | **Permission modes (Manual / Edit automatically)** | a mode indicator in the prompt box | A UI flag → passed into the prompt context (an instruction to the agent "do not write files, show the plan of changes") plus a soft restriction via the Gateway's tool policy, if available. Full server-side enforcement is a question for the Gateway; on the MVP: prompt-level + movement of acceptance through P1-1. | **M** | Agent-side enforcement is not guaranteed — we set honest expectations in the UI |
@@ -146,7 +146,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 ### P2 — nice to have
 
 | # | Feature | Implementation | Estimate |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | P2-1 | AI titles for new sessions | `sessions.title.prepare` → `displayName` on `sessions.create` | S |
 | P2-2 | Auto-archive/groups in the history list | local categorisation over sessions.list (grouping per workspace folder in VS Code state) | M |
 | P2-3 | Side questions `/btw` | a side panel: a second webview with a separate one-shot chat session that does not write into the main one | M |
@@ -159,7 +159,7 @@ Effort legend: S ≈ hours to a day, M ≈ 2–4 days, L ≈ a week or more.
 ### Explicitly out of scope (we do not duplicate — and why)
 
 | Claude feature | Why we skip it |
-|---|---|
+| --- | --- |
 | **Bundled CLI / terminal mode** | We will **not bundle our own CLI** into the extension — terminal mode is niche. This does not mean dropping the existing external acpx transport: it remains the fallback (§0.3, P0-1) |
 | **Login/Anthropic accounts, Claude-format permission rules storage, `~/.claude/settings.json`** | Authentication is a Gateway token; permission rules belong to Gateway policy, not the extension |
 | **MCP configuration from the extension** | MCP lives on the Gateway/agents; manage it from the Control UI. Duplicating the UI means maintaining two sources of truth |
@@ -203,9 +203,9 @@ The unit is a "wave of edits" between toolCall lulls within one run. For local g
 The general case for the product: the Gateway (and the agent's workspace) lives on one host (Docker server, NAS, VPS), while the user's VS Code is on another. The project files may sit next to the Gateway, on the machine with VS Code, or be absent from the filesystem entirely (chats via paste). Options:
 
 | Option | When | Mechanics |
-|---|---|---|
+| --- | --- | --- |
 | **A. Repo next to the Gateway + VS Code Remote (SSH/WSL/Tunnel)** | the main path for code | Remote opens the folder in the same place the agent's repo lives — all files are "local" to the window; diffs/checkpoints work as usual. The recommended path for code. |
-| **B. Paired node exec** | the window is local, the repo is on the Gateway host, Remote is not used | For reading/diffs: `nodes`-invoke through Gateway RPC (dir.list/file.fetch) — for previews/context only; edits go through the agent. The diff is textual (see 5.1.4). |
+| **B. Paired node exec** | the window is local, the repo is on the Gateway host, Remote is not used | For reading/diffs: `nodes`-invoke through Gateway RPC (dir.list/file.fetch) — for previews/context only; edits go through the agent. The diff is textual (see §5.1.4). |
 | **C. Textual context without a filesystem** | the code is not reachable by the agent through the filesystem (closed environments, no git sources) | The extension inlines text fragments into the prompt (it already can); the agent returns a patch/text, applied manually. No filesystem magic. |
 
 Decision: the MVP is optimised for A (nothing needed — it works out of the box); B is a textual-diff fallback (P1-1); C already exists. **Documenting all three scenarios in the product README is still outstanding** — the current README has no Remote/SSH, paired-node, NAS or textual-filesystem fallback section, so this item must not be counted as delivered.
@@ -215,6 +215,7 @@ Decision: the MVP is optimised for A (nothing needed — it works out of the box
 The problem: the agent (on the Gateway) must be able to run commands on the user's machine — tests, project scripts, `rg`/codebase search, builds — and get the output. Without this, an agent on the Gateway is "blind and handless" with respect to a local project.
 
 Mechanics (all the components already exist in the Gateway, nothing to wait for):
+
 1. **Executor registration**: on connecting, the extension declares itself as a node/client role with exec capability (the same protocol the OpenClaw desktop nodes use; see protocol/handshake — caps/commands/permissions). This is a **second, node-role connection alongside the operator-role chat socket** — one role per connection, so the chat transport stays `role=operator` and keeps its scopes.
 2. **Agent request**: standard exec through the Gateway with `exec-approvals` — the agent initiates, the Gateway routes to our "node" client.
 3. **Execution in the VS Code terminal**: `window.createTerminal` (plus the shell integration API for structured output). The user sees the command and the output in real time — the same transparency as Claude Code.
@@ -222,6 +223,7 @@ Mechanics (all the components already exist in the Gateway, nothing to wait for)
 5. **Returning output**: stdout/stderr streams to the agent as the tool result; long outputs are truncated with the tail kept (like tokenjuice).
 
 Implementation in stages:
+
 - **MVP+ (optional in the MVP)**: a manual mode — the extension shows a "command request" in the chat, the user runs it themselves, and a button sends the output to the agent.
 - **v1 (full P1-0)**: automatic exec via approvals bound to the immutable code identity described in §5.5.4 (command + arguments + cwd + workspace + resolved executable path + content digests of the loaded script/config), with persistent approval disabled and the request escalated to Run once whenever that identity cannot be established — not a generic runner-name or command-tuple allowlist, which the detailed design rejects as workspace-controlled execution. Output streaming.
 - **v2**: background tasks (dev servers) in `/tasks`, several parallel terminals, working across multiple workspaces.
@@ -235,8 +237,10 @@ Risks: security (every command requires an explicit decision bound to its exact 
 ## 6. Roadmap: MVP → v1 → v2
 
 ### MVP (≈ 2–3 weeks) — "a useful chat to the Gateway"
+
 Contents: P0-1..P0-6 (WS transport with a fallback to the old acpx, agent selector, streaming, history+resume, auto-context build-outs, slash commands), P1-6 (abort/steer), P1-8 (usage), P1-5 (tool-call groups, focus view can wait for MVP+).
 **Readiness criteria:**
+
 - Connecting to the Gateway by token with reconnect; the token in SecretStorage.
 - Choosing an agent in the UI; a message goes to its session; the reply streams; tool calls are visible as groups; stop works.
 - History: a session list with previews, clicking restores the transcript (including the cold placeholder), continuing works after a window restart (catch-up by deltaCursor).
@@ -245,16 +249,20 @@ Contents: P0-1..P0-6 (WS transport with a fallback to the old acpx, agent select
 - Tests: unit tests for GatewayClient (mock WS), the event reducer, contract adapters.
 
 ### v1 (≈ +3–4 weeks) — "editor integration"
+
 Contents: **P1-0 (terminal bridge: approvals bound to the immutable code identity of §5.5.4 + output streaming; persistent approval is disabled and the request escalated to Run once wherever that identity cannot be established — not a generic runner-name or command-tuple allowlist)**, P1-1 (inline diffs MVP: a diff view, accept/reject at the file level, a textual fallback for a NAS), P1-2 (Manual/Edit automatically modes at the prompt+UI level), P1-3 (full plan mode: the plan as an md document, approve), P1-4 (checkpoints: git-based for local repos, rewind code), P1-7 (multipanel with indicators).
 **Readiness criteria:**
+
 - An agent edit in a local repo shows a diff; reject returns the file to its previous state.
 - Plan mode: a full plan→edit the plan→approve→execute cycle within one session.
 - The checkpoint button on a message returns files to their pre-run state (git repo).
 - Two parallel sessions in different tabs with activity indication.
 
 ### v2 (≈ +2–4 weeks) — "polish and ecosystem"
+
 Contents: per-change accept/reject, P2-1 (AI titles), P2-2 (groups/auto-archive), P2-3 (/btw), P2-4 (URI handler), P2-5 (the remaining copy button; export itself is already implemented), P2-7 (the remaining a11y announcements and focus-last-message; the live region exists), the focus view toggle, NAS checkpoints via node exec if a paired node is connected, a `/tasks` map of background tasks (P2-6 partly).
 **Readiness criteria:**
+
 - Per-change review in the diff (up to 100 changes), Accept/Reject at Cursor.
 - Session titles are generated; history groups persist per workspace.
 - A deep link opens a tab with a prefilled prompt.
@@ -265,7 +273,7 @@ Contents: per-change accept/reject, P2-1 (AI titles), P2-2 (groups/auto-archive)
 ## 7. Summary priority table
 
 | Priority | Features | Total estimate |
-|---|---|---|
+| --- | --- | --- |
 | P0 | WS transport, agent selector, streaming, history/resume, auto-context, slash | ~2–3 weeks |
 | P1 | **Terminal bridge**, diffs, permission modes, plan mode, checkpoints, multipanel, abort/steer, usage, focus view | ~3–4 weeks |
 | P2 | Titles, groups, /btw, deep links, copy response, a11y, /tasks | ~2–3 weeks |
@@ -283,8 +291,8 @@ Contents: per-change accept/reject, P2-1 (AI titles), P2-2 (groups/auto-archive)
 Gaps found at the second review (beyond the terminal bridge P1-0):
 
 | # | Feature | Why | Priority | Estimate |
-|---|---|---|---|---|
-| A-1 | **Mid-session model switching** (`/model`) | For coding: a fast model for routine work, a strong one for architecture; Claude can | P1 | S |
+| --- | --- | --- | --- | --- |
+| A-1 | **Mid-session model switching** (`/model`) | For coding: a fast model for routine work, a strong one for architecture; Claude can already switch mid-session | P1 | S |
 | A-2 | **Inserting images/screenshots** (drag & drop is already done; clipboard paste remains) | A UI bug screenshot → the fix; Claude supports it. The composer already handles OS drop and the attachment pipeline accepts image MIME types; there is no paste handler yet | P1 | S (paste only) |
 | A-3 | **Keybinding set**: `Cmd+Esc` (editor↔chat focus), `Cmd+Shift+Esc` (new tab), `Cmd+N` | Working speed, Claude UX parity | P1 | S |
 | A-4 | **Notification on background completion** (OS notification + a coloured dot on the tab) | Long tasks: you left the tab → you come back via a notification | P1 | S (the dots are part of P1-7) |
@@ -296,12 +304,14 @@ Gaps found at the second review (beyond the terminal bridge P1-0):
 | A-10 | **Agent profiles per task type** (coding/review/domain) | Starting a session with the right agent + slash set quickly; domain-specific nuances belong in user profiles, not in the core | P2 | S |
 | A-11 | **Project Rules Ingester — built-in loading of project rules/skills** | Projects carry knowledge in standardised files (AGENTS.md, CLAUDE.md, .cursor/rules, .github/copilot-instructions.md, CONTRIBUTING, docs/adr). The ingester scans the repo by a configurable directory pattern set and publishes the rules to memory-wiki with provenance (file + lines) and a project binding; recall at session start by key. This is part of the plugin (not a separate product), strengthens every Gateway agent, and provides the `/conventions` slash command in the extension. | P1 | M–L |
 
-#### A-11 Project Rules Ingester — design
+### A-11 Project Rules Ingester — design
 
 **Project binding (hierarchy):**
+
 1. **Git remote URL** (normalised origin) — the primary key; it survives renames and works when the repo is cloned elsewhere.
 2. **An explicit alias** (`project: <name>`) — a manual override, required for non-git projects (proprietary configurations, legacy repos).
 3. **Path/folder name** — a fallback when there is no git.
+
 Recall: at session start or on agent selection the extension determines the key (git remote from the workspace → an alias from settings → the path) and supplies the found rules to the context.
 
 **The format catalogue (configurable, not hardcoded):** AGENTS.md, CLAUDE.md/.claude/*.md, .cursor/rules/*.mdc, .github/copilot-instructions.md, .windsurfrules, .clinerules, CONTRIBUTING.md, docs/adr/*.md, README#Architecture; custom globs. Extraction is a faithful copy of the text with provenance (LLM compression is an option, the raw text is always stored).
@@ -357,6 +367,7 @@ Technical decisions made once before the code starts, binding for the whole proj
 A standalone project (the owner's repository); upstream OpenKnots is not pulled and not synced (see §0.4) — one repository, one PR flow. Upstream is only an archive/legal reference (MIT + we keep the thanks); cherry-picking from it is not planned.
 
 **Branches/triggers:**
+
 - `main` protection is **in place via a ruleset, not the classic branch-protection API** (re-audited 2026-10-03): `branches/main/protection` still returns `Branch not protected`, but the active `main-branch-protection` ruleset does enforce the checks below. What the ruleset requires: required status check `ci` with the strict (up-to-date-branch) policy, `required_approving_review_count: 1`, required thread resolution, dismissal of stale reviews on push, and allowed merge methods merge/squash/rebase. It carries a `RepositoryRole` bypass (`always`), so the owner can merge without an external approval. The review gate at the start: **the owner is the sole maintainer and approver**. GitHub **does not let a PR author approve their own PR**, so the `1`-approval requirement is satisfied only through that owner bypass today; tighten it (2 reviews for other people's PRs, and reconsider the bypass) once other maintainers/contributors appear.
 - `dev` as a pre-release branch is optional at the start (the MVP can go straight to main through a PR).
 - Branch naming: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
@@ -381,6 +392,7 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 **Owner's principle**: the project must not have "dump files" — large multi-purpose modules get split by purpose. Namespaces are allowed for tidying up code organisation (owner's decision 2026-09-25).
 
 **Task 1 — Architecture analysis and planning** (the first days of the sprint, before code):
+
 - Review every module under `src/` (core/, vscode/, webview/, overview/, chat/) for "dumps": files over 300 lines with more than 10 exports of differing purposes.
 - Target structure: modules by responsibility, namespaces/barrels for public surfaces, classes + DI for stateful parts.
 - Result: a module-map document (into the plan, an addition to §3) + a list of dump files with a plan for splitting them.
@@ -401,10 +413,11 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 
 ### 9.1.7 Sprint 3 candidate: a shared markdown/text utility module (owner's proposal, 2026-09-26)
 
-**Facts**: duplication today is limited to HTML escaping, and it is two different implementations — `webview/viewMessaging.ts` uses lodash's `escape` (re-exported locally as `escapeHtml`) only as a fallback inside `renderMarkdown`, while `webview/content-js.ts` (the webview-side script) has its own `escapeHtml`. There is no `escapeGlob` in the repository. `accessInfo/format.ts` is markdown report generation (domain formatting, not rendering). But both layers work with markdown.
+**Facts**: duplication today is limited to HTML escaping, and it exists as two different implementations — `webview/viewMessaging.ts` uses lodash's `escape` (re-exported locally as `escapeHtml`) only as a fallback inside `renderMarkdown`, while `webview/content-js.ts` (the webview-side script) has its own `escapeHtml`. There is no `escapeGlob` in the repository. `accessInfo/format.ts` is markdown report generation (domain formatting, not rendering). But both layers work with markdown.
 
 **Plan (S). Owner's decision 2026-09-26: do it on the next touch of these files, do not allocate a separate sprint:**
-- Move out `core/markdown.ts` (or `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitize + the escaping fallback) and the link-safety helpers it depends on — pure text/markdown utilities with no vscode dependency. Decide at that point whether the lodash `escape` fallback stays or becomes a local helper; do not treat the webview's `content-js.ts` `escapeHtml` as part of this move (that script is injected into the webview as source and cannot import from `core/`).
+
+- Move out `core/markdown.ts` (or `core/text.ts`): `renderMarkdown` (markdownToHTML + sanitise + the escaping fallback) and the link-safety helpers it depends on — pure text/markdown utilities with no vscode dependency. Decide at that point whether the lodash `escape` fallback stays or becomes a local helper; do not treat the webview's `content-js.ts` `escapeHtml` as part of this move (that script is injected into the webview as source and cannot import from `core/`).
 - `viewMessaging.ts` imports from there; do NOT move `accessInfo/format.ts` (that is a domain report; moving it would create a new mini-dump).
 - If accessInfo ever needs HTML escaping — take it from `core/markdown.ts`.
 - Sprint 3 leftovers from the Architect's review: `core/frames.ts` (parseFrame + mappers from gatewayChatService/contract), splitting the accessInfo tests per submodule.
@@ -418,15 +431,17 @@ A standalone project (the owner's repository); upstream OpenKnots is not pulled 
 ### Task 1 — architecture analysis and planning: **partial**
 
 Fully covered:
+
 - `src/extension.ts` — **1 line, 58 bytes**. The ~72 KB monolith was decomposed.
 - `src/chat/getWebviewContent.ts` — **the file is gone**. The ~117 KB monolith was moved into `src/webview/content-js.ts` / `content-css.ts`.
 
 Not covered:
+
 - **The module map as an artifact is missing.** §9.1.6 required the result to be "a module-map document + a list of dump files with a plan for splitting them". This audit supplies the dump-file list and its measurement (the table below), but no module-map document exists — to this day there is only the `core/` / `vscode/` / `webview/` split — and no splitting plan accompanies the table. Both are still outstanding.
 - **Dump files above the threshold were identified only by this audit, and not by a standalone artifact.** The table below is the measurement and the conclusion; §9.1.6 asked for a plan for splitting them, and there still is none. The task's threshold is "more than 300 lines with more than 10 exports of differing purposes". That is two conditions plus a judgement: lines, export count, and whether the exports serve unrelated responsibilities. Measured on 2026-10-03 (top-level `export` statements; the line count is the file's last line number, so a file with no trailing newline counts one higher than `wc -l` reports):
 
 | File | Lines | Top-level exports | Meets the threshold? |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `src/webview/ChatViewProvider.ts` | 2940 | 2 | **No** — it is one large provider class. It fails the export count outright; its size is a cohesion problem, not a dump of mixed exports |
 | `src/webview/content-js.ts` | 2774 | 5 | **No** — mostly long string payloads (`TOOL_STATUS_JS` and friends), not logic |
 | `src/core/gatewayChatService.ts` | 2307 | 9 | **No** — one service module; 9 exports, under the count |
