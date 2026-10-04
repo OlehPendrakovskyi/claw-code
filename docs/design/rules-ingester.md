@@ -26,7 +26,7 @@ Domain-specific formats (for example `.bsl` files or proprietary LSP servers) be
 
 ## Lifecycle
 
-1. Ingest on request (`/conventions ingest`), or on first contact with the repository when the Gateway is local (see *Privacy*).
+1. Ingest on request (`/conventions ingest`). On first contact with a repository the extension may **offer** to ingest, but never ingests without the user's confirmation (see *Privacy*).
 2. Wiki synthesis with project metadata.
 3. A fingerprint (a hash of the source files).
 4. On change: a proposed update diff — **never a silent update**.
@@ -34,7 +34,7 @@ Domain-specific formats (for example `.bsl` files or proprietary LSP servers) be
 
 ## Privacy
 
-Rules are stored in the user's memory-wiki vault, which lives **on the configured Gateway**. With a local Gateway they stay on the machine; with a Gateway on a NAS or server (roadmap §5) the raw rule text is sent to that host. The extension sends them nowhere else and has no telemetry. The ingest prompt names the Gateway host as the destination before anything is uploaded, and ingest is always explicit (never automatic) for a non-loopback Gateway.
+Rules are stored in the user's memory-wiki vault, which lives **on the configured Gateway**. With a local Gateway they stay on the machine; with a Gateway on a NAS or server (roadmap §5) the raw rule text is sent to that host. The extension sends them nowhere else and has no telemetry. Every ingest asks for confirmation and names the Gateway as the destination. A loopback URL is **not** treated as proof that the Gateway is local — an SSH port forward or tunnel exposes a remote Gateway as `127.0.0.1` — so the confirmation can be skipped only if the Gateway itself provides a trustworthy locality signal, which it does not today.
 
 ## Slash commands
 
