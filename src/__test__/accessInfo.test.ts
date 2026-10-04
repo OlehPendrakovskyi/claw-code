@@ -446,6 +446,11 @@ describe('redactText', () => {
         expect(redactText('endpoint_https://alice:secret@host.example/x')).toBe('endpoint_https://***:***@host.example/x');
     });
 
+    it('masks a JSON credential value that contains escaped quotes', () => {
+        expect(redactText('{"token":"abc\\"def","page":2}')).toBe('{"token"=***,"page":2}');
+        expect(redactText("{'secret':'a\\'b'}")).not.toContain('b\'');
+    });
+
     it('masks plain-text key and signature values outside URLs', () => {
         expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=*** signature=*** page=2');
     });

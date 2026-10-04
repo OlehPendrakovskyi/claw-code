@@ -29,10 +29,10 @@ export function redactEndpoint(endpoint: string): string {
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
 export function redactPlainSecrets(text: string): string {
     const sensitiveKey =
-        /(["']?[A-Za-z0-9_.-]*(?:token|api[_-]?key|apikey|key|secret|password|passwd|credential|access[_-]?key|signature)[A-Za-z0-9_.-]*["']?)\s*[:=]\s*("[^"]*"|'[^']*'|`[^`]*`|\S+)/gi;
+        /(["']?[A-Za-z0-9_.-]*(?:token|api[_-]?key|apikey|key|secret|password|passwd|credential|access[_-]?key|signature)[A-Za-z0-9_.-]*["']?)\s*[:=]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\S+)/gi;
     return text
         .replace(sensitiveKey, '$1=***')
-        .replace(/(["']?authorization["']?)\s*[:=]\s*("[^"]*"|'[^']*'|`[^`]*`|\S+.*)/gi, '$1=***')
+        .replace(/(["']?authorization["']?)\s*[:=]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\S+.*)/gi, '$1=***')
         .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
 }
 
