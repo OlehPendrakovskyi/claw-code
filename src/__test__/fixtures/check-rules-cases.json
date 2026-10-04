@@ -396,6 +396,30 @@
             "file": "src/__test__/c.test.ts",
             "line": "fs.mkdtempSync(path.join(TEMP_ROOT, 'tmpfiles-'));",
             "expect": null
+        },
+        {
+            "name": "R36: shell given as a path",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { shell: '/bin/bash' });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shell from a variable",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { shell: useShell });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shorthand shell option",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { shell });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: shell explicitly false",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { shell: false });",
+            "expect": null
         }
     ]
 }

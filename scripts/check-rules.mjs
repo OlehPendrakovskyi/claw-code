@@ -231,7 +231,9 @@ const CHECKS = [
         scope: 'source',
         message: 'shell execution; use execFile/spawn with an argv vector and no shell',
         test: (node, context) =>
-            (ts.isPropertyAssignment(node) && lastName(node.name) === 'shell' && node.initializer.kind === ts.SyntaxKind.TrueKeyword) ||
+            // Any `shell` option but a literal false runs a shell: `true`, a path such as '/bin/bash', a variable.
+            (ts.isPropertyAssignment(node) && lastName(node.name) === 'shell' && node.initializer.kind !== ts.SyntaxKind.FalseKeyword) ||
+            (ts.isShorthandPropertyAssignment(node) && node.name.text === 'shell') ||
             SHELL_EXECUTORS.has(calledExport(node, context.childProcess) ?? '') ||
             importsShellExecutor(node),
     },

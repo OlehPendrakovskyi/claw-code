@@ -44,8 +44,22 @@ const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
 /** The userinfo of a URL, `scheme://user:pass@`, matched without parsing: up to the last `@` of the
  *  authority, since a raw `@` may appear inside the password. */
 const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/i;
-/** A query parameter whose name matches SENSITIVE_PARAM, matched without parsing. */
-const URL_SENSITIVE_QUERY = new RegExp(`([?&][^=&#\\s]*${SENSITIVE_PARAM.source}[^=&#\\s]*=)[^&#\\s]*`, 'gi');
+/** One `name=value` query parameter, matched without parsing. */
+const URL_QUERY_PARAM = /([?&])([^=&#\s]*)=([^&#\s]*)/g;
+
+/** Mask sensitive query values in an unparsable URL. Names are percent-decoded first (`to%6ben` is
+ *  `token`); a name that does not decode is treated as sensitive, so this fails toward hiding. */
+function maskSensitiveQuery(url: string): string {
+    return url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) => {
+        let decoded: string;
+        try {
+            decoded = decodeURIComponent(name.replace(/\+/g, ' '));
+        } catch {
+            return `${separator}${name}=***`;
+        }
+        return SENSITIVE_PARAM.test(decoded) ? `${separator}${name}=***` : param;
+    });
+}
 
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
@@ -57,7 +71,7 @@ export function redactText(text: string): string {
         const redacted = redactEndpoint(url);
         // An unparsable URL comes back unchanged: still mask its `user:pass@` and sensitive query
         // values without parsing, so this fails toward hiding.
-        const safe = redacted === url ? url.replace(URL_USERINFO, '$1***@').replace(URL_SENSITIVE_QUERY, '$1***') : redacted;
+        const safe = redacted === url ? maskSensitiveQuery(url.replace(URL_USERINFO, '$1***@')) : redacted;
         return safe + match.slice(url.length);
     }));
 }

@@ -15,11 +15,11 @@ pnpm run typecheck
 pnpm run lint
 pnpm run check:rules
 pnpm run compile
-pnpm exec vitest run
+pnpm run test:coverage
 pnpm run license:check
 ```
 
-Run Vitest directly as above: `pnpm run test` repeats compile and lint through `pretest`.
+Run Vitest through `test:coverage` as above, which applies the coverage thresholds CI enforces: `pnpm run test` would repeat compile and lint through `pretest` and skip coverage.
 
 Working rules:
 

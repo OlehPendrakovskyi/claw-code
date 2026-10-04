@@ -430,6 +430,14 @@ describe('redactText', () => {
         expect(redactText('bad https://alice:secret@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });
 
+    it('masks a percent-encoded sensitive query name when the URL cannot be parsed', () => {
+        expect(redactText('bad https://[not-a-host/x?to%6ben=secret&page=2')).toBe('bad https://[not-a-host/x?to%6ben=***&page=2');
+    });
+
+    it('masks a query value whose name does not decode, failing toward hiding', () => {
+        expect(redactText('bad https://[not-a-host/x?a%E0=secret')).toBe('bad https://[not-a-host/x?a%E0=***');
+    });
+
     it('masks a password containing @ when the URL cannot be parsed', () => {
         expect(redactText('bad https://alice:p@ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });

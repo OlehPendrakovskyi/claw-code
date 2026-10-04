@@ -6,7 +6,7 @@
 
 Rules are in `docs/development-rules.md`; tick what applies, strike out what does not.
 
-- [ ] CI gates pass locally, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check` (S6)
+- [ ] CI gates pass locally, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm run test:coverage`, `pnpm run license:check` (S6)
 - [ ] Every fix ships a regression test that fails without it; a behaviour change has a test for its new boundary (R7, R34, R49)
 - [ ] Async code revalidates after every `await`, with a generation or ownership check (R2, R3)
 - [ ] Teardown retires only the owner's own registration (R1, R16, R17, R23)

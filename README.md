@@ -182,7 +182,7 @@ pnpm install
 pnpm run watch       # rebuild on change; press F5 to launch the Extension Development Host
 ```
 
-Before pushing, run the same gates as CI, in its order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. CI also measures test coverage against the thresholds in `vitest.config.ts` (`pnpm run test:coverage`). CI runs on Linux, Windows and macOS.
+Before pushing, run the same gates as CI, in its order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm run test:coverage`, `pnpm run license:check`. `test:coverage` applies the coverage thresholds in `vitest.config.ts`, as CI does. CI runs on Linux, Windows and macOS.
 
 Project documents: [roadmap](docs/roadmap.md), [engineering foundation](docs/engineering.md), [development rules](docs/development-rules.md).
 
