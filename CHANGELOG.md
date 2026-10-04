@@ -17,7 +17,7 @@ Semantic Versioning.
 
 ### Changed
 
-- CI enforces more of the development rules: type-aware linting across the codebase (`pnpm run lint`), line-based rule checks (`pnpm run check:rules`), and test-coverage thresholds of at least 90% on the Linux leg (`pnpm run test:coverage`). New tests for the setup, hardening, Overview, terminal, status bar and recommendation code raise coverage from 88% to 95% of statements.
+- CI enforces more of the development rules: type-aware linting across the codebase (`pnpm run lint`), syntax-aware rule checks (`pnpm run check:rules`, using the TypeScript parser), and test-coverage thresholds of at least 90% on the Linux leg (`pnpm run test:coverage`). New tests for the setup, hardening, Overview, terminal, status bar and recommendation code raise coverage from 88% to 95% of statements.
 - Add a pull-request checklist and `AGENTS.md` for contributors and coding agents.
 
 ### Docs

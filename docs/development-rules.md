@@ -111,7 +111,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist.
 
 **R10. Log hygiene.** *General, MUST.* Never log secrets, prompts or file contents; log only counters, keys and ids.
-*Check:* `pnpm run check:rules` flags log calls that interpolate prompt or payload text or `JSON.stringify` (line-based; multi-line calls still need review).
+*Check:* `pnpm run check:rules` parses each source file and flags any logger call (`log`, `logger`, `this.logger`, `console`, …) with a prompt- or payload-named value (`text`, `prompt`, `body`, …) or `JSON.stringify` in any argument. It judges by name, not by type, so review still applies.
 
 **R35. Credentials are redacted on every egress surface, not only in logs.** *General, MUST.* UI labels, tree descriptions, reports, error messages, and prompt wrappers pass a sanitiser (URL forms: userinfo and `?key=***`; plaintext: `key=…`, `OPENAI_API_KEY=…`, `"token":"…"`, `Bearer …`); a child process's `stderr` is sanitised too; never echo the raw value of a workspace setting back in an error. R10 covers logs only; this is the separate, equally mandatory surface. (Recurring class: 30 findings across PRs #1, #8, #11.)
 *Check:* review checklist.

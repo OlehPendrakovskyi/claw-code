@@ -1,5 +1,5 @@
 {
-    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it.",
+    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it; `expect` is the rule reported at line 1, or null for a clean run.",
     "cases": [
         {
             "name": "R10: template interpolation of prompt text",
@@ -62,10 +62,10 @@
             "expect": null
         },
         {
-            "name": "R10 limitation: a call split across lines is not seen",
+            "name": "R10: a call split across lines",
             "file": "src/a.ts",
             "line": "log.info(\n    `p=${prompt}`\n);",
-            "expect": null
+            "expect": "R10"
         },
         {
             "name": "R10 scope: test files may log anything",
@@ -162,6 +162,78 @@
             "file": "src/__test__/d.test.ts",
             "line": "afterEach((ctx) => {",
             "expect": null
+        },
+        {
+            "name": "R10: this.logger receiver",
+            "file": "src/a.ts",
+            "line": "this.logger.info(`prompt=${request.text}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as a later argument",
+            "file": "src/a.ts",
+            "line": "log.info('send', prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: console receiver",
+            "file": "src/a.ts",
+            "line": "console.log(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: text passed through a helper call",
+            "file": "src/a.ts",
+            "line": "log.info(`p=${shorten(prompt)}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: transformed text",
+            "file": "src/a.ts",
+            "line": "log.debug(`p=${prompt.trim().toLowerCase()}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a field of a payload that is not text",
+            "file": "src/a.ts",
+            "line": "log.info(`type=${msg.type}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: an error message through a helper",
+            "file": "src/a.ts",
+            "line": "log.error(`failed: ${errorMessage(err)}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a non-logger receiver",
+            "file": "src/a.ts",
+            "line": "panel.info(text);",
+            "expect": null
+        },
+        {
+            "name": "R36: exec import split across lines",
+            "file": "src/b.ts",
+            "line": "import {\n    spawn,\n    exec,\n} from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: renamed exec import",
+            "file": "src/b.ts",
+            "line": "import { exec as run } from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: tmpdir() through a destructured import",
+            "file": "src/__test__/c.test.ts",
+            "line": "const dir = tmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R54: expression body on the next line",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach(() =>\n    vi.useRealTimers());",
+            "expect": "R54"
         }
     ]
 }

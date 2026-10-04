@@ -50,7 +50,7 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm run lint
 
-      # Line-based checks for development rules R10, R36, R43 and R54 (scripts/check-rules.mjs).
+      # Syntax-aware checks for development rules R10, R36, R43 and R54 (scripts/check-rules.mjs).
       - name: Rule checks
         if: runner.os == 'Linux'
         run: pnpm run check:rules
