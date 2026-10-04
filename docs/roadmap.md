@@ -2,7 +2,7 @@
 
 > **Status on 2026-10-04.** Version 0.2.1. The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Feature status lives in one place: the table in §6.
 >
-> **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is never used in the product name, in identifiers (namespaces, commands, settings) or in published material.
+> **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is not used as or in the product's name or branding, nor in identifiers (namespaces, commands, settings). Published material refers to it only where factually necessary — this note, or third-party file names such as `CLAUDE.md` that the rules ingester reads.
 
 This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b784585`, and the long version of this file). Design detail and history now live in separate documents:
 
@@ -87,7 +87,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | REL-5 | `SECURITY.md` with a private vulnerability-reporting path | R0 | Todo | S | Required before the Terminal Bridge ships |
 | REL-6 | Marketplace listing: current screenshots, icon, categories, Open VSX metadata | R0 | Partial | S | Screenshots exist in `assets/images/` |
 | SEC-1 | Block, or require confirmation for, a non-loopback `ws://` gateway | R0 | Todo | S | §2 requirement 1 |
-| SEC-2 | Remove prompt text from the `handleSend` log line (`ChatViewProvider.ts:1032`) | R0 | Todo | S | Red-line violation, [engineering.md §3](engineering.md#3-logging) |
+| SEC-2 | Remove prompt text from logs: the `handleSend` line (`ChatViewProvider.ts:1032`, first 80 characters) and the debug panel's message log (`debugPanel.ts:210`, the full `send` text); review the acpx stderr tail log (`ChatService.ts:412`) | R0 | Todo | S | Red-line violation, [engineering.md §3](engineering.md#3-logging) |
 | ENG-1 | One injected logger; production debug gate; CI file sink with tee/upload; consolidate the four output channels | v1 | Todo | M | [engineering.md §3](engineering.md#3-logging) |
 | ENG-2 | Split the dump files `viewMessaging.ts` and `slashCommands.ts` (maybe `gatewayConfig.ts`) | v1 | Todo | M | [Sprint 1 audit](audits/2026-10-03-sprint1.md) |
 | ENG-3 | Decide the transport layout: keep `gatewayChatService.ts` + `gatewayProtocol/`, or move to the `core/gateway/GatewayClient.ts` target | v1 | Open decision | — | [engineering.md §2](engineering.md#2-code-structure) |
@@ -140,7 +140,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | P2-2 | Auto-archive and per-workspace groups in history | v2 | Todo | M | |
 | P2-3 | Side questions (`/btw`) in a separate one-shot session | v2 | Todo | M | |
 | P2-4 | URI handler `vscode://<publisher>.claw-code/open?prompt=…&session=…` | v2 | Todo | S | Authority follows REL-2 |
-| P2-5 | Copy response to clipboard | v2 | Partial | S | Export to Markdown/JSON is done |
+| P2-5 | Copy response to clipboard | v2 | Todo | S | No copy action exists yet; conversation export to Markdown/JSON is a separate, finished feature |
 | P2-6 | `@terminal` mentions and a `/tasks` map of background processes | v2 | Todo | M–L | |
 | P2-7 | Screen-reader announcements for replies, tool steps and status; focus-last-message command | v2 | Partial | M | A persistent aria-live region announces approvals, questions and status changes |
 | P1-1c | Per-change accept/reject in the diff (up to 100), Accept/Reject at cursor, pre-apply in Manual mode | v2 | Todo | L | [Design](design/diff-and-checkpoints.md#v2-extensions) |

@@ -54,7 +54,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 - Errors carry stable codes (a `LogEvent` enum) and a context bag of safe fields only (sessionKey, iteration, event type); stack traces never reach the UI.
 - **Debug isolation**: develop against a separate dev gateway so agents' working memory is not polluted by debug traffic.
 
-**Current state (audit 2026-10-03):** none of the target exists yet. There is no shared logger class, no file sink and no debug gate; four output channels are created independently (`chat/ChatService.ts`, `vscode/commands/shared.ts`, `webview/debugPanel.ts`, `webview/viewMessaging.ts`), all at info level. One red-line violation exists: `ChatViewProvider.ts:1032` logs the first 80 characters of every prompt. Tracked as **SEC-2** (the violation) and **ENG-1** (the logger).
+**Current state (audit 2026-10-03):** none of the target exists yet. There is no shared logger class, no file sink and no debug gate; four output channels are created independently (`chat/ChatService.ts`, `vscode/commands/shared.ts`, `webview/debugPanel.ts`, `webview/viewMessaging.ts`), all at info level. Two red-line violations exist (re-checked 2026-10-04): `ChatViewProvider.ts:1032` logs the first 80 characters of every prompt, and `webview/debugPanel.ts:210` logs every message from the debug webview as JSON — including `send` messages, which carry the **complete** prompt text (`debugPanel.ts:178`). A third line needs review: `chat/ChatService.ts:412` logs the tail of acpx's stderr, whose content the CLI controls and may include prompt or file text. Tracked as **SEC-2** (the violations and the stderr review) and **ENG-1** (the logger).
 
 ## 4. Code quality
 
