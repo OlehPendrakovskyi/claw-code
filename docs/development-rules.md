@@ -117,7 +117,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist.
 
 **R36. Workspace-configurable values are untrusted command/URL input.** *General, MUST.* Never interpolate a workspace setting into a shell; only `execFile` with an argv vector and a quote-aware parser. An action that executes or connects in a workspace context is gated on workspace trust, and a setting that can choose such an action is user-scoped so a workspace can neither supply nor disable it. A URL taken from settings is scheme-validated (allow-list) before it is opened. Do not conflate user-scope secret protection (R31) with workspace-trust gating. *In claw-code:* `autoConnect` and the hardening command are gated on `workspace.isTrusted` and are application-scoped user settings; `openDashboard` is deliberately not trust-gated, because its http/https allow-list before `openExternal` is the entire protection for that path. (PR #1.)
-*Check:* review checklist.
+*Check:* `pnpm run check:rules` flags `exec`/`execSync` from `child_process` under any binding, and a `shell` option other than `false`, `null` or `undefined` on spawn options; trust gating and URL validation need review.
 
 **R30. External commands run only from absolute paths.** *General, MUST.* PATH entries without an absolute path (relative, repo-planted) are ignored (protection against planted `node.exe`/`cli.js`); npm/pnpm shims on Windows resolve to the JS entry and run through node without a shell; children never receive an empty PATH; PATH is read case-sensitively on POSIX.
 *Check:* review checklist; `searchPath` / `cliLauncher` tests.
