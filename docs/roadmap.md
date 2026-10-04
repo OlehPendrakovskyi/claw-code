@@ -82,7 +82,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | --- | --- | --- | --- | --- | --- |
 | REL-1 | Name availability and trademark check for `Claw Code` | R0 | Todo | S | §3 |
 | REL-2 | Owner-controlled publisher and Open VSX namespace; update `package.json` and derived IDs | R0 | Todo | S | §3 |
-| REL-3 | README for Claw Code | R0 | Done | S | Rewritten for the fork; the upstream README was removed in `b784585` |
+| REL-3 | README for Claw Code | R0 | Done | S | Rewritten for the fork; the upstream README was removed in the same change set |
 | REL-4 | Release workflow (tag → vsce + ovsx → GitHub Release) | R0 | Todo | M | [engineering.md §6](engineering.md#6-cicd) |
 | REL-5 | `SECURITY.md` with a private vulnerability-reporting path | R0 | Todo | S | Required before the Terminal Bridge ships |
 | REL-7 | Pin the packaging tools: add `@vscode/vsce` (MIT) and `ovsx` as dev dependencies, and make `install-local.sh`, `publish-all.sh` and the `publish:*` scripts call them via `pnpm exec`. Today the scripts fetch the latest release at run time, and `publish:vsce` / `publish:ovsx` call binaries that are not installed. `ovsx` is EPL-2.0: as a dev-only dependency it is outside the `--production` licence check, but it needs the owner's approval under the dependency policy | R0 | Todo | S | Until then the README pins `@vscode/vsce@4.0.0` |
