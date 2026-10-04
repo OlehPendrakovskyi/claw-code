@@ -31,6 +31,10 @@ const LOG_METHODS = new Set(['info', 'warn', 'error', 'debug', 'trace', 'append'
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 const SHELL_EXECUTORS = new Set(['exec', 'execSync']);
+/** child_process functions that take an options object, where `shell` would apply. */
+const PROCESS_SPAWNERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']);
+/** `shell` values that do not turn a shell on. */
+const SHELL_OFF = new Set([ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword]);
 
 /** The names a file binds to a module and to its exports, whatever they are called locally:
  *  `import * as cp`, `import cp`, `const cp = require(…)` (namespaces) and `import { exec as run }`,
@@ -83,10 +87,9 @@ function importsShellExecutor(node) {
         return bindings !== undefined && ts.isNamedImports(bindings) &&
             bindings.elements.some(element => SHELL_EXECUTORS.has((element.propertyName ?? element.name).text));
     }
-    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && node.initializer &&
-        ts.isCallExpression(node.initializer) && ts.isIdentifier(node.initializer.expression) &&
-        node.initializer.expression.text === 'require' && node.initializer.arguments.length === 1 &&
-        isChildProcess(node.initializer.arguments[0])) {
+    const loaded = ts.isVariableDeclaration(node) && node.initializer ? loadedModule(node.initializer) : undefined;
+    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && loaded !== undefined &&
+        /^(?:node:)?child_process$/.test(loaded)) {
         return node.name.elements.some(element => SHELL_EXECUTORS.has(lastName(element.propertyName ?? element.name) ?? ''));
     }
     return false;
@@ -222,6 +225,56 @@ function outputChannelBindings(source) {
     return names;
 }
 
+function isShellOption(node) {
+    if (ts.isShorthandPropertyAssignment(node)) {
+        return node.name.text === 'shell';
+    }
+    if (!ts.isPropertyAssignment(node) || lastName(node.name) !== 'shell') {
+        return false;
+    }
+    const value = unwrap(node.initializer);
+    return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
+}
+
+/** Whether a call starts a process: a child_process spawner by any binding, or a function of that name. */
+function isSpawnCall(node, context) {
+    return ts.isCallExpression(node) &&
+        (PROCESS_SPAWNERS.has(calledExport(node, context.childProcess) ?? '') || PROCESS_SPAWNERS.has(lastName(node.expression) ?? ''));
+}
+
+/** Whether an object literal is the options of a spawn call: passed inline, or held in a variable that
+ *  the same file passes to one (`const opts = { … }; spawn(cmd, args, opts)`). */
+function isSpawnOptions(object, context) {
+    if (!ts.isObjectLiteralExpression(object)) {
+        return false;
+    }
+    let node = object;
+    while (ts.isParenthesizedExpression(node.parent) || ts.isAsExpression(node.parent) || ts.isSatisfiesExpression(node.parent)) {
+        node = node.parent;
+    }
+    if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
+        return isSpawnCall(node.parent, context);
+    }
+    return ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) && context.spawnOptionNames.has(node.parent.name.text);
+}
+
+/** Identifiers a file passes to spawn calls (candidate option variables). */
+function spawnArgumentNames(source, context) {
+    const names = new Set();
+    const visit = node => {
+        if (isSpawnCall(node, context)) {
+            for (const argument of node.arguments) {
+                if (ts.isIdentifier(argument)) {
+                    names.add(argument.text);
+                }
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return names;
+}
+
 /** Local names of imported loggers: `import { log as out } from './shared'` makes `out` a logger. */
 function importedLoggers(source) {
     const names = new Set();
@@ -260,9 +313,9 @@ const CHECKS = [
         scope: 'source',
         message: 'shell execution; use execFile/spawn with an argv vector and no shell',
         test: (node, context) =>
-            // Any `shell` option but a literal false runs a shell: `true`, a path such as '/bin/bash', a variable.
-            (ts.isPropertyAssignment(node) && lastName(node.name) === 'shell' && node.initializer.kind !== ts.SyntaxKind.FalseKeyword) ||
-            (ts.isShorthandPropertyAssignment(node) && node.name.text === 'shell') ||
+            // A `shell` option on an object given to a process spawner, set to anything but false, null or
+            // undefined: `true`, a shell path such as '/bin/bash', or a variable.
+            (isShellOption(node) && isSpawnOptions(node.parent, context)) ||
             SHELL_EXECUTORS.has(calledExport(node, context.childProcess) ?? '') ||
             importsShellExecutor(node),
     },
@@ -323,6 +376,7 @@ for (const file of walk(SRC)) {
         outputChannels: outputChannelBindings(source),
         loggers: importedLoggers(source),
     };
+    context.spawnOptionNames = spawnArgumentNames(source, context);
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
     const visit = node => {
         for (const check of checks) {

@@ -480,6 +480,36 @@
             "file": "src/__test__/c.test.ts",
             "line": "fs.mkdtempSync(`${TEMP_ROOT}/openclaw-${id}-`);",
             "expect": null
+        },
+        {
+            "name": "R36 clean: an unrelated object with a shell field",
+            "file": "src/b.ts",
+            "line": "const profile = { shell: 'zsh', theme: 'dark' };",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: shell left undefined",
+            "file": "src/b.ts",
+            "line": "spawn(cmd, args, { shell: undefined });",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option in a variable passed to spawn",
+            "file": "src/b.ts",
+            "line": "const opts = { shell: true }; spawn(cmd, args, opts);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: import-only destructure behind a type assertion",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = require('child_process') as typeof import('child_process');",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: import-only destructure from an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "const { execSync } = await import('node:child_process');",
+            "expect": "R36"
         }
     ]
 }
