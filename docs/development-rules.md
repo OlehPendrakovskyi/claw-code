@@ -7,7 +7,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 - **IDs are stable.** `R1`–`R55` are the original numbered rules with their original numbers; `S1`–`S6` are the former "claw-code specifics" 1–6, renamed so they no longer collide with `R1`–`R6`. New rules continue from `R56`. An ID is never renumbered or reused. When rules merge, the absorbed ID keeps a one-line pointer entry. A reference such as "rule 50" in an older commit or code comment means `R50`.
 - **Grouped by topic, not by date.** Position in the file carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
-- **Scope.** *General* rules apply to any project and are the portable part of this file; *claw-code* rules apply to this repository.
+- **Scope.** *General* rules apply to any project and are the portable part of this file; *claw-code* rules apply to this repository. A General rule's principle carries over as written, but its examples, file paths, issue references and Check line are this repository's and must be adapted when the rule is copied elsewhere.
 - **Check** says how a rule is verified: the compiler, the linter, CI, a test, or the review checklist at the end of this file.
 
 | Topic | Rules |
@@ -225,7 +225,7 @@ The refactor phases (PRs #17, #20, #21, #26) produced bookkeeping faults rather 
 **R19. Every review round is a bug class, not a line.** *General, MUST.* After a finding, grep the whole diff (and then the codebase) for the same class, and fix similar valid spots in the same commit. After the PR, run a separate codebase-wide pass, with a PR immediately following the current one.
 *Check:* the PR author's thread reply names the sibling spots checked or fixed (R60).
 
-**R20. Rules are a living document.** *General, MUST.* Every technical PR, after its review cycle, adds or amends a declarative rule here (not "we fixed X" but "always do Y"). It goes under the right topic with the next free ID, never renumbering existing ones. The *General* rules are the portable part: they are copied to other projects as written.
+**R20. Rules are a living document.** *General, MUST.* Every technical PR, after its review cycle, adds or amends a declarative rule here (not "we fixed X" but "always do Y"). It goes under the right topic with the next free ID, never renumbering existing ones. The *General* rules are the portable part: their principles are copied to other projects, with the repository-specific examples, paths, issue references and checks adapted to the target project.
 *Check:* review — a PR that went through a review cycle adds or amends a rule here.
 
 **R21. GitHub language is English.** *General, MUST.* All communication on GitHub (code comments, JSDoc, PR titles, descriptions, threads, summary comments, review bodies) is English-only, for any project, by owner decision (2026-09-29: for claw-code unconditionally, regardless of community-project status). It does not apply to internal chats or memory, and applies to new content only: existing Russian comments are not rewritten. Repository documentation is included: every new repository document is written in English.
