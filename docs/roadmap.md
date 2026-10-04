@@ -1,9 +1,6 @@
 # "Claude for OpenClaw" — improvement plan for openknots/openclaw-extension
 
 > **Status on 2026-10-03.** Sprint 1 is partially closed — see §9.1.6 and the "Sprint 1 audit" section at the end of this document. The runner is Vitest and the linter is oxlint; CI is green on ubuntu/windows/macos.
-
-> **Relationship to the root `ROADMAP.md`.** This document is the authoritative project plan and replaces the old root `ROADMAP.md` (an older, high-level wishlist for voice chat, planning UX, and similar ideas that predate the §9 architecture decisions), which this PR deletes from the repository root. Where the two disagreed, this document wins. The old root file is not a second source of truth — its items have no sprint assignment, no estimates and no status here.
-
 > **The name is a working title.** "Claude for OpenClaw" is used only inside the team to discuss UX goals. Before the public release, replace it: "Claude" is an Anthropic trademark, and using another product's trademark in the name is misleading and legally risky. Never use the word `claude` as an identifier (namespace, commands, settings) in code or configuration. Publish under a neutral name.
 
 **Release name candidates** (theme: "a companion for OpenClaw inside the editor"): **`Claw Code` — primary candidate (owner's choice, 2026-09-24)**, then `OpenClaw Companion`, `OpenClaw Studio`, `OpenClaw IDE`, `Clawside`. Before publishing: check availability on the VS Code Marketplace / Open VSX / npm and confirm there are no trademark conflicts.
@@ -17,16 +14,17 @@ Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude
 1. **Zero-config connection**: an onboarding flow of "enter the gateway URL + token" at minimum; gateway discovery over the local network (Bonjour addressing, disableable via env — the owner has `OPENCLAW_DISABLE_BONJOUR` set, but others may have it enabled). Transport security follows the rule classified by `GatewayConfigService.sendsTokenInCleartext`: a non-loopback gateway (NAS, remote server) should use `wss://` or sit behind a secure tunnel — the token crosses the network in the first `connect` RPC's `auth` object (`gatewayChatService.ts` opens the socket with the URL only), so cleartext `ws://` to a remote host would send the credential in the clear. **Current state (audit, 2026-10-03): this is warn-only, not enforced** — `sendsTokenInCleartext` only classifies the URL, and `ChatServiceFactory.warnIfCleartext` (`chatServiceFactory.ts:164,302-309`) shows a one-off `showWarningMessage` and then connects anyway; there is no block. Outstanding work: reject the connection (or prompt for confirmation) for a non-loopback `ws://` gateway.
 2. **Private by default**: token in SecretStorage; nothing leaves the machine except the WebSocket connection to the user's own gateway; no telemetry.
 3. **Dual transport** (gateway-ws | cli) — works both for people on a local CLI and for those on a Docker gateway: removes the entry barrier for existing users of the openknot extension.
-4. **PR strategy**: standalone project (owner's repository); upstream OpenKnots is **not pulled and not synced** — over 90% of the code will be rewritten, so cherry-picking would become a source of conflicts rather than a saving. Upstream remains only as a **legal/archive reference** (not an active merge remote). At the fork's first commit, explicitly preserve the **MIT copyright notice of the original project** (openknots/openclaw-extension, author Val Alexander) and state **gratitude for the original** in the README/CHANGELOG: the licence and attribution survive the rebranding to Claw Code; all new code is ours.
+4. **PR strategy**: standalone project (owner's repository); upstream OpenKnots is **not pulled and not synced** — over 90% of the code will be rewritten, so cherry-picking would become a source of conflicts rather than a saving. Upstream remains only as a **legal/archive reference** (not an active merge remote). At the fork's first commit, explicitly preserve the **MIT copyright notice of the original project** (openknots/openclaw-extension, author Val Alexander) and state **gratitude for the original** in the README/CHANGELOG: the license and attribution survive the rebranding to Claw Code; all new code is ours.
 5. **i18n neutrality**: UI strings in English (the community standard), with readiness for localization (strings gathered in one module).
 6. **Documentation**: README covering the key scenarios (connecting to a Docker gateway, choosing an agent, the terminal bridge), CHANGELOG, semantic versioning.
-7. **Licence**: retain the upstream MIT and explicitly state the fork's origin and differences.
+7. **License**: retain the upstream MIT and explicitly state the fork's origin and differences.
 
 ---
 
 ## 1. What the Claude Code VS Code extension does (full feature list)
 
 ### 1.1 Chat and the prompt box
+
 - A graphical chat panel (sidebar / editor tab / separate window), multi-panel parallel sessions, coloured indicators on tabs (blue = awaiting permission, orange = finished in the background).
 - Session history: search, rename, archive (auto-archive after 14 days of inactivity), restore, sessions in named groups.
 - AI-generated session titles.
@@ -40,31 +38,37 @@ Date: 2026-09-24. Basis: the official VS Code extension documentation for Claude
 - Focus view — collapse tool calls/thinking, leaving only prompts and responses.
 
 ### 1.2 Permissions and modes
+
 - Permission modes in the prompt box indicator: **Auto** (a classifier decides), **Manual** (ask for edits/commands), **Plan** (describe a plan, wait for approval), **Edit automatically**.
 - In Manual: side-by-side diff before an edit, accept/reject, editing the proposed content directly in the diff view before accepting, per-change accept/reject (buttons under each change, up to 100 changes), Accept/Reject Change at Cursor commands plus the editor context menu.
 - Persistent permission rules (Allow/Ask/Deny, with user/project/local scopes).
 
 ### 1.3 Plan mode
+
 - Switching via mode or `/plan`, `/plan <task>`, `/plan open`.
 - The plan opens as a full Markdown document in the editor — commentable inline before the work starts.
 
 ### 1.4 Diffs, checkpoints, rollback
+
 - Inline diffs in the editor and in the panel, auto-accept mode.
 - **Checkpoints**: a rewind button on every message with three options: fork conversation / rewind code only / fork + rewind.
 - Autosave of files before the agent reads or writes them.
 
 ### 1.5 IDE context
+
 - Claude sees the selection automatically; `Option+K` inserts an @-mention of the selection.
 - attachOpenFile — the open file enters the context automatically.
 - Exchange of diagnostics (linter problems) with the CLI; respectGitIgnore for file search; git diff/staged in context.
 - Automatic Python environment activation.
 
 ### 1.6 Keyboard and commands
+
 - `Cmd+Esc` toggles focus editor↔chat; `Cmd+Shift+Esc` opens a new tab; `Option+K` @-mention; Cmd+N new session; Cmd+Shift+T reopen closed session; Focus last message (accessibility).
 - Full screen reader support (announcing replies, tool steps, permission prompts, statuses).
 - URI handler `vscode://anthropic.claude-code/open?prompt=...&session=***` — launching sessions from scripts.
 
 ### 1.7 Ecosystem and the rest
+
 - MCP management UI (`/mcp`), plugins and marketplaces (`/plugins`, install-plugin deep link).
 - Subagents with live progress lines; `/tasks` — a map of background tasks (dev servers and the like).
 - Multi-root workspaces, per-workspace session groups.
@@ -80,10 +84,10 @@ Fork stack: **TypeScript strict** (`module: ESNext`, `moduleResolution: bundler`
 - `src/extension.ts` — a **one-line bootstrap**: the ~72 KB monolith was already decomposed, and activation now lives in `src/vscode/`.
 - `src/chat/getWebviewContent.ts` — **the file is gone**: the ~117 KB UI monolith was already moved into `src/webview/content-js.ts` / `content-css.ts`.
 - `ChatService.ts` is the concrete acpx (local CLI) implementation — there is no separate transport interface; `chatServiceFactory` selects `gateway | acpx | auto` and hands callers one of two classes (`ChatService | GatewayChatService`) (acpx is the fallback when the Gateway is unreachable within a short timeout).
-- Token/settings are centralised in `src/core/gatewayConfig.ts` (settings + SecretStorage).
+- Token/settings are centralized in `src/core/gatewayConfig.ts` (settings + SecretStorage).
 
 | Present | Details |
-|---|---|
+| --- | --- |
 | Chat webview | `ChatViewProvider` (sidebar view) + pop out; one active run per thread (`handleSend` rejects while `thread.isStreaming`) — a process per message only in the acpx fallback |
 | Transport | `chatServiceFactory` selects `gateway \| acpx \| auto`: Gateway WS RPC (`GatewayChatService`, the primary path) with a fallback to the local CLI process (`new ChatService()`, which spawns acpx per message), both streaming ChatEvent (text / toolCall / usage / done / error) |
 | Slash commands | /explain /fix /review /test /refactor /doc /commit /harden /search /plan /compact — with auto-context (selection, file, diagnostics, gitDiff, gitStaged) |
