@@ -328,7 +328,7 @@ const CHECKS = [
                 return false;
             }
             const callee = lastName(node.expression);
-            if (callee === 'tmpdir' || calledExport(node, context.os) === 'tmpdir') {
+            if (calledExport(node, context.os) === 'tmpdir') {
                 return true;
             }
             const first = node.arguments[0];

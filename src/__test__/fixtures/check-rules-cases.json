@@ -100,7 +100,7 @@
         {
             "name": "R43: os.tmpdir() in a test",
             "file": "src/__test__/c.test.ts",
-            "line": "const dir = os.tmpdir();",
+            "line": "import * as os from 'os'; const dir = os.tmpdir();",
             "expect": "R43"
         },
         {
@@ -112,13 +112,13 @@
         {
             "name": "R43 clean: the temp helper itself",
             "file": "src/__test__/helpers/tempDir.ts",
-            "line": "export const TEMP_ROOT = fs.realpathSync.native(os.tmpdir());",
+            "line": "import * as os from 'os'; export const TEMP_ROOT = fs.realpathSync.native(os.tmpdir());",
             "expect": null
         },
         {
             "name": "R43 scope: source files are not checked",
             "file": "src/c.ts",
-            "line": "const dir = os.tmpdir();",
+            "line": "import * as os from 'os'; const dir = os.tmpdir();",
             "expect": null
         },
         {
@@ -226,7 +226,7 @@
         {
             "name": "R43: tmpdir() through a destructured import",
             "file": "src/__test__/c.test.ts",
-            "line": "const dir = tmpdir();",
+            "line": "import { tmpdir } from 'node:os'; const dir = tmpdir();",
             "expect": "R43"
         },
         {
@@ -510,6 +510,18 @@
             "file": "src/b.ts",
             "line": "const { execSync } = await import('node:child_process');",
             "expect": "R36"
+        },
+        {
+            "name": "R43 clean: an unrelated function named tmpdir",
+            "file": "src/__test__/c.test.ts",
+            "line": "const tmpdir = vi.fn(); tmpdir();",
+            "expect": null
+        },
+        {
+            "name": "R43: tmpdir from a destructured require",
+            "file": "src/__test__/c.test.ts",
+            "line": "const { tmpdir } = require('os'); tmpdir();",
+            "expect": "R43"
         }
     ]
 }
