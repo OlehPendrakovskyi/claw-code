@@ -420,6 +420,15 @@ describe('redactText', () => {
     it('leaves text without credentials unchanged', () => {
         expect(redactText('connect ECONNREFUSED http://127.0.0.1:18789')).toBe('connect ECONNREFUSED http://127.0.0.1:18789');
     });
+
+    it('redacts a URL that ends in brackets or sentence punctuation, keeping the punctuation', () => {
+        expect(redactText('failed [https://alice:secret@host.example]')).toBe('failed [https://***:***@host.example/]');
+        expect(redactText('see (https://alice:secret@host.example/x).')).toBe('see (https://***:***@host.example/x).');
+    });
+
+    it('still masks userinfo when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:secret@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
 });
 
 describe('redactEndpoint', () => {

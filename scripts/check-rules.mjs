@@ -50,7 +50,7 @@ const CHECKS = [
         rule: 'R54',
         scope: 'test',
         message: 'expression-bodied test hook returns a value Vitest may run as teardown; use a block body',
-        test: line => /\b(?:beforeEach|afterEach|beforeAll|afterAll)\(\s*(?:async\s*)?\(\)\s*=>\s*[^{\s]/.test(line),
+        test: line => /\b(?:beforeEach|afterEach|beforeAll|afterAll)\(\s*(?:async\s*)?(?:\([^)]*\)|[\w$]+)\s*=>\s*[^{\s]/.test(line),
     },
 ];
 
