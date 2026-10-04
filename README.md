@@ -25,7 +25,7 @@ A VS Code companion for [OpenClaw](https://docs.openclaw.ai). Chat with the agen
 
 - **`@`-mentions** to attach workspace files, including line ranges such as `@src/app.ts#L5-10`.
 - **Insert selection** as a mention with `Alt+K` (`Cmd+Alt+K` on macOS).
-- **Attach the open file** automatically on every send (`openclaw.chat.attachOpenFile`).
+- **Attach the open file** automatically to every normal message (`openclaw.chat.attachOpenFile`). Slash commands add their own context instead (see the table below).
 - **Attachments** via the `+` button or drag and drop, including images.
 - **Slash commands** that add the right context for the task:
 
@@ -134,7 +134,7 @@ The first time, the Gateway may ask you to approve this device (pairing). Approv
 | `openclaw.gateway.url` | `ws://127.0.0.1:18789` | Gateway WebSocket URL |
 | `openclaw.gateway.transport` | `auto` | `gateway`, `acpx`, or `auto` |
 | `openclaw.gateway.protocolVersion` | `auto` | Gateway protocol version to offer; keep `auto` unless the Gateway reports a mismatch |
-| `openclaw.chat.attachOpenFile` | `false` | Attach the active file to every message |
+| `openclaw.chat.attachOpenFile` | `false` | Attach the active file to every normal message (not to slash commands) |
 | `openclaw.chat.systemPrompt` | empty | Text added in front of every message |
 | `openclaw.chat.dimension` | `1x1` | Thread grid: `1x1`, `2x2`, `2x3`, `3x3`, `4x4` |
 | `openclaw.chat.collapseCompleted` | `true` | Collapse finished threads in the `1x1` view |
