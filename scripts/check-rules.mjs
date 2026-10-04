@@ -45,6 +45,11 @@ function moduleBindings(source, moduleName) {
     const members = new Map();
     const isModule = node => (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && pattern.test(node.text);
     const visit = node => {
+        // `import cp = require('child_process')`
+        if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) &&
+            isModule(node.moduleReference.expression)) {
+            namespaces.add(node.name.text);
+        }
         if (ts.isImportDeclaration(node) && isModule(node.moduleSpecifier) && node.importClause) {
             const { name, namedBindings } = node.importClause;
             if (name) {
@@ -308,6 +313,11 @@ function isSpawnOptions(object, context) {
     if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
         return isSpawnCall(node.parent, context);
     }
+    if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
+        // `options = { … }` for a variable that reaches a spawn call.
+        const target = unwrap(node.parent.left);
+        return ts.isIdentifier(target) && context.spawnOptionNames.has(target.text);
+    }
     return ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) && context.spawnOptionNames.has(node.parent.name.text);
 }
 
@@ -318,8 +328,11 @@ function spawnArgumentNames(source, context) {
     // What each variable's object is built from: spread sources and plain aliases.
     const sources = new Map();
     const collect = node => {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-            const value = unwrap(node.initializer);
+        // `const options = …` and a later `options = …` both say what `options` is built from.
+        const assigned = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
+        if ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) || assigned) {
+            const name = assigned ? unwrap(node.left).text : node.name.text;
+            const value = unwrap(assigned ? node.right : node.initializer);
             const from = [];
             if (ts.isIdentifier(value)) {
                 from.push(value.text);
@@ -331,7 +344,7 @@ function spawnArgumentNames(source, context) {
                 }
             }
             if (from.length > 0) {
-                sources.set(node.name.text, from);
+                sources.set(name, [...(sources.get(name) ?? []), ...from]);
             }
         }
         ts.forEachChild(node, collect);
@@ -390,6 +403,10 @@ function isLogCall(node, context) {
         return false;
     }
     const receiver = memberObject(node.expression);
+    // `vscode.window.createOutputChannel('x').appendLine(…)`: the receiver is the channel itself.
+    if (receiver !== undefined && ts.isCallExpression(unwrap(receiver)) && lastName(unwrap(receiver).expression) === 'createOutputChannel') {
+        return LOG_METHODS.has(lastName(node.expression) ?? '');
+    }
     const receiverName = receiver === undefined ? undefined : lastName(receiver);
     return receiverName !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') &&
         (LOGGER_NAME.test(receiverName) || context.outputChannels.has(receiverName) || context.loggers.has(receiverName));

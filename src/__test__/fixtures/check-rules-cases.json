@@ -642,6 +642,30 @@
             "file": "src/__test__/d.test.ts",
             "line": "import * as vitest from 'vitest'; vitest.afterEach(() => vi.useRealTimers());",
             "expect": "R54"
+        },
+        {
+            "name": "R36: exec through a TypeScript import-equals",
+            "file": "src/b.ts",
+            "line": "import cp = require('node:child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options assigned after declaration",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; let options; options = { shell: true }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options assigned from a spread",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; let options; options = { ...base }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10: inline output channel",
+            "file": "src/a.ts",
+            "line": "vscode.window.createOutputChannel('x').appendLine(prompt);",
+            "expect": "R10"
         }
     ]
 }
