@@ -12,6 +12,13 @@ describe('errorMessage', () => {
         }
     });
 
+    it('takes nothing from a thrown function: not its source, not its toString', () => {
+        const thrown = Object.assign(function leaky() {
+            return 'token=secret';
+        }, { toString: () => { throw new Error('toString must not be called'); } });
+        expect(errorMessage(thrown)).toBe('Non-Error value (function)');
+    });
+
     it('says when the thrown value is an array', () => {
         expect(errorMessage(['token=secret'])).toBe('Non-Error value (array)');
     });

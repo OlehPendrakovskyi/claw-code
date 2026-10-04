@@ -257,8 +257,16 @@ function outputChannelBindings(source) {
     const names = new Set();
     const visit = node => {
         if ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && node.initializer &&
-            ts.isCallExpression(node.initializer) && lastName(node.initializer.expression) === 'createOutputChannel') {
+            ts.isCallExpression(unwrap(node.initializer)) && lastName(unwrap(node.initializer).expression) === 'createOutputChannel') {
             const name = lastName(node.name);
+            if (name !== undefined) {
+                names.add(name);
+            }
+        }
+        // `this.output = vscode.window.createOutputChannel('x')` (a constructor assigning a field), `out = …`.
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isCallExpression(unwrap(node.right)) && lastName(unwrap(node.right).expression) === 'createOutputChannel') {
+            const name = lastName(unwrap(node.left));
             if (name !== undefined) {
                 names.add(name);
             }

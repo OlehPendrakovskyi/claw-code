@@ -666,6 +666,18 @@
             "file": "src/a.ts",
             "line": "vscode.window.createOutputChannel('x').appendLine(prompt);",
             "expect": "R10"
+        },
+        {
+            "name": "R10: output channel assigned to a field",
+            "file": "src/a.ts",
+            "line": "this.output = vscode.window.createOutputChannel('x'); this.output.appendLine(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: output channel assigned after declaration",
+            "file": "src/a.ts",
+            "line": "let out; out = vscode.window.createOutputChannel('x'); out.info(text);",
+            "expect": "R10"
         }
     ]
 }
