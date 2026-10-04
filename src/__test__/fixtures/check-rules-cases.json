@@ -1,0 +1,28 @@
+{
+    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it.",
+    "cases": [
+        { "name": "R10: template interpolation of prompt text", "file": "src/a.ts", "line": "log.info(`send: ${prompt}`);", "expect": "R10" },
+        { "name": "R10: member access to prompt text", "file": "src/a.ts", "line": "log.info(`prompt=${request.text}`);", "expect": "R10" },
+        { "name": "R10: optional member access", "file": "src/a.ts", "line": "log.warn(`turn ${turn?.prompt}`);", "expect": "R10" },
+        { "name": "R10: truncated prompt text", "file": "src/a.ts", "line": "log.info(`text=\"${text.slice(0, 80)}\"`);", "expect": "R10" },
+        { "name": "R10: prompt text as a direct argument", "file": "src/a.ts", "line": "log.info(text);", "expect": "R10" },
+        { "name": "R10: payload as the first of several arguments", "file": "src/a.ts", "line": "log.error(msg.body, extra);", "expect": "R10" },
+        { "name": "R10: serialised message", "file": "src/a.ts", "line": "log.info(`in: ${JSON.stringify(msg)}`);", "expect": "R10" },
+        { "name": "R10 clean: a length", "file": "src/a.ts", "line": "log.info(`chars=${text.length}`);", "expect": null },
+        { "name": "R10 clean: an error message", "file": "src/a.ts", "line": "log.error(`connect failed: ${message}`);", "expect": null },
+        { "name": "R10 clean: a name that only starts like a text name", "file": "src/a.ts", "line": "log.info(`ctx=${contextId}`);", "expect": null },
+        { "name": "R10 limitation: a call split across lines is not seen", "file": "src/a.ts", "line": "log.info(\n    `p=${prompt}`\n);", "expect": null },
+        { "name": "R10 scope: test files may log anything", "file": "src/__test__/a.test.ts", "line": "log.info(text);", "expect": null },
+        { "name": "R36: shell option", "file": "src/b.ts", "line": "spawn(cmd, args, { shell: true });", "expect": "R36" },
+        { "name": "R36: exec import", "file": "src/b.ts", "line": "import { exec } from 'child_process';", "expect": "R36" },
+        { "name": "R36: execSync import with node: prefix", "file": "src/b.ts", "line": "import { spawn, execSync } from 'node:child_process';", "expect": "R36" },
+        { "name": "R36 clean: execFile import", "file": "src/b.ts", "line": "import { execFile } from 'child_process';", "expect": null },
+        { "name": "R43: os.tmpdir() in a test", "file": "src/__test__/c.test.ts", "line": "const dir = os.tmpdir();", "expect": "R43" },
+        { "name": "R43: literal /tmp in mkdtemp", "file": "src/__test__/c.test.ts", "line": "fs.mkdtempSync('/tmp/x-');", "expect": "R43" },
+        { "name": "R43 clean: the temp helper itself", "file": "src/__test__/helpers/tempDir.ts", "line": "export const TEMP_ROOT = fs.realpathSync.native(os.tmpdir());", "expect": null },
+        { "name": "R43 scope: source files are not checked", "file": "src/c.ts", "line": "const dir = os.tmpdir();", "expect": null },
+        { "name": "R54: expression-bodied hook", "file": "src/__test__/d.test.ts", "line": "beforeEach(() => vi.useFakeTimers());", "expect": "R54" },
+        { "name": "R54: async expression-bodied hook", "file": "src/__test__/d.test.ts", "line": "afterEach(async () => reset());", "expect": "R54" },
+        { "name": "R54 clean: block-bodied hook", "file": "src/__test__/d.test.ts", "line": "beforeEach(() => {", "expect": null }
+    ]
+}

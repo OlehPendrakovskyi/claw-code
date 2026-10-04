@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { redactPlainSecrets } from '../core/accessInfo/redact';
+import { redactText } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -410,7 +410,7 @@ class AcpxRun {
         this.onStdout(this.stdoutDecoder.end());
         this.onStderr(this.stderrDecoder.end());
         if (this.stderrTail.trim()) {
-            log.info(`acpx stderr: ${redactPlainSecrets(this.stderrTail.trim())}`);
+            log.info(`acpx stderr: ${redactText(this.stderrTail.trim())}`);
         }
         if (!this.finished && !this.droppingOversizedLine) {
             this.emitLine(this.takePendingLine());
@@ -444,7 +444,7 @@ class AcpxRun {
             return null;
         }
         // The tail is the child's raw stderr, shown in the chat and the log: redact credentials first.
-        const message = redactPlainSecrets(this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal)));
+        const message = redactText(this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal)));
         log.error(`acpx error: ${message}`);
         return { type: 'error', message };
     }

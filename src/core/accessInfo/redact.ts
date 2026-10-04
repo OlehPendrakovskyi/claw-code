@@ -33,3 +33,13 @@ export function redactPlainSecrets(text: string): string {
         .replace(/(["']?authorization["']?)\s*[:=]\s*("[^"]*"|'[^']*'|`[^`]*`|\S+.*)/gi, '$1=***')
         .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
 }
+
+/** A URL of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) inside free-form text. */
+const URL_IN_TEXT = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+
+/** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first
+ *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
+ *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
+export function redactText(text: string): string {
+    return redactPlainSecrets(text.replace(URL_IN_TEXT, url => redactEndpoint(url)));
+}

@@ -389,6 +389,18 @@ describe('ChatService.sendMessage', () => {
             expect(logged).not.toContain('sk-live-123');
         });
 
+        it('redacts URL credentials from the stderr it logs and reports', () => {
+            const info = vi.mocked(agentLog.info);
+            info.mockClear();
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('clone failed: https://alice:secret@git.example/repo.git'));
+            child.emit('close', 1, null);
+            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('acpx stderr: clone failed: https://***:***@git.example/repo.git');
+            expect(logged).not.toContain('secret');
+            expect(events[0]).toEqual({ type: 'error', message: 'clone failed: https://***:***@git.example/repo.git' });
+        });
+
         it('redacts credentials from the stderr it reports as the run error', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('auth failed: token=abc123'));

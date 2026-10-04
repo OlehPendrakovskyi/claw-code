@@ -11,7 +11,7 @@ Semantic Versioning.
 ### Fixed
 
 - Stop logging prompt text: a sent prompt is logged by length only, and the debug panel logs only a message's type.
-- Redact credentials from the acpx stderr tail, in the log and in the error shown in the chat.
+- Redact credentials, including URL userinfo such as `https://user:pass@host`, from the acpx stderr tail, in the log and in the error shown in the chat. One helper (`redactText`) now does this for every free-form error surface.
 - Wait for the tools view to refresh before confirming a tool toggle or uninstall, and report a failed refresh instead of dropping it.
 - Show a readable, redacted error when Connect fails, instead of the raw error value.
 

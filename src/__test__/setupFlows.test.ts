@@ -60,7 +60,7 @@ import {
     getNodeInstallCommandForPlatform,
     getNodeInstallOptions,
 } from '../core/setupOptions';
-import { copyToClipboard, execFileAsync } from '../vscode/commands/shared';
+import { copyToClipboard, execFileAsync, log as sharedLog } from '../vscode/commands/shared';
 import { copyInstallCommand, openDashboard, openDocs, openNodeDocs, openOnboardDocs, openUpdateDocs } from '../vscode/commands/docs';
 import { openAuthProfiles, openOpenClawConfig, openSettings } from '../vscode/config';
 import { setStatus } from '../vscode/statusbar';
@@ -412,6 +412,21 @@ describe('setup flows', () => {
                 expect(setStatus).toHaveBeenLastCalledWith('idle');
                 expect(terminals.openclaw.sendText).not.toHaveBeenCalled();
             });
+        });
+
+        it('redacts URL credentials from the failure in both the log and the notification', async () => {
+            setAvailable('node', 'openclaw');
+            const logError = vi.mocked(sharedLog.error);
+            logError.mockClear();
+            terminals.openclaw.show.mockImplementationOnce(() => {
+                throw new Error('fetch https://alice:secret@registry.example/pkg failed');
+            });
+
+            await connect();
+
+            expect(errorMessage).toHaveBeenCalledWith('Failed to connect: fetch https://***:***@registry.example/pkg failed');
+            expect(logError).toHaveBeenCalledWith('connect() failed: fetch https://***:***@registry.example/pkg failed');
+            expect(JSON.stringify(logError.mock.calls)).not.toContain('secret');
         });
 
         it('reports a failure with secrets redacted and resets the in-flight guard', async () => {

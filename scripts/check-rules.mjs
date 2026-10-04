@@ -14,8 +14,14 @@ const SRC = join(ROOT, 'src');
 const TEST_DIR = join(SRC, '__test__') + sep;
 const TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
 
-/** Names whose raw value is prompt or payload text, and must not be interpolated into a log line. */
+/** Names whose raw value is prompt or payload text, and must not reach a log line. */
 const TEXT_NAMES = 'text|prompt|content|body|msg|raw|payload|chunk|frame';
+/** An optional property path ending in one of TEXT_NAMES: `text`, `request.text`, `turn?.prompt`. */
+const TEXT_PATH = `(?:[\\w$]+\\??\\.)*(?:${TEXT_NAMES})`;
+/** A template interpolation of such a value, raw or cut (`.slice(0, 80)`), but not `.length`. */
+const TEXT_INTERPOLATION = new RegExp(`\\$\\{${TEXT_PATH}(?:\\.(?:slice|substring|substr|trim)\\([^)]*\\))?\\}`);
+/** Such a value passed straight to the log call: `log.info(text)`, `log.info(msg.body, …)`. */
+const TEXT_ARGUMENT = new RegExp(`\\blog\\.\\w+\\(\\s*${TEXT_PATH}\\s*[,)]`);
 
 const CHECKS = [
     {
@@ -24,7 +30,7 @@ const CHECKS = [
         message: 'log call writes prompt or payload text; log ids, counts or lengths instead',
         test: line =>
             /\blog\.(?:info|warn|error|debug|trace|append|appendLine)\(/.test(line) &&
-            (/JSON\.stringify\(/.test(line) || new RegExp(`\\$\\{(?:${TEXT_NAMES})(?:\\.(?:slice|substring|substr|trim)\\([^)]*\\))?\\}`).test(line)),
+            (/JSON\.stringify\(/.test(line) || TEXT_INTERPOLATION.test(line) || TEXT_ARGUMENT.test(line)),
     },
     {
         rule: 'R36',

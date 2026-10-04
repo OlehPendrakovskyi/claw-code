@@ -5,6 +5,7 @@ import {
     extractAccessInfoFromConfig,
     redactEndpoint,
     redactPlainSecrets,
+    redactText,
     extractEnvVarName,
     extractMcpServers,
     extractTools,
@@ -392,6 +393,32 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).toContain('Config issue: no config');
         expect(markdown).toContain('CLI issue: cli exploded');
         expect(markdown).toContain('No CLI output captured.');
+    });
+});
+
+describe('redactText', () => {
+    it('redacts URL userinfo inside free-form text', () => {
+        expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
+            'failed: https://***:***@host.example/repo.git (exit 1)'
+        );
+    });
+
+    it('redacts URLs of any scheme, including ssh and git+https', () => {
+        expect(redactText('ssh://bob:pw@git.example/x and git+https://carol:tok@h.example/y')).toBe(
+            'ssh://***:***@git.example/x and git+https://***:***@h.example/y'
+        );
+    });
+
+    it('redacts sensitive query values and plain-text secrets in the same text', () => {
+        // The plain-text pass treats everything after `api_key=` up to whitespace as the value,
+        // so later query params go too: it errs toward hiding, never toward showing.
+        expect(redactText('GET https://api.example/v1?api_key=abc&page=2 with token=xyz')).toBe(
+            'GET https://api.example/v1?api_key=*** with token=***'
+        );
+    });
+
+    it('leaves text without credentials unchanged', () => {
+        expect(redactText('connect ECONNREFUSED http://127.0.0.1:18789')).toBe('connect ECONNREFUSED http://127.0.0.1:18789');
     });
 });
 
