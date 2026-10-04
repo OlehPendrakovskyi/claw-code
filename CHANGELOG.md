@@ -13,10 +13,11 @@ Semantic Versioning.
 - Stop logging prompt text: a sent prompt is logged by length only, and the debug panel logs only a message's type.
 - Redact credentials from the acpx stderr tail, in the log and in the error shown in the chat.
 - Wait for the tools view to refresh before confirming a tool toggle or uninstall, and report a failed refresh instead of dropping it.
+- Show a readable, redacted error when Connect fails, instead of the raw error value.
 
 ### Changed
 
-- CI enforces more of the development rules: type-aware linting for Promise misuse (`pnpm run lint:types`), line-based rule checks (`pnpm run check:rules`), and test-coverage thresholds on the Linux leg (`pnpm run test:coverage`).
+- CI enforces more of the development rules: type-aware linting across the codebase (`pnpm run lint`), line-based rule checks (`pnpm run check:rules`), and test-coverage thresholds of at least 90% on the Linux leg (`pnpm run test:coverage`). New tests for the setup, hardening, Overview, terminal, status bar and recommendation code raise coverage from 88% to 95% of statements.
 - Add a pull-request checklist and `AGENTS.md` for contributors and coding agents.
 
 ### Docs

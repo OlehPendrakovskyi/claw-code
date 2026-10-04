@@ -35,7 +35,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist; interleaving tests (R7).
 
 **R4. A Promise is never checked as a boolean.** *General, MUST.* Async validation happens only via `await`. An unchecked Promise is always truthy.
-*Check:* `pnpm run lint:types` (type-aware `no-misused-promises` and `no-floating-promises`, in CI).
+*Check:* `pnpm run lint` (type-aware oxlint; `no-floating-promises` and `no-misused-promises` are errors).
 
 **R11. Background process infrastructure.** *General, MUST.* Interval ≥ maximum run duration (no overlaps); durable progress markers; single-flight.
 *Check:* review checklist.
@@ -147,7 +147,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist.
 
 **R34. Every block of code gets unit tests.** *General, MUST.* Logic, branches, guards, parsers and error handlers are tested: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them.
-*Check:* coverage thresholds in `vitest.config.ts`, enforced on CI's Linux leg (`pnpm run test:coverage` locally); per-change coverage is a review item.
+*Check:* coverage thresholds in `vitest.config.ts` (never below 90% on any metric), enforced on CI's Linux leg (`pnpm run test:coverage` locally); per-change coverage is a review item.
 
 **R49. A refactor that changes behaviour needs a test that fails without the change.** *General, MUST.* A green suite can still hide a semantic change: the change compiles, the old tests pass, and nothing exercises the edge. When a commit message says a caller "now observes" something different, that sentence is a test obligation. Cover the boundary explicitly — a rejected value, and what the caller sees instead. This matters most for extraction PRs, where the code looks unchanged because lines only moved between files. (PR #26 changed the token-count validator from "positive finite" to "positive safe integer" and moved a truncation suffix between layers; three of four findings were the untested new behaviour — a rejected count reads as `0`, not as the sent value.)
 *Check:* review checklist.
@@ -234,7 +234,7 @@ The refactor phases (PRs #17, #20, #21, #26) produced bookkeeping faults rather 
 **R60. Copilot review protocol.** *General, MUST.* Verify every finding against HEAD (review snapshots are often stale). Reply in every thread with what was done and the fixing commit, then resolve it. Read each review overview's **Open** and **Previously missed** sections as well as the inline threads. "Previously missed" findings have no thread, so answer them in one PR comment per review, finding by finding (valid → fixed in `<sha>`; invalid → the evidence). A finding that needs a code or dependency change outside the PR's scope is tracked (roadmap ID or issue), not silently dropped. Stop rule: a round that produces no commits ends the loop.
 *Check:* zero unresolved threads, and a disposition comment for every review with "Previously missed" items.
 
-**S6. Repository process.** *claw-code, MUST.* Explicit branch fetch (refspec hygiene, `git remote prune`); rebase onto the remote tip before pushing (verify with `ls-remote`); Conventional Commits; run the CI gates before every commit, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run lint:types`, `pnpm run check:rules`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. Run the test runner directly as CI does: `pnpm run test` would repeat compile and lint through `pretest`. Diagnose hangs explicitly rather than force-terminating runs. Copilot reviews follow R60.
+**S6. Repository process.** *claw-code, MUST.* Explicit branch fetch (refspec hygiene, `git remote prune`); rebase onto the remote tip before pushing (verify with `ls-remote`); Conventional Commits; run the CI gates before every commit, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. Run the test runner directly as CI does: `pnpm run test` would repeat compile and lint through `pretest`. Diagnose hangs explicitly rather than force-terminating runs. Copilot reviews follow R60.
 *Check:* `.github/workflows/ci.yml` runs the same gates in the same order.
 
 **R55. Removing a tool is only complete when nothing names it.** *General, MUST.* After removing a tool, search the whole repository for its name — config, scripts, workflows, docs, and `/// <reference types="…" />` directives (which keep a removed package's types alive and hide the removal from `tsc`) — and change every invocation, not only the source that used it. Verify by running what CI runs, not what you just typed. (The Jest → Vitest migration went green locally while a CI step and a package script still named the old binary.)

@@ -4,23 +4,44 @@
         "correctness": "error",
         "suspicious": "warn"
     },
-    "plugins": ["typescript"],
-    "ignorePatterns": ["out/**", "assets/**", "node_modules/**"],
+    "plugins": [
+        "typescript"
+    ],
+    "ignorePatterns": [
+        "out/**",
+        "assets/**",
+        "node_modules/**"
+    ],
     "overrides": [
         {
-            "files": ["src/webview/**"],
+            "files": [
+                "src/webview/**"
+            ],
             "rules": {
                 "no-useless-escape": "off"
             }
         },
         {
-            "files": ["src/__test__/**"],
+            "files": [
+                "src/__test__/**"
+            ],
             "rules": {
                 "no-unused-vars": "off",
                 "typescript/no-unused-vars": "off",
                 "no-extraneous-class": "off",
-                "no-underscore-dangle": "off"
+                "no-underscore-dangle": "off",
+                "typescript/unbound-method": "off"
             }
         }
-    ]
+    ],
+    "rules": {
+        "typescript/unbound-method": [
+            "error",
+            {
+                "ignoreStatic": true
+            }
+        ],
+        "typescript/no-floating-promises": "error",
+        "typescript/no-misused-promises": "error"
+    }
 }

@@ -13,7 +13,6 @@ Gates, in CI's order (S6):
 ```sh
 pnpm run typecheck
 pnpm run lint
-pnpm run lint:types
 pnpm run check:rules
 pnpm run compile
 pnpm exec vitest run

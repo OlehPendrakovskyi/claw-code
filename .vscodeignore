@@ -22,6 +22,6 @@ scripts/**
 assets/images/readme-hero.png
 assets/images/readme-hero.svg
 coverage/**
-.oxlintrc*.json
+.oxlintrc.json
 AGENTS.md
 CLAUDE.md

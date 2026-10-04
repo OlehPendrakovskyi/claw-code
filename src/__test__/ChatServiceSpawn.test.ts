@@ -833,7 +833,7 @@ describe('ChatService.sendMessage', () => {
             child.emit('close', 1, null);
             const message = (events[0] as { message: string }).message;
             expect(message.startsWith('Internal error: quota exceeded xxx')).toBe(true);
-            expect([...message].some(ch => ch.charCodeAt(0) < 0x20)).toBe(false);
+            expect(Array.from(message).some(ch => ch.charCodeAt(0) < 0x20)).toBe(false);
             expect(message.length).toBeLessThan(1100);
         });
 

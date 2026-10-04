@@ -16,6 +16,8 @@ import { openOpenClawConfig, openAuthProfiles, openSettings } from '../config';
 import { log, execFileAsync, copyToClipboard, isOpenClawExecutable, type QuickPickOption } from './shared';
 import { getSetupTerminal, getOpenClawTerminal } from './terminals';
 import { copyInstallCommand, openDocs, openOnboardDocs, openDashboard, openUpdateDocs, openNodeDocs } from './docs';
+import { errorMessage } from '../../core/errors';
+import { redactPlainSecrets } from '../../core/accessInfo/redact';
 
 const OPENCLAW_PROVIDERS_DOCS_URL = 'https://docs.openclaw.ai/providers';
 const PROVIDER_DOCS: Record<string, string> = {
@@ -115,7 +117,7 @@ export async function connect() {
     } catch (error) {
         setStatus('error');
         log.error('connect() failed', error);
-        vscode.window.showErrorMessage(`Failed to connect: ${error}`);
+        vscode.window.showErrorMessage(`Failed to connect: ${redactPlainSecrets(errorMessage(error))}`);
     } finally {
         isConnecting = false;
     }
