@@ -162,7 +162,14 @@ function memberObject(node) {
 
 /** Whether an expression inside a log call's arguments carries prompt or payload text. */
 function carriesText(node) {
-    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
+    if (ts.isElementAccessExpression(node)) {
+        // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
+        const key = unwrap(node.argumentExpression);
+        return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
+            ? TEXT_NAMES.has(key.text)
+            : carriesText(node.expression);
+    }
+    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
         return TEXT_NAMES.has(lastName(node) ?? '');
     }
     if (ts.isCallExpression(node)) {
@@ -238,8 +245,7 @@ function isShellOption(node) {
 
 /** Whether a call starts a process: a child_process spawner by any binding, or a function of that name. */
 function isSpawnCall(node, context) {
-    return ts.isCallExpression(node) &&
-        (PROCESS_SPAWNERS.has(calledExport(node, context.childProcess) ?? '') || PROCESS_SPAWNERS.has(lastName(node.expression) ?? ''));
+    return ts.isCallExpression(node) && PROCESS_SPAWNERS.has(calledExport(node, context.childProcess) ?? '');
 }
 
 /** Whether an object literal is the options of a spawn call: passed inline, or held in a variable that
@@ -264,8 +270,16 @@ function spawnArgumentNames(source, context) {
     const visit = node => {
         if (isSpawnCall(node, context)) {
             for (const argument of node.arguments) {
-                if (ts.isIdentifier(argument)) {
-                    names.add(argument.text);
+                const value = unwrap(argument);
+                if (ts.isIdentifier(value)) {
+                    names.add(value.text);
+                } else if (ts.isObjectLiteralExpression(value)) {
+                    // `{ ...opts }`: the spread object's fields become the options.
+                    for (const property of value.properties) {
+                        if (ts.isSpreadAssignment(property) && ts.isIdentifier(unwrap(property.expression))) {
+                            names.add(unwrap(property.expression).text);
+                        }
+                    }
                 }
             }
         }
@@ -327,13 +341,12 @@ const CHECKS = [
             if (context.file === TEMP_HELPER || !ts.isCallExpression(node)) {
                 return false;
             }
-            const callee = lastName(node.expression);
             if (calledExport(node, context.os) === 'tmpdir') {
                 return true;
             }
             const first = node.arguments[0];
             const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
-            return (makesTemp(callee) || makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) &&
+            return (makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) &&
                 first !== undefined && containsTmpLiteral(first);
         },
     },

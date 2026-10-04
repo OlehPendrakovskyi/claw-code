@@ -76,7 +76,7 @@
         {
             "name": "R36: shell option",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell: true });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: true });",
             "expect": "R36"
         },
         {
@@ -106,7 +106,7 @@
         {
             "name": "R43: literal /tmp in mkdtemp",
             "file": "src/__test__/c.test.ts",
-            "line": "fs.mkdtempSync('/tmp/x-');",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync('/tmp/x-');",
             "expect": "R43"
         },
         {
@@ -238,7 +238,7 @@
         {
             "name": "R36: quoted shell option",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { \"shell\": true });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { \"shell\": true });",
             "expect": "R36"
         },
         {
@@ -364,7 +364,7 @@
         {
             "name": "R36: computed literal shell key",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { ['shell']: true });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { ['shell']: true });",
             "expect": "R36"
         },
         {
@@ -388,37 +388,37 @@
         {
             "name": "R43: /tmp inside path.join",
             "file": "src/__test__/c.test.ts",
-            "line": "fs.mkdtempSync(path.join('/tmp', 'x-'));",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(path.join('/tmp', 'x-'));",
             "expect": "R43"
         },
         {
             "name": "R43 clean: a path merely containing tmp",
             "file": "src/__test__/c.test.ts",
-            "line": "fs.mkdtempSync(path.join(TEMP_ROOT, 'tmpfiles-'));",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(path.join(TEMP_ROOT, 'tmpfiles-'));",
             "expect": null
         },
         {
             "name": "R36: shell given as a path",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell: '/bin/bash' });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: '/bin/bash' });",
             "expect": "R36"
         },
         {
             "name": "R36: shell from a variable",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell: useShell });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: useShell });",
             "expect": "R36"
         },
         {
             "name": "R36: shorthand shell option",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell });",
             "expect": "R36"
         },
         {
             "name": "R36 clean: shell explicitly false",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell: false });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: false });",
             "expect": null
         },
         {
@@ -472,13 +472,13 @@
         {
             "name": "R43: /tmp in a template literal head",
             "file": "src/__test__/c.test.ts",
-            "line": "fs.mkdtempSync(`/tmp/openclaw-${id}-`);",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(`/tmp/openclaw-${id}-`);",
             "expect": "R43"
         },
         {
             "name": "R43 clean: a template under the canonical root",
             "file": "src/__test__/c.test.ts",
-            "line": "fs.mkdtempSync(`${TEMP_ROOT}/openclaw-${id}-`);",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(`${TEMP_ROOT}/openclaw-${id}-`);",
             "expect": null
         },
         {
@@ -490,13 +490,13 @@
         {
             "name": "R36 clean: shell left undefined",
             "file": "src/b.ts",
-            "line": "spawn(cmd, args, { shell: undefined });",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: undefined });",
             "expect": null
         },
         {
             "name": "R36: shell option in a variable passed to spawn",
             "file": "src/b.ts",
-            "line": "const opts = { shell: true }; spawn(cmd, args, opts);",
+            "line": "import { spawn } from 'child_process'; const opts = { shell: true }; spawn(cmd, args, opts);",
             "expect": "R36"
         },
         {
@@ -522,6 +522,36 @@
             "file": "src/__test__/c.test.ts",
             "line": "const { tmpdir } = require('os'); tmpdir();",
             "expect": "R43"
+        },
+        {
+            "name": "R10: indexing into prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(text[0]);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: indexing into a text field",
+            "file": "src/a.ts",
+            "line": "log.info(request.text[i]);",
+            "expect": "R10"
+        },
+        {
+            "name": "R36 clean: a local function named spawn",
+            "file": "src/b.ts",
+            "line": "function spawn(profile: object) {} spawn({ shell: 'zsh' });",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option spread into spawn options",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const opts = { shell: true }; spawn(cmd, args, { ...opts });",
+            "expect": "R36"
+        },
+        {
+            "name": "R43 clean: a local function named mkdtempSync",
+            "file": "src/__test__/c.test.ts",
+            "line": "const mkdtempSync = (p: string) => p; mkdtempSync('/tmp/x-');",
+            "expect": null
         }
     ]
 }

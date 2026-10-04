@@ -429,6 +429,19 @@ describe('setup flows', () => {
             expect(JSON.stringify(logError.mock.calls)).not.toContain('secret');
         });
 
+        it('reports a thrown plain object readably and redacted', async () => {
+            setAvailable('node', 'openclaw');
+            terminals.openclaw.show.mockImplementationOnce(() => {
+                // A non-Error throw, as some APIs do.
+                // oxlint-disable-next-line no-throw-literal
+                throw { code: 'EPIPE', detail: 'token=abc123' };
+            });
+
+            await connect();
+
+            expect(errorMessage).toHaveBeenCalledWith('Failed to connect: {"code":"EPIPE","detail":"token=***');
+        });
+
         it('reports a failure with secrets redacted and resets the in-flight guard', async () => {
             setAvailable('node', 'openclaw');
             terminals.openclaw.show.mockImplementationOnce(() => {
