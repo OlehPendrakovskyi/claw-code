@@ -2,7 +2,7 @@
 
 > **Status on 2026-10-03.** Sprint 1 is partially closed — see §9.1.6 and the "Sprint 1 audit" section at the end of this document. The runner is Vitest and the linter is oxlint; CI is green on ubuntu/windows/macos.
 
-> **Relationship to the root `ROADMAP.md`.** This document is the authoritative project plan. The root `ROADMAP.md` is an older, high-level wishlist (voice chat, planning UX, and similar ideas that predate the §9 architecture decisions); where the two disagree, this document wins. The root file is kept as background, not as a second source of truth — its items have no sprint assignment, no estimates and no status here.
+> **Relationship to the root `ROADMAP.md`.** This document is the authoritative project plan and replaces the old root `ROADMAP.md` (an older, high-level wishlist for voice chat, planning UX, and similar ideas that predate the §9 architecture decisions), which this PR deletes from the repository root. Where the two disagreed, this document wins. The old root file is not a second source of truth — its items have no sprint assignment, no estimates and no status here.
 
 > **The name is a working title.** "Claude for OpenClaw" is used only inside the team to discuss UX goals. Before the public release, replace it: "Claude" is an Anthropic trademark, and using another product's trademark in the name is misleading and legally risky. Never use the word `claude` as an identifier (namespace, commands, settings) in code or configuration. Publish under a neutral name.
 
