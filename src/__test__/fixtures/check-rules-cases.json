@@ -606,6 +606,42 @@
             "file": "src/b.ts",
             "line": "const base = { shell: 'zsh' }; const profile = { ...base };",
             "expect": null
+        },
+        {
+            "name": "R36: shell assigned on an options object",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const options: SpawnOptions = {}; options.shell = true; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: shell assigned on an unrelated object",
+            "file": "src/b.ts",
+            "line": "const profile = {} as { shell?: string }; profile.shell = 'zsh';",
+            "expect": null
+        },
+        {
+            "name": "R43: fs.promises.mkdtemp through a namespace",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; await fs.promises.mkdtemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: promises destructured from fs",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { promises } from 'node:fs'; await promises.mkdtemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R54: aliased Vitest hook import",
+            "file": "src/__test__/d.test.ts",
+            "line": "import { beforeEach as setup } from 'vitest'; setup(() => vi.useFakeTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: hook through a vitest namespace",
+            "file": "src/__test__/d.test.ts",
+            "line": "import * as vitest from 'vitest'; vitest.afterEach(() => vi.useRealTimers());",
+            "expect": "R54"
         }
     ]
 }

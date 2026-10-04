@@ -213,6 +213,24 @@ function carriesText(node) {
     return found;
 }
 
+/** The `fs.promises` member a call reaches: `fs.promises.mkdtemp(…)` with `fs` any binding of the fs
+ *  module, or `promises.mkdtemp(…)` with `promises` destructured from it. */
+function fsPromisesMember(node, context) {
+    const object = memberObject(node.expression);
+    if (object === undefined) {
+        return undefined;
+    }
+    const receiver = unwrap(object);
+    if (ts.isIdentifier(receiver) && context.fs.members.get(receiver.text) === 'promises') {
+        return lastName(node.expression);
+    }
+    const parent = memberObject(receiver);
+    const root = parent === undefined ? undefined : unwrap(parent);
+    const isFs = root !== undefined && ((ts.isIdentifier(root) && context.fs.namespaces.has(root.text)) ||
+        /^(?:node:)?fs$/.test(loadedModule(root) ?? ''));
+    return isFs && lastName(receiver) === 'promises' ? lastName(node.expression) : undefined;
+}
+
 /** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
 function containsTmpLiteral(node) {
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && /^\/tmp(?:\/|$)/.test(node.text)) {
@@ -244,6 +262,21 @@ function outputChannelBindings(source) {
     };
     visit(source);
     return names;
+}
+
+/** `options.shell = true` (or `options['shell'] = …`) on an object that reaches a spawn call. */
+function isShellAssignment(node, context) {
+    if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+        return false;
+    }
+    const target = node.left;
+    const object = memberObject(target);
+    if (object === undefined || lastName(target) !== 'shell' || !ts.isIdentifier(unwrap(object)) ||
+        !context.spawnOptionNames.has(unwrap(object).text)) {
+        return false;
+    }
+    const value = unwrap(node.right);
+    return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
 }
 
 function isShellOption(node) {
@@ -377,6 +410,7 @@ const CHECKS = [
             // A `shell` option on an object given to a process spawner, set to anything but false, null or
             // undefined: `true`, a shell path such as '/bin/bash', or a variable.
             (isShellOption(node) && isSpawnOptions(node.parent, context)) ||
+            isShellAssignment(node, context) ||
             SHELL_EXECUTORS.has(calledExport(node, context.childProcess) ?? '') ||
             importsShellExecutor(node) ||
             (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && SHELL_EXECUTORS.has(context.childProcess.members.get(node.name.text) ?? '')),
@@ -394,7 +428,8 @@ const CHECKS = [
             }
             const first = node.arguments[0];
             const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
-            return (makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises))) &&
+            return (makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises)) ||
+                makesTemp(fsPromisesMember(node, context))) &&
                 first !== undefined && containsTmpLiteral(first);
         },
     },
@@ -402,8 +437,15 @@ const CHECKS = [
         rule: 'R54',
         scope: 'test',
         message: 'expression-bodied test hook returns a value Vitest may run as teardown; use a block body',
-        test: node => {
-            if (!ts.isCallExpression(node) || !ts.isIdentifier(node.expression) || !HOOKS.has(node.expression.text)) {
+        test: (node, context) => {
+            if (!ts.isCallExpression(node)) {
+                return false;
+            }
+            // `beforeEach(…)` (Vitest globals), `setup(…)` for `{ beforeEach as setup }`, `vitest.beforeEach(…)`.
+            const hook = ts.isIdentifier(node.expression)
+                ? context.vitest.members.get(node.expression.text) ?? node.expression.text
+                : calledExport(node, context.vitest);
+            if (!HOOKS.has(hook ?? '')) {
                 return false;
             }
             const callback = node.arguments[0];
@@ -434,6 +476,7 @@ for (const file of walk(SRC)) {
         os: moduleBindings(source, 'os'),
         fs: moduleBindings(source, 'fs'),
         fsPromises: moduleBindings(source, 'fs/promises'),
+        vitest: moduleBindings(source, 'vitest'),
         outputChannels: outputChannelBindings(source),
         loggers: importedLoggers(source),
     };
