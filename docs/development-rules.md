@@ -79,7 +79,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* R25.
 
 **R25. Wire frames are tested against the product's real schemas.** *claw-code, MUST.* Every outgoing frame is validated against JSON Schema exported from the real gateway's TypeBox schemas (fixtures, regenerable via `scripts/sync-openclaw-protocol.mjs`), plus frames captured from a live gateway; the implementation is verified end-to-end against a real instance on loopback.
-*Check:* the `gatewayProtocolV4*` test suites.
+*Check:* the `gatewayProtocolV4*` suites validate frames against the exported schemas and captured frames. They do not cover the live end-to-end part: until the integration smoke test exists (ENG-10 in the [roadmap](roadmap.md)), a protocol change is verified by hand against a gateway on loopback before merge, and the PR says so.
 
 **R26. Protocol versioning goes through an adapter + negotiation.** *claw-code, MUST.* A version-neutral model, `GatewayProtocolAdapter`, a v4 adapter; registration negotiates the version from a setting (`openclaw.gateway.protocolVersion: auto | 4`); an unsupported version yields a clear permanent error; the negotiated version is visible in the status badge and logs.
 *Check:* `gatewayProtocolV4.test.ts` (version negotiation).
