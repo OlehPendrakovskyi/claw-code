@@ -17,6 +17,7 @@ import {
     STDOUT_LINE_MAX_CHARS,
 } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
+import { outputChannelNamed } from './helpers/outputChannels';
 
 // The factory must cover the whole export surface of the mocked module, not only
 // the members this test calls: `satisfies` keeps that check honest at compile time
@@ -34,6 +35,7 @@ vi.mock('child_process', () => ({
 } satisfies typeof import('child_process')));
 
 const spawnMock = vi.mocked(spawn);
+const agentLog = outputChannelNamed('OpenClaw Agent');
 const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
 type FakeChild = ChildProcess & { stdin: Writable; stdout: EventEmitter; stderr: EventEmitter; stdinBytes: Buffer[] };
@@ -374,6 +376,24 @@ describe('ChatService.sendMessage', () => {
             child.emit('close', 0, null);
             expect(events).toEqual([{ type: 'done' }]);
             expect(onRunComplete).toHaveBeenCalledTimes(1);
+        });
+
+        it('redacts credentials from the stderr tail it logs', () => {
+            const info = vi.mocked(agentLog.info);
+            info.mockClear();
+            const { child } = start();
+            child.stderr.emit('data', Buffer.from('request failed: OPENAI_API_KEY=sk-live-123'));
+            child.emit('close', 1, null);
+            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('acpx stderr: request failed: OPENAI_API_KEY=***');
+            expect(logged).not.toContain('sk-live-123');
+        });
+
+        it('redacts credentials from the stderr it reports as the run error', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('auth failed: token=abc123'));
+            child.emit('close', 1, null);
+            expect(events[0]).toEqual({ type: 'error', message: 'auth failed: token=***' });
         });
 
         it('keeps only the tail of a flood of stderr', () => {

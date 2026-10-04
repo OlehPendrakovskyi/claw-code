@@ -12,6 +12,16 @@ export default defineConfig({
         environment: 'node',
         include: ['src/__test__/**/*.test.ts'],
         setupFiles: ['./src/__test__/setup.ts'],
+        // Measured only with --coverage (CI's Linux leg). The thresholds sit just below the
+        // coverage measured when they were introduced (2026-10-04: statements 88.4%, branches
+        // 86.6%, functions 89.7%, lines 88.3%), so a drop fails CI; raise them as coverage grows.
+        coverage: {
+            provider: 'v8',
+            include: ['src/**/*.ts'],
+            exclude: ['src/__test__/**'],
+            reporter: ['text-summary'],
+            thresholds: { statements: 88, branches: 86, functions: 89, lines: 88 },
+        },
     },
     resolve: {
         alias: [

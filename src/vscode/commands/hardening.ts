@@ -221,7 +221,7 @@ async function withToolEntry(
     }
 
     await writeOpenClawConfigRecord(configPath, config);
-    getOverviewProvider()?.refreshTools();
+    await getOverviewProvider()?.refreshTools();
     vscode.window.showInformationMessage(result.message);
 }
 

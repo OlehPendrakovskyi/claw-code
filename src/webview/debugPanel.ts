@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { getNonce } from './content';
+import { asNonEmptyString, asRecord } from '../core/typeGuards';
 
 const log = vscode.window.createOutputChannel('OpenClaw Debug', { log: true });
 
@@ -207,7 +208,8 @@ button:hover { opacity: 0.9; }
 </html>`;
 
     panel.webview.onDidReceiveMessage(msg => {
-        log.info(`[DebugPanel] message from webview: ${JSON.stringify(msg)}`);
+        // Only the message type: a `send` message carries the full prompt text, which must not reach the log.
+        log.info(`[DebugPanel] message from webview: type=${asNonEmptyString(asRecord(msg)?.type) ?? 'unknown'}`);
     });
 
     log.info('Debug chat panel opened');

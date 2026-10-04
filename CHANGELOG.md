@@ -8,6 +8,17 @@ Semantic Versioning.
 
 ## Unreleased
 
+### Fixed
+
+- Stop logging prompt text: a sent prompt is logged by length only, and the debug panel logs only a message's type.
+- Redact credentials from the acpx stderr tail, in the log and in the error shown in the chat.
+- Wait for the tools view to refresh before confirming a tool toggle or uninstall, and report a failed refresh instead of dropping it.
+
+### Changed
+
+- CI enforces more of the development rules: type-aware linting for Promise misuse (`pnpm run lint:types`), line-based rule checks (`pnpm run check:rules`), and test-coverage thresholds on the Linux leg (`pnpm run test:coverage`).
+- Add a pull-request checklist and `AGENTS.md` for contributors and coding agents.
+
 ### Docs
 
 - Reorganise `docs/development-rules.md` by topic with stable rule IDs (R1–R55 keep their numbers; the former "claw-code specifics" become S1–S6), add strength, scope and a check to each rule, correct stale references, and add rules R56–R60 from the roadmap review.

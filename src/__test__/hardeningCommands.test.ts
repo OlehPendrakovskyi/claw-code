@@ -13,16 +13,61 @@ vi.mock('../core/configIO', async () => ({
     getHardeningMode: vi.fn(() => 'terminal'),
     getOpenClawConfigPath: vi.fn(() => '/home/u/.openclaw/openclaw.json'),
     readOpenClawConfig: vi.fn(async () => ({ config: {} })),
+    loadOpenClawConfigRecord: vi.fn(),
+    writeOpenClawConfigRecord: vi.fn(async () => undefined),
 }));
 
 import * as vscode from 'vscode';
-import { getHardeningCommandPrefix } from '../core/configIO';
+import { getHardeningCommandPrefix, loadOpenClawConfigRecord, writeOpenClawConfigRecord } from '../core/configIO';
 import { execFileAsync } from '../vscode/commands/shared';
-import { showHardeningAccessSummary } from '../vscode/commands/hardening';
+import { getOverviewProvider } from '../vscode/commands/terminals';
+import { showHardeningAccessSummary, toggleToolEntry } from '../vscode/commands/hardening';
+import type { ToolEntry } from '../core/tools';
 
 const posixOnly = process.platform === 'win32' ? it.skip : it;
 
 describe('hardening commands', () => {
+    describe('toggleToolEntry', () => {
+        const tool: ToolEntry = { id: 'fmt', label: 'fmt', enabled: true, path: ['tools', 0], source: 'tools' };
+
+        beforeEach(() => {
+            vi.mocked(loadOpenClawConfigRecord).mockResolvedValue({ config: { tools: [{ name: 'fmt', enabled: true }] }, path: '/home/u/.openclaw/openclaw.json' });
+            vi.mocked(vscode.window.showInformationMessage).mockClear();
+        });
+
+        afterEach(() => {
+            vi.mocked(getOverviewProvider).mockReturnValue(undefined);
+        });
+
+        it('confirms the change only after the tools view has refreshed', async () => {
+            const order: string[] = [];
+            const refreshTools = vi.fn(async () => {
+                await Promise.resolve();
+                order.push('refreshed');
+            });
+            vi.mocked(getOverviewProvider).mockReturnValue({ refreshTools } as unknown as ReturnType<typeof getOverviewProvider>);
+            vi.mocked(vscode.window.showInformationMessage).mockImplementation(async () => {
+                order.push('confirmed');
+                return undefined;
+            });
+
+            await toggleToolEntry(tool);
+
+            expect(writeOpenClawConfigRecord).toHaveBeenCalledWith('/home/u/.openclaw/openclaw.json', { tools: [{ name: 'fmt', enabled: false }] });
+            expect(order).toEqual(['refreshed', 'confirmed']);
+        });
+
+        it('surfaces a failed refresh instead of leaving it unhandled', async () => {
+            const refreshTools = vi.fn(async () => {
+                throw new Error('tree refresh failed');
+            });
+            vi.mocked(getOverviewProvider).mockReturnValue({ refreshTools } as unknown as ReturnType<typeof getOverviewProvider>);
+
+            await expect(toggleToolEntry(tool)).rejects.toThrow('tree refresh failed');
+            expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+        });
+    });
+
     describe('showHardeningAccessSummary', () => {
         beforeEach(() => {
             Object.assign(vscode.workspace, { isTrusted: true });

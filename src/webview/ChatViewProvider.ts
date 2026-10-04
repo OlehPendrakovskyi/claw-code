@@ -1029,7 +1029,7 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     /** Whether the prompt was dispatched to a backend. */
     private async handleSend(thread: ChatThreadState, text: string): Promise<boolean> {
-        log.info(`handleSend: thread=${thread.id}, text="${text.slice(0, 80)}"`);
+        log.info(`handleSend: thread=${thread.id}, chars=${text.length}`);
         if (thread.isStreaming) {
             return false;
         }

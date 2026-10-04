@@ -50,14 +50,25 @@ jobs:
         if: runner.os == 'Linux'
         run: pnpm run lint
 
+      # Promise misuse (development rule R4) needs type information, so it runs as its own pass.
+      - name: Type-aware lint
+        if: runner.os == 'Linux'
+        run: pnpm run lint:types
+
+      # Line-based checks for development rules R10, R36, R43 and R54 (scripts/check-rules.mjs).
+      - name: Rule checks
+        if: runner.os == 'Linux'
+        run: pnpm run check:rules
+
       - name: Build
         run: pnpm run compile
 
       # the runner directly: `pnpm run test` would repeat compile and lint through pretest.
+      # Coverage, with its thresholds, is measured once, on the Linux leg.
       # A step timeout, unlike the job's, fails the step and keeps its log.
       - name: Test
         timeout-minutes: 10
-        run: pnpm exec vitest run
+        run: pnpm exec vitest run ${{ runner.os == 'Linux' && '--coverage' || '' }}
 
       - name: License check
         if: runner.os == 'Linux'
