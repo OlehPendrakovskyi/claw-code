@@ -84,7 +84,7 @@ cd claw-code
 pnpm install
 pnpm run compile
 pnpm dlx @vscode/vsce package --no-dependencies -o claw-code.vsix
-code --install-extension claw-code.vsix --force
+code --install-extension claw-code.vsix --force   # or: cursor --install-extension claw-code.vsix --force
 ```
 
 ## Connect to your Gateway
