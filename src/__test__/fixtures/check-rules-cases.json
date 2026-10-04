@@ -570,6 +570,24 @@
             "file": "src/b.ts",
             "line": "import * as cp from 'child_process'; const run = cp.execFile; run(file, args);",
             "expect": null
+        },
+        {
+            "name": "R36: exec on a parenthesised namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; (cp).exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync on an asserted namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; (cp as typeof cp).execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10 clean: a RegExp test result",
+            "file": "src/a.ts",
+            "line": "log.info(`secret=${/secret/.test(text)}`);",
+            "expect": null
         }
     ]
 }

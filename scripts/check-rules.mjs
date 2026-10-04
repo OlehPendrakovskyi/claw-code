@@ -114,7 +114,8 @@ function calledExport(node, bindings) {
         return bindings.members.get(callee.text);
     }
     const object = memberObject(callee);
-    if (object !== undefined && ts.isIdentifier(object) && bindings.namespaces.has(object.text)) {
+    const receiver = object === undefined ? undefined : unwrap(object);
+    if (receiver !== undefined && ts.isIdentifier(receiver) && bindings.namespaces.has(receiver.text)) {
         return lastName(callee);
     }
     // `require('child_process').exec(…)`, `(await import('node:child_process')).execSync(…)`.
@@ -184,6 +185,10 @@ function carriesText(node) {
     if (ts.isCallExpression(node)) {
         const method = lastName(node.expression);
         const object = memberObject(node.expression);
+        // `text.includes(x)`, `/re/.test(text)`: the result is a boolean or number, whatever went in.
+        if (object !== undefined && NON_TEXT_RESULT.has(method ?? '')) {
+            return false;
+        }
         if (object !== undefined) {
             if (method === 'stringify' && lastName(object) === 'JSON') {
                 return true;

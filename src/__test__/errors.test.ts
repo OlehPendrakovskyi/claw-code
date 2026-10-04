@@ -6,8 +6,10 @@ describe('errorMessage', () => {
         expect(errorMessage('plain failure')).toBe('plain failure');
     });
 
-    it('uses the message of a record that carries one', () => {
-        expect(errorMessage({ message: 'socket hang up', code: 'ECONNRESET' })).toBe('socket hang up');
+    it('does not trust a record\'s message field either', () => {
+        const message = errorMessage({ message: 'token=secret', code: 'E1' });
+        expect(message).toBe('Non-Error value (keys: message, code)');
+        expect(message).not.toContain('secret');
     });
 
     it('describes any other object by its keys, never its values', () => {
