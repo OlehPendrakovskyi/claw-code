@@ -4,7 +4,7 @@
 >
 > **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is not used as or in the product's name or branding, nor in identifiers (namespaces, commands, settings). Published material refers to it only where factually necessary — this note, or third-party file names such as `CLAUDE.md` that the rules ingester reads.
 
-This replaces the earlier single-file plan (the root `ROADMAP.md`, deleted in `b784585`, and the long version of this file). Design detail and history now live in separate documents:
+This replaces the earlier single-file plan (the root `ROADMAP.md`, removed by this change set together with the upstream README, and the long version of this file). Design detail and history now live in separate documents:
 
 | Document | Contents |
 | --- | --- |
