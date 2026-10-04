@@ -133,7 +133,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 
 ## Filesystem and paths
 
-**R6. Filesystem checklist.** *General, MUST.* `realpath` at ingestion → containment check → open with `O_NOFOLLOW` (+`O_NONBLOCK` for potentially special files) → `fstat`-vs-`lstat` (dev/ino) + `isFile()` → revalidate after await. Containment is checked on resolve AND on read, and every entry point uses the same guards (in claw-code, slash commands use the same guards as `handleSend` — was S5). Check-then-use is a race by default. Residual windows are documented honestly, naming the responsible component.
+**R6. Filesystem checklist.** *General, MUST.* `realpath` at ingestion → containment check → open with `O_NOFOLLOW` (+`O_NONBLOCK` for potentially special files) → `fstat`-vs-`lstat` (dev/ino) + `isFile()` → verify the opened handle's own path through the OS (the fd link on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandle` on Windows) against the canonical root, and fail closed where no such facility exists → revalidate after await. Identity checks alone do not prove containment: an ancestor swapped before both the open and the `lstat` satisfies them (see P3 in [the diff design](design/diff-and-checkpoints.md#path-resolution-and-containment); the attachment reader's gap is #40). Containment is checked on resolve AND on read, and every entry point uses the same guards (in claw-code, slash commands use the same guards as `handleSend` — was S5). Check-then-use is a race by default. Residual windows are documented honestly, naming the responsible component.
 *Check:* review checklist; attachment-reader tests.
 
 **S5. Paths/attachments.** Merged into R6.
