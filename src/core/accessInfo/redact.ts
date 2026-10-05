@@ -555,9 +555,12 @@ function maskUserinfo(text: string): string {
                 spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
             }
             // A URL parser drops line breaks inside a URL (`https://alice:P\nQ@host` has the password `PQ`), so a
-            // CR, LF or CRLF right where the scan stopped, inside an unparsable `user:password`, does not end
-            // it: the next line's first run goes on, to its last `@`. Anywhere else a line break ends the URL.
-            if (spacedAt === -1 && ambiguous && j === i) {
+            // CR, LF or CRLF right where the scan stopped, after a `:`, does not end it: the next line's first run
+            // goes on, to its last `@`. That holds when the text before the break parses too (`alice:123` reads
+            // as a port, yet `https://alice:123\nQ@host` has the password `123Q`), so a `host:port` ending a line
+            // with `x@y` starting the next is masked as userinfo, as the parser reads it. Without a `:` before
+            // the break, the break ends the URL.
+            if (spacedAt === -1 && colonBeforeSlash && j === i) {
                 let k = j;
                 while (text[k] === '\r' || text[k] === '\n') {
                     k++;

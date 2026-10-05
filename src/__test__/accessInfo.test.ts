@@ -823,6 +823,8 @@ describe('redactText', () => {
     it('masks URL userinfo split by a line break, as a URL parser reads it', () => {
         for (const eol of ['\n', '\r', '\r\n']) {
             expect(redactText(`https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+            // A numeric prefix parses as a port, yet the whole is one password.
+            expect(redactText(`https://alice:123${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
             expect(formatNamedEntry({ name: 'gh', url: `https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x` })).toBe('gh (https://***:***@host.example/x)');
         }
         // Anywhere else a line break still ends the URL.
@@ -954,6 +956,7 @@ describe('redactText', () => {
             'https://a ' + 'b:'.repeat(size / 2),
             'https://a b '.repeat(size / 12) + '@',
             'https://a:b\n'.repeat(size / 12) + '@',
+            'https://a:1\n'.repeat(size / 12) + '@',
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
             'Basic "' + 'A'.repeat(size),
             '?token=' + '\\\\t'.repeat(size / 3) + '"',
