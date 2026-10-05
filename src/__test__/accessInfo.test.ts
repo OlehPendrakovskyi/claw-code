@@ -396,6 +396,15 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toContain('alice');
     });
 
+    it('redacts malformed endpoints in MCP server and tool labels', () => {
+        const info = infoWith({
+            mcpServers: [formatNamedEntry({ name: 'remote', url: 'https://alice:secret@[bad' }) ?? ''],
+            tools: ['fetch (https://bob:hunter2@[bad)'],
+        });
+        const markdown = formatAccessSummaryMarkdown(info);
+        expect(markdown).not.toMatch(/alice|secret|bob|hunter2/);
+    });
+
     it('surfaces config and CLI issues', () => {
         const markdown = formatAccessSummaryMarkdown(createEmptyAccessInfo(), 'no config', 'cli exploded');
         expect(markdown).toContain('Config issue: no config');
@@ -591,6 +600,13 @@ describe('redactText', () => {
 
     it('masks a sensitive query value quoted with escaped quotes inside a JSON string', () => {
         expect(redactText(JSON.stringify({ reason: '?to%6ben="PRIVATE_PREFIX PRIVATE_SUFFIX"' }))).not.toContain('PRIVATE');
+    });
+
+    it('masks a credential under an escaped JSON key inside a string field', () => {
+        const json = JSON.stringify({ reason: '{"token":"PRIVATE_VALUE","page":2}' });
+        const redacted = redactText(json);
+        expect(redacted).not.toContain('PRIVATE_VALUE');
+        expect(redacted).toContain('page');
     });
 
     it('masks unpadded or truncated Basic values but keeps prose', () => {

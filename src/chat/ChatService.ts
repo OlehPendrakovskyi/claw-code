@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { openCredentialAt, redactText } from '../core/accessInfo/redact';
+import { openCredentialAt, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -31,6 +31,9 @@ export const STDERR_TAIL_MAX_CHARS = 16 * 1024;
 /** Raw stderr kept for redaction. Redaction sees this much more than the tail it reports, so a
  *  credential's label is still there when its value is redacted. */
 export const STDERR_RAW_WINDOW_CHARS = 4 * STDERR_TAIL_MAX_CHARS;
+/** The start of a terminal code cut off at the end of a stderr chunk. */
+// eslint-disable-next-line no-control-regex
+const PARTIAL_TERMINAL_CODE = /\u001b(?:\[[0-9;]*)?$/;
 
 /** How long an aborted acpx gets after SIGTERM before it is SIGKILLed. */
 export const ABORT_KILL_GRACE_MS = 3000;
@@ -330,6 +333,8 @@ class AcpxRun {
     /** A credential whose label was dropped before its value closed: stderr is discarded until its unescaped
      *  closing quote, then to the end of that line. `escaped` carries a pending backslash across chunks. */
     private droppingStderrCredential: { quote: string; escaped: boolean } | undefined;
+    /** The start of a terminal code split across chunks, held back until the rest arrives. */
+    private stderrPartialCode = '';
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -408,7 +413,12 @@ class AcpxRun {
      *  line whose start was cut off is dropped up to its newline. A quoted credential open at the cut is
      *  dropped through its closing quote, across lines and chunks, so no value outlives its label. */
     private onStderr(text: string): void {
-        let incoming = text;
+        // Colour codes could separate a label from its value: strip them before tracking anything, holding back
+        // a code cut off at the chunk's end until the rest arrives.
+        const joined = this.stderrPartialCode + text;
+        const partial = PARTIAL_TERMINAL_CODE.exec(joined);
+        this.stderrPartialCode = partial?.[0] ?? '';
+        let incoming = stripTerminalCodes(partial === null ? joined : joined.slice(0, partial.index));
         if (this.droppingStderrCredential !== undefined) {
             const close = this.closingQuoteIndex(incoming, this.droppingStderrCredential);
             if (close === -1) {

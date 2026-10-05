@@ -28,9 +28,10 @@ export function redactEndpoint(endpoint: string): string {
 
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, … */
 const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|credential|access[_-]?key|signature/i;
-/** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, so a
- *  long run is tried once rather than from each of its characters. */
-const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(["']?[A-Za-z0-9_.-]+["']?)\s*[:=]\s*/g;
+/** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
+ *  escaped quotes too (`\"token\"` inside a JSON string), so a long run is tried once rather than from each
+ *  of its characters. */
+const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(\\?["']?[A-Za-z0-9_.-]+\\?["']?)\s*[:=]\s*/g;
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
@@ -176,7 +177,8 @@ function openQuotedValue(text: string, cut: number, opener: RegExp, isSensitive:
             start++;
         }
         const quote = text[start] ?? '';
-        if (start >= cut || !VALUE_QUOTE.test(quote) || !isSensitive(pair)) {
+        // The key came before the cut, so its value is tracked even when it opens after it (`password=\n"…"`).
+        if (!VALUE_QUOTE.test(quote) || !isSensitive(pair)) {
             continue;
         }
         let close = -1;
@@ -196,6 +198,15 @@ function openQuotedValue(text: string, cut: number, opener: RegExp, isSensitive:
         opener.lastIndex = close + 1;
     }
     return undefined;
+}
+
+/** A terminal control sequence (`ESC[…m` and the other CSI forms). */
+// eslint-disable-next-line no-control-regex
+const TERMINAL_CODE = /\u001b\[[0-9;]*[A-Za-z]/g;
+
+/** Text without terminal colour and other CSI codes, which could sit between a label and its value. */
+export function stripTerminalCodes(text: string): string {
+    return text.replace(TERMINAL_CODE, '');
 }
 
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
@@ -431,8 +442,7 @@ export function redactText(text: string): string {
     //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
-    // eslint-disable-next-line no-control-regex
-    const plain = text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+    const plain = stripTerminalCodes(text);
     const userinfoMasked = maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@');
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';

@@ -234,6 +234,25 @@ describe('ChatService buffer and abort bounds', () => {
             expect((events[0] as { message: string }).message).toBe('real failure');
         });
 
+        it('tracks a credential whose label a colour code separates from its value, also across chunks', () => {
+            for (const parts of [
+                [`password\u001b[0m="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`],
+                [`password\u001b[`, `0m="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`],
+            ]) {
+                const { child, events } = start();
+                parts.forEach(part => child.stderr.emit('data', Buffer.from(part)));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe('real failure');
+            }
+        });
+
+        it('tracks a credential whose label precedes the cut and whose value opens after it', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${'x'.repeat(STDERR_RAW_WINDOW_CHARS)} password=\n"PRIVATE_VALUE"\nreal failure`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('prefers an agent failure message over the stderr tail', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('stderr noise'));

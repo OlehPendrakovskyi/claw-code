@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { redactEndpoint, redactText } from './redact.js';
+import { redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -51,11 +51,12 @@ export function formatAccessSummaryMarkdown(
     }
 
     lines.push('## MCP servers');
-    lines.push(formatList(info.mcpServers, 'No MCP servers detected in config or CLI output.'));
+    // Labels can carry endpoints; every list that can is rendered through redactText.
+    lines.push(formatList(info.mcpServers.map(redactText), 'No MCP servers detected in config or CLI output.'));
     lines.push('');
 
     lines.push('## Tools');
-    lines.push(formatList(info.tools, 'No tools detected in config.'));
+    lines.push(formatList(info.tools.map(redactText), 'No tools detected in config.'));
     lines.push('');
 
     lines.push('## Keys and credentials');
@@ -68,7 +69,6 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     lines.push('## Network endpoints');
-    // Endpoints come through redactEndpoint, which leaves a malformed URL unchanged: redact them as text too.
     lines.push(formatList(info.networkEndpoints.map(redactText), 'No network endpoints detected.'));
     lines.push('');
 
@@ -106,7 +106,7 @@ export function formatList(items: string[], emptyMessage: string) {
 /** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (typeof entry === 'string') {
-        return redactEndpoint(entry);
+        return redactText(entry);
     }
     if (!isRecord(entry)) {
         return fallbackName;
@@ -114,7 +114,8 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    const endpoint = rawEndpoint !== undefined ? redactEndpoint(rawEndpoint) : undefined;
+    // redactText, not redactEndpoint, which leaves a malformed URL unchanged.
+    const endpoint = rawEndpoint !== undefined ? redactText(rawEndpoint) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
     }
