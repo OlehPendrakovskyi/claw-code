@@ -940,6 +940,13 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
         });
 
+        it('redacts a credential under a Windows path on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('failed reading C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

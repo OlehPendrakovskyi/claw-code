@@ -45,10 +45,13 @@ const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|passp
 const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnr])`;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
  *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
- *  long run is tried once rather than from each of its characters or backslashes. A key may also start right
- *  after serialised whitespace (`failure\nOPENAI_API_KEY=…` inside a JSON string), though not at a backslash
- *  there, so a run of escapes (`\n\n\n…`) does not start a match at each one. */
-const KEY_SEPARATOR = new RegExp(String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[tnr])(?=["'A-Za-z0-9_.-]))(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
+ *  long run is tried once rather than from each of its characters or backslashes. A key may also start at a
+ *  name character right after a backslash (`C:\secrets\OPENAI_API_KEY=…`, `failure\nOPENAI_API_KEY=…` inside a
+ *  JSON string), or at an escaped quote right after serialised whitespace (`\n\"token\": …`); never inside a
+ *  backslash run, nor at an escape letter right before another backslash, so a run of escapes (`\n\n\n…`)
+ *  does not start a match at each one. After a backslash, `\token` may be a path segment or a tab and `oken`,
+ *  so {@link maskSensitivePairs} tests such a key both ways. */
+const KEY_SEPARATOR = new RegExp(String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\)(?=[A-Za-z0-9_.-])(?![tnr]\\)|(?<=\\[tnr])(?=\\*["']))(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
@@ -248,8 +251,11 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         // An Authorization or Cookie value is a credential too, under any key naming one (`cookie_header`), masked
         // whole: a bare one to the end of its line, since a cookie list holds `name=value` pairs of its own.
         // is left to CREDENTIAL_HEADER, which takes the rest of its line.
-        const header = CREDENTIAL_HEADER_KEY.test(pair[1]);
-        const sensitive = header || SENSITIVE_KEY.test(pair[1]);
+        // A key right after a backslash that starts with `t`, `n` or `r` may follow an escape (`\npass=…`): its
+        // name is then the rest, so both readings are tested.
+        const name = text[pair.index - 1] === '\\' && /^[tnr]/.test(pair[1]) ? [pair[1], pair[1].slice(1)] : [pair[1]];
+        const header = name.some(key => CREDENTIAL_HEADER_KEY.test(key));
+        const sensitive = header || name.some(key => SENSITIVE_KEY.test(key));
         if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }

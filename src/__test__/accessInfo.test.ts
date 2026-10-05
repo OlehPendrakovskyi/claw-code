@@ -622,6 +622,15 @@ describe('redactText', () => {
         }
     });
 
+    it('masks a credential whose key follows a Windows path backslash, raw and serialised', () => {
+        expect(redactText('C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE')).toBe('C:\\secrets\\OPENAI_API_KEY=***');
+        expect(redactText(JSON.stringify({ path: 'C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText('C:\\Users\\me\\token: PRIVATE_VALUE')).toBe('C:\\Users\\me\\token=***');
+        // After an escape letter, the key is read both ways: `\npass` is `pass` after a newline.
+        expect(redactText(JSON.stringify({ reason: 'failure\npass=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: 'failure\ncookie: PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+    });
+
     it('masks a credential whose key follows serialised whitespace', () => {
         expect(redactText(JSON.stringify({ reason: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE' }))).toBe('{"reason":"failure\\nOPENAI_API_KEY=***');
         expect(redactText(JSON.stringify({ reason: 'x\ttoken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
@@ -899,6 +908,8 @@ describe('redactText', () => {
             '\u009d'.repeat(size / 2),
             '\\\\n'.repeat(size / 3) + 'token',
             'a\\\\n'.repeat(size / 4) + '=',
+            '\\a'.repeat(size / 2) + '=',
+            '\\aaaa'.repeat(size / 5),
             'token' + '\\\\'.repeat(size / 2) + 't=',
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
