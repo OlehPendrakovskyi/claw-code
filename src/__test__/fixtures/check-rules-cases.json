@@ -849,6 +849,42 @@
             "others": {
                 "src/run.ts": "import { options } from './opts';\nconfigure(options);\n"
             }
+        },
+        {
+            "name": "R10: prompt text replacing an output channel's content",
+            "file": "src/a.ts",
+            "line": "channel.replace(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: payload through console.dir",
+            "file": "src/a.ts",
+            "line": "console.dir(payload);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: message body through console.table",
+            "file": "src/a.ts",
+            "line": "console.table(msg.body);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as console.assert's message",
+            "file": "src/a.ts",
+            "line": "console.assert(ok, `bad: ${prompt}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a length through console.dir",
+            "file": "src/a.ts",
+            "line": "console.dir({ chars: text.length });",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: replace on text that is not logged",
+            "file": "src/a.ts",
+            "line": "const clean = text.replace(/x/g, '');",
+            "expect": null
         }
     ]
 }

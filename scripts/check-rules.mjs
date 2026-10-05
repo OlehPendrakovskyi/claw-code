@@ -28,8 +28,13 @@ const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', '
 /** Methods whose result is a boolean or a number, not text. Any other method called on a text value
  *  (`slice`, `replace`, `split`, `padEnd`, …) is treated as still carrying text. */
 const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search', 'charCodeAt', 'codePointAt', 'localeCompare', 'test']);
-/** Logging methods, on a receiver that is a logger (`log`, `logger`, `this.logger`, `console`, …). */
-const LOG_METHODS = new Set(['info', 'warn', 'error', 'debug', 'trace', 'append', 'appendLine', 'log']);
+/** Methods that write their arguments to a log or output surface, on a receiver that is a logger (`log`,
+ *  `logger`, `this.logger`, `console`, …): the logger levels, VS Code's `OutputChannel` (`append`,
+ *  `appendLine`, `replace`) and the rest of `console`'s writers. */
+const LOG_METHODS = new Set([
+    'info', 'warn', 'error', 'debug', 'trace', 'log', 'append', 'appendLine', 'replace',
+    'dir', 'dirxml', 'table', 'assert', 'group', 'groupCollapsed', 'timeLog',
+]);
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 /** Operators whose result is a boolean whatever their operands: comparisons, `instanceof`, `in`. */
