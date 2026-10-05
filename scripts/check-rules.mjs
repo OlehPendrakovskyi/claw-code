@@ -412,8 +412,7 @@ function isShellAssignment(node, context) {
     if (object === undefined || lastName(target) !== 'shell' || !isOptionsVariable(object, context)) {
         return false;
     }
-    const value = unwrap(node.right);
-    return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
+    return !isShellOffValue(node.right, context);
 }
 
 function isShellOption(node, context) {
@@ -424,8 +423,17 @@ function isShellOption(node, context) {
     if (!ts.isPropertyAssignment(node) || lastName(node.name) !== 'shell') {
         return false;
     }
-    const value = unwrap(node.initializer);
-    return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
+    return !isShellOffValue(node.initializer, context);
+}
+
+/** Whether a `shell` value turns no shell on: `false`, `null`, `undefined`, or a `const` holding one of them
+ *  (`const shellOff = false; … { shell: shellOff }`). */
+function isShellOffValue(expression, context) {
+    const value = unwrap(expression);
+    if (SHELL_OFF.has(value.kind) || (ts.isIdentifier(value) && value.text === 'undefined')) {
+        return true;
+    }
+    return ts.isIdentifier(value) && isConstantShellOff(context.checker.getSymbolAtLocation(value));
 }
 
 /** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`. */

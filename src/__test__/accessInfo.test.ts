@@ -412,6 +412,18 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toMatch(/alice|secret|bob|hunter2/);
     });
 
+    it('redacts key sources and local files taken from config values', () => {
+        const info = extractAccessInfoFromConfig(
+            { credentials: { env: 'OPENAI_API_KEY=PRIVATE', file: '/run/secrets/token=PRIVATE' } },
+            '/tmp/openclaw.json'
+        );
+        expect(info.keySources.join('\n')).toContain('PRIVATE');
+        const markdown = formatAccessSummaryMarkdown(info);
+        expect(markdown).toContain('- Environment variable: OPENAI_API_KEY=***');
+        expect(markdown).toContain('## Local files\n- /run/secrets/token=***');
+        expect(markdown).not.toContain('PRIVATE');
+    });
+
     it('surfaces config and CLI issues', () => {
         const markdown = formatAccessSummaryMarkdown(createEmptyAccessInfo(), 'no config', 'cli exploded');
         expect(markdown).toContain('Config issue: no config');

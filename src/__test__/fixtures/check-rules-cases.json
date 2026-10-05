@@ -1227,6 +1227,24 @@
             "expect": null
         },
         {
+            "name": "R36 clean: a shell option set to a constant false",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const shellOff = false; spawn(cmd, args, { shell: shellOff });",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: a constant false assigned as the shell of spawn options",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const shellOff = false; const options: SpawnOptions = {}; options.shell = shellOff; spawn(cmd, args, options);",
+            "expect": null
+        },
+        {
+            "name": "R36: a shell option set to a mutable variable holding false",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; let shellOff = false; shellOff = true; spawn(cmd, args, { shell: shellOff });",
+            "expect": "R36"
+        },
+        {
             "name": "R36: a shorthand shell bound to a variable that may be true",
             "file": "src/a.ts",
             "line": "import { spawn } from 'child_process'; let shell = false; shell = true; spawn(cmd, args, { shell });",

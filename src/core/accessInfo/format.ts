@@ -51,7 +51,7 @@ export function formatAccessSummaryMarkdown(
     }
 
     lines.push('## MCP servers');
-    // Labels can carry endpoints; every list that can is rendered through redactText.
+    // Labels can carry endpoints or secrets; every list that can is rendered through redactText.
     lines.push(formatList(info.mcpServers.map(redactText), 'No MCP servers detected in config or CLI output.'));
     lines.push('');
 
@@ -62,7 +62,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('## Keys and credentials');
     lines.push(
         formatList(
-            info.keySources,
+            info.keySources.map(redactText),
             'No key sources detected. If you use environment variables, they may not appear in config.'
         )
     );
@@ -73,8 +73,9 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     lines.push('## Local files');
+    // Key sources and paths come from config values (`{ env: 'X=…' }`, `{ file: '…/token=…' }`), so they are redacted too.
     const files = configPath ? uniqSorted([configPath, ...info.localFiles]) : info.localFiles;
-    lines.push(formatList(files, 'No local files detected.'));
+    lines.push(formatList(files.map(redactText), 'No local files detected.'));
     lines.push('');
 
     if (info.notes.length > 0) {
