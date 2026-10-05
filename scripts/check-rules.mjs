@@ -30,10 +30,10 @@ const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', '
 const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search', 'charCodeAt', 'codePointAt', 'localeCompare', 'test']);
 /** Methods that write their arguments to a log or output surface, on a receiver that is a logger (`log`,
  *  `logger`, `this.logger`, `console`, …): the logger levels, VS Code's `OutputChannel` (`append`,
- *  `appendLine`, `replace`) and the rest of `console`'s writers. */
+ *  `appendLine`, `replace`) and the rest of `console`'s writers, labels included (`count`, `timeEnd`). */
 const LOG_METHODS = new Set([
     'info', 'warn', 'error', 'debug', 'trace', 'log', 'append', 'appendLine', 'replace',
-    'dir', 'dirxml', 'table', 'assert', 'group', 'groupCollapsed', 'timeLog',
+    'dir', 'dirxml', 'table', 'assert', 'group', 'groupCollapsed', 'timeLog', 'timeEnd', 'count',
 ]);
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
 /** Type names of loggers: VS Code's `OutputChannel` and `LogOutputChannel`, `Console`, any `…Logger`. */

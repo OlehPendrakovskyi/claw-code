@@ -628,6 +628,17 @@ describe('redactText', () => {
         expect(redactText('uses Basic Authentication and basic configuration')).toBe('uses Basic Authentication and basic configuration');
     });
 
+    it('strips OSC sequences, terminated or truncated, before matching credentials', () => {
+        expect(redactText('token\u001b]0;title\u0007=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('token\u001b]0;title\u001b\\=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('ok \u001b]0;never ends\nnext token=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+    });
+
+    it('masks array and object header values whole', () => {
+        expect(redactText(JSON.stringify({ headers: { Cookie: ['session=PRIVATE_COOKIE'] } }, null, 2))).not.toContain('PRIVATE_COOKIE');
+        expect(redactText(JSON.stringify({ headers: { Authorization: { scheme: 'Bearer', value: 'PRIVATE_AUTH' } } }, null, 2))).not.toContain('PRIVATE_AUTH');
+    });
+
     it('strips every CSI form before matching credentials', () => {
         expect(redactText('token\u001b[?25h=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText('token\u001b[38:2:1:2:3m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
@@ -717,6 +728,7 @@ describe('redactText', () => {
             'x://a: '.repeat(size / 7),
             ' //a: '.repeat(size / 6),
             '=//a:'.repeat(size / 5),
+            '\u001b]'.repeat(size / 2),
             'cookie: "'.repeat(size / 9) + '\n',
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),

@@ -152,8 +152,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         const start = KEY_SEPARATOR.lastIndex;
         const escaped = isEscapedQuote(text, start);
         const quoted = escaped || VALUE_QUOTE.test(text[start] ?? '');
-        // A quoted Authorization or Cookie value is a credential too; unquoted ones are left to CREDENTIAL_HEADER.
-        const sensitive = SENSITIVE_KEY.test(pair[1]) || (quoted && CREDENTIAL_HEADER_KEY.test(pair[1]));
+        const composite = text[start] === '[' || text[start] === '{';
+        // A quoted, array or object Authorization or Cookie value is a credential too, masked whole; a bare one
+        // is left to CREDENTIAL_HEADER, which takes the rest of its line.
+        const sensitive = SENSITIVE_KEY.test(pair[1]) || ((quoted || composite) && CREDENTIAL_HEADER_KEY.test(pair[1]));
         if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }
@@ -172,9 +174,11 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
 }
 
 /** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
- *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`. */
+ *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`; or an OSC
+ *  sequence (`ESC]0;title`) ended by BEL or ST (`ESC\\`). A truncated OSC runs to the next ESC, BEL or line
+ *  break, so no sequence scans past another and stripping stays linear. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
+const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?/g;
 
 /** Text without terminal colour and other CSI codes, which could sit between a label and its value. */
 export function stripTerminalCodes(text: string): string {

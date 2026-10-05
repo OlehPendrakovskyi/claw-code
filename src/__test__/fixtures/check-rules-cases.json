@@ -1192,6 +1192,24 @@
             "file": "src/a.ts",
             "line": "import * as cp from 'child_process'; cp.spawn.apply(cp, ['node', [], { shell: false }]);",
             "expect": null
+        },
+        {
+            "name": "R10: prompt text as a console.count label",
+            "file": "src/a.ts",
+            "line": "console.count(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as a console.timeEnd label",
+            "file": "src/a.ts",
+            "line": "console.timeEnd(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a fixed console.count label",
+            "file": "src/a.ts",
+            "line": "console.count('sends');",
+            "expect": null
         }
     ]
 }
