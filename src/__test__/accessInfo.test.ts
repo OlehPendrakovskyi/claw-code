@@ -622,6 +622,20 @@ describe('redactText', () => {
         }
     });
 
+    it('masks the userinfo of a URL whose username holds whitespace', () => {
+        expect(redactText('https://alice smith:PRIVATE_VALUE@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('https://alice\tsmith:PRIVATE_VALUE@host.example/x')).toBe('https://***@host.example/x');
+        expect(formatNamedEntry({ name: 'gh', url: 'https://alice smith:PRIVATE_VALUE@host.example/x' })).not.toContain('PRIVATE');
+        // Prose with no `:` after the space keeps its text.
+        expect(redactText('see https://example.com and mail bob@example.org')).toBe('see https://example.com and mail bob@example.org');
+    });
+
+    it('masks a quoted query value after serialised whitespace', () => {
+        const masked = redactText(JSON.stringify({ error: 'https://[bad/x?to%6ben=\t"PRIVATE_PREFIX PRIVATE_SUFFIX"', ok: 1 }));
+        expect(masked).not.toContain('PRIVATE');
+        expect(masked).toContain('"ok":1');
+    });
+
     it('masks a credential whose key follows a Windows path backslash, raw and serialised', () => {
         expect(redactText('C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE')).toBe('C:\\secrets\\OPENAI_API_KEY=***');
         expect(redactText(JSON.stringify({ path: 'C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
@@ -910,6 +924,9 @@ describe('redactText', () => {
             'a\\\\n'.repeat(size / 4) + '=',
             '\\a'.repeat(size / 2) + '=',
             '\\aaaa'.repeat(size / 5),
+            'https://a ' + 'b:'.repeat(size / 2),
+            'https://a b '.repeat(size / 12) + '@',
+            '?token=' + '\\\\t'.repeat(size / 3) + '"',
             'token' + '\\\\'.repeat(size / 2) + 't=',
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),

@@ -947,6 +947,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
         });
 
+        it('redacts a quoted query value after serialised whitespace on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'https://[bad/x?to%6ben=\t"PRIVATE_PREFIX PRIVATE_SUFFIX"' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

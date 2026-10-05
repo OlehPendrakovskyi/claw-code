@@ -404,6 +404,8 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
 const QUERY_VALUE_STOP = /[&#\s]/;
+/** A run of whitespace, raw or serialised ({@link SPACE}), possibly empty. */
+const LEADING_SPACE = new RegExp(`${SPACE}*`, 'y');
 const EMBEDDED_DELIMITER = /["'`<>]/;
 /** What may follow a quote, backtick or angle bracket that closes the text around a query value. */
 const VALUE_CLOSER = /[\s>"'`,;)\]}]/;
@@ -535,15 +537,19 @@ function maskUserinfo(text: string): string {
         // `://`. When the text before the space does not parse (`alice:PRIVATE` is no port), it is one ambiguous
         // authority to the end of its line, `/` and nested `://` included (`alice:P word://tail@host`); with no
         // `@` in that stretch it holds no userinfo and is skipped whole, so no stretch is scanned twice.
+        // A username may hold whitespace too (`https://alice smith:pass@host`): with no `:` before the space, one
+        // after it on the same stretch makes what follows a `user:password`, and the same run applies.
         let spacedAt = -1;
-        if (i < text.length && slash === -1 && colonBeforeSlash && lastAt === -1) {
-            const ambiguous = start !== undefined && !URL.canParse(text.slice(start, i));
+        if (i < text.length && slash === -1 && lastAt === -1) {
+            const ambiguous = colonBeforeSlash && start !== undefined && !URL.canParse(text.slice(start, i));
+            let colonSeen = colonBeforeSlash;
             let j = i;
             for (; j < text.length && text[j] !== '\r' && text[j] !== '\n'; j++) {
                 if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
                     break;
                 }
-                spacedAt = text[j] === '@' ? j : spacedAt;
+                colonSeen ||= text[j] === ':';
+                spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
@@ -622,10 +628,10 @@ function maskQueryPairs(text: string): string {
             continue;
         }
         // `?token= value`: the value starts after any whitespace, a line break included, as in the plain-text pairs.
-        let start = QUERY_NAME.lastIndex;
-        while (WHITESPACE.test(text[start] ?? '')) {
-            start++;
-        }
+        // Serialised whitespace (`\t` in JSON) too, so a quoted value after it is still seen as quoted.
+        LEADING_SPACE.lastIndex = QUERY_NAME.lastIndex;
+        LEADING_SPACE.test(text);
+        const start = LEADING_SPACE.lastIndex;
         const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '');
         const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
