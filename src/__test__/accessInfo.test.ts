@@ -857,6 +857,17 @@ describe('redactText', () => {
         }
     });
 
+    it('masks a special-scheme URL whose separator or userinfo a tab or line break splits', () => {
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`https:${sep}alice:PRIVATE@host.example/x`)).toBe('https://***:***@host.example/x');
+            expect(redactText(`https:/alice:PRIVATE${sep}SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+        }
+        // Prose keeps its spelling and its line boundary.
+        expect(redactText('the https: scheme\nmail bob@example.org, see http:/x\nbob@example.org')).toBe(
+            'the https: scheme\nmail bob@example.org, see http:/x\nbob@example.org'
+        );
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -1012,6 +1023,8 @@ describe('redactText', () => {
             '?token=a' + '\n'.repeat(size),
             '?a' + '\n'.repeat(size) + '=',
             ' //a' + '\n'.repeat(size / 2) + ':@',
+            'https:/a:'.repeat(size / 9) + '\n@',
+            'https:\n'.repeat(size / 7) + 'a',
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

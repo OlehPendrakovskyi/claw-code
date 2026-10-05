@@ -1027,6 +1027,13 @@ describe('ChatService.sendMessage', () => {
             expect(message).not.toContain('OmE');
         });
 
+        it('redacts a special-scheme URL split by line breaks on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https:\nalice:PRIVATE@host.example/x\nfetch https:/alice:PRIVATE\r\nSUFFIX@host.example/x\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toMatch(/PRIVATE|SUFFIX/);
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

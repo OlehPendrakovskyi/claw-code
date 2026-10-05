@@ -162,8 +162,10 @@ function compositeValueEnd(text: string, start: number): number {
                 }
                 // As in valueEnd: before a `'` or backtick, any backslash run escapes it.
                 let run = 1;
-                while (c !== '"' && text[i + run] === '\\') {
-                    run++;
+                if (c !== '"') {
+                    while (text[i + run] === '\\') {
+                        run++;
+                    }
                 }
                 i += run + 1;
             }
@@ -210,8 +212,10 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
     if ((unclosed.get(quote) ?? text.length) > start) {
         for (let i = start + 1; i < text.length; i++) {
             if (text[i] === '\\') {
-                while (anyRunEscapes && text[i + 1] === '\\') {
-                    i++;
+                if (anyRunEscapes) {
+                    while (text[i + 1] === '\\') {
+                        i++;
+                    }
                 }
                 i++;
             } else if (text[i] === quote) {
@@ -472,38 +476,77 @@ function schemeStart(text: string, separator: number): number | undefined {
 
 /** A special scheme (`http`, `https`, `ws`, `wss`, `ftp`) and the slashes after it. A URL parser takes any run
  *  of `/` and `\` there, or none, as the start of the authority: `https:/alice:pw@host`, `https:\\alice:pw@host`
- *  and `https:alice:pw@host` all carry `alice:pw` as userinfo. */
-const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:https?|wss?|ftp):[/\\]*/gi;
+ *  and `https:alice:pw@host` all carry `alice:pw` as userinfo. It drops tabs and line breaks too, so they may
+ *  sit in the run (`https:\nalice:pw@host`). */
+const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:https?|wss?|ftp):[/\\\t\r\n]*/gi;
 const LINE_BREAK = /[\r\n]/g;
+/** What ends an authority for a URL parser: `/`, `\`, `?`, `#`, or whitespace other than a tab or line break. */
+const AUTHORITY_STOP = /[/\\?#]|[^\S\t\r\n]/g;
+const BREAK = /[\t\r\n]/g;
 
 /** Rewrite the separator of a special-scheme URL spelled other than `://` (`https:/`, `https:\\`, `https:`,
- *  `https:///`) as `://` when an `@` follows on its line, so the userinfo passes find it as a parser would.
- *  The redacted text shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@` and
- *  line break are each found once per stretch. */
+ *  `https:///`, `https:\n`) as `://` when its userinfo passes should see it as a parser would: an `@` follows on
+ *  its line, or the authority, read across tabs and line breaks, holds an `@` and a `:` before it
+ *  (`https:/alice:pw\nSUFFIX@host`). A username alone across a break is no secret, so prose keeps its line
+ *  boundary. The redacted text shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@`,
+ *  `:`, break and authority end are each found once per stretch. */
 function normalizeSpecialSchemes(text: string): string {
     let out = '';
     let copied = 0;
     let nextAt = -1;
+    let nextLineBreak = -1;
     let nextBreak = -1;
+    let nextColon = -1;
+    let stop = -1;
+    let lastAt = -1;
+
+    /** Whether the authority from `end`, read across breaks, has an `@`, a break before it, and a `:` before
+     *  that `@`. Stop characters do not depend on where a scan starts, so a stretch is scanned once. */
+    const userinfoAcrossBreaks = (end: number, colon: number): boolean => {
+        if (stop < end) {
+            AUTHORITY_STOP.lastIndex = end;
+            stop = AUTHORITY_STOP.exec(text)?.index ?? text.length;
+            lastAt = -1;
+            for (let k = stop - 1; k >= end; k--) {
+                if (text[k] === '@') {
+                    lastAt = k;
+                    break;
+                }
+            }
+        }
+        if (lastAt < end) {
+            return false;
+        }
+        if (nextBreak < colon) {
+            BREAK.lastIndex = colon;
+            nextBreak = BREAK.exec(text)?.index ?? text.length;
+        }
+        if (nextColon < end) {
+            nextColon = text.indexOf(':', end);
+            nextColon = nextColon === -1 ? text.length : nextColon;
+        }
+        return nextBreak < lastAt && nextColon < lastAt;
+    };
+
     SPECIAL_SCHEME.lastIndex = 0;
     for (let match = SPECIAL_SCHEME.exec(text); match !== null; match = SPECIAL_SCHEME.exec(text)) {
         const end = SPECIAL_SCHEME.lastIndex;
-        const separator = match[0].slice(match[0].indexOf(':'));
-        if (separator === '://' || end >= text.length || WHITESPACE.test(text[end])) {
+        const colon = match.index + match[0].indexOf(':');
+        if (text.slice(colon, end) === '://' || end >= text.length || WHITESPACE.test(text[end])) {
             continue;
         }
         if (nextAt < end) {
             nextAt = text.indexOf('@', end);
             nextAt = nextAt === -1 ? text.length : nextAt;
         }
-        if (nextBreak < end) {
+        if (nextLineBreak < end) {
             LINE_BREAK.lastIndex = end;
-            nextBreak = LINE_BREAK.exec(text)?.index ?? text.length;
+            nextLineBreak = LINE_BREAK.exec(text)?.index ?? text.length;
         }
-        if (nextAt >= nextBreak) {
+        if (nextAt >= nextLineBreak && !userinfoAcrossBreaks(end, colon)) {
             continue;
         }
-        out += `${text.slice(copied, match.index)}${match[0].slice(0, match[0].indexOf(':'))}://`;
+        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon)}://`;
         copied = end;
     }
     return out + text.slice(copied);
