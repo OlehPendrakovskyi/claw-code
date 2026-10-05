@@ -29,39 +29,63 @@ export function redactEndpoint(endpoint: string): string {
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, … */
 const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|credential|access[_-]?key|signature/i;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
- *  escaped quotes too (`\"token\"` inside a JSON string), so a long run is tried once rather than from each
- *  of its characters. */
-const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(\\?["']?[A-Za-z0-9_.-]+\\?["']?)\s*[:=]\s*/g;
+ *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
+ *  long run is tried once rather than from each of its characters or backslashes. */
+const KEY_SEPARATOR = /(?<![A-Za-z0-9_.\\-])(\\*["']?[A-Za-z0-9_.-]+\\*["']?)\s*[:=]\s*/g;
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
 /** A credential header and its whole value (quoted, or the rest of the line), masked as `Name=***`. A value
- *  that is already a bare `***` ending a JSON field (a quoted value masked by an earlier pass, then `,`, a
+ *  that is already a bare {@link MASK} ending a JSON field (a quoted value masked by an earlier pass, then `,`, a
  *  closing bracket or the end) is left alone, so the fields after it survive. Anything else after it,
  *  such as `; session=…` in a Cookie header, is still part of the header and is masked. A name right after
  *  `?` or `&` is a query parameter, which the query passes handle. A quoted value stays on its line, so an unterminated one never sends the match
  *  scanning to the end of the text. */
-const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
+// eslint-disable-next-line no-control-regex
+const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\u0000(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
 const NON_SPACE = /\S/;
 /** The key and separator of a pair that follows an unquoted secret on its line (`page=2`, `"name":`). */
-const NEXT_PAIR = /\\?["']?[A-Za-z0-9_.-]+\\?["']?[ \t]*[:=]/y;
-/** A value an earlier pass already masked, left bare (`?token=*** ok`). */
-const MASKED_VALUE = /\*\*\*(?=\s|$)/y;
+const NEXT_PAIR = /\\*["']?[A-Za-z0-9_.-]+\\*["']?[ \t]*[:=]/y;
+/** A value an earlier pass already masked, left bare (`?token=*** ok`). Only {@link MASK} counts: a `***` in the
+ *  input is text like any other (`password=*** PRIVATE` is a password holding spaces). */
+// eslint-disable-next-line no-control-regex
+const MASKED_VALUE = /\u0000(?=\s|$)/y;
+/** What a pass writes in place of a value until the text is returned, where it becomes `***`. It is a control
+ *  byte, which {@link stripTerminalCodes} removes from the input first, so no input can pose as a mask. */
+const MASK = '\u0000';
+// eslint-disable-next-line no-control-regex
+const MASKS = /\u0000/g;
 
-/** Whether a value opens with a backslash-escaped quote, as inside a JSON string (`"password=\\"a b\\""`). */
+/** Text with every {@link MASK} shown as `***`. */
+function unmask(text: string): string {
+    return text.replace(MASKS, '***');
+}
+
+/** How many backslashes escape the quote a value opens with, as inside a JSON string (`"password=\\"a b\\""`:
+ *  1) or one serialised again (3, 7, …); 0 when it opens with none. */
+function escapedQuoteRun(text: string, start: number): number {
+    let run = 0;
+    while (text[start + run] === '\\') {
+        run++;
+    }
+    return run > 0 && VALUE_QUOTE.test(text[start + run] ?? '') ? run : 0;
+}
+
+/** Whether a value opens with a backslash-escaped quote ({@link escapedQuoteRun}). */
 function isEscapedQuote(text: string, start: number): boolean {
-    return text[start] === '\\' && VALUE_QUOTE.test(text[start + 1] ?? '');
+    return escapedQuoteRun(text, start) > 0;
 }
 
 /** Where a value opened by an escaped quote ends: after the matching escaped quote. Without one it ends
- *  where the enclosing string does, at an unescaped `"`, or at the end of the line, so its tail is masked
- *  too. A run of n backslashes before the quote encodes it twice over: the outer string unescapes it to
- *  (n - 1) / 2 backslashes and a quote, which closes the value only when that count is even, so only
- *  n % 4 === 1 closes (`\"` does, the interior `\\\"` does not). Each scan stops at the enclosing string's
- *  end, which keeps a pass linear. */
+ *  where the outermost enclosing string does, at an unescaped `"`, or at the end of the line, so its tail is
+ *  masked too. A value opened by k backslashes and a quote is closed by a run of n backslashes before that
+ *  quote when n % (2k + 2) === k: one layer of escaping maps n to (n - 1) / 2, so a run that unescapes to an
+ *  escaped backslash before the quote does not close it (with k = 1, `\"` does, the interior `\\\"` does
+ *  not). Each scan stops at the outermost string's end, which keeps a pass linear. */
 function escapedValueEnd(text: string, start: number): number {
-    const quote = text[start + 1];
-    let i = start + 2;
+    const opening = escapedQuoteRun(text, start);
+    const quote = text[start + opening];
+    let i = start + opening + 1;
     while (i < text.length && text[i] !== '"' && text[i] !== '\n' && text[i] !== '\r') {
         if (text[i] !== '\\') {
             i++;
@@ -72,7 +96,7 @@ function escapedValueEnd(text: string, start: number): number {
             run++;
         }
         if (text[i + run] === quote) {
-            if (run % 4 === 1) {
+            if (run % (2 * opening + 2) === opening) {
                 return i + run + 1;
             }
             i += run + 1;
@@ -197,10 +221,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         if (end === start) {
             continue;
         }
-        const opening = escaped ? text.slice(start, start + 2) : text[start];
+        const opening = escaped ? text.slice(start, start + escapedQuoteRun(text, start) + 1) : text[start];
         out += quotedOnly
             ? `${text.slice(copied, start)}${opening}***${opening}`
-            : `${text.slice(copied, pair.index)}${pair[1]}=***`;
+            : `${text.slice(copied, pair.index)}${pair[1]}=${MASK}`;
         copied = end;
         KEY_SEPARATOR.lastIndex = end;
     }
@@ -212,13 +236,21 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  sequence (`ESC]0;title`) ended by BEL or ST (`ESC\\`). A truncated OSC runs to the next ESC, BEL or line
  *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
  *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), are stripped too; a serialised
- *  OSC stops at the next backslash or quote, so it never runs past the end of its string. */
+ *  OSC stops at the next backslash or quote, so it never runs past the end of its string. One after a
+ *  backslash is left alone: there the backslash is escaped (`\\u001b`), and dropping the text after it
+ *  would leave it escaping the next character, a closing quote included. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|\\(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|\\(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
+const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|(?<!\\)\\(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|(?<!\\)\\(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
 
-/** Text without terminal colour and other CSI codes, which could sit between a label and its value. */
+/** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, …), raw or serialised
+ *  as `\\u0000` or `\\x00` (not after a backslash, as in {@link TERMINAL_CODE}). */
+// eslint-disable-next-line no-control-regex
+const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?<!\\)\\(?:u00|x)(?:0[0-8bcef]|1[0-9a-f]|7f)/gi;
+
+/** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
+ *  which could sit between a label and its value (`token\u0000=…`). */
 export function stripTerminalCodes(text: string): string {
-    return text.replace(TERMINAL_CODE, '');
+    return text.replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
 }
 
 const BEARER = /\b(bearer)\s+/gi;
@@ -256,6 +288,11 @@ function maskBearerTokens(text: string): string {
 
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
 export function redactPlainSecrets(text: string): string {
+    return unmask(maskPlainSecrets(text.replace(MASKS, '')));
+}
+
+/** {@link redactPlainSecrets}, leaving each value it masks as {@link MASK}. */
+function maskPlainSecrets(text: string): string {
     return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
         // Any length: `Basic YTo=` is still a credential. Basic is held to base64 shape (whole 4-character
         // groups, valid padding), so prose such as "basic usage" is left alone.
@@ -542,7 +579,7 @@ function maskQueryPairs(text: string): string {
         }
         const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '');
         const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
-        out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=***`;
+        out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
         QUERY_NAME.lastIndex = end;
     }
@@ -570,11 +607,15 @@ export function redactText(text: string): string {
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {
-        out += prepared.slice(copied, start) + redactUrl(prepared.slice(start, end));
+        out += prepared.slice(copied, start) + redactUrl(prepared.slice(start, end)).replace(MASKED_QUERY_VALUE, `$1${MASK}`);
         copied = end;
     }
-    return redactPlainSecrets(out + prepared.slice(copied));
+    return unmask(maskPlainSecrets(out + prepared.slice(copied)));
 }
+
+/** A sensitive query value {@link redactUrl} masked: a whole `***` value, which the URL span ends or `&` or `#`
+ *  follows. The span ends at whitespace, so the value cannot go on past it. */
+const MASKED_QUERY_VALUE = /([?&][^=&#?\s]*=)\*\*\*(?=[&#]|$)/g;
 
 /** Redact one URL found in free-form text. */
 function redactUrl(match: string): string {

@@ -652,6 +652,32 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ reason: 'sent Bearer "PRIVATE_PREFIX PRIVATE_SUFFIX', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
     });
 
+    it('masks a credential in JSON serialised more than once', () => {
+        const twice = JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE', ok: 1 }) });
+        expect(redactText(twice)).toBe('{"detail":"{\\"token\\"=***,\\"ok\\":1}"}');
+        const thrice = JSON.stringify({ reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) });
+        expect(redactText(thrice)).not.toContain('PRIVATE');
+        // An escaped interior quote at the deeper level does not end the value.
+        expect(redactText(JSON.stringify({ detail: JSON.stringify({ token: 'a"PRIVATE b' }) }))).not.toContain('PRIVATE');
+    });
+
+    it('treats a `***` in the input as text, not as a mask', () => {
+        expect(redactText('password=*** PRIVATE_SUFFIX')).toBe('password=***');
+        expect(redactText('Cookie: ***, PRIVATE_SUFFIX')).toBe('Cookie=***');
+        expect(redactPlainSecrets('password=*** PRIVATE_SUFFIX')).toBe('password=***');
+        // A mask a pass wrote still keeps the text after it.
+        expect(redactText('GET https://host.example/?token=`a b` ok')).toBe('GET https://host.example/?token=*** ok');
+    });
+
+    it('strips control bytes that could split a credential name, keeping tabs and line endings', () => {
+        expect(redactText('token\u0000=PRIVATE')).toBe('token=***');
+        expect(redactText('to\u0008ken\u007f=PRIVATE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ error: 'token\u0001=PRIVATE' }))).not.toContain('PRIVATE');
+        expect(redactText('a\tb\r\nc\u0000d')).toBe('a\tb\r\ncd');
+        // A serialised escape after a backslash is an escaped backslash and text: left alone.
+        expect(redactText('{"a":"x\\\\u0000","b":"keep"}')).toBe('{"a":"x\\\\u0000","b":"keep"}');
+    });
+
     it('masks the userinfo of a special-scheme URL spelled without `//`, as a URL parser reads it', () => {
         expect(redactText('https:/alice:secret@host.example/x')).toBe('https://***:***@host.example/x');
         expect(redactText('see https:\\\\alice:secret@host.example/x now')).toBe('see https://***:***@host.example/x now');
@@ -811,6 +837,9 @@ describe('redactText', () => {
             'https:/a@'.repeat(size / 9),
             'http:x'.repeat(size / 6) + '@',
             '\\u001b]'.repeat(size / 7),
+            '\\'.repeat(size) + '"',
+            'token=\\\\\\"'.repeat(size / 10),
+            '\\\\\\"token\\\\\\":'.repeat(size / 14),
         ];
         for (const input of inputs) {
             const started = performance.now();
