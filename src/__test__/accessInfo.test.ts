@@ -460,6 +460,7 @@ describe('redactText', () => {
     it('masks the userinfo of a network-path reference', () => {
         expect(redactText('request //alice:secret@host.example/x failed')).toBe('request //***@host.example/x failed');
         expect(redactText('url="//alice:secret@host.example/x"')).toBe('url="//***@host.example/x"');
+        expect(redactText('request //alice:p@ss@host.example/x failed')).toBe('request //***@host.example/x failed');
     });
 
     it('leaves a path with a double slash and an @ alone', () => {

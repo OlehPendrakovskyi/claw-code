@@ -72,6 +72,14 @@ function resolveValue(node, checker, depth = 0) {
     if (loaded !== undefined) {
         return { module: moduleName(loaded) };
     }
+    // `promisify(execFile)` runs execFile: the wrapper is the function it wraps.
+    if (ts.isCallExpression(node) && node.arguments.length === 1) {
+        const callee = resolveValue(node.expression, checker, depth + 1);
+        if (callee?.module === 'util' && callee.member === 'promisify') {
+            const target = resolveValue(node.arguments[0], checker, depth + 1);
+            return target?.member !== undefined ? target : undefined;
+        }
+    }
     const bound = boundFunction(node);
     if (bound !== undefined) {
         const target = resolveValue(bound, checker, depth + 1);
