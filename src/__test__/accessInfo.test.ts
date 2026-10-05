@@ -546,6 +546,21 @@ describe('redactText', () => {
         expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
     });
 
+    it('masks a query value that follows spaces after the =', () => {
+        expect(redactText('GET https://host.example/?token= PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('GET https://[bad/x?to%6ben= PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+    });
+
+    it('masks an unquoted query value holding a quote, backtick or angle bracket', () => {
+        expect(redactText('bad https://[bad/x?to%6ben=abc"PRIVATE_SUFFIX')).toBe('bad https://[bad/x?to%6ben=***');
+        expect(redactText('bad https://[bad/x?to%6ben=abc`PRIVATE_SUFFIX')).toBe('bad https://[bad/x?to%6ben=***');
+        expect(redactText('bad https://[bad/x?to%6ben=abc<PRIVATE_SUFFIX')).toBe('bad https://[bad/x?to%6ben=***');
+    });
+
+    it('keeps the quote that closes an attribute around a sensitive query value', () => {
+        expect(redactText('<a href="https://[bad/x?to%6ben=abc">x</a>')).toBe('<a href="https://[bad/x?to%6ben=***">x</a>');
+    });
+
     it('masks a sensitive value after a run of question marks', () => {
         // A parsable URL is re-serialised by URL, which percent-encodes the extra `?`s.
         expect(redactText('GET https://host.example/x???token=abc ok')).not.toContain('abc');

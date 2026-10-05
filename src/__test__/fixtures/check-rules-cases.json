@@ -1104,6 +1104,48 @@
             "file": "src/a.ts",
             "line": "const info = console.info; function f(info: (x: string) => void, prompt: string) { info(prompt); }",
             "expect": null
+        },
+        {
+            "name": "R10: a destructured logger method",
+            "file": "src/a.ts",
+            "line": "const { info } = console; info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a renamed destructured logger method",
+            "file": "src/a.ts",
+            "line": "const { info: write } = console; write(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a destructured logger method logging a length",
+            "file": "src/a.ts",
+            "line": "const { info } = console; info(`chars=${prompt.length}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a parameter shadowing a destructured logger method",
+            "file": "src/a.ts",
+            "line": "const { info } = console; function f(info: (x: string) => void, prompt: string) { info(prompt); }",
+            "expect": null
+        },
+        {
+            "name": "R10: prompt text bound in advance to a logger method",
+            "file": "src/a.ts",
+            "line": "const write = console.info.bind(console, prompt); write();",
+            "expect": "R10"
+        },
+        {
+            "name": "R36: a shell option bound in advance to spawn",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.spawn.bind(cp, cmd, args, { shell: true })();",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: spawn bound without a shell",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.spawn.bind(cp, cmd, args, { shell: false })();",
+            "expect": null
         }
     ]
 }

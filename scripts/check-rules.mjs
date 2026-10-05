@@ -418,9 +418,16 @@ function isShellOption(node) {
     return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
 }
 
-/** Whether a call starts a process: a child_process spawner by any binding, or a function of that name. */
+/** Whether a call starts a process, or binds the arguments of one that will: a child_process spawner by
+ *  any binding, called or bound with `.bind`. */
 function isSpawnCall(node, context) {
-    return ts.isCallExpression(node) && PROCESS_SPAWNERS.has(calledExport(node, 'child_process', context.checker) ?? '');
+    if (!ts.isCallExpression(node)) {
+        return false;
+    }
+    // `cp.spawn.bind(cp, cmd, args, { shell: true })` binds the options a later call uses.
+    const target = boundFunction(node) !== undefined ? resolveValue(node, context.checker) : undefined;
+    const spawner = target?.module === 'child_process' ? target.member : calledExport(node, 'child_process', context.checker);
+    return PROCESS_SPAWNERS.has(spawner ?? '');
 }
 
 /** Whether an object literal is the options of a spawn call: passed inline, held in a variable passed to
@@ -637,36 +644,56 @@ function hasLoggerType(declaration) {
     return LOGGER_TYPE.test(name.text);
 }
 
-function isLogCall(node, context) {
-    return ts.isCallExpression(node) && isLoggerMethod(invokedFunction(node.expression), context);
+/** The arguments a log call writes, or undefined when the call is not a log call: its own, after any
+ *  bound in advance (`console.info.bind(console, prompt)`). */
+function logCallArguments(node, context) {
+    if (!ts.isCallExpression(node)) {
+        return undefined;
+    }
+    const bound = loggerMethodBoundArguments(invokedFunction(node.expression), context);
+    return bound === undefined ? undefined : [...bound, ...node.arguments];
 }
 
-/** Whether an expression is a logging method of a logger: `log.info`, a bound copy
- *  (`console.info.bind(console)`), or a variable holding either (`const info = console.info`). A variable
- *  is followed through its symbol, so a local that shadows such an alias is judged by its own value. */
-function isLoggerMethod(node, context, depth = 0) {
+/** The arguments bound in advance to a logging method of a logger, or undefined when the expression is
+ *  not one. It may be the method itself (`log.info`), a bound copy (`console.info.bind(console, prefix)`,
+ *  whose arguments after `this` are written first), or a variable holding either (`const info =
+ *  console.info`, `const { info: write } = console`). A variable is followed through its symbol, so a
+ *  local that shadows such an alias is judged by its own value. */
+function loggerMethodBoundArguments(node, context, depth = 0) {
     const value = unwrap(node);
     if (depth > 8) {
-        return false;
+        return undefined;
     }
     const bound = boundFunction(value);
     if (bound !== undefined) {
-        return isLoggerMethod(bound, context, depth + 1);
+        const inner = loggerMethodBoundArguments(bound, context, depth + 1);
+        return inner === undefined ? undefined : [...inner, ...value.arguments.slice(1)];
     }
     const receiver = memberObject(value);
     if (receiver !== undefined) {
-        return LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context);
+        return LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context) ? [] : undefined;
     }
     if (!ts.isIdentifier(value)) {
-        return false;
+        return undefined;
     }
     const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
+    // `const { info } = console`, `const { info: write } = console`: the property read from the source.
+    if (declaration !== undefined && ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer !== undefined) {
+        const method = lastName(declaration.propertyName ?? declaration.name);
+        return LOG_METHODS.has(method ?? '') && isLoggerReceiver(declaration.parent.parent.initializer, context) ? [] : undefined;
+    }
     if (declaration === undefined || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
-        return false;
+        return undefined;
     }
     const symbol = context.checker.getSymbolAtLocation(declaration.name);
-    return [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]
-        .some(v => v !== undefined && isLoggerMethod(v, context, depth + 1));
+    for (const v of [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]) {
+        const args = v === undefined ? undefined : loggerMethodBoundArguments(v, context, depth + 1);
+        if (args !== undefined) {
+            return args;
+        }
+    }
+    return undefined;
 }
 
 const CHECKS = [
@@ -674,7 +701,7 @@ const CHECKS = [
         rule: 'R10',
         scope: 'source',
         message: 'log call writes prompt or payload text; log ids, counts or lengths instead',
-        test: (node, context) => isLogCall(node, context) && node.arguments.some(carriesText),
+        test: (node, context) => logCallArguments(node, context)?.some(carriesText) ?? false,
     },
     {
         rule: 'R36',

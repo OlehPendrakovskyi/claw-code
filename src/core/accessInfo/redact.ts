@@ -121,8 +121,25 @@ const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
-/** Characters of an unquoted query value. */
-const QUERY_UNQUOTED = /[^&#\s"'`<>]/;
+const QUERY_VALUE_STOP = /[&#\s]/;
+const EMBEDDED_DELIMITER = /["'`<>]/;
+/** What may follow a quote, backtick or angle bracket that closes the text around a query value. */
+const VALUE_CLOSER = /[\s>"'`,;)\]}]/;
+
+/** Where an unquoted sensitive query value ends: at `&`, `#` or whitespace. A quote, backtick or angle
+ *  bracket ends it only where it closes the surrounding text (`href="…?token=abc">`), that is, when
+ *  followed by whitespace, a closer or the end. So `to%6ben=abc"PRIVATE` is masked whole; over-matching
+ *  hides more, never less. */
+function sensitiveQueryValueEnd(text: string, start: number): number {
+    let end = start;
+    while (end < text.length && !QUERY_VALUE_STOP.test(text[end])) {
+        if (EMBEDDED_DELIMITER.test(text[end]) && (end + 1 === text.length || VALUE_CLOSER.test(text[end + 1]))) {
+            break;
+        }
+        end++;
+    }
+    return end;
+}
 
 /** Where the scheme ending at `separator` (the index of a `://`) starts: the whole run of scheme characters
  *  before it, which must begin with a letter; undefined when there is none. */
@@ -266,7 +283,12 @@ function maskQueryPairs(text: string): string {
         if (!isSensitiveQueryName(pair[2])) {
             continue;
         }
-        const end = valueEnd(text, QUERY_NAME.lastIndex, QUERY_UNQUOTED, unclosed);
+        // `?token= value`: the value starts after any spaces, as in the plain-text pairs.
+        let start = QUERY_NAME.lastIndex;
+        while (text[start] === ' ' || text[start] === '\t') {
+            start++;
+        }
+        const end = VALUE_QUOTE.test(text[start] ?? '') ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=***`;
         copied = end;
         QUERY_NAME.lastIndex = end;
