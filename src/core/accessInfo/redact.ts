@@ -35,10 +35,12 @@ const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
 /** A credential header and its whole value (quoted, or the rest of the line), masked as `Name=***`. A value
- *  that is already a bare `***` (a quoted value masked by an earlier pass) is left alone, so the fields
- *  after it survive. A quoted value stays on its line, so an unterminated one never sends the match
+ *  that is already a bare `***` ending a JSON field (a quoted value masked by an earlier pass, then `,`, a
+ *  closing bracket or the end) is left alone, so the fields after it survive. Anything else after it,
+ *  such as `; session=…` in a Cookie header, is still part of the header and is masked. A name right after
+ *  `?` or `&` is a query parameter, which the query passes handle. A quoted value stays on its line, so an unterminated one never sends the match
  *  scanning to the end of the text. */
-const CREDENTIAL_HEADER = /(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[\s,;)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
+const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
 const NON_SPACE = /\S/;
 
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
@@ -330,7 +332,10 @@ export function redactText(text: string): string {
     // 0. Userinfo first, so no later pass can take its `@` (`https://alice:p&token="x@host`); then whole
     //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
-    const userinfoMasked = maskUserinfo(text).replace(NETWORK_PATH_USERINFO, '//***@');
+    // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
+    // eslint-disable-next-line no-control-regex
+    const plain = text.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '');
+    const userinfoMasked = maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@');
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';
     let copied = 0;

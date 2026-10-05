@@ -547,6 +547,7 @@ describe('redactText', () => {
         expect(redactText('Set-Cookie: session=abc123; Path=/; HttpOnly\nnext')).toBe('Set-Cookie=***\nnext');
         expect(redactText('{"Cookie":"theme=dark; session=abc123","ok":1}')).toBe('{"Cookie"=***,"ok":1}');
         expect(redactText('{"Authorization":"Bearer abc","ok":1}')).toBe('{"Authorization"=***,"ok":1}');
+        expect(redactText('Cookie: "theme=dark"; session=abc123')).toBe('Cookie=***');
         expect(redactText('GET https://host.example/?cookie=session-secret')).not.toContain('session-secret');
         expect(redactText('GET https://[bad/x?cookie=session-secret ok')).toBe('GET https://[bad/x?cookie=*** ok');
     });
@@ -564,6 +565,12 @@ describe('redactText', () => {
 
     it('masks a userinfo with a slash before a nested ://', () => {
         expect(redactText('failed https://alice:PRIVATE_PREFIX/ss://tail@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
+    it('masks credentials around terminal colour codes', () => {
+        expect(redactText('\u001b[31mtoken\u001b[0m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('Authorization: Bearer \u001b[1mPRIVATE_VALUE\u001b[0m')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('bearer \u001b[33mPRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
     });
 
     it('masks a userinfo holding spaces', () => {
