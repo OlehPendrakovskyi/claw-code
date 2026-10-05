@@ -312,13 +312,13 @@ function memberObject(node) {
 }
 
 /** Whether an expression inside a log call's arguments carries prompt or payload text. */
-function carriesText(node) {
+function carriesText(node, checker) {
     if (ts.isElementAccessExpression(node)) {
         // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
         const key = unwrap(node.argumentExpression);
         return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
             ? TEXT_NAMES.has(key.text)
-            : carriesText(node.expression);
+            : carriesText(node.expression, checker);
     }
     if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
         return TEXT_NAMES.has(lastName(node) ?? '');
@@ -334,11 +334,14 @@ function carriesText(node) {
             if (method === 'stringify' && lastName(object) === 'JSON') {
                 return true;
             }
-            if (method !== undefined && !NON_TEXT_RESULT.has(method) && carriesText(object)) {
+            if (method !== undefined && !NON_TEXT_RESULT.has(method) && carriesText(object, checker)) {
                 return true;
             }
         }
-        return node.arguments.some(carriesText);
+        if (isStringifyAlias(node.expression, checker)) {
+            return true;
+        }
+        return node.arguments.some(argument => carriesText(argument, checker));
     }
     // `text === ''`, `text.length > 0`, `!text`, `typeof text`: a boolean or a type name, not the text.
     if (ts.isBinaryExpression(node) && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
@@ -349,16 +352,38 @@ function carriesText(node) {
     }
     if (ts.isPropertyAssignment(node)) {
         // `{ text: text.length }`: a plain key is a label, not a value; a computed key is a value.
-        return carriesText(node.initializer) || (ts.isComputedPropertyName(node.name) && carriesText(node.name.expression));
+        return carriesText(node.initializer, checker) || (ts.isComputedPropertyName(node.name) && carriesText(node.name.expression, checker));
     }
     if (ts.isShorthandPropertyAssignment(node)) {
         return TEXT_NAMES.has(node.name.text);
     }
     let found = false;
     ts.forEachChild(node, child => {
-        found ||= carriesText(child);
+        found ||= carriesText(child, checker);
     });
     return found;
+}
+
+/** Whether a callee is `JSON.stringify` under another name: `const encode = JSON.stringify` or
+ *  `const { stringify: encode } = JSON`, with `JSON` the global one. The callee is followed through its
+ *  symbol, so a parameter or local that shadows the alias, or a local `JSON`, is not one. */
+function isStringifyAlias(callee, checker) {
+    if (!ts.isIdentifier(callee)) {
+        return false;
+    }
+    const isGlobalJson = node => ts.isIdentifier(node) && node.text === 'JSON' &&
+        (checker.getSymbolAtLocation(node)?.declarations ?? []).length === 0;
+    const declaration = checker.getSymbolAtLocation(callee)?.declarations?.[0];
+    if (declaration !== undefined && ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined) {
+        const value = unwrap(declaration.initializer);
+        return ts.isPropertyAccessExpression(value) && value.name.text === 'stringify' && isGlobalJson(unwrap(value.expression));
+    }
+    if (declaration !== undefined && ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer !== undefined) {
+        return lastName(declaration.propertyName ?? declaration.name) === 'stringify' &&
+            isGlobalJson(unwrap(declaration.parent.parent.initializer));
+    }
+    return false;
 }
 
 /** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
@@ -654,8 +679,38 @@ function isLoggerDeclaration(declaration, context, depth) {
             return false;
         }
     }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent)) {
+        // `const { log: out } = shared`: the property it reads decides, as its source declares it. A source
+        // whose type does not name it leaves the decision to the names, the property's and the binding's own.
+        const source = destructuredDeclaration(declaration, context.checker);
+        if (source !== undefined) {
+            return isLoggerDeclaration(source, context, depth + 1);
+        }
+        return LOGGER_NAME.test(lastName(declaration.propertyName ?? declaration.name) ?? '') ||
+            LOGGER_NAME.test(lastName(declaration.name) ?? '');
+    }
+    if (ts.isPropertyAssignment(declaration) && !isOpaqueValue(declaration.initializer)) {
+        // `{ log: … }` in an object literal: its value decides, not its key.
+        return isLoggerReceiver(declaration.initializer, context, depth + 1);
+    }
     const name = declaration.name !== undefined ? lastName(declaration.name) : undefined;
     return LOGGER_NAME.test(name ?? '');
+}
+
+/** The declaration of the property a destructured binding reads (`log` in `const { log: out } = shared`),
+ *  found through the type of its source; undefined for a rest element, a computed key, or a source whose type
+ *  does not name it. An export read through a namespace import is followed to its declaration. */
+function destructuredDeclaration(binding, checker) {
+    const holder = binding.parent.parent;
+    const key = binding.dotDotDotToken === undefined ? lastName(binding.propertyName ?? binding.name) : undefined;
+    if (key === undefined || !ts.isVariableDeclaration(holder) || holder.initializer === undefined) {
+        return undefined;
+    }
+    let property = checker.getTypeAtLocation(holder.initializer).getProperty(key);
+    if (property !== undefined && property.flags & ts.SymbolFlags.Alias) {
+        property = checker.getAliasedSymbol(property);
+    }
+    return property?.declarations?.[0];
 }
 
 /** Whether a value comes out of a call or `new`, whose result the check cannot see. */
@@ -768,7 +823,7 @@ const CHECKS = [
         rule: 'R10',
         scope: 'source',
         message: 'log call writes prompt or payload text; log ids, counts or lengths instead',
-        test: (node, context) => logCallArguments(node, context)?.some(carriesText) ?? false,
+        test: (node, context) => logCallArguments(node, context)?.some(argument => carriesText(argument, context.checker)) ?? false,
     },
     {
         rule: 'R36',

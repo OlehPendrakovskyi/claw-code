@@ -1130,6 +1130,54 @@
             "expect": null
         },
         {
+            "name": "R10: a logger destructured under another name from a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; const { log: out } = shared; out.info(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "import * as vscode from 'vscode';\nexport const log = vscode.window.createOutputChannel('x');\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10 clean: a non-logger destructured from a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; const { label: log } = shared; log.info(prompt);",
+            "expect": null,
+            "others": {
+                "src/shared.ts": "import * as vscode from 'vscode';\nexport const log = vscode.window.createOutputChannel('x');\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10 clean: a non-logger destructured from an object literal",
+            "file": "src/a.ts",
+            "line": "const { log: out } = { log: 1 }; out.info(prompt);",
+            "expect": null
+        },
+        {
+            "name": "R10: JSON.stringify destructured under another name",
+            "file": "src/a.ts",
+            "line": "const { stringify: encode } = JSON; console.info(encode(event));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: JSON.stringify assigned to another name",
+            "file": "src/a.ts",
+            "line": "const encode = JSON.stringify; console.info(encode(event));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a parameter shadowing a JSON.stringify alias",
+            "file": "src/a.ts",
+            "line": "const encode = JSON.stringify; function f(encode: (x: unknown) => string, event: unknown) { console.info(encode(event)); }",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: stringify destructured from a local JSON",
+            "file": "src/a.ts",
+            "line": "const JSON = { stringify: (x: unknown) => 'n' }; const { stringify: encode } = JSON; console.info(encode(event));",
+            "expect": null
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",
