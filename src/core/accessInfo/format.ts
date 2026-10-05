@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { redactText } from './redact.js';
+import { redactEndpoint, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -118,8 +118,9 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const name = rawName !== undefined ? redactText(rawName) : safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    // redactText, not redactEndpoint, which leaves a malformed URL unchanged.
-    const endpoint = rawEndpoint !== undefined ? redactText(rawEndpoint) : undefined;
+    // A structured endpoint is one URL: redactEndpoint masks it as a URL parser reads it (which drops line
+    // breaks inside it), then redactText covers what does not parse, which redactEndpoint leaves unchanged.
+    const endpoint = rawEndpoint !== undefined ? redactText(redactEndpoint(rawEndpoint)) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
     }

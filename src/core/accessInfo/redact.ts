@@ -67,8 +67,6 @@ const CREDENTIAL_HEADER = new RegExp(
     'gi'
 );
 const NON_SPACE = /\S/;
-/** The key and separator of a pair that follows an unquoted secret on its line (`page=2`, `"name":`). */
-const NEXT_PAIR = new RegExp(String.raw`\\*["']?[A-Za-z0-9_.-]+\\*["']?(?:[ \t]|(?<!\\)\\+t)*[:=]`, 'y');
 /** A value an earlier pass already masked, left bare (`?token=*** ok`). Only {@link MASK} counts: a `***` in the
  *  input is text like any other (`password=*** PRIVATE` is a password holding spaces). */
 // eslint-disable-next-line no-control-regex
@@ -133,19 +131,12 @@ function escapedValueEnd(text: string, start: number): number {
     return i;
 }
 
-/** Where an unquoted secret ends. A password may hold spaces (`password=correct horse battery staple`),
- *  so the value runs to the end of its line, or to just before the next `key=` / `key:` pair on it, so that
- *  pair is still scanned (`key=a signature=b page=2`); with `wholeLine`, always to the end of its line. Trailing whitespace is left outside. Linear: each
- *  space is followed by at most one name run, and no two runs overlap. */
-function unquotedSecretEnd(text: string, start: number, wholeLine = false): number {
+/** Where an unquoted secret ends: at the end of its line. A password may hold spaces, and words that look
+ *  like further fields (`password=correct horse page=x`); free-form text cannot show where it stops, so
+ *  everything after it on the line is masked with it. Trailing whitespace is left outside. */
+function unquotedSecretEnd(text: string, start: number): number {
     let end = start;
     while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
-        if (!wholeLine && (text[end] === ' ' || text[end] === '\t')) {
-            NEXT_PAIR.lastIndex = end + 1;
-            if (NEXT_PAIR.test(text)) {
-                break;
-            }
-        }
         end++;
     }
     while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t')) {
@@ -263,7 +254,7 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         if (!quoted && !composite && MASKED_VALUE.test(text)) {
             continue;
         }
-        const end = quoted || composite ? valueEnd(text, start, NON_SPACE, unclosed) : unquotedSecretEnd(text, start, header);
+        const end = quoted || composite ? valueEnd(text, start, NON_SPACE, unclosed) : unquotedSecretEnd(text, start);
         if (end === start) {
             continue;
         }
@@ -304,7 +295,7 @@ export function stripTerminalCodes(text: string): string {
 const BEARER = new RegExp(String.raw`\b(bearer)${SPACE}+`, 'gi');
 /** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. In a
  *  single-quoted one, any backslash run escapes the quote after it, as in {@link valueEnd}. */
-const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*/y;
+const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|`(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^`\\\r\n])*`?|[A-Za-z0-9._~+/-]+=*/y;
 
 /** Mask every Bearer token, of any length (a short one is still a credential), as `Bearer ***`. A token
  *  opened by an escaped quote, as in serialized error details (`"sent Bearer \\"a b\\""`), runs to its matching
@@ -343,6 +334,10 @@ export function redactPlainSecrets(text: string): string {
 /** {@link redactPlainSecrets}, leaving each value it masks as {@link MASK}. */
 function maskPlainSecrets(text: string): string {
     return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
+        // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
+        // base64 tests as a bare one below, to its closing quote or the end of its run.
+        .replace(QUOTED_BASIC, (match, word: string, _escape: string, _quote: string, value: string) =>
+            BASE64_WHOLE.test(value) || BASE64_ENCODED.test(value) ? `${word} ***` : match)
         // Any length: `Basic YTo=` is still a credential. Basic is held to base64 shape (whole 4-character
         // groups, valid padding), so prose such as "basic usage" is left alone.
         .replace(new RegExp(String.raw`\b(basic)${SPACE}+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])`, 'gi'), '$1 ***')
@@ -351,6 +346,14 @@ function maskPlainSecrets(text: string): string {
         // purpose, so prose such as "Basic Authentication" is left alone.
         .replace(new RegExp(String.raw`\b([Bb][Aa][Ss][Ii][Cc])${SPACE}+(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*(?![A-Za-z0-9+/=])`, 'g'), '$1 ***');
 }
+
+/** `Basic` and a quoted or escaped-quoted value: the word, then the value inside its quotes. */
+const QUOTED_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+(\\*)(["'${'`'}])([A-Za-z0-9+/]+=*)(?:\2\3)?(?![A-Za-z0-9+/=])`, 'gi');
+/** Whole base64: 4-character groups with valid padding. */
+const BASE64_WHOLE = /^(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$/;
+/** Unpadded or truncated base64 that looks encoded: eight or more characters holding a digit, `+`, `/` or a
+ *  capital after the first. */
+const BASE64_ENCODED = /^(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*$/;
 
 const SCHEME_CHAR = /[a-z0-9+.-]/i;
 const LETTER = /[a-z]/i;
@@ -550,6 +553,18 @@ function maskUserinfo(text: string): string {
                 }
                 colonSeen ||= text[j] === ':';
                 spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
+            }
+            // A URL parser drops line breaks inside a URL (`https://alice:P\nQ@host` has the password `PQ`), so a
+            // CR, LF or CRLF right where the scan stopped, inside an unparsable `user:password`, does not end
+            // it: the next line's first run goes on, to its last `@`. Anywhere else a line break ends the URL.
+            if (spacedAt === -1 && ambiguous && j === i) {
+                let k = j;
+                while (text[k] === '\r' || text[k] === '\n') {
+                    k++;
+                }
+                for (; k < text.length && !WHITESPACE.test(text[k]); k++) {
+                    spacedAt = text[k] === '@' ? k : spacedAt;
+                }
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }

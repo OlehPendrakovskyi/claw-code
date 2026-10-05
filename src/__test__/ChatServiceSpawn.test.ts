@@ -954,6 +954,18 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts backtick Bearer and quoted Basic credentials on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('sent Bearer `PRIVATE_VALUE`\nsent Basic "dXNlcjpwYXNz"\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toMatch(/PRIVATE|dXNlcjpwYXNz/);
+            const second = start();
+            const details = { reason: 'sent Bearer `PRIVATE_VALUE`', auth: 'Basic "dXNlcjpwYXNz"' };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|dXNlcjpwYXNz/);
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

@@ -451,10 +451,10 @@ describe('redactText', () => {
     });
 
     it('redacts sensitive query values and plain-text secrets in the same text', () => {
-        // The plain-text pass treats everything after `api_key=` up to the next pair on the line as the value,
-        // so later query params and words go too: it errs toward hiding, never toward showing.
+        // The plain-text pass treats everything after `api_key=` to the end of the line as the value, so later
+        // query params, words and pairs go too: it errs toward hiding, never toward showing.
         expect(redactText('GET https://api.example/v1?api_key=abc&page=2 with token=xyz')).toBe(
-            'GET https://api.example/v1?api_key=*** token=***'
+            'GET https://api.example/v1?api_key=***'
         );
     });
 
@@ -796,10 +796,37 @@ describe('redactText', () => {
         expect(redactText('{"a":"\\u001b]0;title","b":"keep"}')).toBe('{"a":"","b":"keep"}');
     });
 
-    it('masks an unquoted password holding spaces, to the next pair or the end of its line', () => {
+    it('masks an unquoted password holding spaces to the end of its line, words that look like pairs included', () => {
         expect(redactText('password=correct horse battery staple')).toBe('password=***');
-        expect(redactText('login password=correct horse battery staple user=bob\nnext line')).toBe('login password=*** user=bob\nnext line');
+        expect(redactText('login password=correct horse battery staple user=bob\nnext line')).toBe('login password=***\nnext line');
+        // Free-form text cannot show that `page=` starts a field rather than continuing the password.
+        expect(redactText('password=correct horse page=PRIVATE_SUFFIX')).toBe('password=***');
         expect(redactText('token: PRIVATE_PREFIX PRIVATE_SUFFIX')).toBe('token=***');
+    });
+
+    it('masks a backtick-quoted Bearer token, raw, escaped and unterminated', () => {
+        expect(redactText('sent Bearer `PRIVATE_VALUE` ok')).toBe('sent Bearer *** ok');
+        expect(redactText('sent Bearer `a\\`PRIVATE b` ok')).toBe('sent Bearer *** ok');
+        expect(redactText('sent Bearer `PRIVATE_PREFIX PRIVATE_SUFFIX')).toBe('sent Bearer ***');
+        expect(redactText(JSON.stringify({ reason: 'sent Bearer `PRIVATE_PREFIX PRIVATE_SUFFIX`', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
+    });
+
+    it('masks a quoted or escaped-quoted Basic credential, held to the base64 tests', () => {
+        expect(redactText('sent Basic "dXNlcjpwYXNz" ok')).toBe('sent Basic *** ok');
+        expect(redactText("sent Basic 'dXNlcjpwYXNz' ok")).toBe('sent Basic *** ok');
+        expect(redactText(JSON.stringify({ reason: 'sent Basic "dXNlcjpwYXNz"', ok: 1 }))).toBe('{"reason":"sent Basic ***","ok":1}');
+        // Prose in quotes is no credential.
+        expect(redactText('uses "Basic" "authentication" here')).toBe('uses "Basic" "authentication" here');
+        expect(redactText('Basic "Authentication" mode')).toBe('Basic "Authentication" mode');
+    });
+
+    it('masks URL userinfo split by a line break, as a URL parser reads it', () => {
+        for (const eol of ['\n', '\r', '\r\n']) {
+            expect(redactText(`https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+            expect(formatNamedEntry({ name: 'gh', url: `https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x` })).toBe('gh (https://***:***@host.example/x)');
+        }
+        // Anywhere else a line break still ends the URL.
+        expect(redactText('see https://example.com\nbob@example.org')).toBe('see https://example.com\nbob@example.org');
     });
 
     it('masks a whole array or object credential value, spaced and nested', () => {
@@ -926,6 +953,9 @@ describe('redactText', () => {
             '\\aaaa'.repeat(size / 5),
             'https://a ' + 'b:'.repeat(size / 2),
             'https://a b '.repeat(size / 12) + '@',
+            'https://a:b\n'.repeat(size / 12) + '@',
+            'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
+            'Basic "' + 'A'.repeat(size),
             '?token=' + '\\\\t'.repeat(size / 3) + '"',
             'token' + '\\\\'.repeat(size / 2) + 't=',
             'https://a:' + '"'.repeat(size),
@@ -988,7 +1018,7 @@ describe('redactText', () => {
     });
 
     it('masks plain-text key and signature values outside URLs', () => {
-        expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=*** signature=*** page=2');
+        expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=***');
     });
 
     it('masks punctuation that belongs to a sensitive query value', () => {
