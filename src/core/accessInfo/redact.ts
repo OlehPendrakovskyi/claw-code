@@ -43,6 +43,10 @@ export function redactPlainSecrets(text: string): string {
  *  A match ends where another `scheme://` begins, so adjacent URLs (`a,https://…`) are redacted one by one,
  *  and starts after any character that cannot be part of a scheme, `_` included (`endpoint_https://…`). */
 const URL_IN_TEXT = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/(?:(?![a-z][a-z0-9+.-]*:\/\/)[^\s"'<>])+/gi;
+/** A userinfo holding a quote or angle bracket, which would end {@link URL_IN_TEXT}'s match before the `@`
+ *  (`https://alice:p"ass@host`): everything from the scheme to the last `@` before the first `/` or space.
+ *  Without a path this can over-match into following text; that hides more, never less. */
+const QUOTED_USERINFO = /([a-z][a-z0-9+.-]*:\/\/)(?=[^\s/@]*["'<>])[^\s/]*@/gi;
 /** Punctuation and closing brackets that end a sentence or a bracketed URL rather than belong to it. */
 const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
 /** The userinfo of a parsable URL, `scheme://user:pass@`, matched without parsing: up to the last `@`
@@ -73,7 +77,8 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
-    return redactPlainSecrets(text.replace(URL_IN_TEXT, match => {
+    // 0. A quote or angle bracket in the userinfo would cut the URL short of its `@`: mask it first.
+    return redactPlainSecrets(text.replace(QUOTED_USERINFO, '$1***@').replace(URL_IN_TEXT, match => {
         // 1. The whole match, so punctuation that belongs to a credential (`signature=!!!`) is masked with it.
         const whole = redactEndpoint(match);
         if (whole !== match) {

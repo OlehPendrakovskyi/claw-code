@@ -451,6 +451,16 @@ describe('redactText', () => {
         expect(redactText('failed https://alice:p/ss@[not-a-host/x')).toBe('failed https://***@[not-a-host/x');
     });
 
+    it('masks a userinfo holding a quote or angle bracket', () => {
+        expect(redactText('failed https://alice:p"ass@host/x')).toBe('failed https://***@host/x');
+        expect(redactText("failed https://alice:p'ass@host/x")).toBe('failed https://***@host/x');
+        expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
+    });
+
+    it('leaves a quoted URL without userinfo alone', () => {
+        expect(redactText('<a href="https://host.example/x">docs</a>')).toBe('<a href="https://host.example/x">docs</a>');
+    });
+
     it('leaves an @ in the path of a parsable URL without userinfo alone', () => {
         expect(redactText('see https://github.com/@scope/pkg')).toBe('see https://github.com/@scope/pkg');
     });

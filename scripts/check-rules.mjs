@@ -128,6 +128,25 @@ function resolveDeclaration(declaration, checker, depth) {
         }
         return undefined;
     }
+    // An import from another file in the program is followed to that file's export: a re-export shim
+    // (`export { exec as run } from 'child_process'`), an exported alias, or `export default`.
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
+        const exported = exportedDeclaration(declaration, checker);
+        if (exported !== undefined) {
+            return resolveDeclaration(exported, checker, depth + 1);
+        }
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const from = declaration.parent.parent.moduleSpecifier;
+        if (from !== undefined && ts.isStringLiteral(from)) {
+            return { module: moduleName(from.text), member: lastName(declaration.propertyName ?? declaration.name) };
+        }
+        const local = checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local === undefined ? undefined : resolveDeclaration(local, checker, depth + 1);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return resolveValue(declaration.expression, checker, depth);
+    }
     if (ts.isImportSpecifier(declaration)) {
         return {
             module: moduleName(declaration.parent.parent.parent.moduleSpecifier.text),
@@ -151,6 +170,14 @@ function resolveDeclaration(declaration, checker, depth) {
         return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
     }
     return undefined;
+}
+
+/** The declaration an import binding names in another file of the program, or undefined when its module
+ *  is not part of the program (a package such as `child_process`). */
+function exportedDeclaration(binding, checker) {
+    const symbol = checker.getSymbolAtLocation(binding.name);
+    const target = symbol === undefined ? undefined : checker.getImmediateAliasedSymbol(symbol);
+    return target?.declarations?.[0];
 }
 
 /** The export of `module` a call reaches, under any binding: `run()` for `{ exec as run }`, `cp.exec()`. */
@@ -183,6 +210,13 @@ function bindsShellExecutor(node, checker) {
     };
     if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
         return node.importClause.namedBindings.elements.some(element => isShellExecutor(element.name));
+    }
+    // `export { exec } from 'child_process'` and `export * from 'child_process'` hand an executor on.
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier) &&
+        moduleName(node.moduleSpecifier.text) === 'child_process') {
+        const exports = node.exportClause;
+        return exports === undefined ||
+            (ts.isNamedExports(exports) && exports.elements.some(element => SHELL_EXECUTORS.has(lastName(element.propertyName ?? element.name) ?? '')));
     }
     // `run = cp.exec`: an executor assigned after declaration.
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {

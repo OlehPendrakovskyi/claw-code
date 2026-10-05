@@ -885,6 +885,54 @@
             "file": "src/a.ts",
             "line": "const clean = text.replace(/x/g, '');",
             "expect": null
+        },
+        {
+            "name": "R36: exec through a re-export shim",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "export { exec as run } from 'child_process';\n"
+            }
+        },
+        {
+            "name": "R36: exec through an exported alias in another file",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "import * as cp from 'child_process';\nexport const run = cp.exec;\n"
+            }
+        },
+        {
+            "name": "R36: exec through a default export in another file",
+            "file": "src/run.ts",
+            "line": "import run from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "import * as cp from 'child_process';\nexport default cp.exec;\n"
+            }
+        },
+        {
+            "name": "R36: re-exporting exec",
+            "file": "src/shim.ts",
+            "line": "export { exec as run } from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: re-exporting all of child_process",
+            "file": "src/shim.ts",
+            "line": "export * from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile through a re-export shim",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(file, args);",
+            "expect": null,
+            "others": {
+                "src/shim.ts": "export { execFile as run } from 'child_process';\n"
+            }
         }
     ]
 }
