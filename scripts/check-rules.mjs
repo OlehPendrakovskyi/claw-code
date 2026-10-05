@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
  * Mechanical checks for rules in docs/development-rules.md. Each check names
- * the rule it enforces. Files are parsed with the TypeScript compiler (syntax
- * only, no type information), so a call or import split across lines is seen
- * like any other; what a check cannot know is a value's meaning, so R10 judges
- * by name (`text`, `prompt`, …) and the review checklist still applies.
+ * the rule it enforces. Files are parsed by the TypeScript compiler, and module
+ * bindings are resolved through its symbol table (lexical scope, aliases,
+ * destructuring, every import form), so a call or import split across lines,
+ * or a local that shadows an import, is seen as the compiler sees it. What a
+ * check cannot know is a value's meaning, so R10 judges by name (`text`,
+ * `prompt`, …) and the review checklist still applies.
  *
  * Scope: these checks catch the ordinary ways a rule is broken — under any
  * local name, import style, dot or literal-key access. They do not try to
@@ -12,7 +14,7 @@
  * renamed before it is logged, code built at run time); that is review's job.
  * A finding prints `file:line  [rule] message` and the script exits non-zero.
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import ts from 'typescript';
 
@@ -36,99 +38,106 @@ const PROCESS_SPAWNERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSyn
 /** `shell` values that do not turn a shell on. */
 const SHELL_OFF = new Set([ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword]);
 
-/** The names a file binds to a module and to its exports, whatever they are called locally:
- *  `import * as cp`, `import cp`, `const cp = require(…)` (namespaces) and `import { exec as run }`,
- *  `const { exec: run } = require(…)` (members, local name → exported name). */
-function moduleBindings(source, moduleName) {
-    const pattern = new RegExp(`^(?:node:)?${moduleName}$`);
-    const namespaces = new Set();
-    const members = new Map();
-    const isModule = node => (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && pattern.test(node.text);
-    const visit = node => {
-        // `import cp = require('child_process')`
-        if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) &&
-            isModule(node.moduleReference.expression)) {
-            namespaces.add(node.name.text);
-        }
-        if (ts.isImportDeclaration(node) && isModule(node.moduleSpecifier) && node.importClause) {
-            const { name, namedBindings } = node.importClause;
-            if (name) {
-                namespaces.add(name.text);
-            }
-            if (namedBindings && ts.isNamespaceImport(namedBindings)) {
-                namespaces.add(namedBindings.name.text);
-            } else if (namedBindings) {
-                for (const element of namedBindings.elements) {
-                    members.set(element.name.text, (element.propertyName ?? element.name).text);
-                }
-            }
-        }
-        // `const run = cp.exec` or `const run = require('child_process').exec`: a member taken from the module.
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-            const member = unwrap(node.initializer);
-            const object = memberObject(member);
-            if (object !== undefined && lastName(member) !== undefined &&
-                ((ts.isIdentifier(unwrap(object)) && namespaces.has(unwrap(object).text)) || pattern.test(loadedModule(object) ?? ''))) {
-                members.set(node.name.text, lastName(member));
-            }
-        }
-        const loaded = node.initializer ? unwrap(node.initializer) : undefined;
-        if (ts.isVariableDeclaration(node) && loaded && ts.isCallExpression(loaded) &&
-            ((ts.isIdentifier(loaded.expression) && loaded.expression.text === 'require') || loaded.expression.kind === ts.SyntaxKind.ImportKeyword) &&
-            loaded.arguments.length >= 1 && isModule(loaded.arguments[0])) {
-            if (ts.isIdentifier(node.name)) {
-                namespaces.add(node.name.text);
-            } else if (ts.isObjectBindingPattern(node.name)) {
-                for (const element of node.name.elements) {
-                    if (ts.isIdentifier(element.name)) {
-                        members.set(element.name.text, lastName(element.propertyName ?? element.name));
-                    }
-                }
-            }
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(source);
-    return { pattern, namespaces, members };
+/** A module name without the `node:` prefix. */
+function moduleName(text) {
+    return text.replace(/^node:/, '');
 }
 
-/** An import or `require` destructuring of `exec`/`execSync` from child_process, under any local name. */
-function importsShellExecutor(node) {
-    const isChildProcess = specifier => (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier)) &&
-        /^(?:node:)?child_process$/.test(specifier.text);
-    if (ts.isImportDeclaration(node) && isChildProcess(node.moduleSpecifier)) {
-        const bindings = node.importClause?.namedBindings;
-        return bindings !== undefined && ts.isNamedImports(bindings) &&
-            bindings.elements.some(element => SHELL_EXECUTORS.has((element.propertyName ?? element.name).text));
+/** What an expression denotes in module terms: `{ module }` for a module namespace, `{ module, member }`
+ *  for one of its exports, or undefined. An identifier is followed through its TypeScript symbol to its
+ *  declaration, so lexical scope decides: a parameter or local that shadows an import resolves to
+ *  itself, not to the import. Aliases (`const run = cp.exec`), destructuring, `require`, `import()`,
+ *  `import x = require()` and `fs.promises` resolve the same way. */
+function resolveValue(node, checker, depth = 0) {
+    if (depth > 8) {
+        return undefined;
     }
-    const loaded = ts.isVariableDeclaration(node) && node.initializer ? loadedModule(node.initializer) : undefined;
-    if (ts.isVariableDeclaration(node) && ts.isObjectBindingPattern(node.name) && loaded !== undefined &&
-        /^(?:node:)?child_process$/.test(loaded)) {
-        return node.name.elements.some(element => SHELL_EXECUTORS.has(lastName(element.propertyName ?? element.name) ?? ''));
+    node = unwrap(node);
+    const loaded = loadedModule(node);
+    if (loaded !== undefined) {
+        return { module: moduleName(loaded) };
     }
-    return false;
+    if (ts.isIdentifier(node)) {
+        const declaration = checker.getSymbolAtLocation(node)?.declarations?.[0];
+        return declaration === undefined ? undefined : resolveDeclaration(declaration, checker, depth + 1);
+    }
+    const object = memberObject(node);
+    if (object !== undefined) {
+        const base = resolveValue(object, checker, depth + 1);
+        const name = lastName(node);
+        return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
+    }
+    return undefined;
 }
 
-/** The export a call reaches through `bindings`: `run()` for `{ exec as run }`, `cp.exec()` for `* as cp`. */
-function calledExport(node, bindings) {
+/** The export `name` read from what `base` denotes; `fs.promises` is the `fs/promises` namespace. */
+function memberOf(base, name) {
+    if (base.member === undefined) {
+        return { module: base.module, member: name };
+    }
+    if (base.module === 'fs' && base.member === 'promises') {
+        return { module: 'fs/promises', member: name };
+    }
+    return undefined;
+}
+
+function resolveDeclaration(declaration, checker, depth) {
+    if (ts.isImportSpecifier(declaration)) {
+        return {
+            module: moduleName(declaration.parent.parent.parent.moduleSpecifier.text),
+            member: (declaration.propertyName ?? declaration.name).text,
+        };
+    }
+    if (ts.isNamespaceImport(declaration)) {
+        return { module: moduleName(declaration.parent.parent.moduleSpecifier.text) };
+    }
+    if (ts.isImportClause(declaration)) {
+        return { module: moduleName(declaration.parent.moduleSpecifier.text) };
+    }
+    if (ts.isImportEqualsDeclaration(declaration) && ts.isExternalModuleReference(declaration.moduleReference) &&
+        ts.isStringLiteral(declaration.moduleReference.expression)) {
+        return { module: moduleName(declaration.moduleReference.expression.text) };
+    }
+    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name) && declaration.initializer) {
+        return resolveValue(declaration.initializer, checker, depth);
+    }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer) {
+        const base = resolveValue(declaration.parent.parent.initializer, checker, depth);
+        const name = lastName(declaration.propertyName ?? declaration.name);
+        return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
+    }
+    return undefined;
+}
+
+/** The export of `module` a call reaches, under any binding: `run()` for `{ exec as run }`, `cp.exec()`. */
+function calledExport(node, module, checker) {
     if (!ts.isCallExpression(node)) {
         return undefined;
     }
-    const callee = node.expression;
-    if (ts.isIdentifier(callee)) {
-        return bindings.members.get(callee.text);
+    const target = resolveValue(node.expression, checker);
+    return target?.module === module ? target.member : undefined;
+}
+
+/** A declaration that binds `exec`/`execSync` from child_process, called or not: a named import,
+ *  `const run = cp.exec`, `const { exec } = require(…)`. */
+function bindsShellExecutor(node, checker) {
+    const isShellExecutor = identifier => {
+        const target = resolveValue(identifier, checker);
+        return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
+    };
+    if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
+        return node.importClause.namedBindings.elements.some(element => isShellExecutor(element.name));
     }
-    const object = memberObject(callee);
-    const receiver = object === undefined ? undefined : unwrap(object);
-    if (receiver !== undefined && ts.isIdentifier(receiver) && bindings.namespaces.has(receiver.text)) {
-        return lastName(callee);
+    if (ts.isVariableDeclaration(node)) {
+        if (ts.isIdentifier(node.name)) {
+            return isShellExecutor(node.name);
+        }
+        if (ts.isObjectBindingPattern(node.name)) {
+            return node.name.elements.some(element => ts.isIdentifier(element.name) && isShellExecutor(element.name));
+        }
     }
-    // `require('child_process').exec(…)`, `(await import('node:child_process')).execSync(…)`.
-    const loaded = object === undefined ? undefined : loadedModule(object);
-    if (loaded !== undefined && bindings.pattern.test(loaded)) {
-        return lastName(callee);
-    }
-    return undefined;
+    return false;
 }
 
 /** The last name of `a`, `a.b`, `a?.b`, `a['b']` or a quoted property name; undefined for anything
@@ -218,24 +227,6 @@ function carriesText(node) {
     return found;
 }
 
-/** The `fs.promises` member a call reaches: `fs.promises.mkdtemp(…)` with `fs` any binding of the fs
- *  module, or `promises.mkdtemp(…)` with `promises` destructured from it. */
-function fsPromisesMember(node, context) {
-    const object = memberObject(node.expression);
-    if (object === undefined) {
-        return undefined;
-    }
-    const receiver = unwrap(object);
-    if (ts.isIdentifier(receiver) && context.fs.members.get(receiver.text) === 'promises') {
-        return lastName(node.expression);
-    }
-    const parent = memberObject(receiver);
-    const root = parent === undefined ? undefined : unwrap(parent);
-    const isFs = root !== undefined && ((ts.isIdentifier(root) && context.fs.namespaces.has(root.text)) ||
-        /^(?:node:)?fs$/.test(loadedModule(root) ?? ''));
-    return isFs && lastName(receiver) === 'promises' ? lastName(node.expression) : undefined;
-}
-
 /** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
 function containsTmpLiteral(node) {
     if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && /^\/tmp(?:\/|$)/.test(node.text)) {
@@ -305,7 +296,7 @@ function isShellOption(node) {
 
 /** Whether a call starts a process: a child_process spawner by any binding, or a function of that name. */
 function isSpawnCall(node, context) {
-    return ts.isCallExpression(node) && PROCESS_SPAWNERS.has(calledExport(node, context.childProcess) ?? '');
+    return ts.isCallExpression(node) && PROCESS_SPAWNERS.has(calledExport(node, 'child_process', context.checker) ?? '');
 }
 
 /** Whether an object literal is the options of a spawn call: passed inline, or held in a variable that
@@ -436,9 +427,8 @@ const CHECKS = [
             // undefined: `true`, a shell path such as '/bin/bash', or a variable.
             (isShellOption(node) && isSpawnOptions(node.parent, context)) ||
             isShellAssignment(node, context) ||
-            SHELL_EXECUTORS.has(calledExport(node, context.childProcess) ?? '') ||
-            importsShellExecutor(node) ||
-            (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && SHELL_EXECUTORS.has(context.childProcess.members.get(node.name.text) ?? '')),
+            SHELL_EXECUTORS.has(calledExport(node, 'child_process', context.checker) ?? '') ||
+            bindsShellExecutor(node, context.checker),
     },
     {
         rule: 'R43',
@@ -448,13 +438,12 @@ const CHECKS = [
             if (context.file === TEMP_HELPER || !ts.isCallExpression(node)) {
                 return false;
             }
-            if (calledExport(node, context.os) === 'tmpdir') {
+            if (calledExport(node, 'os', context.checker) === 'tmpdir') {
                 return true;
             }
             const first = node.arguments[0];
             const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
-            return (makesTemp(calledExport(node, context.fs)) || makesTemp(calledExport(node, context.fsPromises)) ||
-                makesTemp(fsPromisesMember(node, context))) &&
+            return (makesTemp(calledExport(node, 'fs', context.checker)) || makesTemp(calledExport(node, 'fs/promises', context.checker))) &&
                 first !== undefined && containsTmpLiteral(first);
         },
     },
@@ -466,10 +455,11 @@ const CHECKS = [
             if (!ts.isCallExpression(node)) {
                 return false;
             }
-            // `beforeEach(…)` (Vitest globals), `setup(…)` for `{ beforeEach as setup }`, `vitest.beforeEach(…)`.
-            const hook = ts.isIdentifier(node.expression)
-                ? context.vitest.members.get(node.expression.text) ?? node.expression.text
-                : calledExport(node, context.vitest);
+            // `setup(…)` for `{ beforeEach as setup }` and `vitest.beforeEach(…)` resolve to Vitest; a bare
+            // `beforeEach(…)` with no declaration in scope is the Vitest global. A local of that name is not.
+            const target = resolveValue(node.expression, context.checker);
+            const isGlobal = ts.isIdentifier(node.expression) && context.checker.getSymbolAtLocation(node.expression)?.declarations === undefined;
+            const hook = target?.module === 'vitest' ? target.member : isGlobal ? node.expression.text : undefined;
             if (!HOOKS.has(hook ?? '')) {
                 return false;
             }
@@ -491,17 +481,18 @@ function* walk(dir) {
 }
 
 const findings = [];
-for (const file of walk(SRC)) {
+// One program over all files, for symbol resolution only: no module resolution and no lib, so it needs
+// neither node_modules nor a tsconfig and works the same on a fixture tree.
+const files = [...walk(SRC)];
+const program = ts.createProgram(files, { noResolve: true, noLib: true, types: [], target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext });
+const checker = program.getTypeChecker();
+for (const file of files) {
     const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
     const checks = CHECKS.filter(check => check.scope === scope);
-    const source = ts.createSourceFile(file, readFileSync(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    const source = program.getSourceFile(file);
     const context = {
         file,
-        childProcess: moduleBindings(source, 'child_process'),
-        os: moduleBindings(source, 'os'),
-        fs: moduleBindings(source, 'fs'),
-        fsPromises: moduleBindings(source, 'fs/promises'),
-        vitest: moduleBindings(source, 'vitest'),
+        checker,
         outputChannels: outputChannelBindings(source),
         loggers: importedLoggers(source),
     };

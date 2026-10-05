@@ -678,6 +678,30 @@
             "file": "src/a.ts",
             "line": "let out; out = vscode.window.createOutputChannel('x'); out.info(text);",
             "expect": "R10"
+        },
+        {
+            "name": "R36 clean: a parameter shadowing an imported spawn",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function each(spawn: (o: object) => void) { spawn({ shell: 'zsh' }); }",
+            "expect": null
+        },
+        {
+            "name": "R36: the imported spawn outside the shadowing scope",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function each(spawn: (o: object) => void) {} spawn(cmd, args, { shell: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R43 clean: a parameter shadowing an imported tmpdir",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { tmpdir } from 'os'; function at(tmpdir: () => string) { return tmpdir(); }",
+            "expect": null
+        },
+        {
+            "name": "R54 clean: a local function named beforeEach",
+            "file": "src/__test__/d.test.ts",
+            "line": "const beforeEach = (f: () => unknown) => f; beforeEach(() => 1);",
+            "expect": null
         }
     ]
 }
