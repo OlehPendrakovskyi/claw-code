@@ -638,11 +638,35 @@ function hasLoggerType(declaration) {
 }
 
 function isLogCall(node, context) {
-    if (!ts.isCallExpression(node) || !LOG_METHODS.has(lastName(node.expression) ?? '')) {
+    return ts.isCallExpression(node) && isLoggerMethod(invokedFunction(node.expression), context);
+}
+
+/** Whether an expression is a logging method of a logger: `log.info`, a bound copy
+ *  (`console.info.bind(console)`), or a variable holding either (`const info = console.info`). A variable
+ *  is followed through its symbol, so a local that shadows such an alias is judged by its own value. */
+function isLoggerMethod(node, context, depth = 0) {
+    const value = unwrap(node);
+    if (depth > 8) {
         return false;
     }
-    const receiver = memberObject(node.expression);
-    return receiver !== undefined && isLoggerReceiver(receiver, context);
+    const bound = boundFunction(value);
+    if (bound !== undefined) {
+        return isLoggerMethod(bound, context, depth + 1);
+    }
+    const receiver = memberObject(value);
+    if (receiver !== undefined) {
+        return LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context);
+    }
+    if (!ts.isIdentifier(value)) {
+        return false;
+    }
+    const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
+    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
+        return false;
+    }
+    const symbol = context.checker.getSymbolAtLocation(declaration.name);
+    return [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]
+        .some(v => v !== undefined && isLoggerMethod(v, context, depth + 1));
 }
 
 const CHECKS = [

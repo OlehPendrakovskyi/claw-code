@@ -57,8 +57,9 @@ describe('scripts/check-rules.mjs', () => {
         expect(result.output).toContain('2 rule finding(s)');
     });
 
+    // Parsing the whole of src/ takes seconds under coverage and parallel load.
     it('passes the repository itself', () => {
         const output = execFileSync(process.execPath, [SCRIPT], { cwd: process.cwd(), encoding: 'utf8' });
         expect(output).toContain('R10, R36, R43, R54 clean');
-    });
+    }, 30_000);
 });

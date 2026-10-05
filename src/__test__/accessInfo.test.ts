@@ -531,6 +531,11 @@ describe('redactText', () => {
         expect(redactText('GET https://[bad/x?author%69zation=private-value ok')).toBe('GET https://[bad/x?author%69zation=*** ok');
     });
 
+    it('masks a userinfo whose password holds a quoted query-like pair', () => {
+        expect(redactText('failed https://alice:private&token="abc@host.example/x"')).toBe('failed https://***:***@host.example/x"');
+        expect(redactText('failed //alice:private&token="abc@host.example/x"')).toBe('failed //***@host.example/x"');
+    });
+
     it('masks a whole quoted Authorization value whose text looks like a query', () => {
         const json = JSON.stringify({ Authorization: 'prefix?to%6ben=abc"private-tail' });
         expect(redactText(json)).not.toContain('private-tail');
@@ -603,7 +608,8 @@ describe('redactText', () => {
             redactText(input);
             expect(performance.now() - started).toBeLessThan(3000);
         }
-    });
+        // The per-input bound is the check; the test as a whole may run long under coverage and parallel load.
+    }, 60_000);
 
     it('leaves a quoted URL without userinfo alone', () => {
         expect(redactText('<a href="https://host.example/x">docs</a>')).toBe('<a href="https://host.example/x">docs</a>');

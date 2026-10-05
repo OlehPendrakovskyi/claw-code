@@ -1074,6 +1074,36 @@
             "file": "src/a.ts",
             "line": "const log = { info(x: string) {} }; log.info(prompt);",
             "expect": null
+        },
+        {
+            "name": "R10: a bound logger method",
+            "file": "src/a.ts",
+            "line": "const write = console.info.bind(console); write(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a logger method held in a variable",
+            "file": "src/a.ts",
+            "line": "const info = console.info; info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a logger method invoked through call",
+            "file": "src/a.ts",
+            "line": "console.info.call(console, prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a bound logger method logging a length",
+            "file": "src/a.ts",
+            "line": "const write = console.info.bind(console); write(`chars=${prompt.length}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a parameter shadowing a logger alias",
+            "file": "src/a.ts",
+            "line": "const info = console.info; function f(info: (x: string) => void, prompt: string) { info(prompt); }",
+            "expect": null
         }
     ]
 }

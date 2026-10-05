@@ -284,11 +284,11 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
-    // 0. Whole quoted credentials first (`{"password":"a?token=b\"tail"}`), so no later pass can eat an escape
-    //    inside one; then userinfo, so nothing can cut it apart; then query values, which a quote, backtick
-    //    or angle bracket would otherwise cut off from their URL.
-    const quotedMasked = maskSensitivePairs(text, true);
-    const prepared = maskQueryPairs(maskUserinfo(quotedMasked).replace(NETWORK_PATH_USERINFO, '//***@'));
+    // 0. Userinfo first, so no later pass can take its `@` (`https://alice:p&token="x@host`); then whole
+    //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
+    //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
+    const userinfoMasked = maskUserinfo(text).replace(NETWORK_PATH_USERINFO, '//***@');
+    const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {
