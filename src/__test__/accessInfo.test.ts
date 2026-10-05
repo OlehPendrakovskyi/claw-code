@@ -567,6 +567,20 @@ describe('redactText', () => {
         expect(redactText('failed https://alice:PRIVATE_PREFIX/ss://tail@host.example/x')).toBe('failed https://***@host.example/x');
     });
 
+    it('masks a credential quoted with escaped quotes inside a JSON string', () => {
+        const json = JSON.stringify({ reason: 'password="PRIVATE_PREFIX PRIVATE_SUFFIX"', ok: 1 });
+        const redacted = redactText(json);
+        expect(redacted).not.toContain('PRIVATE');
+        expect(redacted).toContain('"ok":1');
+        expect(redactText(JSON.stringify({ reason: 'token="PRIVATE_PREFIX PRIVATE_SUFFIX' }))).not.toContain('PRIVATE');
+    });
+
+    it('masks unpadded or truncated Basic values but keeps prose', () => {
+        expect(redactText('sent Basic Zm9vOmJhcg')).toBe('sent Basic ***');
+        expect(redactText('sent Basic dXNlcjpwYXN')).toBe('sent Basic ***');
+        expect(redactText('uses Basic Authentication and basic configuration')).toBe('uses Basic Authentication and basic configuration');
+    });
+
     it('masks credentials around terminal colour codes', () => {
         expect(redactText('\u001b[31mtoken\u001b[0m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText('Authorization: Bearer \u001b[1mPRIVATE_VALUE\u001b[0m')).not.toContain('PRIVATE_VALUE');

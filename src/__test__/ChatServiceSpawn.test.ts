@@ -857,6 +857,21 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE_PASSWORD');
         });
 
+        it('redacts a credential quoted inside structured details', () => {
+            const { child, events } = start();
+            const details = { reason: 'password="PRIVATE_PREFIX PRIVATE_SUFFIX"' };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential quoted inside JSON on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token="PRIVATE_PREFIX PRIVATE_SUFFIX"' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts the error message itself', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));

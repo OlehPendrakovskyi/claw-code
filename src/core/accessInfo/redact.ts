@@ -43,6 +43,29 @@ const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
 const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
 const NON_SPACE = /\S/;
 
+/** Whether a value opens with a backslash-escaped quote, as inside a JSON string (`"password=\\"a b\\""`). */
+function isEscapedQuote(text: string, start: number): boolean {
+    return text[start] === '\\' && VALUE_QUOTE.test(text[start + 1] ?? '');
+}
+
+/** Where a value opened by an escaped quote ends: after the matching escaped quote. Without one it ends
+ *  where the enclosing string does, at an unescaped `"`, or at the end of the line, so its tail is masked
+ *  too. Each scan stops at the enclosing string's end, which keeps a pass linear. */
+function escapedValueEnd(text: string, start: number): number {
+    const quote = text[start + 1];
+    let i = start + 2;
+    while (i < text.length && text[i] !== '"' && text[i] !== '\n' && text[i] !== '\r') {
+        if (text[i] === '\\') {
+            if (text[i + 1] === quote) {
+                return i + 2;
+            }
+            i++;
+        }
+        i++;
+    }
+    return i;
+}
+
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
  *  quote, across lines. One with no closing quote, as in truncated stderr, runs to the end of its line,
  *  so its tail is masked too. An unquoted value is a run of `unquoted` characters. `unclosed` records,
@@ -50,6 +73,9 @@ const NON_SPACE = /\S/;
  *  past it and is plain text to that earlier scan, so it cannot close either. No stretch is scanned for a
  *  closing quote twice, and a pass that consumes each value it measures stays linear. */
 function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<string, number>): number {
+    if (isEscapedQuote(text, start)) {
+        return escapedValueEnd(text, start);
+    }
     const quote = text[start];
     let end = start;
     if (quote === undefined || !VALUE_QUOTE.test(quote)) {
@@ -86,7 +112,8 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
     KEY_SEPARATOR.lastIndex = 0;
     for (let pair = KEY_SEPARATOR.exec(text); pair !== null; pair = KEY_SEPARATOR.exec(text)) {
         const start = KEY_SEPARATOR.lastIndex;
-        const quoted = VALUE_QUOTE.test(text[start] ?? '');
+        const escaped = isEscapedQuote(text, start);
+        const quoted = escaped || VALUE_QUOTE.test(text[start] ?? '');
         // A quoted Authorization or Cookie value is a credential too; unquoted ones are left to CREDENTIAL_HEADER.
         const sensitive = SENSITIVE_KEY.test(pair[1]) || (quoted && CREDENTIAL_HEADER_KEY.test(pair[1]));
         if (!sensitive || (quotedOnly && !quoted)) {
@@ -96,8 +123,9 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         if (end === start) {
             continue;
         }
+        const opening = escaped ? text.slice(start, start + 2) : text[start];
         out += quotedOnly
-            ? `${text.slice(copied, start)}${text[start]}***${text[start]}`
+            ? `${text.slice(copied, start)}${opening}***${opening}`
             : `${text.slice(copied, pair.index)}${pair[1]}=***`;
         copied = end;
         KEY_SEPARATOR.lastIndex = end;
@@ -112,7 +140,11 @@ export function redactPlainSecrets(text: string): string {
         // Any length: a short Bearer token or `Basic YTo=` is still a credential. Basic is held to
         // base64 shape (whole 4-character groups, valid padding), so prose such as "basic usage" is left alone.
         .replace(/\b(bearer)\s+[A-Za-z0-9._~+/-]+=*/gi, '$1 ***')
-        .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***');
+        .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***')
+        // An unpadded or truncated value (`Basic Zm9vOmJhcg`) is still a credential when it looks encoded: eight or
+        // more base64 characters holding a digit, `+`, `/` or a capital after the first. Case-sensitive on
+        // purpose, so prose such as "Basic Authentication" is left alone.
+        .replace(/\b([Bb][Aa][Ss][Ii][Cc])\s+(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*(?![A-Za-z0-9+/=])/g, '$1 ***');
 }
 
 const SCHEME_CHAR = /[a-z0-9+.-]/i;
