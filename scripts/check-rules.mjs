@@ -489,7 +489,7 @@ const CHECKS = [
     },
     {
         rule: 'R36',
-        scope: 'source',
+        scope: 'all',
         message: 'shell execution; use execFile/spawn with an argv vector and no shell',
         test: (node, context) =>
             // A `shell` option on an object given to a process spawner, set to anything but false, null or
@@ -560,7 +560,7 @@ for (const file of files) {
 }
 for (const file of files) {
     const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
-    const checks = CHECKS.filter(check => check.scope === scope);
+    const checks = CHECKS.filter(check => check.scope === scope || check.scope === 'all');
     const source = program.getSourceFile(file);
     const context = {
         file,

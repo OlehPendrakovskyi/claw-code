@@ -762,6 +762,12 @@
             "file": "src/b.ts",
             "line": "import * as cp from 'child_process'; let run; run = cp.exec; run(cmd);",
             "expect": "R36"
+        },
+        {
+            "name": "R36 scope: test files are checked too",
+            "file": "src/__test__/e.test.ts",
+            "line": "import { execSync } from 'child_process'; execSync('node build.mjs');",
+            "expect": "R36"
         }
     ]
 }
