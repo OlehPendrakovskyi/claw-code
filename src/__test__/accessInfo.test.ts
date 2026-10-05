@@ -456,6 +456,12 @@ describe('redactText', () => {
         expect(redactText("{'secret':'a\\'b'}")).not.toContain('b\'');
     });
 
+    it('masks short Basic and Bearer credentials, but not prose after the word basic', () => {
+        expect(redactText('auth failed: Basic YTo=')).toBe('auth failed: Basic ***');
+        expect(redactText('header Bearer abc')).toBe('header Bearer ***');
+        expect(redactText('see the basic usage guide')).toBe('see the basic usage guide');
+    });
+
     it('masks plain-text key and signature values outside URLs', () => {
         expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=*** signature=*** page=2');
     });

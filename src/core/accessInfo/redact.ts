@@ -33,7 +33,10 @@ export function redactPlainSecrets(text: string): string {
     return text
         .replace(sensitiveKey, '$1=***')
         .replace(/(["']?authorization["']?)\s*[:=]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\S+.*)/gi, '$1=***')
-        .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '$1 ***');
+        // Any length: a short Bearer token or `Basic YTo=` is still a credential. Basic is held to
+        // base64 shape (whole 4-character groups, valid padding), so prose such as "basic usage" is left alone.
+        .replace(/\b(bearer)\s+[A-Za-z0-9._~+/-]+=*/gi, '$1 ***')
+        .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***');
 }
 
 /** A URL of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) inside free-form text.
