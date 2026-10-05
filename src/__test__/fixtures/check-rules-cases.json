@@ -702,6 +702,48 @@
             "file": "src/__test__/d.test.ts",
             "line": "const beforeEach = (f: () => unknown) => f; beforeEach(() => 1);",
             "expect": null
+        },
+        {
+            "name": "R36: shell set through an alias of the options",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const options = {}; const alias = options; alias.shell = true; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: same-named options in an unrelated scope",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function a(options: object) { spawn(cmd, args, options); } function b() { const options = { shell: 'zsh' }; return options; }",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a comparison on the text",
+            "file": "src/a.ts",
+            "line": "log.info(`empty=${text === ''}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a negation and a typeof",
+            "file": "src/a.ts",
+            "line": "log.info(`missing=${!prompt} kind=${typeof body}`);",
+            "expect": null
+        },
+        {
+            "name": "R10: a logical operator returns the text itself",
+            "file": "src/a.ts",
+            "line": "log.info(text || 'none');",
+            "expect": "R10"
+        },
+        {
+            "name": "R54: a parenthesised expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "beforeEach((() => vi.useFakeTimers()));",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: an asserted expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach((() => vi.useRealTimers()) as () => void);",
+            "expect": "R54"
         }
     ]
 }

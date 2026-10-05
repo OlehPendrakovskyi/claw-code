@@ -32,6 +32,12 @@ const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf'
 const LOG_METHODS = new Set(['info', 'warn', 'error', 'debug', 'trace', 'append', 'appendLine', 'log']);
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+/** Operators whose result is a boolean whatever their operands: comparisons, `instanceof`, `in`. */
+const BOOLEAN_OPERATORS = new Set([
+    ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.GreaterThanToken,
+    ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.InstanceOfKeyword, ts.SyntaxKind.InKeyword,
+]);
 const SHELL_EXECUTORS = new Set(['exec', 'execSync']);
 /** child_process functions that take an options object, where `shell` would apply. */
 const PROCESS_SPAWNERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']);
@@ -213,6 +219,13 @@ function carriesText(node) {
         }
         return node.arguments.some(carriesText);
     }
+    // `text === ''`, `text.length > 0`, `!text`, `typeof text`: a boolean or a type name, not the text.
+    if (ts.isBinaryExpression(node) && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
+        return false;
+    }
+    if ((ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) || ts.isTypeOfExpression(node)) {
+        return false;
+    }
     if (ts.isPropertyAssignment(node)) {
         // `{ text: text.length }`: a plain key is a label, not a value; a computed key is a value.
         return carriesText(node.initializer) || (ts.isComputedPropertyName(node.name) && carriesText(node.name.expression));
@@ -275,8 +288,7 @@ function isShellAssignment(node, context) {
     }
     const target = node.left;
     const object = memberObject(target);
-    if (object === undefined || lastName(target) !== 'shell' || !ts.isIdentifier(unwrap(object)) ||
-        !context.spawnOptionNames.has(unwrap(object).text)) {
+    if (object === undefined || lastName(target) !== 'shell' || !isOptionsVariable(object, context)) {
         return false;
     }
     const value = unwrap(node.right);
@@ -314,52 +326,56 @@ function isSpawnOptions(object, context) {
     }
     if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
         // `options = { … }` for a variable that reaches a spawn call.
-        const target = unwrap(node.parent.left);
-        return ts.isIdentifier(target) && context.spawnOptionNames.has(target.text);
+        return isOptionsVariable(node.parent.left, context);
     }
-    return ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name) && context.spawnOptionNames.has(node.parent.name.text);
+    return ts.isVariableDeclaration(node.parent) && isOptionsVariable(node.parent.name, context);
 }
 
-/** Identifiers a file passes to spawn calls (candidate option variables), closed over composition:
- *  `const options = { ...base }` or `const options = base` makes `base` an options source too. */
-function spawnArgumentNames(source, context) {
-    const names = new Set();
-    // What each variable's object is built from: spread sources and plain aliases.
-    const sources = new Map();
-    const collect = node => {
-        // `const options = …` and a later `options = …` both say what `options` is built from.
+/** The symbols of variables that hold spawn options, by TypeScript symbol rather than name, so two
+ *  scopes' `options` never collide. Starts from identifiers passed to a spawn call (and spread into
+ *  one's options), then closes over composition: a plain alias (`const alias = options`) links both
+ *  ways, because either name can then mutate the same object; a spread (`{ ...base }`) links one way,
+ *  from the options to their source. */
+function spawnOptionSymbols(source, context) {
+    const symbolOf = node => {
+        const value = unwrap(node);
+        return ts.isIdentifier(value) ? context.checker.getSymbolAtLocation(value) : undefined;
+    };
+    const edges = new Map();
+    const link = (from, to) => {
+        if (from !== undefined && to !== undefined) {
+            edges.set(from, [...(edges.get(from) ?? []), to]);
+        }
+    };
+    const options = new Set();
+    const visit = node => {
+        // `const x = …` and a later `x = …` both say what x is built from.
         const assigned = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
         if ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) || assigned) {
-            const name = assigned ? unwrap(node.left).text : node.name.text;
+            const target = symbolOf(assigned ? node.left : node.name);
             const value = unwrap(assigned ? node.right : node.initializer);
-            const from = [];
             if (ts.isIdentifier(value)) {
-                from.push(value.text);
+                link(target, symbolOf(value));
+                link(symbolOf(value), target);
             } else if (ts.isObjectLiteralExpression(value)) {
                 for (const property of value.properties) {
-                    if (ts.isSpreadAssignment(property) && ts.isIdentifier(unwrap(property.expression))) {
-                        from.push(unwrap(property.expression).text);
+                    if (ts.isSpreadAssignment(property)) {
+                        link(target, symbolOf(property.expression));
                     }
                 }
             }
-            if (from.length > 0) {
-                sources.set(name, [...(sources.get(name) ?? []), ...from]);
-            }
         }
-        ts.forEachChild(node, collect);
-    };
-    collect(source);
-    const visit = node => {
         if (isSpawnCall(node, context)) {
             for (const argument of node.arguments) {
                 const value = unwrap(argument);
-                if (ts.isIdentifier(value)) {
-                    names.add(value.text);
+                const symbol = symbolOf(value);
+                if (symbol !== undefined) {
+                    options.add(symbol);
                 } else if (ts.isObjectLiteralExpression(value)) {
-                    // `{ ...opts }`: the spread object's fields become the options.
                     for (const property of value.properties) {
-                        if (ts.isSpreadAssignment(property) && ts.isIdentifier(unwrap(property.expression))) {
-                            names.add(unwrap(property.expression).text);
+                        const spread = ts.isSpreadAssignment(property) ? symbolOf(property.expression) : undefined;
+                        if (spread !== undefined) {
+                            options.add(spread);
                         }
                     }
                 }
@@ -368,17 +384,22 @@ function spawnArgumentNames(source, context) {
         ts.forEachChild(node, visit);
     };
     visit(source);
-    // Fixed point: every source of an options variable is an options variable as well.
-    const pending = [...names];
+    const pending = [...options];
     while (pending.length > 0) {
-        for (const from of sources.get(pending.pop()) ?? []) {
-            if (!names.has(from)) {
-                names.add(from);
-                pending.push(from);
+        for (const next of edges.get(pending.pop()) ?? []) {
+            if (!options.has(next)) {
+                options.add(next);
+                pending.push(next);
             }
         }
     }
-    return names;
+    return options;
+}
+
+/** Whether an identifier is one of the file's spawn-options variables. */
+function isOptionsVariable(node, context) {
+    const value = unwrap(node);
+    return ts.isIdentifier(value) && context.spawnOptions.has(context.checker.getSymbolAtLocation(value));
 }
 
 /** Local names of imported loggers: `import { log as out } from './shared'` makes `out` a logger. */
@@ -463,7 +484,7 @@ const CHECKS = [
             if (!HOOKS.has(hook ?? '')) {
                 return false;
             }
-            const callback = node.arguments[0];
+            const callback = node.arguments[0] === undefined ? undefined : unwrap(node.arguments[0]);
             return callback !== undefined && ts.isArrowFunction(callback) && !ts.isBlock(callback.body);
         },
     },
@@ -496,7 +517,7 @@ for (const file of files) {
         outputChannels: outputChannelBindings(source),
         loggers: importedLoggers(source),
     };
-    context.spawnOptionNames = spawnArgumentNames(source, context);
+    context.spawnOptions = spawnOptionSymbols(source, context);
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
     const visit = node => {
         for (const check of checks) {
