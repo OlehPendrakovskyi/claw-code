@@ -463,6 +463,13 @@ describe('redactText', () => {
         expect(redactText('request //alice:p@ss@host.example/x failed')).toBe('request //***@host.example/x failed');
     });
 
+    it('masks a network-path userinfo holding a quote, backtick or angle bracket', () => {
+        expect(redactText('request //alice:p"ass@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText("request //alice:p'ass@host.example/x failed")).toBe('request //***@host.example/x failed');
+        expect(redactText('request //alice:p`ass@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText('request //alice:p<ss@host.example/x failed')).toBe('request //***@host.example/x failed');
+    });
+
     it('leaves a path with a double slash and an @ alone', () => {
         expect(redactText('see a//b@c and https://host.example//x@y')).toBe('see a//b@c and https://host.example//x@y');
     });

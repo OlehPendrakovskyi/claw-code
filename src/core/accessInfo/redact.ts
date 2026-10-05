@@ -74,8 +74,9 @@ const QUOTE = /["'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
- *  password may hold `@`. Linear: a match never crosses a `/`. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/[^\s/"'`<>]*@/g;
+ *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, which
+ *  fails toward hiding. Linear: a match never crosses a `/`. */
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*|(?=[^\s/@:"'`<>]*:)[^\s/]*)@/g;
 const WHITESPACE = /\s/;
 /** A `name=value` query pair anywhere in the text, its value possibly quoted. As in {@link VALUE_AT}, an
  *  unterminated quote runs to the end of its line. */
