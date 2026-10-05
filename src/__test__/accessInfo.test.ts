@@ -480,6 +480,15 @@ describe('redactText', () => {
         expect(redactText("bad https://[bad/x?page=2&to%6ben='super-secret'")).toBe('bad https://[bad/x?page=2&to%6ben=***');
     });
 
+    it('masks the tail of an unterminated quoted value, as in truncated stderr', () => {
+        expect(redactText('failed: password="correct horse battery staple\nnext line')).toBe('failed: password=***\nnext line');
+        expect(redactText("failed: token='correct horse battery staple")).toBe('failed: token=***');
+    });
+
+    it('masks the tail of an unterminated quoted query value', () => {
+        expect(redactText('GET https://host.example/?token="correct horse battery staple\nok')).toBe('GET https://host.example/?token=***\nok');
+    });
+
     it('masks a quoted query value containing spaces', () => {
         expect(redactText('bad https://[bad/x?password="super secret" next')).toBe('bad https://[bad/x?password=*** next');
     });
@@ -501,6 +510,8 @@ describe('redactText', () => {
             'a://'.repeat(size / 4),
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
+            'token="x\n'.repeat(size / 9),
+            '?a="'.repeat(size / 4) + '\n',
         ];
         for (const input of inputs) {
             const started = performance.now();

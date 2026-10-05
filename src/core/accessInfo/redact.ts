@@ -31,8 +31,10 @@ const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|crede
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, so a
  *  long run is tried once rather than from each of its characters. */
 const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(["']?[A-Za-z0-9_.-]+["']?)\s*[:=]\s*/g;
-/** A value at a given position: a quoted string (with escapes) or a run of non-space characters. */
-const VALUE_AT = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\S+/y;
+/** A value at a given position: a quoted string (with escapes) or a run of non-space characters. A quote
+ *  with no close on its line, as in truncated stderr, runs to the end of that line, so its tail is masked
+ *  too. A quoted value never spans lines, which keeps every scan linear. */
+const VALUE_AT = /"(?:\\.|[^"\\\r\n])*(?:"|(?=[\r\n])|$)|'(?:\\.|[^'\\\r\n])*(?:'|(?=[\r\n])|$)|`(?:\\.|[^`\\\r\n])*(?:`|(?=[\r\n])|$)|\S+/y;
 
 /** Mask the value of every `key=value` / `key: value` pair whose key names a secret. A pair with an
  *  ordinary key keeps its value, and scanning goes on inside it (`a=token=x` masks `token`'s value).
@@ -75,8 +77,9 @@ const QUOTE = /["'<>]/;
  *  password may hold `@`. Linear: a match never crosses a `/`. */
 const NETWORK_PATH_USERINFO = /(?<![^\s"'<>([{=,])\/\/[^\s/"'<>]*@/g;
 const WHITESPACE = /\s/;
-/** A `name=value` query pair anywhere in the text, its value possibly quoted. */
-const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^&#\s"'<>]*)/g;
+/** A `name=value` query pair anywhere in the text, its value possibly quoted. As in {@link VALUE_AT}, an
+ *  unterminated quote runs to the end of its line. */
+const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\\r\n])*(?:"|(?=[\r\n])|$)|'(?:\\.|[^'\\\r\n])*(?:'|(?=[\r\n])|$)|[^&#\s"'<>]*)/g;
 
 /** Where the scheme ending at `separator` (the index of a `://`) starts: the whole run of scheme characters
  *  before it, which must begin with a letter; undefined when there is none. */
