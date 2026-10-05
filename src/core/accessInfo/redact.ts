@@ -43,6 +43,10 @@ const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
  *  scanning to the end of the text. */
 const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
 const NON_SPACE = /\S/;
+/** The key and separator of a pair that follows an unquoted secret on its line (`page=2`, `"name":`). */
+const NEXT_PAIR = /\\?["']?[A-Za-z0-9_.-]+\\?["']?[ \t]*[:=]/y;
+/** A value an earlier pass already masked, left bare (`?token=*** ok`). */
+const MASKED_VALUE = /\*\*\*(?=\s|$)/y;
 
 /** Whether a value opens with a backslash-escaped quote, as inside a JSON string (`"password=\\"a b\\""`). */
 function isEscapedQuote(text: string, start: number): boolean {
@@ -77,6 +81,27 @@ function escapedValueEnd(text: string, start: number): number {
         }
     }
     return i;
+}
+
+/** Where an unquoted secret ends. A password may hold spaces (`password=correct horse battery staple`),
+ *  so the value runs to the end of its line, or to just before the next `key=` / `key:` pair on it, so that
+ *  pair is still scanned (`key=a signature=b page=2`). Trailing whitespace is left outside. Linear: each
+ *  space is followed by at most one name run, and no two runs overlap. */
+function unquotedSecretEnd(text: string, start: number): number {
+    let end = start;
+    while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
+        if (text[end] === ' ' || text[end] === '\t') {
+            NEXT_PAIR.lastIndex = end + 1;
+            if (NEXT_PAIR.test(text)) {
+                break;
+            }
+        }
+        end++;
+    }
+    while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t')) {
+        end--;
+    }
+    return end;
 }
 
 /** Where an array or object value (`[ "a", "b" ]`, `{ "value": "x" }`) ends: after its matching bracket,
@@ -144,7 +169,8 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
 
 /** Mask the value of every `key=value` / `key: value` pair whose key names a secret, as `key=***`. With
  *  `quotedOnly`, only quoted values are masked, and each stays quoted (`"token":"***"`), so a later full
- *  pass consumes just that quoted value rather than the text after it. A pair with an ordinary key keeps
+ *  pass consumes just that quoted value rather than the text after it. An unquoted value may hold spaces
+ *  ({@link unquotedSecretEnd}); a bare `***` left by an earlier pass is skipped. A pair with an ordinary key keeps
  *  its value, and scanning goes on inside it (`a=token=x` masks `token`'s value). Linear in the text's
  *  length. */
 function maskSensitivePairs(text: string, quotedOnly = false): string {
@@ -163,7 +189,11 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }
-        const end = valueEnd(text, start, NON_SPACE, unclosed);
+        MASKED_VALUE.lastIndex = start;
+        if (!quoted && !composite && MASKED_VALUE.test(text)) {
+            continue;
+        }
+        const end = quoted || composite ? valueEnd(text, start, NON_SPACE, unclosed) : unquotedSecretEnd(text, start);
         if (end === start) {
             continue;
         }
@@ -189,14 +219,44 @@ export function stripTerminalCodes(text: string): string {
     return text.replace(TERMINAL_CODE, '');
 }
 
+const BEARER = /\b(bearer)\s+/gi;
+/** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. */
+const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\.|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*/y;
+
+/** Mask every Bearer token, of any length (a short one is still a credential), as `Bearer ***`. A token
+ *  opened by an escaped quote, as in serialized error details (`"sent Bearer \\"a b\\""`), runs to its matching
+ *  escaped quote, past escaped interior quotes, or without one to the end of the enclosing string or line.
+ *  Linear: each pass consumes the token it measures. */
+function maskBearerTokens(text: string): string {
+    let out = '';
+    let copied = 0;
+    BEARER.lastIndex = 0;
+    for (let match = BEARER.exec(text); match !== null; match = BEARER.exec(text)) {
+        const start = BEARER.lastIndex;
+        let end = start;
+        if (isEscapedQuote(text, start)) {
+            end = escapedValueEnd(text, start);
+        } else {
+            BEARER_TOKEN.lastIndex = start;
+            if (BEARER_TOKEN.test(text)) {
+                end = BEARER_TOKEN.lastIndex;
+            }
+        }
+        if (end === start) {
+            continue;
+        }
+        out += `${text.slice(copied, match.index)}${match[1]} ***`;
+        copied = end;
+        BEARER.lastIndex = end;
+    }
+    return out + text.slice(copied);
+}
+
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
 export function redactPlainSecrets(text: string): string {
-    return maskSensitivePairs(text)
-        .replace(CREDENTIAL_HEADER, '$1=***')
-        // Any length: a short Bearer token or `Basic YTo=` is still a credential. Basic is held to
-        // base64 shape (whole 4-character groups, valid padding), so prose such as "basic usage" is left alone.
-        // A quoted token too (`Bearer "abc"`), to its closing quote or the end of its line.
-        .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\\r\n])*"?|'(?:\\.|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*)/gi, '$1 ***')
+    return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
+        // Any length: `Basic YTo=` is still a credential. Basic is held to base64 shape (whole 4-character
+        // groups, valid padding), so prose such as "basic usage" is left alone.
         .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***')
         // An unpadded or truncated value (`Basic Zm9vOmJhcg`) is still a credential when it looks encoded: eight or
         // more base64 characters holding a digit, `+`, `/` or a capital after the first. Case-sensitive on

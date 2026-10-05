@@ -434,10 +434,10 @@ describe('redactText', () => {
     });
 
     it('redacts sensitive query values and plain-text secrets in the same text', () => {
-        // The plain-text pass treats everything after `api_key=` up to whitespace as the value,
-        // so later query params go too: it errs toward hiding, never toward showing.
+        // The plain-text pass treats everything after `api_key=` up to the next pair on the line as the value,
+        // so later query params and words go too: it errs toward hiding, never toward showing.
         expect(redactText('GET https://api.example/v1?api_key=abc&page=2 with token=xyz')).toBe(
-            'GET https://api.example/v1?api_key=*** with token=***'
+            'GET https://api.example/v1?api_key=*** token=***'
         );
     });
 
@@ -627,6 +627,20 @@ describe('redactText', () => {
         expect(redactText('sent Bearer "unterminated value')).toBe('sent Bearer ***');
     });
 
+    it('masks a Bearer token opened by an escaped quote, as in serialized details', () => {
+        expect(redactText(JSON.stringify({ reason: 'sent Bearer "PRIVATE_PREFIX PRIVATE_SUFFIX"', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
+        // An escaped interior quote does not end the token.
+        expect(redactText(JSON.stringify({ reason: 'sent Bearer "a\\"PRIVATE b"', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
+        // Without a closing quote it runs to the end of the enclosing string.
+        expect(redactText(JSON.stringify({ reason: 'sent Bearer "PRIVATE_PREFIX PRIVATE_SUFFIX', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
+    });
+
+    it('masks an unquoted password holding spaces, to the next pair or the end of its line', () => {
+        expect(redactText('password=correct horse battery staple')).toBe('password=***');
+        expect(redactText('login password=correct horse battery staple user=bob\nnext line')).toBe('login password=*** user=bob\nnext line');
+        expect(redactText('token: PRIVATE_PREFIX PRIVATE_SUFFIX')).toBe('token=***');
+    });
+
     it('masks a whole array or object credential value, spaced and nested', () => {
         expect(redactText('{ "tokens": [ "PRIVATE" ], "ok": 1 }')).toBe('{ "tokens"=***, "ok": 1 }');
         expect(redactText('{ "credentials": { "value": "PRIVATE", "more": [1, "]"] }, "ok": 1 }')).toBe('{ "credentials"=***, "ok": 1 }');
@@ -753,6 +767,11 @@ describe('redactText', () => {
             'https://[bad/' + '?'.repeat(size),
             'token=`'.repeat(size / 7) + "?a='".repeat(size / 4),
             '?a="'.repeat(size / 4) + '\n',
+            'password=a' + ' b'.repeat(size / 2),
+            'password=a' + ' b.c'.repeat(size / 4),
+            'token=*** '.repeat(size / 10),
+            "bearer \\'".repeat(size / 9),
+            'bearer \\"\\\\'.repeat(size / 11),
         ];
         for (const input of inputs) {
             const started = performance.now();
