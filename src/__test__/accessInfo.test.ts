@@ -438,6 +438,11 @@ describe('redactText', () => {
         expect(redactText('bad https://[not-a-host/x?a%E0=secret')).toBe('bad https://[not-a-host/x?a%E0=***');
     });
 
+    it('masks a password containing ? or # when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:p?ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+        expect(redactText('bad https://alice:p#ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
+
     it('masks a password containing @ when the URL cannot be parsed', () => {
         expect(redactText('bad https://alice:p@ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });

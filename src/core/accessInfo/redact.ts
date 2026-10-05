@@ -42,9 +42,10 @@ export function redactPlainSecrets(text: string): string {
 const URL_IN_TEXT = /(?<![a-z0-9+.-])[a-z][a-z0-9+.-]*:\/\/(?:(?![a-z][a-z0-9+.-]*:\/\/)[^\s"'<>])+/gi;
 /** Punctuation and closing brackets that end a sentence or a bracketed URL rather than belong to it. */
 const TRAILING_DELIMITERS = /[)\]}.,;:!?]+$/;
-/** The userinfo of a URL, `scheme://user:pass@`, matched without parsing: up to the last `@` of the
- *  authority, since a raw `@` may appear inside the password. */
-const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/?#\s]*@/i;
+/** The userinfo of a URL, `scheme://user:pass@`, matched without parsing: up to the last `@` before the
+ *  first `/`, since a raw `@`, `?` or `#` may appear inside a malformed password. This can over-match a
+ *  URL with no path and an `@` in its query; that hides more, never less. */
+const URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)[^/\s]*@/i;
 /** One `name=value` query parameter, matched without parsing. */
 const URL_QUERY_PARAM = /([?&])([^=&#\s]*)=([^&#\s]*)/g;
 

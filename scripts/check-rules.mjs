@@ -87,7 +87,35 @@ function memberOf(base, name) {
     return undefined;
 }
 
+/** Whole-variable assignments in the program, by the assigned variable's symbol: `run = cp.exec` makes
+ *  `cp.exec` one of the values `run` can hold. Filled once, before the checks run. */
+const assignmentsBySymbol = new Map();
+
+function collectAssignments(source, checker) {
+    const visit = node => {
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left))) {
+            const symbol = checker.getSymbolAtLocation(unwrap(node.left));
+            if (symbol !== undefined) {
+                assignmentsBySymbol.set(symbol, [...(assignmentsBySymbol.get(symbol) ?? []), node.right]);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+}
+
 function resolveDeclaration(declaration, checker, depth) {
+    // `let run; run = cp.exec`: a variable also holds whatever is assigned to it later.
+    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        const symbol = checker.getSymbolAtLocation(declaration.name);
+        for (const value of [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]) {
+            const target = value === undefined ? undefined : resolveValue(value, checker, depth);
+            if (target !== undefined) {
+                return target;
+            }
+        }
+        return undefined;
+    }
     if (ts.isImportSpecifier(declaration)) {
         return {
             module: moduleName(declaration.parent.parent.parent.moduleSpecifier.text),
@@ -103,9 +131,6 @@ function resolveDeclaration(declaration, checker, depth) {
     if (ts.isImportEqualsDeclaration(declaration) && ts.isExternalModuleReference(declaration.moduleReference) &&
         ts.isStringLiteral(declaration.moduleReference.expression)) {
         return { module: moduleName(declaration.moduleReference.expression.text) };
-    }
-    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name) && declaration.initializer) {
-        return resolveValue(declaration.initializer, checker, depth);
     }
     if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
         ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer) {
@@ -134,6 +159,11 @@ function bindsShellExecutor(node, checker) {
     };
     if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
         return node.importClause.namedBindings.elements.some(element => isShellExecutor(element.name));
+    }
+    // `run = cp.exec`: an executor assigned after declaration.
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const target = resolveValue(node.right, checker);
+        return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
     }
     if (ts.isVariableDeclaration(node)) {
         if (ts.isIdentifier(node.name)) {
@@ -402,34 +432,52 @@ function isOptionsVariable(node, context) {
     return ts.isIdentifier(value) && context.spawnOptions.has(context.checker.getSymbolAtLocation(value));
 }
 
-/** Local names of imported loggers: `import { log as out } from './shared'` makes `out` a logger. */
-function importedLoggers(source) {
-    const names = new Set();
-    for (const statement of source.statements) {
-        const bindings = ts.isImportDeclaration(statement) ? statement.importClause?.namedBindings : undefined;
-        if (bindings && ts.isNamedImports(bindings)) {
-            for (const element of bindings.elements) {
-                if (LOGGER_NAME.test((element.propertyName ?? element.name).text)) {
-                    names.add(element.name.text);
-                }
-            }
+/** Whether a value is an output channel created here: `….createOutputChannel(…)`. */
+function isChannelCreation(node) {
+    const value = unwrap(node);
+    return ts.isCallExpression(value) && lastName(value.expression) === 'createOutputChannel';
+}
+
+/** Whether a receiver is a logger. An identifier is followed through its symbol, so lexical scope
+ *  decides: a local alias of a logger (`const out = log`), a variable holding an output channel, or an
+ *  imported logger under any name is one; a parameter or local that shadows one is judged by its own
+ *  declaration. Where nothing declares it (a global such as `console`), or it is a parameter or field
+ *  without a value to follow, the logger naming convention decides. */
+function isLoggerReceiver(node, context, depth = 0) {
+    const value = unwrap(node);
+    if (isChannelCreation(value)) {
+        return true;
+    }
+    if (ts.isPropertyAccessExpression(value)) {
+        // `this.output`, `this.logger`: fields assigned a channel anywhere in the file, or named as loggers.
+        return LOGGER_NAME.test(value.name.text) || context.outputChannels.has(value.name.text);
+    }
+    if (!ts.isIdentifier(value) || depth > 8) {
+        return false;
+    }
+    const symbol = context.checker.getSymbolAtLocation(value);
+    const declaration = symbol?.declarations?.[0];
+    if (declaration === undefined) {
+        return LOGGER_NAME.test(value.text);
+    }
+    if (ts.isImportSpecifier(declaration)) {
+        return LOGGER_NAME.test((declaration.propertyName ?? declaration.name).text);
+    }
+    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        const values = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])].filter(v => v !== undefined);
+        if (values.length > 0) {
+            return values.some(v => isChannelCreation(v) || isLoggerReceiver(v, context, depth + 1));
         }
     }
-    return names;
+    return LOGGER_NAME.test(value.text);
 }
 
 function isLogCall(node, context) {
-    if (!ts.isCallExpression(node)) {
+    if (!ts.isCallExpression(node) || !LOG_METHODS.has(lastName(node.expression) ?? '')) {
         return false;
     }
     const receiver = memberObject(node.expression);
-    // `vscode.window.createOutputChannel('x').appendLine(…)`: the receiver is the channel itself.
-    if (receiver !== undefined && ts.isCallExpression(unwrap(receiver)) && lastName(unwrap(receiver).expression) === 'createOutputChannel') {
-        return LOG_METHODS.has(lastName(node.expression) ?? '');
-    }
-    const receiverName = receiver === undefined ? undefined : lastName(receiver);
-    return receiverName !== undefined && LOG_METHODS.has(lastName(node.expression) ?? '') &&
-        (LOGGER_NAME.test(receiverName) || context.outputChannels.has(receiverName) || context.loggers.has(receiverName));
+    return receiver !== undefined && isLoggerReceiver(receiver, context);
 }
 
 const CHECKS = [
@@ -508,6 +556,9 @@ const files = [...walk(SRC)];
 const program = ts.createProgram(files, { noResolve: true, noLib: true, types: [], target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext });
 const checker = program.getTypeChecker();
 for (const file of files) {
+    collectAssignments(program.getSourceFile(file), checker);
+}
+for (const file of files) {
     const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
     const checks = CHECKS.filter(check => check.scope === scope);
     const source = program.getSourceFile(file);
@@ -515,7 +566,6 @@ for (const file of files) {
         file,
         checker,
         outputChannels: outputChannelBindings(source),
-        loggers: importedLoggers(source),
     };
     context.spawnOptions = spawnOptionSymbols(source, context);
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;

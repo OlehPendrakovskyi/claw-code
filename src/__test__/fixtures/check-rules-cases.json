@@ -744,6 +744,24 @@
             "file": "src/__test__/d.test.ts",
             "line": "afterEach((() => vi.useRealTimers()) as () => void);",
             "expect": "R54"
+        },
+        {
+            "name": "R10: a local alias of an imported logger",
+            "file": "src/a.ts",
+            "line": "import { log } from './shared'; const out = log; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a parameter shadowing a channel variable",
+            "file": "src/a.ts",
+            "line": "const out = vscode.window.createOutputChannel('x'); function show(out: { info(v: unknown): void }) { out.info(prompt); }",
+            "expect": null
+        },
+        {
+            "name": "R36: an executor assigned after declaration",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; let run; run = cp.exec; run(cmd);",
+            "expect": "R36"
         }
     ]
 }
