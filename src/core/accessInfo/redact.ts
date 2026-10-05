@@ -50,18 +50,30 @@ function isEscapedQuote(text: string, start: number): boolean {
 
 /** Where a value opened by an escaped quote ends: after the matching escaped quote. Without one it ends
  *  where the enclosing string does, at an unescaped `"`, or at the end of the line, so its tail is masked
- *  too. Each scan stops at the enclosing string's end, which keeps a pass linear. */
+ *  too. A run of n backslashes before the quote encodes it twice over: the outer string unescapes it to
+ *  (n - 1) / 2 backslashes and a quote, which closes the value only when that count is even, so only
+ *  n % 4 === 1 closes (`\"` does, the interior `\\\"` does not). Each scan stops at the enclosing string's
+ *  end, which keeps a pass linear. */
 function escapedValueEnd(text: string, start: number): number {
     const quote = text[start + 1];
     let i = start + 2;
     while (i < text.length && text[i] !== '"' && text[i] !== '\n' && text[i] !== '\r') {
-        if (text[i] === '\\') {
-            if (text[i + 1] === quote) {
-                return i + 2;
-            }
+        if (text[i] !== '\\') {
             i++;
+            continue;
         }
-        i++;
+        let run = 0;
+        while (text[i + run] === '\\') {
+            run++;
+        }
+        if (text[i + run] === quote) {
+            if (run % 4 === 1) {
+                return i + run + 1;
+            }
+            i += run + 1;
+        } else {
+            i += run;
+        }
     }
     return i;
 }
@@ -131,6 +143,35 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         KEY_SEPARATOR.lastIndex = end;
     }
     return out + text.slice(copied);
+}
+
+/** The sensitive quoted value (`password="…`) that is still open at `cut`, if any: where its key starts,
+ *  its quote, and the index just past its closing quote, or -1 when it does not close within `text`. A
+ *  caller that drops `text` before `cut`, such as a bounded stderr window, uses this so it never keeps a
+ *  value whose label it has dropped. Linear: each quoted value is scanned once. */
+export function openCredentialAt(text: string, cut: number): { keyStart: number; quote: string; end: number } | undefined {
+    KEY_SEPARATOR.lastIndex = 0;
+    for (let pair = KEY_SEPARATOR.exec(text); pair !== null && pair.index < cut; pair = KEY_SEPARATOR.exec(text)) {
+        const start = KEY_SEPARATOR.lastIndex;
+        const quote = text[start] ?? '';
+        if (start >= cut || !VALUE_QUOTE.test(quote) || !(SENSITIVE_KEY.test(pair[1]) || CREDENTIAL_HEADER_KEY.test(pair[1]))) {
+            continue;
+        }
+        let close = -1;
+        for (let i = start + 1; i < text.length; i++) {
+            if (text[i] === '\\') {
+                i++;
+            } else if (text[i] === quote) {
+                close = i;
+                break;
+            }
+        }
+        if (close === -1 || close >= cut) {
+            return { keyStart: pair.index, quote, end: close === -1 ? -1 : close + 1 };
+        }
+        KEY_SEPARATOR.lastIndex = close + 1;
+    }
+    return undefined;
 }
 
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
@@ -343,7 +384,8 @@ function maskQueryPairs(text: string): string {
         while (WHITESPACE.test(text[start] ?? '')) {
             start++;
         }
-        const end = VALUE_QUOTE.test(text[start] ?? '') ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
+        const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '');
+        const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=***`;
         copied = end;
         QUERY_NAME.lastIndex = end;

@@ -188,6 +188,26 @@ describe('ChatService buffer and abort bounds', () => {
             expect((events[0] as { message: string }).message).toBe('the real error');
         });
 
+        it('drops a multiline quoted credential whose label fell out of the window, within one chunk', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE_SUFFIX');
+            expect(message).toBe('real failure');
+        });
+
+        it('drops a multiline quoted credential whose label fell out of the window, across chunks', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\n`));
+            child.stderr.emit('data', Buffer.from('PRIVATE_'));
+            child.stderr.emit('data', Buffer.from('SUFFIX"\nreal failure'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE_');
+            expect(message).toBe('real failure');
+        });
+
         it('prefers an agent failure message over the stderr tail', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('stderr noise'));

@@ -575,6 +575,16 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ reason: 'token="PRIVATE_PREFIX PRIVATE_SUFFIX' }))).not.toContain('PRIVATE');
     });
 
+    it('does not take an encoded interior quote for the closing one', () => {
+        // The value holds an escaped quote; serialised, it becomes \\\" inside \"…\".
+        const json = JSON.stringify({ reason: 'password="PRIVATE_PREFIX\\"PRIVATE_SUFFIX"' });
+        expect(redactText(json)).not.toContain('PRIVATE');
+    });
+
+    it('masks a sensitive query value quoted with escaped quotes inside a JSON string', () => {
+        expect(redactText(JSON.stringify({ reason: '?to%6ben="PRIVATE_PREFIX PRIVATE_SUFFIX"' }))).not.toContain('PRIVATE');
+    });
+
     it('masks unpadded or truncated Basic values but keeps prose', () => {
         expect(redactText('sent Basic Zm9vOmJhcg')).toBe('sent Basic ***');
         expect(redactText('sent Basic dXNlcjpwYXN')).toBe('sent Basic ***');

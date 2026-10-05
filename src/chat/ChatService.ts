@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { redactText } from '../core/accessInfo/redact';
+import { openCredentialAt, redactText } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -327,6 +327,9 @@ class AcpxRun {
     private stderrRaw = '';
     /** True while discarding the rest of a stderr line whose start, and any label it held, was dropped. */
     private droppingStderrLine = false;
+    /** The quote of a credential whose label was dropped before its value closed: stderr is discarded until
+     *  that quote, then to the end of its line. */
+    private droppingStderrUntilQuote: string | undefined;
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -402,9 +405,19 @@ class AcpxRun {
     }
 
     /** Keeps the raw end of stderr within STDERR_RAW_WINDOW_CHARS. An overflow is cut at a line break, and a
-     *  line whose start was cut off is dropped up to its newline, so no value outlives its label. */
+     *  line whose start was cut off is dropped up to its newline. A quoted credential open at the cut is
+     *  dropped through its closing quote, across lines and chunks, so no value outlives its label. */
     private onStderr(text: string): void {
         let incoming = text;
+        if (this.droppingStderrUntilQuote !== undefined) {
+            const close = incoming.indexOf(this.droppingStderrUntilQuote);
+            if (close === -1) {
+                return;
+            }
+            this.droppingStderrUntilQuote = undefined;
+            this.droppingStderrLine = true;
+            incoming = incoming.slice(close + 1);
+        }
         if (this.droppingStderrLine) {
             const lineBreak = incoming.indexOf('\n');
             if (lineBreak === -1) {
@@ -418,7 +431,16 @@ class AcpxRun {
             this.stderrRaw = raw;
             return;
         }
-        const lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
+        let lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
+        const open = lineBreak === -1 ? undefined : openCredentialAt(raw, lineBreak + 1);
+        if (open !== undefined && open.end === -1) {
+            this.stderrRaw = '';
+            this.droppingStderrUntilQuote = open.quote;
+            return;
+        }
+        if (open !== undefined) {
+            lineBreak = raw.indexOf('\n', open.end);
+        }
         this.stderrRaw = lineBreak === -1 ? '' : raw.slice(lineBreak + 1);
         this.droppingStderrLine = lineBreak === -1;
     }
