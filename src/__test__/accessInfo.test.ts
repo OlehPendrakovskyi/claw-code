@@ -509,6 +509,12 @@ describe('redactText', () => {
         expect(redactText('GET https://[bad/x?token="first\nsecond" ok')).toBe('GET https://[bad/x?token=*** ok');
     });
 
+    it('masks a sensitive value after a run of question marks', () => {
+        // A parsable URL is re-serialised by URL, which percent-encodes the extra `?`s.
+        expect(redactText('GET https://host.example/x???token=abc ok')).not.toContain('abc');
+        expect(redactText('GET https://[bad/x???token=abc ok')).toBe('GET https://[bad/x???token=*** ok');
+    });
+
     it('masks a backtick-quoted query value', () => {
         expect(redactText('GET https://host.example/?token=`secret value` ok')).toBe('GET https://host.example/?token=*** ok');
         expect(redactText('GET https://[bad/x?to%6ben=`secret value` ok')).toBe('GET https://[bad/x?to%6ben=*** ok');
@@ -552,6 +558,8 @@ describe('redactText', () => {
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),
             'token="'.repeat(size / 7),
+            '?'.repeat(size),
+            'https://[bad/' + '?'.repeat(size),
             'token=`'.repeat(size / 7) + "?a='".repeat(size / 4),
             '?a="'.repeat(size / 4) + '\n',
         ];

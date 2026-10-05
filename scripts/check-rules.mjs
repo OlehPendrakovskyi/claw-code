@@ -550,11 +550,13 @@ function isLoggerReceiver(node, context, depth = 0) {
     if (isChannelCreation(value)) {
         return true;
     }
-    if (ts.isPropertyAccessExpression(value)) {
-        // `this.output`, `this.logger`: fields assigned a channel anywhere in the file, named as loggers, or
-        // declared with a logger type.
-        return LOGGER_NAME.test(value.name.text) || context.outputChannels.has(value.name.text) ||
-            hasLoggerType(context.checker.getSymbolAtLocation(value)?.declarations?.[0]);
+    if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+        // `this.output`, `this['logger']`: fields assigned a channel anywhere in the file, named as loggers,
+        // or declared with a logger type. A key held in a variable names nothing (see lastName).
+        const name = lastName(value);
+        const field = ts.isPropertyAccessExpression(value) ? value : value.argumentExpression;
+        return name !== undefined && (LOGGER_NAME.test(name) || context.outputChannels.has(name) ||
+            hasLoggerType(context.checker.getSymbolAtLocation(field)?.declarations?.[0]));
     }
     if (!ts.isIdentifier(value) || depth > 8) {
         return false;

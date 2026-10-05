@@ -1044,6 +1044,18 @@
             "file": "src/a.ts",
             "line": "import * as cp from 'child_process'; cp[('exec')](cmd);",
             "expect": "R36"
+        },
+        {
+            "name": "R10: a logger field read with a literal key",
+            "file": "src/a.ts",
+            "line": "class A { send(prompt: string) { this['logger'].info(prompt); } }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a field read with a variable-held key",
+            "file": "src/a.ts",
+            "line": "class A { send(prompt: string, key: string) { this[key].info(prompt); } }",
+            "expect": null
         }
     ]
 }

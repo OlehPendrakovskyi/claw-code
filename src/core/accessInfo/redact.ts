@@ -112,7 +112,7 @@ const QUOTE = /["'`<>]/;
 const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*|(?=[^\s/@:"'`<>]*:)[^\s/]*)@/g;
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
-const QUERY_NAME = /([?&])([^=&#\s"'`<>]*)=/g;
+const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
 /** Characters of an unquoted query value. */
 const QUERY_UNQUOTED = /[^&#\s"'`<>]/;
 
@@ -214,8 +214,9 @@ const TRAILING_DELIMITERS = /(?<![)\]}.,;:!?])[)\]}.,;:!?]+$/;
 /** The userinfo of an unparsable URL, whose authority has no knowable end (a password may hold `/`):
  *  everything up to the last `@`. An `@` in the path or query over-matches; that hides more, never less. */
 const UNPARSED_URL_USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)\S*@/i;
-/** One `name=value` query parameter, matched without parsing. */
-const URL_QUERY_PARAM = /([?&])([^=&#\s]*)=([^&#\s]*)/g;
+/** One `name=value` query parameter, matched without parsing. A name holds no `?`, `&` or `=`, so each
+ *  candidate name is scanned once, a failed one included. */
+const URL_QUERY_PARAM = /([?&])([^=&#?\s]*)=([^&#\s]*)/g;
 
 /** Whether a query name is sensitive once percent-decoded (`to%6ben` is `token`); a name that does not
  *  decode counts as sensitive, so this fails toward hiding. */
