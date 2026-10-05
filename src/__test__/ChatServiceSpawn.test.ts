@@ -1006,6 +1006,27 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a query name split by a line break in structured details and JSON stderr', () => {
+            const details = { reason: 'https://host.example/?to\nken=PRIVATE_VALUE', ok: 1 };
+            const first = start();
+            first.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stderr.emit('data', Buffer.from(`${JSON.stringify(details)}\n`));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a line-split network-path userinfo and a short Basic pair on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch //ali\nce:PRIVATE@host.example/x failed\nsent Basic OmE\n'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).not.toContain('OmE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

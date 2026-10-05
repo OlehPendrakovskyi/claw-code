@@ -350,21 +350,30 @@ function isBasicCredential(value: string): boolean {
     return BASE64_WHOLE.test(value) || BASE64_ENCODED.test(value) || decodesToPair(value);
 }
 
-/** Whether base64, padded or not, decodes to printable text holding a `:`, as a `user:password` pair does
- *  (`ejpzcmtkcw` is `z:srkds`), whatever its letters look like. */
+/** Whether base64, padded or not and of any length, decodes to text holding a `:`, as a `user:password` pair
+ *  does (`ejpzcmtkcw` is `z:srkds`, `OmE` is `:a`, `w6k6eA` is `é:x`), whatever its letters look like. The bytes
+ *  must be valid UTF-8 with no control character, which leaves almost all prose alone. */
 function decodesToPair(value: string): boolean {
-    if (value.length < 4) {
+    const bytes = Buffer.from(value, 'base64');
+    if (!bytes.includes(0x3a)) {
         return false;
     }
-    return PRINTABLE_PAIR.test(Buffer.from(value, 'base64').toString('latin1'));
+    try {
+        return !CONTROL_CHARACTER.test(UTF8.decode(bytes));
+    } catch {
+        return false;
+    }
 }
 
 /** `Basic` and a quoted or escaped-quoted value: the word, then the value inside its quotes. */
 const QUOTED_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+(\\*)(["'${'`'}])([A-Za-z0-9+/]+=*)(?:\2\3)?(?![A-Za-z0-9+/=])`, 'gi');
 /** `Basic` and a bare value. */
 const BARE_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+([A-Za-z0-9+/]+=*)(?![A-Za-z0-9+/=])`, 'gi');
-/** Printable ASCII holding a `:`. */
-const PRINTABLE_PAIR = /^[ -~]*:[ -~]*$/;
+/** A strict UTF-8 decoder: invalid bytes throw. */
+const UTF8 = new TextDecoder('utf-8', { fatal: true });
+/** A C0 or C1 control character, or DEL. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/;
 /** Whole base64: 4-character groups with valid padding. Any length: `Basic YTo=` is still a credential. */
 const BASE64_WHOLE = /^(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$/;
 /** Unpadded or truncated base64 that looks encoded: eight or more characters holding a digit, `+`, `/` or a
@@ -503,22 +512,29 @@ function normalizeSpecialSchemes(text: string): string {
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
 const PARSER_IGNORED = /[\t\r\n]/g;
 const PARSER_IGNORED_CHAR = /[\t\r\n]/;
+/** A tab or line break serialised (`\\t`, `\\n`, `\\r`) at any depth, with its whole backslash run. */
+const SERIALISED_BREAK = /(?<!\\)\\+[tnr]/g;
 
 /** Mask a URL userinfo that tabs or line breaks split, as a URL parser reads it: it drops them anywhere in a
- *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password. The authority
- *  runs, across them, to the first `/`, `?`, `#`, other whitespace or `://`; its userinfo runs to the last `@`
- *  there and is masked as `***@` when, rejoined, it holds a `:`. A username alone is no secret, so
- *  `https://example.com\nbob@example.org` keeps its line boundary. Linear: no scan crosses a `://`, and the
- *  search for the next one resumes where a scan stopped. */
+ *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password, and so does a
+ *  network-path reference resolved against a base (`//ali\nce:pw@host`, a `//` at the start of the text or
+ *  after {@link NETWORK_PATH_BOUNDARY}). The authority runs, across them, to the first `/`, `?`, `#` or other
+ *  whitespace; its userinfo runs to the last `@` there and is masked as `***@` when, rejoined, it holds a `:`.
+ *  A username alone is no secret, so `https://example.com\nbob@example.org` keeps its line boundary. Linear:
+ *  a scan stops at the next `/`, and the search for the next `//` resumes there. */
 function maskBrokenUserinfo(text: string): string {
     let out = '';
     let copied = 0;
-    for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
-        const body = at + 3;
+    for (let at = text.indexOf('//'); at !== -1; at = text.indexOf('//', at + 2)) {
+        const scheme = text[at - 1] === ':' && schemeStart(text, at - 1) !== undefined;
+        if (!scheme && at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) {
+            continue;
+        }
+        const body = at + 2;
         let broken = false;
         let lastAt = -1;
         let k = body;
-        for (; k < text.length && !text.startsWith('://', k); k++) {
+        for (; k < text.length; k++) {
             const c = text[k];
             if (c === '\t' || c === '\r' || c === '\n') {
                 broken = true;
@@ -528,12 +544,11 @@ function maskBrokenUserinfo(text: string): string {
                 lastAt = k;
             }
         }
-        if (broken && lastAt !== -1 && schemeStart(text, at) !== undefined &&
-            text.slice(body, lastAt).replace(PARSER_IGNORED, '').includes(':')) {
+        if (broken && lastAt !== -1 && body >= copied && text.slice(body, lastAt).replace(PARSER_IGNORED, '').includes(':')) {
             out += `${text.slice(copied, body)}***@`;
             copied = lastAt + 1;
         }
-        at = Math.max(at, k - 3);
+        at = Math.max(at, k - 2);
     }
     return out + text.slice(copied);
 }
@@ -673,8 +688,10 @@ const URL_QUERY_PARAM = /([?&])([^=&#?\s]*)=([^&#\s]*)/g;
  *  decode counts as sensitive, so this fails toward hiding. */
 function isSensitiveQueryName(name: string): boolean {
     try {
-        // A URL parser drops tabs and line breaks before decoding: `to\tken` is `token`.
-        return SENSITIVE_PARAM.test(decodeURIComponent(name.replace(PARSER_IGNORED, '').replace(/\+/g, ' ')));
+        // A URL parser drops tabs and line breaks before decoding: `to\tken` is `token`. Serialised, as
+        // `to\\tken` in JSON at any depth, they are dropped too; a `\token` path segment is read both ways.
+        return [name, name.replace(SERIALISED_BREAK, '')].some(candidate =>
+            SENSITIVE_PARAM.test(decodeURIComponent(candidate.replace(PARSER_IGNORED, '').replace(/\+/g, ' '))));
     } catch {
         return true;
     }

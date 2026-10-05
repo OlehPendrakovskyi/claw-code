@@ -830,8 +830,11 @@ describe('redactText', () => {
         expect(redactText('sent Basic ejpzcmtkcw ok')).toBe('sent Basic *** ok');
         expect(redactText('sent Basic "ejpzcmtkcw" ok')).toBe('sent Basic *** ok');
         expect(redactText(JSON.stringify({ reason: 'sent Basic ejpzcmtkcw' }))).not.toContain('ejpzcmtkcw');
-        // Prose decodes to no pair and is left alone.
-        expect(redactText('basic usage, Basic Authentication, basic setup guide')).toBe('basic usage, Basic Authentication, basic setup guide');
+        // Short and non-ASCII pairs: `OmE` is `:a`, `w6k6eA` is `é:x`.
+        expect(redactText('sent Basic OmE ok')).toBe('sent Basic *** ok');
+        expect(redactText('sent Basic "w6k6eA" ok')).toBe('sent Basic *** ok');
+        // Prose decodes to no valid UTF-8 pair and is left alone.
+        expect(redactText('basic usage, Basic Authentication, basic setup guide, Basic Output')).toBe('basic usage, Basic Authentication, basic setup guide, Basic Output');
     });
 
     it('masks a sensitive query value across the tabs and line breaks a URL parser drops', () => {
@@ -847,6 +850,10 @@ describe('redactText', () => {
         for (const sep of ['\t', '\n', '\r\n']) {
             expect(redactText(`https://host.example/?to${sep}ken=PRIVATE_VALUE`)).not.toContain('PRIVATE');
             expect(redactText(`see https://[bad/x?pass${sep}word=PRIVATE_VALUE ok`)).not.toContain('PRIVATE');
+            // Serialised, at one and two levels.
+            const url = `https://host.example/?to${sep}ken=PRIVATE_VALUE`;
+            expect(redactText(JSON.stringify({ reason: url }))).not.toContain('PRIVATE');
+            expect(redactText(JSON.stringify(JSON.stringify({ reason: url })))).not.toContain('PRIVATE');
         }
     });
 
@@ -856,6 +863,11 @@ describe('redactText', () => {
         expect(redactText('see https://alice:P\r\nQ\rR@host.example/x ok')).toBe('see https://***@host.example/x ok');
         // A username alone is no secret: the line boundary stays.
         expect(redactText('https://example.com\nbob@example.org')).toBe('https://example.com\nbob@example.org');
+        // A network-path reference too, and a `//` inside a word starts none.
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`fetch //ali${sep}ce:PRIVATE@host.example/x failed`)).toBe('fetch //***@host.example/x failed');
+        }
+        expect(redactText('see //example.com\nbob@example.org and a//b\nc:d@e')).toBe('see //example.com\nbob@example.org and a//b\nc:d@e');
     });
 
     it('masks URL userinfo split by a line break, as a URL parser reads it', () => {
@@ -999,6 +1011,8 @@ describe('redactText', () => {
             'Basic ' + 'ejpz'.repeat(size / 4),
             '?token=a' + '\n'.repeat(size),
             '?a' + '\n'.repeat(size) + '=',
+            ' //a' + '\n'.repeat(size / 2) + ':@',
+            '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
             'Basic "' + 'A'.repeat(size),
