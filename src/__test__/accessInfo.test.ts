@@ -593,6 +593,20 @@ describe('redactText', () => {
         expect(redactText('GET https://[bad/x?cookie=session-secret ok')).toBe('GET https://[bad/x?cookie=*** ok');
     });
 
+    it('masks a value opened by an escaped single quote or backtick past an escaped double quote', () => {
+        expect(redactText('password=\\\'prefix\\"PRIVATE_SUFFIX\\\'')).toBe('password=***');
+        expect(redactText('password=\\`prefix\\"PRIVATE_SUFFIX\\`')).toBe('password=***');
+        // The enclosing string's own end still stops it.
+        expect(redactText('{"a":"password=\\\'PRIVATE","ok":1}')).toBe('{"a":"password=***","ok":1}');
+    });
+
+    it('masks a serialised composite credential whose single-quoted string holds an escaped quote', () => {
+        expect(redactText(JSON.stringify({ reason: "tokens=['prefix\\' ]PRIVATE_SUFFIX']" }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: 'tokens=[`prefix\\` ]PRIVATE_SUFFIX`]' }))).not.toContain('PRIVATE');
+        // Unserialised, the string and the array close where they should.
+        expect(redactText("tokens=['a\\' ]b'] ok")).toBe('tokens=*** ok');
+    });
+
     it('masks a bare value under any key naming a cookie, to the end of its line', () => {
         expect(redactText('cookie_header=PRIVATE_VALUE')).toBe('cookie_header=***');
         expect(redactText('cookieHeader=PRIVATE_VALUE\nnext')).toBe('cookieHeader=***\nnext');
@@ -688,8 +702,14 @@ describe('redactText', () => {
         expect(redactText('to\u0008ken\u007f=PRIVATE')).toBe('token=***');
         expect(redactText(JSON.stringify({ error: 'token\u0001=PRIVATE' }))).not.toContain('PRIVATE');
         expect(redactText('a\tb\r\nc\u0000d')).toBe('a\tb\r\ncd');
-        // A serialised escape after a backslash is an escaped backslash and text: left alone.
-        expect(redactText('{"a":"x\\\\u0000","b":"keep"}')).toBe('{"a":"x\\\\u0000","b":"keep"}');
+        // An escape serialised again goes with its whole backslash run, so no quote is left escaped.
+        expect(redactText('{"a":"x\\\\u0000","b":"keep"}')).toBe('{"a":"x","b":"keep"}');
+        expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u0000=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
+    });
+
+    it('strips terminal codes serialised more than once before matching credentials', () => {
+        expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ a: JSON.stringify({ b: JSON.stringify({ error: 'token\u001b[31m=PRIVATE_VALUE' }) }) }))).not.toContain('PRIVATE');
     });
 
     it('masks the userinfo of a special-scheme URL spelled without `//`, as a URL parser reads it', () => {
@@ -830,6 +850,8 @@ describe('redactText', () => {
             'https://h.example/?' + Array.from({ length: size / 16 }, (_, i) => `token${i}=x`).join('&'),
             "password='" + '\\\\'.repeat(size / 2),
             "bearer '" + '\\\\'.repeat(size / 2) + '\n',
+            'tokens=[\'' + '\\\\'.repeat(size / 2),
+            '\\\\'.repeat(size / 2) + 'u001',
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
             'x://a: '.repeat(size / 7),

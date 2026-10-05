@@ -901,6 +901,21 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential that a colour code separates from its label in nested JSON on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a serialised composite credential in structured details', () => {
+            const { child, events } = start();
+            const details = { reason: "tokens=['prefix\\' ]PRIVATE_SUFFIX']", ok: 1 };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

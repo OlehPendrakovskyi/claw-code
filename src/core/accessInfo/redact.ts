@@ -111,6 +111,9 @@ function escapedValueEnd(text: string, start: number): number {
                 return i + run + 1;
             }
             i += run + 1;
+        } else if (text[i + run] === '"' && run % 2 === 1) {
+            // An escaped `"` inside a value opened by `\'` or a backtick, not the enclosing string's end.
+            i += run + 1;
         } else {
             i += run;
         }
@@ -150,7 +153,16 @@ function compositeValueEnd(text: string, start: number): number {
         if (VALUE_QUOTE.test(c)) {
             i++;
             while (i < text.length && text[i] !== c) {
-                i += text[i] === '\\' ? 2 : 1;
+                if (text[i] !== '\\') {
+                    i++;
+                    continue;
+                }
+                // As in valueEnd: before a `'` or backtick, any backslash run escapes it.
+                let run = 1;
+                while (c !== '"' && text[i + run] === '\\') {
+                    run++;
+                }
+                i += run + 1;
             }
         } else if (c === '[' || c === '{') {
             closers.push(c === '[' ? ']' : '}');
@@ -255,16 +267,17 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  sequence (`ESC]0;title`) ended by BEL or ST (`ESC\\`). A truncated OSC runs to the next ESC, BEL or line
  *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
  *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), are stripped too; a serialised
- *  OSC stops at the next backslash or quote, so it never runs past the end of its string. One after a
- *  backslash is left alone: there the backslash is escaped (`\\u001b`), and dropping the text after it
- *  would leave it escaping the next character, a closing quote included. */
+ *  OSC stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
+ *  again (`\\\\u001b` in nested JSON) is matched with its whole backslash run, which goes with it, so no
+ *  backslash is left escaping the next character, a closing quote included. A match starts only where a
+ *  run does, which keeps a long run linear. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|(?<!\\)\\(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|(?<!\\)\\(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
+const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|(?<!\\)\\+(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, …), raw or serialised
- *  as `\\u0000` or `\\x00` (not after a backslash, as in {@link TERMINAL_CODE}). */
+ *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
 // eslint-disable-next-line no-control-regex
-const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?<!\\)\\(?:u00|x)(?:0[0-8bcef]|1[0-9a-f]|7f)/gi;
+const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?<!\\)\\+(?:u00|x)(?:0[0-8bcef]|1[0-9a-f]|7f)/gi;
 
 /** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
  *  which could sit between a label and its value (`token\u0000=…`). */
