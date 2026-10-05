@@ -933,6 +933,36 @@
             "others": {
                 "src/shim.ts": "export { execFile as run } from 'child_process';\n"
             }
+        },
+        {
+            "name": "R10: a parameter typed as a log output channel",
+            "file": "src/a.ts",
+            "line": "function write(out: vscode.LogOutputChannel, text: string) { out.info(text); }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a parameter typed as an output channel",
+            "file": "src/a.ts",
+            "line": "function write(sink: OutputChannel, prompt: string) { sink.appendLine(prompt); }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a constructor parameter property typed as a logger",
+            "file": "src/a.ts",
+            "line": "class A { constructor(private readonly out: Logger) {} send(text: string) { this.out.info(text); } }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a typed logger parameter logging a length",
+            "file": "src/a.ts",
+            "line": "function write(out: vscode.LogOutputChannel, text: string) { out.info(`chars=${text.length}`); }",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a parameter of an unrelated type",
+            "file": "src/a.ts",
+            "line": "function write(buffer: TextBuffer, text: string) { buffer.append(text); }",
+            "expect": null
         }
     ]
 }

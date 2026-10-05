@@ -36,6 +36,8 @@ const LOG_METHODS = new Set([
     'dir', 'dirxml', 'table', 'assert', 'group', 'groupCollapsed', 'timeLog',
 ]);
 const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
+/** Type names of loggers: VS Code's `OutputChannel` and `LogOutputChannel`, `Console`, any `…Logger`. */
+const LOGGER_TYPE = /^(?:Console|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
 /** Operators whose result is a boolean whatever their operands: comparisons, `instanceof`, `in`. */
 const BOOLEAN_OPERATORS = new Set([
@@ -531,8 +533,10 @@ function isLoggerReceiver(node, context, depth = 0) {
         return true;
     }
     if (ts.isPropertyAccessExpression(value)) {
-        // `this.output`, `this.logger`: fields assigned a channel anywhere in the file, or named as loggers.
-        return LOGGER_NAME.test(value.name.text) || context.outputChannels.has(value.name.text);
+        // `this.output`, `this.logger`: fields assigned a channel anywhere in the file, named as loggers, or
+        // declared with a logger type.
+        return LOGGER_NAME.test(value.name.text) || context.outputChannels.has(value.name.text) ||
+            hasLoggerType(context.checker.getSymbolAtLocation(value)?.declarations?.[0]);
     }
     if (!ts.isIdentifier(value) || depth > 8) {
         return false;
@@ -541,6 +545,10 @@ function isLoggerReceiver(node, context, depth = 0) {
     const declaration = symbol?.declarations?.[0];
     if (declaration === undefined) {
         return LOGGER_NAME.test(value.text);
+    }
+    // A parameter, field or variable declared with a logger type, whatever it is called.
+    if (hasLoggerType(declaration)) {
+        return true;
     }
     if (ts.isImportSpecifier(declaration)) {
         return LOGGER_NAME.test((declaration.propertyName ?? declaration.name).text);
@@ -552,6 +560,16 @@ function isLoggerReceiver(node, context, depth = 0) {
         }
     }
     return LOGGER_NAME.test(value.text);
+}
+
+/** Whether a declaration is annotated with a logger type: `out: vscode.LogOutputChannel`, `log: Logger`. */
+function hasLoggerType(declaration) {
+    const type = declaration?.type;
+    if (type === undefined || !ts.isTypeReferenceNode(type)) {
+        return false;
+    }
+    const name = ts.isQualifiedName(type.typeName) ? type.typeName.right : type.typeName;
+    return LOGGER_TYPE.test(name.text);
 }
 
 function isLogCall(node, context) {

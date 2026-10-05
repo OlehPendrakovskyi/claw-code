@@ -457,6 +457,34 @@ describe('redactText', () => {
         expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
     });
 
+    it('masks a quoted value under an encoded sensitive key in an unparsable URL', () => {
+        expect(redactText('bad https://[bad/x?to%6ben="super-secret"')).toBe('bad https://[bad/x?to%6ben=***');
+        expect(redactText("bad https://[bad/x?page=2&to%6ben='super-secret'")).toBe('bad https://[bad/x?page=2&to%6ben=***');
+    });
+
+    it('masks a sensitive pair inside the value of an ordinary one', () => {
+        expect(redactText('a=token=xyz')).toBe('a=token=***');
+    });
+
+    it('stays linear on 1 MiB of adversarial input', () => {
+        const size = 1024 * 1024;
+        const inputs = [
+            'https://' + 'a'.repeat(size),
+            'a'.repeat(size),
+            'x'.repeat(size) + '=1',
+            'bearer ' + 'a'.repeat(size),
+            'https://x' + '.'.repeat(size) + 'a',
+            '?a="'.repeat(size / 4),
+            'a=b'.repeat(size / 3),
+        ];
+        for (const input of inputs) {
+            const started = performance.now();
+            redactText(input);
+            // Linear work takes tens of milliseconds; the quadratic forms took hours.
+            expect(performance.now() - started).toBeLessThan(3000);
+        }
+    });
+
     it('leaves a quoted URL without userinfo alone', () => {
         expect(redactText('<a href="https://host.example/x">docs</a>')).toBe('<a href="https://host.example/x">docs</a>');
     });
