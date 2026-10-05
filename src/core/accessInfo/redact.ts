@@ -69,6 +69,10 @@ const LETTER = /[a-z]/i;
 /** Characters that end a URL in free-form text. */
 const URL_TERMINATOR = /[\s"'<>]/;
 const QUOTE = /["'<>]/;
+/** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
+ *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
+ *  path such as `a//b` never matches. Linear: the userinfo stops at the first `/`. */
+const NETWORK_PATH_USERINFO = /(?<![^\s"'<>([{=,])\/\/[^\s/@"'<>]+@/g;
 const WHITESPACE = /\s/;
 /** A `name=value` query pair anywhere in the text, its value possibly quoted. */
 const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^&#\s"'<>]*)/g;
@@ -189,7 +193,7 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
     // 0. A quote or angle bracket would cut a URL short of its `@` or of a query value: mask those first.
-    const prepared = maskQuotedUserinfo(maskQueryPairs(text));
+    const prepared = maskQuotedUserinfo(maskQueryPairs(text)).replace(NETWORK_PATH_USERINFO, '//***@');
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {

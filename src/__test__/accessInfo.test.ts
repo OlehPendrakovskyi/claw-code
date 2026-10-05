@@ -457,6 +457,15 @@ describe('redactText', () => {
         expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
     });
 
+    it('masks the userinfo of a network-path reference', () => {
+        expect(redactText('request //alice:secret@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText('url="//alice:secret@host.example/x"')).toBe('url="//***@host.example/x"');
+    });
+
+    it('leaves a path with a double slash and an @ alone', () => {
+        expect(redactText('see a//b@c and https://host.example//x@y')).toBe('see a//b@c and https://host.example//x@y');
+    });
+
     it('masks a userinfo holding both a slash and a quote', () => {
         expect(redactText('failed https://alice:p/"ass@host/x')).toBe('failed https://***@host/x');
     });
@@ -490,6 +499,7 @@ describe('redactText', () => {
             'a=b'.repeat(size / 3),
             'a://'.repeat(size / 4),
             'https://a:' + '"'.repeat(size),
+            ' //'.repeat(size / 3),
         ];
         for (const input of inputs) {
             const started = performance.now();
