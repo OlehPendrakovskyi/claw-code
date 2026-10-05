@@ -990,6 +990,42 @@
             "file": "src/a.ts",
             "line": "import { execFile } from 'child_process'; import { promisify } from 'util'; const run = promisify(execFile); run(file, args, { shell: false });",
             "expect": null
+        },
+        {
+            "name": "R10: a renamed default import of a logger module",
+            "file": "src/a.ts",
+            "line": "import out from './logger'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a namespace import of a logger module",
+            "file": "src/a.ts",
+            "line": "import * as out from './log'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a renamed default import of a logger from another file",
+            "file": "src/a.ts",
+            "line": "import out from './shared'; out.info(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "export const log = vscode.window.createOutputChannel('x', { log: true });\nexport default log;\n"
+            }
+        },
+        {
+            "name": "R10: a renamed import of an exported output channel from another file",
+            "file": "src/a.ts",
+            "line": "import { channel as out } from './shared'; out.appendLine(text);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "export const channel = vscode.window.createOutputChannel('x');\n"
+            }
+        },
+        {
+            "name": "R10 clean: a default import of a non-logger module",
+            "file": "src/a.ts",
+            "line": "import out from './buffer'; out.append(text);",
+            "expect": null
         }
     ]
 }

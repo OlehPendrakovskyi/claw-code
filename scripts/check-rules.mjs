@@ -549,25 +549,59 @@ function isLoggerReceiver(node, context, depth = 0) {
     if (!ts.isIdentifier(value) || depth > 8) {
         return false;
     }
-    const symbol = context.checker.getSymbolAtLocation(value);
-    const declaration = symbol?.declarations?.[0];
-    if (declaration === undefined) {
-        return LOGGER_NAME.test(value.text);
+    const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
+    return declaration === undefined ? LOGGER_NAME.test(value.text) : isLoggerDeclaration(declaration, context, depth + 1);
+}
+
+/** Whether what a declaration binds is a logger: one declared with a logger type, a variable whose
+ *  values (initializer and later assignments) are loggers or output channels, an export of one, or an
+ *  import of one (see {@link isLoggerImport}). Anything else, such as a parameter with no type to read,
+ *  is judged by the logger naming convention. */
+function isLoggerDeclaration(declaration, context, depth) {
+    if (depth > 8) {
+        return false;
     }
-    // A parameter, field or variable declared with a logger type, whatever it is called.
     if (hasLoggerType(declaration)) {
         return true;
     }
-    if (ts.isImportSpecifier(declaration)) {
-        return LOGGER_NAME.test((declaration.propertyName ?? declaration.name).text);
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration) || ts.isNamespaceImport(declaration)) {
+        return isLoggerImport(declaration, context, depth);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return isLoggerReceiver(declaration.expression, context, depth + 1);
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const local = context.checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local !== undefined
+            ? isLoggerDeclaration(local, context, depth + 1)
+            : LOGGER_NAME.test(lastName(declaration.propertyName ?? declaration.name) ?? '');
     }
     if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        const symbol = context.checker.getSymbolAtLocation(declaration.name);
         const values = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])].filter(v => v !== undefined);
         if (values.length > 0) {
             return values.some(v => isChannelCreation(v) || isLoggerReceiver(v, context, depth + 1));
         }
     }
-    return LOGGER_NAME.test(value.text);
+    const name = declaration.name !== undefined ? lastName(declaration.name) : undefined;
+    return LOGGER_NAME.test(name ?? '');
+}
+
+/** Whether an import binds a logger, under any local name. An import from another file of the program is
+ *  judged by the declaration it names there. For a module outside the program, a named import is judged by
+ *  its exported name (`{ log as out }`), and a default or namespace import by the module's file name
+ *  (`import out from './logger'`, `import * as out from './log'`). */
+function isLoggerImport(binding, context, depth) {
+    const exported = ts.isNamespaceImport(binding) ? undefined : exportedDeclaration(binding, context.checker);
+    if (exported !== undefined) {
+        return isLoggerDeclaration(exported, context, depth + 1);
+    }
+    if (ts.isImportSpecifier(binding)) {
+        return LOGGER_NAME.test(lastName(binding.propertyName ?? binding.name) ?? '');
+    }
+    const importDeclaration = ts.isNamespaceImport(binding) ? binding.parent.parent : binding.parent;
+    const file = importDeclaration.moduleSpecifier.text.split('/').pop().replace(/\.[^.]*$/, '');
+    return LOGGER_NAME.test(file);
 }
 
 /** Whether a declaration is annotated with a logger type: `out: vscode.LogOutputChannel`, `log: Logger`. */
