@@ -616,6 +616,17 @@ describe('redactText', () => {
         expect(redacted).toContain('page');
     });
 
+    it('masks the rest of a credential value whose brackets do not match', () => {
+        expect(redactText('token: ["x"} PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('token: [{"a": 1]} PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+    });
+
+    it('masks a quoted Bearer token', () => {
+        expect(redactText('sent Bearer "abc def" ok')).toBe('sent Bearer *** ok');
+        expect(redactText("sent bearer 'a\\'b'")).toBe('sent bearer ***');
+        expect(redactText('sent Bearer "unterminated value')).toBe('sent Bearer ***');
+    });
+
     it('masks a whole array or object credential value, spaced and nested', () => {
         expect(redactText('{ "tokens": [ "PRIVATE" ], "ok": 1 }')).toBe('{ "tokens"=***, "ok": 1 }');
         expect(redactText('{ "credentials": { "value": "PRIVATE", "more": [1, "]"] }, "ok": 1 }')).toBe('{ "credentials"=***, "ok": 1 }');
@@ -659,6 +670,8 @@ describe('redactText', () => {
         expect(redactText('clone failed: https://alice:PRIVATE_PREFIX PRIVATE_SUFFIX/word@host.example/repo')).not.toMatch(/PRIVATE|alice/);
         expect(redactText('clone failed: //alice:PRIVATE_PREFIX PRIVATE_SUFFIX/word@host.example/repo')).not.toMatch(/PRIVATE|alice/);
         expect(redactText('see https://example.com: docs/a@b')).toBe('see https://example.com: docs/a@b');
+        expect(redactText(`//alice:PRIVATE_PREFIX ${'a'.repeat(260)}/PRIVATE_SUFFIX@host.example/repo`)).not.toContain('PRIVATE');
+        expect(redactText('https://alice:PRIVATE_PREFIX word://tail@host.example/repo')).not.toMatch(/PRIVATE|alice/);
     });
 
     it('masks a query value that follows whitespace after the =', () => {
@@ -694,13 +707,14 @@ describe('redactText', () => {
         expect(redactText('failed //alice:private&token=abc@host.example/x')).toBe('failed //***@host.example/x');
     });
 
-    it('masks the tail of an unterminated quoted value, as in truncated stderr', () => {
-        expect(redactText('failed: password="correct horse battery staple\nnext line')).toBe('failed: password=***\nnext line');
+    it('masks everything after an unterminated quoted value, which may span lines', () => {
+        expect(redactText('failed: password="correct horse battery staple\nnext line')).toBe('failed: password=***');
+        expect(redactText('password="first\nPRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText("failed: token='correct horse battery staple")).toBe('failed: token=***');
     });
 
     it('masks the tail of an unterminated quoted query value', () => {
-        expect(redactText('GET https://host.example/?token="correct horse battery staple\nok')).toBe('GET https://host.example/?token=***\nok');
+        expect(redactText('GET https://host.example/?token="correct horse battery staple\nok')).toBe('GET https://host.example/?token=***');
     });
 
     it('masks a quoted query value containing spaces', () => {
@@ -729,6 +743,8 @@ describe('redactText', () => {
             ' //a: '.repeat(size / 6),
             '=//a:'.repeat(size / 5),
             '\u001b]'.repeat(size / 2),
+            ' //a:b c'.repeat(size / 8),
+            'x://a:b c '.repeat(size / 10),
             'cookie: "'.repeat(size / 9) + '\n',
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),

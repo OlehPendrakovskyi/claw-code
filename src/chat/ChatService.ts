@@ -598,7 +598,9 @@ function encodePrompt(blocks: PromptBlock[]): Buffer {
 
 /** An ACP error message with its `data.details`, flattened to one bounded line. */
 function withErrorDetails(message: string | undefined, details: unknown): string | undefined {
-    const raw = typeof details === 'string' ? details : details === undefined || details === null ? '' : stringifyToolEvent(details);
+    // Terminal codes come out of string values before serialising, which would turn ESC into a literal `\u001b`.
+    const plainDetails = withoutTerminalCodes(details);
+    const raw = typeof plainDetails === 'string' ? plainDetails : plainDetails === undefined || plainDetails === null ? '' : stringifyToolEvent(plainDetails);
     // Terminal codes first, every CSI form (a code turned into a space would split a label from its value),
     // then every other control run becomes one space.
     // eslint-disable-next-line no-control-regex
@@ -611,6 +613,20 @@ function withErrorDetails(message: string | undefined, details: unknown): string
     const safe = redactText(flat);
     const bounded = safe.length > ERROR_DETAILS_MAX_CHARS ? `${safe.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : safe;
     return safeMessage === undefined ? bounded : `${safeMessage}: ${bounded}`;
+}
+
+/** A copy of a JSON value with terminal codes stripped from every string in it, keys included. */
+function withoutTerminalCodes(value: unknown, depth = 0): unknown {
+    if (typeof value === 'string') {
+        return stripTerminalCodes(value);
+    }
+    if (depth > 32 || value === null || typeof value !== 'object') {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map(item => withoutTerminalCodes(item, depth + 1));
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [stripTerminalCodes(key), withoutTerminalCodes(item, depth + 1)]));
 }
 
 /** Completes a send aborted before it had a process. */

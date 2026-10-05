@@ -81,10 +81,10 @@ function escapedValueEnd(text: string, start: number): number {
 
 /** Where an array or object value (`[ "a", "b" ]`, `{ "value": "x" }`) ends: after its matching bracket,
  *  skipping quoted strings and their escapes, so nested and spaced contents are masked with it. One that
- *  never closes, or holds an unclosed string, runs to the end of the text. A pass consumes the value it
+ *  never closes, holds an unclosed string or a mismatched bracket, runs to the end of the text. A pass consumes the value it
  *  measures, so no stretch is scanned twice. */
 function compositeValueEnd(text: string, start: number): number {
-    let depth = 0;
+    const closers: string[] = [];
     for (let i = start; i < text.length; i++) {
         const c = text[i];
         if (VALUE_QUOTE.test(c)) {
@@ -93,20 +93,27 @@ function compositeValueEnd(text: string, start: number): number {
                 i += text[i] === '\\' ? 2 : 1;
             }
         } else if (c === '[' || c === '{') {
-            depth++;
-        } else if ((c === ']' || c === '}') && --depth === 0) {
-            return i + 1;
+            closers.push(c === '[' ? ']' : '}');
+        } else if (c === ']' || c === '}') {
+            // A bracket that does not close the innermost open one leaves the value's end unknown.
+            if (closers.pop() !== c) {
+                return text.length;
+            }
+            if (closers.length === 0) {
+                return i + 1;
+            }
         }
     }
     return text.length;
 }
 
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
- *  quote, across lines. One with no closing quote, as in truncated stderr, runs to the end of its line,
- *  so its tail is masked too. An unquoted value is a run of `unquoted` characters. `unclosed` records,
- *  per quote character, a position after which that quote never closes. Any later opening quote lies
- *  past it and is plain text to that earlier scan, so it cannot close either. No stretch is scanned for a
- *  closing quote twice, and a pass that consumes each value it measures stays linear. */
+ *  quote, across lines. One with no closing quote, as in truncated stderr, runs to the end of the text: a
+ *  quoted value may span lines, so everything after an unclosed one is ambiguous. An unquoted value is a run
+ *  of `unquoted` characters. `unclosed` records, per quote character, a position after which that quote
+ *  never closes. Any later opening quote lies past it and is plain text to that earlier scan, so it cannot
+ *  close either. No stretch is scanned for a closing quote twice, and a pass that consumes each value it
+ *  measures stays linear. */
 function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<string, number>): number {
     if (isEscapedQuote(text, start)) {
         return escapedValueEnd(text, start);
@@ -132,10 +139,7 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
         }
         unclosed.set(quote, start);
     }
-    while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
-        end++;
-    }
-    return end;
+    return text.length;
 }
 
 /** Mask the value of every `key=value` / `key: value` pair whose key names a secret, as `key=***`. With
@@ -191,7 +195,8 @@ export function redactPlainSecrets(text: string): string {
         .replace(CREDENTIAL_HEADER, '$1=***')
         // Any length: a short Bearer token or `Basic YTo=` is still a credential. Basic is held to
         // base64 shape (whole 4-character groups, valid padding), so prose such as "basic usage" is left alone.
-        .replace(/\b(bearer)\s+[A-Za-z0-9._~+/-]+=*/gi, '$1 ***')
+        // A quoted token too (`Bearer "abc"`), to its closing quote or the end of its line.
+        .replace(/\b(bearer)\s+(?:"(?:\\.|[^"\\\r\n])*"?|'(?:\\.|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*)/gi, '$1 ***')
         .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***')
         // An unpadded or truncated value (`Basic Zm9vOmJhcg`) is still a credential when it looks encoded: eight or
         // more base64 characters holding a digit, `+`, `/` or a capital after the first. Case-sensitive on
@@ -209,12 +214,45 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
  *  (running to the last `@` before a `/` or the end of its line), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
- *  `//host:port/…@…` can be over-masked. When what follows `user:` cannot be a port (it holds a non-digit),
- *  the password may hold both spaces and `/`, and the match runs to the last `@` within 256 characters on
- *  its line. Linear: no match crosses a line break, and the unbounded forms stop at a character that could
+ *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
+ *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line break or a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@|(?=[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@])[^\r\n]{0,256}@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
+/** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
+const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
+/** A `user:password-start` right after `//`, whose second part holds a non-digit, so it is no `host:port`. */
+const NON_PORT_USERINFO = /[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@]/y;
+
+/** Mask a network-path userinfo whose password holds both spaces and `/`
+ *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
+ *  before the end of the line or the next reference. It applies only where what follows `user:` cannot be a
+ *  port. Linear: a scan stops where the next reference could start, and the search resumes there. */
+function maskAmbiguousNetworkUserinfo(text: string): string {
+    let out = '';
+    let copied = 0;
+    let from = 0;
+    for (let at = text.indexOf('//', from); at !== -1; at = text.indexOf('//', from)) {
+        from = at + 2;
+        NON_PORT_USERINFO.lastIndex = at + 2;
+        if ((at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) || at < copied || !NON_PORT_USERINFO.test(text)) {
+            continue;
+        }
+        let lastAt = -1;
+        let j = at + 2;
+        while (j < text.length && text[j] !== '\n' && text[j] !== '\r' &&
+            !(text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]))) {
+            lastAt = text[j] === '@' ? j : lastAt;
+            j++;
+        }
+        if (lastAt !== -1) {
+            out += `${text.slice(copied, at + 2)}***@`;
+            copied = lastAt + 1;
+        }
+        from = Math.max(from, lastAt !== -1 ? lastAt + 1 : j);
+    }
+    return out + text.slice(copied);
+}
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
 const QUERY_VALUE_STOP = /[&#\s]/;
@@ -306,19 +344,21 @@ function maskUserinfo(text: string): string {
             }
         }
         // `https://alice:pass word@host`: a space ended the scan inside a `user:password`. Fail toward hiding by
-        // running on to the last `@` before a `/`, the end of the line or another `://`, since the password may
-        // hold `@` too.
-        // When the text before the space does not parse (`alice:PRIVATE` is no port), the password may hold `/`
-        // as well, so the scan runs past `/` too.
+        // running on to the last `@` (the password may hold `@` too) before a `/`, the end of the line or another
+        // `://`. When the text before the space does not parse (`alice:PRIVATE` is no port), it is one ambiguous
+        // authority to the end of its line, `/` and nested `://` included (`alice:P word://tail@host`); with no
+        // `@` in that stretch it holds no userinfo and is skipped whole, so no stretch is scanned twice.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && colonBeforeSlash && lastAt === -1) {
-            const stops = start !== undefined && !URL.canParse(text.slice(start, i)) ? '\r\n' : '/\r\n';
+            const ambiguous = start !== undefined && !URL.canParse(text.slice(start, i));
             let j = i;
-            while (j < text.length && !stops.includes(text[j]) && !text.startsWith('://', j)) {
+            for (; j < text.length && text[j] !== '\r' && text[j] !== '\n'; j++) {
+                if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
+                    break;
+                }
                 spacedAt = text[j] === '@' ? j : spacedAt;
-                j++;
             }
-            i = spacedAt === -1 ? i : spacedAt;
+            i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
@@ -423,7 +463,7 @@ export function redactText(text: string): string {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     const plain = stripTerminalCodes(text);
-    const userinfoMasked = maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@');
+    const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';
     let copied = 0;

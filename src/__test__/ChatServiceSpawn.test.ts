@@ -893,6 +893,13 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('strips terminal codes from structured details before serialising them', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: 'token\u001b[0m=PRIVATE_VALUE' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('redacts the error message itself', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));

@@ -93,6 +93,15 @@ function resolveValue(node, checker, depth = 0) {
     if (object !== undefined) {
         const base = resolveValue(object, checker, depth + 1);
         const name = lastName(node);
+        // `shared.execFileAsync` for `import * as shared from './shared'`: a member of a module in the program is
+        // followed to its exported declaration there.
+        if (base?.member === undefined && base?.module.startsWith('.')) {
+            const field = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+            const declaration = checker.getSymbolAtLocation(field)?.declarations?.[0];
+            if (declaration !== undefined) {
+                return resolveDeclaration(declaration, checker, depth + 1);
+            }
+        }
         return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
     }
     return undefined;
@@ -407,15 +416,27 @@ function isShellAssignment(node, context) {
     return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
 }
 
-function isShellOption(node) {
+function isShellOption(node, context) {
+    // `{ shell }` takes the value of the variable `shell`: a constant `false`, `null` or `undefined` is no shell.
     if (ts.isShorthandPropertyAssignment(node)) {
-        return node.name.text === 'shell';
+        return node.name.text === 'shell' && !isConstantShellOff(context.checker.getShorthandAssignmentValueSymbol(node));
     }
     if (!ts.isPropertyAssignment(node) || lastName(node.name) !== 'shell') {
         return false;
     }
     const value = unwrap(node.initializer);
     return !SHELL_OFF.has(value.kind) && !(ts.isIdentifier(value) && value.text === 'undefined');
+}
+
+/** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`. */
+function isConstantShellOff(symbol) {
+    const declaration = symbol?.declarations?.[0];
+    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
+        !(ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const)) {
+        return false;
+    }
+    const value = unwrap(declaration.initializer);
+    return SHELL_OFF.has(value.kind) || (ts.isIdentifier(value) && value.text === 'undefined');
 }
 
 /** Whether a call starts a process, or binds the arguments of one that will: a child_process spawner by
@@ -748,7 +769,7 @@ const CHECKS = [
         test: (node, context) =>
             // A `shell` option on an object given to a process spawner, set to anything but false, null or
             // undefined: `true`, a shell path such as '/bin/bash', or a variable.
-            (isShellOption(node) && isSpawnOptions(node.parent, context)) ||
+            (isShellOption(node, context) && isSpawnOptions(node.parent, context)) ||
             isShellAssignment(node, context) ||
             SHELL_EXECUTORS.has(calledExport(node, 'child_process', context.checker) ?? '') ||
             bindsShellExecutor(node, context.checker),

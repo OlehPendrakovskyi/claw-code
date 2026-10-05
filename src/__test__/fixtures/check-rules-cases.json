@@ -1210,6 +1210,27 @@
             "file": "src/a.ts",
             "line": "console.count('sends');",
             "expect": null
+        },
+        {
+            "name": "R36: a shell option through a promisified execFile reached by a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; shared.execFileAsync(file, args, { shell: true });",
+            "expect": "R36",
+            "others": {
+                "src/shared.ts": "import { execFile } from 'child_process';\nimport { promisify } from 'util';\nexport const execFileAsync = promisify(execFile);\n"
+            }
+        },
+        {
+            "name": "R36 clean: a shorthand shell bound to a constant false",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const shell = false; spawn(cmd, args, { shell });",
+            "expect": null
+        },
+        {
+            "name": "R36: a shorthand shell bound to a variable that may be true",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; let shell = false; shell = true; spawn(cmd, args, { shell });",
+            "expect": "R36"
         }
     ]
 }
