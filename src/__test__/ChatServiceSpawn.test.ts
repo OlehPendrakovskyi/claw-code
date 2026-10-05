@@ -980,6 +980,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toMatch(/PRIVATE|ejpzcmtkcw/);
         });
 
+        it('redacts a query credential split by a line break, and one behind a serialised C1 OSC, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https://host.example/?token=PREFIX\nPRIVATE_SUFFIX\ntoken\\u009d0;t\\u009c=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

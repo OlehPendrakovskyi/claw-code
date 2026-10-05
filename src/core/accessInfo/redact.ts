@@ -273,13 +273,14 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  by the single C1 byte CSI (U+009B); or an OSC sequence (`ESC]0;title`, or C1 OSC, U+009D) ended by BEL or ST
  *  (`ESC\\` or U+009C). A truncated OSC runs to the next ESC, BEL, ST or line
  *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
- *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), are stripped too; a serialised
+ *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), and C1 CSI, OSC and ST as
+ *  `\\u009b`, `\\u009d` and `\\u009c` (or `\\x9b`, `\\x9d`, `\\x9c`), are stripped too; a serialised
  *  OSC stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
  *  again (`\\\\u001b` in nested JSON) is matched with its whole backslash run, which goes with it, so no
  *  backslash is left escaping the next character, a closing quote included. A match starts only where a
  *  run does, which keeps a long run linear. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b\]|\u009d)[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b\]|\u009d)[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)\]|u009d|x9d)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -428,17 +429,23 @@ const EMBEDDED_DELIMITER = /["'`<>]/;
 /** What may follow a quote, backtick or angle bracket that closes the text around a query value. */
 const VALUE_CLOSER = /[\s>"'`,;)\]}]/;
 
-/** Where an unquoted sensitive query value ends: at `&`, `#` or whitespace. A quote, backtick or angle
+/** Where an unquoted sensitive query value ends: at `&`, `#` or whitespace other than a tab or line break,
+ *  which a URL parser drops inside a URL (`?token=PREFIX\nSUFFIX` holds `PREFIXSUFFIX`), so the value runs
+ *  across them; trailing ones are left outside. A quote, backtick or angle
  *  bracket ends it only where it closes the surrounding text (`href="…?token=abc">`), that is, when
  *  followed by whitespace, a closer or the end. So `to%6ben=abc"PRIVATE` is masked whole; over-matching
  *  hides more, never less. */
 function sensitiveQueryValueEnd(text: string, start: number): number {
     let end = start;
-    while (end < text.length && !QUERY_VALUE_STOP.test(text[end])) {
+    while (end < text.length && (!QUERY_VALUE_STOP.test(text[end]) || PARSER_IGNORED_CHAR.test(text[end]))) {
         if (EMBEDDED_DELIMITER.test(text[end]) && (end + 1 === text.length || VALUE_CLOSER.test(text[end + 1]))) {
             break;
         }
         end++;
+    }
+    // Breaks that end the text, or come right before a stop, belong to no value: leave the line boundary.
+    while (end > start && PARSER_IGNORED_CHAR.test(text[end - 1])) {
+        end--;
     }
     return end;
 }
@@ -494,6 +501,7 @@ function normalizeSpecialSchemes(text: string): string {
 
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
 const PARSER_IGNORED = /[\t\r\n]/g;
+const PARSER_IGNORED_CHAR = /[\t\r\n]/;
 
 /** Mask a URL userinfo that tabs or line breaks split, as a URL parser reads it: it drops them anywhere in a
  *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password. The authority

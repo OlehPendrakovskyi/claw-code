@@ -772,6 +772,12 @@ describe('redactText', () => {
         expect(redactText('{"error":"token\\u009b0m=PRIVATE_VALUE"}')).not.toContain('PRIVATE');
     });
 
+    it('strips serialised C1 OSC sequences before matching credentials', () => {
+        expect(redactText('token\\u009d0;title\\u009c=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('token\\x9d0;title\\x9c=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ error: 'token\\u009d0;title\\u009c=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+    });
+
     it('strips terminal codes serialised more than once before matching credentials', () => {
         expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
         expect(redactText(JSON.stringify({ a: JSON.stringify({ b: JSON.stringify({ error: 'token\u001b[31m=PRIVATE_VALUE' }) }) }))).not.toContain('PRIVATE');
@@ -826,6 +832,15 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ reason: 'sent Basic ejpzcmtkcw' }))).not.toContain('ejpzcmtkcw');
         // Prose decodes to no pair and is left alone.
         expect(redactText('basic usage, Basic Authentication, basic setup guide')).toBe('basic usage, Basic Authentication, basic setup guide');
+    });
+
+    it('masks a sensitive query value across the tabs and line breaks a URL parser drops', () => {
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`https://host.example/?token=PREFIX${sep}PRIVATE_SUFFIX`)).toBe('https://host.example/?token=***');
+            expect(redactText(`see https://[bad/x?token=PREFIX${sep}PRIVATE_SUFFIX ok`)).not.toContain('PRIVATE');
+        }
+        // A break that ends the value is left in place.
+        expect(redactText('https://[bad/x?token=abc\n')).toBe('https://[bad/x?token=***\n');
     });
 
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
@@ -975,6 +990,8 @@ describe('redactText', () => {
             'https://a:1\n'.repeat(size / 12) + '@',
             'https://a\n'.repeat(size / 10) + ':@',
             'Basic ' + 'ejpz'.repeat(size / 4),
+            '?token=a' + '\n'.repeat(size),
+            '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
             'Basic "' + 'A'.repeat(size),
             '?token=' + '\\\\t'.repeat(size / 3) + '"',
