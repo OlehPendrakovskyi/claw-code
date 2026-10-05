@@ -556,6 +556,12 @@ describe('redactText', () => {
         expect(redactText('see a//b@c')).toBe('see a//b@c');
     });
 
+    it('masks the userinfo of a URL nested in another URL\'s query or fragment', () => {
+        expect(redactText('failed https://public.example?redirect=https://alice:p"PRIVATE@host.example/x')).not.toContain('PRIVATE');
+        expect(redactText('failed https://public.example?redirect=https://alice:p`PRIVATE@host.example/x')).not.toContain('PRIVATE');
+        expect(redactText('failed https://public.example#next=https://alice:p"PRIVATE@host.example/x')).not.toContain('PRIVATE');
+    });
+
     it('masks a userinfo with a slash before a nested ://', () => {
         expect(redactText('failed https://alice:PRIVATE_PREFIX/ss://tail@host.example/x')).toBe('failed https://***@host.example/x');
     });
@@ -565,9 +571,11 @@ describe('redactText', () => {
         expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
     });
 
-    it('masks a query value that follows spaces after the =', () => {
+    it('masks a query value that follows whitespace after the =', () => {
         expect(redactText('GET https://host.example/?token= PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText('GET https://[bad/x?to%6ben= PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('GET https://[bad/x?token=\nPRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('GET https://[bad/x?token=\u00a0PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
     });
 
     it('masks an unquoted query value holding a quote, backtick or angle bracket', () => {

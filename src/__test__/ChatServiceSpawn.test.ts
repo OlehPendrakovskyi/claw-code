@@ -849,6 +849,21 @@ describe('ChatService.sendMessage', () => {
             expect(message.length).toBeLessThan(1100);
         });
 
+        it('redacts the whole detail before bounding it, so a credential whose @ falls past the limit is masked', () => {
+            const { child, events } = start();
+            const details = `https://alice:PRIVATE_PASSWORD${'p'.repeat(2000)}@host.example/x`;
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_PASSWORD');
+        });
+
+        it('redacts the error message itself', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('auth failed: token=***');
+        });
+
         it('stringifies structured details', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: 'auth' } } } }));

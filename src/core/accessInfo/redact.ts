@@ -185,12 +185,13 @@ function maskUserinfo(text: string): string {
         const start = schemeStart(text, at);
         let i = body;
         for (; i < text.length && !WHITESPACE.test(text[i]); i++) {
-            // A `://` before any `/` sits inside a malformed authority (`alice:p://ss://x@host`): skip its `//`,
-            // which is no path, and go on. One after a `/` starts the next URL, unless what came before is an
-            // unparsable `user:…` with no `@` yet (`alice:P/ss://tail@host`): then the whole run stays one
-            // malformed userinfo, so its prefix is not left behind.
+            // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
+            // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
+            // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…` with no `@`
+            // yet (`alice:P/ss://tail@host`): then the whole run stays one malformed userinfo, so its prefix is
+            // not left behind.
             if (text.startsWith('://', i)) {
-                if (slash !== -1 && !malformedTail) {
+                if (authorityEnd !== -1 && !malformedTail) {
                     const ambiguous = start !== undefined && colonBeforeSlash && lastAt === -1 && !URL.canParse(text.slice(start, i));
                     if (!ambiguous) {
                         break;
@@ -303,9 +304,9 @@ function maskQueryPairs(text: string): string {
         if (!isSensitiveQueryName(pair[2])) {
             continue;
         }
-        // `?token= value`: the value starts after any spaces, as in the plain-text pairs.
+        // `?token= value`: the value starts after any whitespace, a line break included, as in the plain-text pairs.
         let start = QUERY_NAME.lastIndex;
-        while (text[start] === ' ' || text[start] === '\t') {
+        while (WHITESPACE.test(text[start] ?? '')) {
             start++;
         }
         const end = VALUE_QUOTE.test(text[start] ?? '') ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);

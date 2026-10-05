@@ -171,8 +171,8 @@ class AcpxEventParser {
     /** Whether acpx refused a prompt block (an image) the agent cannot take. */
     rejectedPromptContent = false;
 
-    /** Why the run failed by the JSON-RPC traffic, for a non-zero exit to report:
-     *  the prompt turn's error, else acpx's own (null id), else the last one. */
+    /** Why the run failed by the JSON-RPC traffic, for a non-zero exit to report: the prompt turn's error,
+     *  else acpx's own (null id), else the last one. Already redacted (see withErrorDetails). */
     get failureMessage(): string | undefined {
         return this.promptError ?? this.acpxError ?? this.lastError;
     }
@@ -472,9 +472,8 @@ class AcpxRun {
         if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
-        // Shown in the chat and the log: the agent's message is redacted here, the stderr tail already is.
-        const failure = this.parser.failureMessage;
-        const message = failure !== undefined ? redactText(failure) : this.redactedStderrTail() || exitReason(code, signal);
+        // Shown in the chat and the log; the agent's message and the stderr tail are both redacted already.
+        const message = this.parser.failureMessage ?? (this.redactedStderrTail() || exitReason(code, signal));
         log.error(`acpx error: ${message}`);
         return { type: 'error', message };
     }
@@ -608,11 +607,14 @@ function withErrorDetails(message: string | undefined, details: unknown): string
     // Terminal colour codes first, then every other control run becomes one space.
     // eslint-disable-next-line no-control-regex
     const flat = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    const safeMessage = message === undefined ? undefined : redactText(message);
     if (flat === '' || flat === message) {
-        return message;
+        return safeMessage;
     }
-    const bounded = flat.length > ERROR_DETAILS_MAX_CHARS ? `${flat.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : flat;
-    return message === undefined ? bounded : `${message}: ${bounded}`;
+    // Redact the whole detail before cutting it: a cut could separate a credential from what marks it as one.
+    const safe = redactText(flat);
+    const bounded = safe.length > ERROR_DETAILS_MAX_CHARS ? `${safe.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : safe;
+    return safeMessage === undefined ? bounded : `${safeMessage}: ${bounded}`;
 }
 
 /** Completes a send aborted before it had a process. */
