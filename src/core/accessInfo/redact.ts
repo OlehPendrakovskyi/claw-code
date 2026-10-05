@@ -68,13 +68,59 @@ const SCHEME_CHAR = /[a-z0-9+.-]/i;
 const LETTER = /[a-z]/i;
 /** Characters that end a URL in free-form text. */
 const URL_TERMINATOR = /[\s"'<>]/;
-/** A userinfo holding a quote or angle bracket, which would end a URL found by {@link urlSpans} before
- *  the `@` (`https://alice:p"ass@host`): everything from the scheme to the last `@` before the first `/` or
- *  space. The scheme starts a run of scheme characters, so a long run is tried once. Without a path this
- *  can over-match into following text; that hides more, never less. */
-const QUOTED_USERINFO = /(?<![a-z0-9+.-])([a-z][a-z0-9+.-]*:\/\/)(?=[^\s/@]*["'<>])[^\s/]*@/gi;
+const QUOTE = /["'<>]/;
+const WHITESPACE = /\s/;
 /** A `name=value` query pair anywhere in the text, its value possibly quoted. */
-const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\\s])*"|'(?:\\.|[^'\\\s])*'|[^&#\s"'<>]*)/g;
+const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^&#\s"'<>]*)/g;
+
+/** Where the scheme ending at `separator` (the index of a `://`) starts: the whole run of scheme characters
+ *  before it, which must begin with a letter; undefined when there is none. */
+function schemeStart(text: string, separator: number): number | undefined {
+    let start = separator;
+    while (start > 0 && SCHEME_CHAR.test(text[start - 1])) {
+        start--;
+    }
+    return start < separator && LETTER.test(text[start]) ? start : undefined;
+}
+
+/** Mask a userinfo holding a quote or angle bracket, which would end a URL found by {@link urlSpans} before
+ *  its `@` (`https://alice:p"ass@host`, `https://alice:p/"ass@host`). The mask runs from the scheme to the
+ *  last `@` before the first `/`. When a `:` comes before that `/`, the userinfo is a `user:password`
+ *  whose password may hold `/`, so the mask runs to the last `@` before whitespace or the next `://`.
+ *  Over-matching hides more, never less. Linear: each character is visited once. */
+function maskQuotedUserinfo(text: string): string {
+    let out = '';
+    let copied = 0;
+    for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
+        const body = at + 3;
+        let slash = -1;
+        let colonBeforeSlash = false;
+        let quote = -1;
+        let atBeforeSlash = -1;
+        let lastAt = -1;
+        let i = body;
+        for (; i < text.length && !WHITESPACE.test(text[i]) && !text.startsWith('://', i); i++) {
+            const c = text[i];
+            if (c === '/' && slash === -1) {
+                slash = i;
+            } else if (c === ':' && slash === -1) {
+                colonBeforeSlash = true;
+            } else if (c === '@') {
+                lastAt = i;
+                atBeforeSlash = slash === -1 ? i : atBeforeSlash;
+            } else if (quote === -1 && QUOTE.test(c)) {
+                quote = i;
+            }
+        }
+        const end = colonBeforeSlash ? lastAt : atBeforeSlash;
+        if (schemeStart(text, at) !== undefined && quote !== -1 && end > quote) {
+            out += `${text.slice(copied, body)}***@`;
+            copied = end + 1;
+        }
+        at = i - 3;
+    }
+    return out + text.slice(copied);
+}
 
 /** The URLs of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) in free-form text, as
  *  [start, end) spans. A scheme is the whole run of scheme characters before `://` and must begin with a
@@ -85,11 +131,8 @@ const QUERY_PAIR = /([?&])([^=&#\s"'<>]*)=("(?:\\.|[^"\\\s])*"|'(?:\\.|[^'\\\s])
 function urlSpans(text: string): Array<[number, number]> {
     const starts: Array<{ start: number; body: number }> = [];
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
-        let start = at;
-        while (start > 0 && SCHEME_CHAR.test(text[start - 1])) {
-            start--;
-        }
-        if (start < at && LETTER.test(text[start])) {
+        const start = schemeStart(text, at);
+        if (start !== undefined) {
             starts.push({ start, body: at + 3 });
         }
     }
@@ -146,7 +189,7 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
     // 0. A quote or angle bracket would cut a URL short of its `@` or of a query value: mask those first.
-    const prepared = maskQueryPairs(text).replace(QUOTED_USERINFO, '$1***@');
+    const prepared = maskQuotedUserinfo(maskQueryPairs(text));
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {

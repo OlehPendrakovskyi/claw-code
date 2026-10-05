@@ -457,9 +457,21 @@ describe('redactText', () => {
         expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
     });
 
+    it('masks a userinfo holding both a slash and a quote', () => {
+        expect(redactText('failed https://alice:p/"ass@host/x')).toBe('failed https://***@host/x');
+    });
+
+    it('leaves a JSON URL followed by an email alone', () => {
+        expect(redactText('{"url":"https://host.example/x","email":"a@b.example"}')).toBe('{"url":"https://host.example/x","email":"a@b.example"}');
+    });
+
     it('masks a quoted value under an encoded sensitive key in an unparsable URL', () => {
         expect(redactText('bad https://[bad/x?to%6ben="super-secret"')).toBe('bad https://[bad/x?to%6ben=***');
         expect(redactText("bad https://[bad/x?page=2&to%6ben='super-secret'")).toBe('bad https://[bad/x?page=2&to%6ben=***');
+    });
+
+    it('masks a quoted query value containing spaces', () => {
+        expect(redactText('bad https://[bad/x?password="super secret" next')).toBe('bad https://[bad/x?password=*** next');
     });
 
     it('masks a sensitive pair inside the value of an ordinary one', () => {
@@ -476,6 +488,8 @@ describe('redactText', () => {
             'https://x' + '.'.repeat(size) + 'a',
             '?a="'.repeat(size / 4),
             'a=b'.repeat(size / 3),
+            'a://'.repeat(size / 4),
+            'https://a:' + '"'.repeat(size),
         ];
         for (const input of inputs) {
             const started = performance.now();
