@@ -210,9 +210,11 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
 /** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
  *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`; or an OSC
  *  sequence (`ESC]0;title`) ended by BEL or ST (`ESC\\`). A truncated OSC runs to the next ESC, BEL or line
- *  break, so no sequence scans past another and stripping stays linear. */
+ *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
+ *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), are stripped too; a serialised
+ *  OSC stops at the next backslash or quote, so it never runs past the end of its string. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?/g;
+const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|\\(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|\\(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
 
 /** Text without terminal colour and other CSI codes, which could sit between a label and its value. */
 export function stripTerminalCodes(text: string): string {
@@ -343,6 +345,45 @@ function schemeStart(text: string, separator: number): number | undefined {
         start--;
     }
     return start < separator && LETTER.test(text[start]) ? start : undefined;
+}
+
+/** A special scheme (`http`, `https`, `ws`, `wss`, `ftp`) and the slashes after it. A URL parser takes any run
+ *  of `/` and `\` there, or none, as the start of the authority: `https:/alice:pw@host`, `https:\\alice:pw@host`
+ *  and `https:alice:pw@host` all carry `alice:pw` as userinfo. */
+const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:https?|wss?|ftp):[/\\]*/gi;
+const LINE_BREAK = /[\r\n]/g;
+
+/** Rewrite the separator of a special-scheme URL spelled other than `://` (`https:/`, `https:\\`, `https:`,
+ *  `https:///`) as `://` when an `@` follows on its line, so the userinfo passes find it as a parser would.
+ *  The redacted text shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@` and
+ *  line break are each found once per stretch. */
+function normalizeSpecialSchemes(text: string): string {
+    let out = '';
+    let copied = 0;
+    let nextAt = -1;
+    let nextBreak = -1;
+    SPECIAL_SCHEME.lastIndex = 0;
+    for (let match = SPECIAL_SCHEME.exec(text); match !== null; match = SPECIAL_SCHEME.exec(text)) {
+        const end = SPECIAL_SCHEME.lastIndex;
+        const separator = match[0].slice(match[0].indexOf(':'));
+        if (separator === '://' || end >= text.length || WHITESPACE.test(text[end])) {
+            continue;
+        }
+        if (nextAt < end) {
+            nextAt = text.indexOf('@', end);
+            nextAt = nextAt === -1 ? text.length : nextAt;
+        }
+        if (nextBreak < end) {
+            LINE_BREAK.lastIndex = end;
+            nextBreak = LINE_BREAK.exec(text)?.index ?? text.length;
+        }
+        if (nextAt >= nextBreak) {
+            continue;
+        }
+        out += `${text.slice(copied, match.index)}${match[0].slice(0, match[0].indexOf(':'))}://`;
+        copied = end;
+    }
+    return out + text.slice(copied);
 }
 
 /** Mask every URL's userinfo before the query pass or URL splitting can cut it apart
@@ -522,7 +563,8 @@ export function redactText(text: string): string {
     //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
-    const plain = stripTerminalCodes(text);
+    // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
+    const plain = normalizeSpecialSchemes(stripTerminalCodes(text));
     const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';

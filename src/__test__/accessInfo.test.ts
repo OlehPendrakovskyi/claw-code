@@ -396,6 +396,11 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toContain('alice');
     });
 
+    it('redacts a special-scheme endpoint spelled without `//` in named entries', () => {
+        expect(formatNamedEntry({ name: 'gh', url: 'https:/alice:secret@host.example/x' })).toBe('gh (https://***:***@host.example/x)');
+        expect(formatNamedEntry({ name: 'gh', url: 'https:\\\\alice:secret@host.example/x' })).not.toMatch(/alice|secret/);
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -647,6 +652,25 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ reason: 'sent Bearer "PRIVATE_PREFIX PRIVATE_SUFFIX', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
     });
 
+    it('masks the userinfo of a special-scheme URL spelled without `//`, as a URL parser reads it', () => {
+        expect(redactText('https:/alice:secret@host.example/x')).toBe('https://***:***@host.example/x');
+        expect(redactText('see https:\\\\alice:secret@host.example/x now')).toBe('see https://***:***@host.example/x now');
+        expect(redactText('https:alice:secret@host.example')).toBe('https://***:***@host.example/');
+        expect(redactText('WSS:/\\alice:secret@host.example')).toBe('wss://***:***@host.example/');
+        expect(redactText('https:///alice:secret@host.example/x')).toBe('https://***:***@host.example/x');
+        // Without an `@` on its line there is no userinfo, and the text keeps its spelling.
+        expect(redactText('the https: scheme, http:/x\nmail bob@example.com')).toBe('the https: scheme, http:/x\nmail bob@example.com');
+    });
+
+    it('strips serialised terminal codes before matching credentials', () => {
+        // An unquoted value runs to the end of its line, the closing `"}` included: it errs toward hiding.
+        expect(redactText(JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }))).toBe('{"error":"token=***');
+        expect(redactText('token\\x1b[31m=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ error: 'token\u001b]0;title\u0007=PRIVATE_VALUE' }))).toBe('{"error":"token=***');
+        // A serialised OSC never runs past the end of its string.
+        expect(redactText('{"a":"\\u001b]0;title","b":"keep"}')).toBe('{"a":"","b":"keep"}');
+    });
+
     it('masks an unquoted password holding spaces, to the next pair or the end of its line', () => {
         expect(redactText('password=correct horse battery staple')).toBe('password=***');
         expect(redactText('login password=correct horse battery staple user=bob\nnext line')).toBe('login password=*** user=bob\nnext line');
@@ -784,6 +808,9 @@ describe('redactText', () => {
             'token=*** '.repeat(size / 10),
             "bearer \\'".repeat(size / 9),
             'bearer \\"\\\\'.repeat(size / 11),
+            'https:/a@'.repeat(size / 9),
+            'http:x'.repeat(size / 6) + '@',
+            '\\u001b]'.repeat(size / 7),
         ];
         for (const input of inputs) {
             const started = performance.now();

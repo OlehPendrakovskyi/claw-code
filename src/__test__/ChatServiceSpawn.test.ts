@@ -882,6 +882,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential that a serialised colour code separates from its label on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('redacts a credential that any CSI form separates from its label in the details', () => {
             for (const code of ['\u001b[?25h', '\u001b[38:2:1:2:3m']) {
                 const { child, events } = start();
