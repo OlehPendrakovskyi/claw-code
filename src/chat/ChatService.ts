@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { openCredentialAt, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
+import { redactText } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -28,12 +28,11 @@ export const STDOUT_LINE_MAX_CHARS = 16 * 1024 * 1024;
 
 /** Stderr only surfaces as a failure message, so only its tail is kept. */
 export const STDERR_TAIL_MAX_CHARS = 16 * 1024;
-/** Raw stderr kept for redaction. Redaction sees this much more than the tail it reports, so a
- *  credential's label is still there when its value is redacted. */
-export const STDERR_RAW_WINDOW_CHARS = 4 * STDERR_TAIL_MAX_CHARS;
-/** The start of a terminal code cut off at the end of a stderr chunk. */
-// eslint-disable-next-line no-control-regex
-const PARTIAL_TERMINAL_CODE = /\u001b(?:\[[0-9;]*)?$/;
+/** Raw stderr kept for redaction. It is redacted whole, so every credential's label is still beside its value
+ *  however the output was chunked. Past this, collection stops and the tail is withheld rather than shown cut. */
+export const STDERR_RAW_MAX_CHARS = 1024 * 1024;
+/** Reported in place of the stderr tail once stderr outgrew STDERR_RAW_MAX_CHARS. */
+export const STDERR_WITHHELD = 'acpx wrote more than 1 MiB to stderr; it is not shown, so no credential in it is cut from its label';
 
 /** How long an aborted acpx gets after SIGTERM before it is SIGKILLed. */
 export const ABORT_KILL_GRACE_MS = 3000;
@@ -328,13 +327,7 @@ class AcpxRun {
     private pendingLineLength = 0;
     private droppingOversizedLine = false;
     private stderrRaw = '';
-    /** True while discarding the rest of a stderr line whose start, and any label it held, was dropped. */
-    private droppingStderrLine = false;
-    /** A credential whose label was dropped before its value closed: stderr is discarded until its unescaped
-     *  closing quote, then to the end of that line. `escaped` carries a pending backslash across chunks. */
-    private droppingStderrCredential: { quote: string; escaped: boolean } | undefined;
-    /** The start of a terminal code split across chunks, held back until the rest arrives. */
-    private stderrPartialCode = '';
+    private stderrOverflowed = false;
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -409,67 +402,24 @@ class AcpxRun {
         return line;
     }
 
-    /** Keeps the raw end of stderr within STDERR_RAW_WINDOW_CHARS. An overflow is cut at a line break, and a
-     *  line whose start was cut off is dropped up to its newline. A quoted credential open at the cut is
-     *  dropped through its closing quote, across lines and chunks, so no value outlives its label. */
+    /** Collects stderr up to STDERR_RAW_MAX_CHARS; beyond that, nothing more is kept (see STDERR_WITHHELD). */
     private onStderr(text: string): void {
-        // Colour codes could separate a label from its value: strip them before tracking anything, holding back
-        // a code cut off at the chunk's end until the rest arrives.
-        const joined = this.stderrPartialCode + text;
-        const partial = PARTIAL_TERMINAL_CODE.exec(joined);
-        this.stderrPartialCode = partial?.[0] ?? '';
-        let incoming = stripTerminalCodes(partial === null ? joined : joined.slice(0, partial.index));
-        if (this.droppingStderrCredential !== undefined) {
-            const close = this.closingQuoteIndex(incoming, this.droppingStderrCredential);
-            if (close === -1) {
-                return;
-            }
-            this.droppingStderrCredential = undefined;
-            this.droppingStderrLine = true;
-            incoming = incoming.slice(close + 1);
-        }
-        if (this.droppingStderrLine) {
-            const lineBreak = incoming.indexOf('\n');
-            if (lineBreak === -1) {
-                return;
-            }
-            this.droppingStderrLine = false;
-            incoming = incoming.slice(lineBreak + 1);
-        }
-        const raw = this.stderrRaw + incoming;
-        if (raw.length <= STDERR_RAW_WINDOW_CHARS) {
-            this.stderrRaw = raw;
+        if (this.stderrOverflowed) {
             return;
         }
-        const lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
-        // With no line break left, the whole window is dropped, so a value open anywhere in it counts.
-        const open = openCredentialAt(raw, lineBreak === -1 ? raw.length : lineBreak + 1);
-        if (open !== undefined && open.end === -1) {
+        if (this.stderrRaw.length + text.length > STDERR_RAW_MAX_CHARS) {
+            this.stderrOverflowed = true;
             this.stderrRaw = '';
-            this.droppingStderrCredential = { quote: open.quote, escaped: open.escapePending };
             return;
         }
-        const keepAfter = open === undefined ? lineBreak : raw.indexOf('\n', open.end);
-        this.stderrRaw = keepAfter === -1 ? '' : raw.slice(keepAfter + 1);
-        this.droppingStderrLine = keepAfter === -1;
+        this.stderrRaw += text;
     }
 
-    /** The index of the credential's unescaped closing quote in `text`, or -1; updates its escape state. */
-    private closingQuoteIndex(text: string, credential: { quote: string; escaped: boolean }): number {
-        for (let i = 0; i < text.length; i++) {
-            if (credential.escaped) {
-                credential.escaped = false;
-            } else if (text[i] === '\\') {
-                credential.escaped = true;
-            } else if (text[i] === credential.quote) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /** The end of stderr, redacted over the whole raw window first, then cut to STDERR_TAIL_MAX_CHARS. */
+    /** The end of stderr, redacted whole first, then cut to STDERR_TAIL_MAX_CHARS; withheld after an overflow. */
     private redactedStderrTail(): string {
+        if (this.stderrOverflowed) {
+            return STDERR_WITHHELD;
+        }
         return redactText(this.stderrRaw.trim()).slice(-STDERR_TAIL_MAX_CHARS);
     }
 

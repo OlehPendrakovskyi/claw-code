@@ -1174,6 +1174,24 @@
             "others": {
                 "src/logger.ts": "export const write = console.info.bind(console);\n"
             }
+        },
+        {
+            "name": "R36: a shell option in an apply argument array",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.spawn.apply(cp, ['node', [], { shell: true }]);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: spawn options held in a variable passed through apply",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; const opts = { shell: true }; cp.spawn.apply(cp, ['node', [], opts]);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: apply without a shell",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.spawn.apply(cp, ['node', [], { shell: false }]);",
+            "expect": null
         }
     ]
 }

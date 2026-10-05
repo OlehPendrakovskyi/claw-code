@@ -430,6 +430,20 @@ function isSpawnCall(node, context) {
     return PROCESS_SPAWNERS.has(spawner ?? '');
 }
 
+/** The arguments a spawn call passes to the spawner: its own, or for `f.apply(this, [a, b, c])` the
+ *  elements of that array literal. Empty for a call that does not spawn. */
+function spawnArguments(call, context) {
+    if (!isSpawnCall(call, context)) {
+        return [];
+    }
+    const callee = unwrap(call.expression);
+    if (lastName(callee) === 'apply' && memberObject(callee) !== undefined) {
+        const list = call.arguments[1] === undefined ? undefined : unwrap(call.arguments[1]);
+        return list !== undefined && ts.isArrayLiteralExpression(list) ? [...list.elements] : [];
+    }
+    return [...call.arguments];
+}
+
 /** Whether an object literal is the options of a spawn call: passed inline, held in a variable passed to
  *  one (`const opts = { … }; spawn(cmd, args, opts)`), or default-exported to a file that passes it. */
 function isSpawnOptions(object, context) {
@@ -442,6 +456,10 @@ function isSpawnOptions(object, context) {
     }
     if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
         return isSpawnCall(node.parent, context);
+    }
+    // `cp.spawn.apply(cp, [cmd, args, { shell: true }])`: the options sit in the argument array.
+    if (ts.isArrayLiteralExpression(node.parent) && ts.isCallExpression(node.parent.parent)) {
+        return spawnArguments(node.parent.parent, context).includes(node);
     }
     if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
         // `options = { … }` for a variable that reaches a spawn call.
@@ -505,7 +523,7 @@ function spawnOptionSymbols(sources, context) {
             }
         }
         if (isSpawnCall(node, context)) {
-            for (const argument of node.arguments) {
+            for (const argument of spawnArguments(node, context)) {
                 const value = unwrap(argument);
                 const symbol = symbolOf(value);
                 if (symbol !== undefined) {

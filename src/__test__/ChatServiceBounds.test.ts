@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
-import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_RAW_WINDOW_CHARS, STDERR_TAIL_MAX_CHARS, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
+import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_RAW_MAX_CHARS, STDERR_TAIL_MAX_CHARS, STDERR_WITHHELD, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
 
 vi.mock('child_process', () => ({ spawn: vi.fn() }));
@@ -180,77 +180,36 @@ describe('ChatService buffer and abort bounds', () => {
             expect(message).not.toContain('second-line');
         });
 
-        it('drops a line whose start, and its label, fell out of the raw window', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`token=${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}`));
-            child.stderr.emit('data', Buffer.from('secret-tail\nthe real error'));
-            child.emit('close', 1, null);
-            expect((events[0] as { message: string }).message).toBe('the real error');
-        });
+        // Far more than the reported tail, so each label below sits well outside it.
+        const PAD = 4 * STDERR_TAIL_MAX_CHARS;
 
-        it('drops a multiline quoted credential whose label fell out of the window, within one chunk', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`));
-            child.emit('close', 1, null);
-            const message = (events[0] as { message: string }).message;
-            expect(message).not.toContain('PRIVATE_SUFFIX');
-            expect(message).toBe('real failure');
-        });
-
-        it('drops a multiline quoted credential whose label fell out of the window, across chunks', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\n`));
-            child.stderr.emit('data', Buffer.from('PRIVATE_'));
-            child.stderr.emit('data', Buffer.from('SUFFIX"\nreal failure'));
-            child.emit('close', 1, null);
-            const message = (events[0] as { message: string }).message;
-            expect(message).not.toContain('PRIVATE_');
-            expect(message).toBe('real failure');
-        });
-
-        it('keeps discarding past an escaped quote, also when the escape is split across chunks', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\n`));
-            child.stderr.emit('data', Buffer.from('PRIV\\"ATE_\\'));
-            child.stderr.emit('data', Buffer.from('"\nSUFFIX"\nreal failure'));
-            child.emit('close', 1, null);
-            const message = (events[0] as { message: string }).message;
-            expect(message).not.toMatch(/PRIV|SUFFIX/);
-            expect(message).toBe('real failure');
-        });
-
-        it('drops an open credential that fills the window before its first line break', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}`));
-            child.stderr.emit('data', Buffer.from('\nPRIVATE_SUFFIX"\nreal failure'));
-            child.emit('close', 1, null);
-            expect((events[0] as { message: string }).message).toBe('real failure');
-        });
-
-        it('drops an open credential under an encoded query name', () => {
-            const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`GET https://host/?to%6ben="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`));
-            child.emit('close', 1, null);
-            expect((events[0] as { message: string }).message).toBe('real failure');
-        });
-
-        it('tracks a credential whose label a colour code separates from its value, also across chunks', () => {
-            for (const parts of [
-                [`password\u001b[0m="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`],
-                [`password\u001b[`, `0m="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`],
-            ]) {
+        it('masks credentials whose labels fall far outside the tail, however the output is chunked', () => {
+            const cases: string[][] = [
+                [`password="${'a'.repeat(PAD)}\nPRIVATE_SUFFIX"\nreal failure`],
+                [`password="${'a'.repeat(PAD)}`, '\nPRIVATE_', 'SUFFIX"\nreal failure'],
+                [`password="${'a'.repeat(PAD)}\nPRIV\\"ATE_\\`, '"\nSUFFIX"\nreal failure'],
+                [`GET https://host/?to%6ben="${'a'.repeat(PAD)}\nPRIVATE_SUFFIX"\nreal failure`],
+                [`${'x'.repeat(PAD)} password=\n"PRIVATE_VALUE"\nreal failure`],
+                [`${'x'.repeat(PAD)} token=\nPRIVATE_VALUE\nreal failure`],
+                [`password="${'a'.repeat(PAD)}\n" token="prefix\nPRIVATE_SUFFIX"\nreal failure`],
+                [`password\u001b[`, `0m="${'a'.repeat(PAD)}\nPRIVATE_SUFFIX"\nreal failure`],
+            ];
+            for (const parts of cases) {
                 const { child, events } = start();
                 parts.forEach(part => child.stderr.emit('data', Buffer.from(part)));
                 child.emit('close', 1, null);
-                expect((events[0] as { message: string }).message).toBe('real failure');
+                const message = (events[0] as { message: string }).message;
+                expect(message).not.toMatch(/PRIV|SUFFIX/);
+                expect(message.endsWith('real failure')).toBe(true);
             }
         });
 
-        it('tracks a credential whose label precedes the cut and whose value opens after it', () => {
+        it('withholds the tail once stderr outgrows its cap, instead of showing a cut that could split a credential', () => {
             const { child, events } = start();
-            child.stderr.emit('data', Buffer.from(`${'x'.repeat(STDERR_RAW_WINDOW_CHARS)} password=\n"PRIVATE_VALUE"\nreal failure`));
+            child.stderr.emit('data', Buffer.from(`token="${'a'.repeat(STDERR_RAW_MAX_CHARS)}`));
+            child.stderr.emit('data', Buffer.from('\nPRIVATE_SUFFIX"\nreal failure'));
             child.emit('close', 1, null);
-            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            expect((events[0] as { message: string }).message).toBe(STDERR_WITHHELD);
         });
 
         it('prefers an agent failure message over the stderr tail', () => {

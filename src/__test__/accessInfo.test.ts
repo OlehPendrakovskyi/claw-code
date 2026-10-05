@@ -615,6 +615,12 @@ describe('redactText', () => {
         expect(redactText('uses Basic Authentication and basic configuration')).toBe('uses Basic Authentication and basic configuration');
     });
 
+    it('strips every CSI form before matching credentials', () => {
+        expect(redactText('token\u001b[?25h=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('token\u001b[38:2:1:2:3m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+        expect(redactText('token\u001b[1 q=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
+    });
+
     it('masks credentials around terminal colour codes', () => {
         expect(redactText('\u001b[31mtoken\u001b[0m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText('Authorization: Bearer \u001b[1mPRIVATE_VALUE\u001b[0m')).not.toContain('PRIVATE_VALUE');

@@ -146,63 +146,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
     return out + text.slice(copied);
 }
 
-/** A sensitive quoted value still open at some cut: where its key starts, its quote, the index just past
- *  its closing quote (-1 when it does not close within the text), and whether the text ends inside a
- *  backslash escape, so a caller reading on knows the next character is escaped. */
-export interface OpenCredential {
-    keyStart: number;
-    quote: string;
-    end: number;
-    escapePending: boolean;
-}
-
-/** The sensitive quoted value (`password="…`, `?to%6ben="…`) still open at `cut`, if any, by the same
- *  sensitivity rules as the plain-text and query passes. A caller that drops `text` before `cut`, such as a
- *  bounded stderr window, uses this so it never keeps a value whose label it has dropped. Linear: each
- *  quoted value is scanned once per pass. */
-export function openCredentialAt(text: string, cut: number): OpenCredential | undefined {
-    const plain = openQuotedValue(text, cut, KEY_SEPARATOR, pair => SENSITIVE_KEY.test(pair[1]) || CREDENTIAL_HEADER_KEY.test(pair[1]));
-    const query = openQuotedValue(text, cut, QUERY_NAME, pair => isSensitiveQueryName(pair[2]));
-    if (plain === undefined || query === undefined) {
-        return plain ?? query;
-    }
-    return plain.keyStart <= query.keyStart ? plain : query;
-}
-
-function openQuotedValue(text: string, cut: number, opener: RegExp, isSensitive: (pair: RegExpExecArray) => boolean): OpenCredential | undefined {
-    opener.lastIndex = 0;
-    for (let pair = opener.exec(text); pair !== null && pair.index < cut; pair = opener.exec(text)) {
-        let start = opener.lastIndex;
-        while (WHITESPACE.test(text[start] ?? '')) {
-            start++;
-        }
-        const quote = text[start] ?? '';
-        // The key came before the cut, so its value is tracked even when it opens after it (`password=\n"…"`).
-        if (!VALUE_QUOTE.test(quote) || !isSensitive(pair)) {
-            continue;
-        }
-        let close = -1;
-        let escapePending = false;
-        for (let i = start + 1; i < text.length; i++) {
-            if (text[i] === '\\') {
-                escapePending = i + 1 === text.length;
-                i++;
-            } else if (text[i] === quote) {
-                close = i;
-                break;
-            }
-        }
-        if (close === -1 || close >= cut) {
-            return { keyStart: pair.index, quote, end: close === -1 ? -1 : close + 1, escapePending };
-        }
-        opener.lastIndex = close + 1;
-    }
-    return undefined;
-}
-
-/** A terminal control sequence (`ESC[…m` and the other CSI forms). */
+/** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
+ *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-9;]*[A-Za-z]/g;
+const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 
 /** Text without terminal colour and other CSI codes, which could sit between a label and its value. */
 export function stripTerminalCodes(text: string): string {
