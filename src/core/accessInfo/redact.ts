@@ -69,13 +69,13 @@ export function redactPlainSecrets(text: string): string {
 const SCHEME_CHAR = /[a-z0-9+.-]/i;
 const LETTER = /[a-z]/i;
 /** Characters that end a URL in free-form text. */
-const URL_TERMINATOR = /[\s"'<>]/;
-const QUOTE = /["'<>]/;
+const URL_TERMINATOR = /[\s"'`<>]/;
+const QUOTE = /["'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
  *  password may hold `@`. Linear: a match never crosses a `/`. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'<>([{=,])\/\/[^\s/"'<>]*@/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/[^\s/"'`<>]*@/g;
 const WHITESPACE = /\s/;
 /** A `name=value` query pair anywhere in the text, its value possibly quoted. As in {@link VALUE_AT}, an
  *  unterminated quote runs to the end of its line. */
@@ -92,8 +92,8 @@ function schemeStart(text: string, separator: number): number | undefined {
 }
 
 /** Mask a malformed userinfo that would split a URL found by {@link urlSpans} before its `@`: one holding a
- *  quote or angle bracket (`https://alice:p"ass@host`, `https://alice:p/"ass@host`), or a nested `://`
- *  (`https://alice:p://ss@host`). A `://` before any `/` can only sit inside a malformed authority, so the
+ *  quote, backtick or angle bracket (`https://alice:p"ass@host`, `https://alice:p/"ass@host`), or a
+ *  nested `://` (`https://alice:p://ss@host`). A `://` before any `/` can only sit inside a malformed authority, so the
  *  scan goes on past it instead of starting a new URL. The mask runs from the scheme to the last `@`
  *  before the first `/`. When a `:` comes before that `/`, the userinfo is a `user:password` whose
  *  password may hold `/`, so the mask runs to the last `@` before whitespace or a later `://`.
@@ -143,9 +143,9 @@ function maskMalformedUserinfo(text: string): string {
 /** The URLs of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) in free-form text, as
  *  [start, end) spans. A scheme is the whole run of scheme characters before `://` and must begin with a
  *  letter, so it starts after any character that cannot be part of one, `_` included
- *  (`endpoint_https://…`). A URL needs at least one character after `://`, stops at whitespace, a quote or
- *  an angle bracket, and ends where the next one begins, so adjacent URLs (`a,https://…`) are redacted one
- *  by one. Linear in the text's length: each `://` walks back only over its own scheme. */
+ *  (`endpoint_https://…`). A URL needs at least one character after `://`, stops at whitespace, a quote,
+ *  a backtick or an angle bracket, and ends where the next one begins, so adjacent URLs (`a,https://…`)
+ *  are redacted one by one. Linear in the text's length: each `://` walks back only over its own scheme. */
 function urlSpans(text: string): Array<[number, number]> {
     const starts: Array<{ start: number; body: number }> = [];
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
@@ -206,7 +206,7 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
-    // 0. A quote or angle bracket would cut a URL short of its `@` or of a query value: mask those first.
+    // 0. A quote, backtick or angle bracket would cut a URL short of its `@` or of a query value: mask those first.
     const prepared = maskMalformedUserinfo(maskQueryPairs(text)).replace(NETWORK_PATH_USERINFO, '//***@');
     let out = '';
     let copied = 0;

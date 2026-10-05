@@ -467,6 +467,15 @@ describe('redactText', () => {
         expect(redactText('see a//b@c and https://host.example//x@y')).toBe('see a//b@c and https://host.example//x@y');
     });
 
+    it('keeps the backticks around a Markdown-wrapped URL', () => {
+        expect(redactText('see `https://alice:secret@host.example/x` here')).toBe('see `https://***:***@host.example/x` here');
+        expect(redactText('see `//alice:secret@host.example/x`')).toBe('see `//***@host.example/x`');
+    });
+
+    it('masks a userinfo holding a backtick', () => {
+        expect(redactText('failed https://alice:p`ass@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
     it('masks a userinfo holding a nested ://', () => {
         expect(redactText('failed https://alice:p://ss@host.example/x')).toBe('failed https://***@host.example/x');
     });
