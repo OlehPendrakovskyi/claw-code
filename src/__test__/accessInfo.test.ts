@@ -452,9 +452,10 @@ describe('redactText', () => {
     });
 
     it('masks a userinfo holding a quote or angle bracket', () => {
-        expect(redactText('failed https://alice:p"ass@host/x')).toBe('failed https://***@host/x');
-        expect(redactText("failed https://alice:p'ass@host/x")).toBe('failed https://***@host/x');
-        expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
+        // These parse (URL percent-encodes the character), so the userinfo keeps its user:password shape.
+        expect(redactText('failed https://alice:p"ass@host/x')).toBe('failed https://***:***@host/x');
+        expect(redactText("failed https://alice:p'ass@host/x")).toBe('failed https://***:***@host/x');
+        expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***:***@host/x');
     });
 
     it('masks the userinfo of a network-path reference', () => {
@@ -480,7 +481,7 @@ describe('redactText', () => {
     });
 
     it('masks a userinfo holding a backtick', () => {
-        expect(redactText('failed https://alice:p`ass@host.example/x')).toBe('failed https://***@host.example/x');
+        expect(redactText('failed https://alice:p`ass@host.example/x')).toBe('failed https://***:***@host.example/x');
     });
 
     it('masks a userinfo holding a nested ://', () => {
@@ -507,6 +508,20 @@ describe('redactText', () => {
     it('masks a closed quoted value that spans lines', () => {
         expect(redactText("secret='first-line\nprivate-second-line' next")).toBe('secret=*** next');
         expect(redactText('GET https://[bad/x?token="first\nsecond" ok')).toBe('GET https://[bad/x?token=*** ok');
+    });
+
+    it('leaves an @ in the query or fragment of a valid URL alone', () => {
+        expect(redactText('see https://host.example?email=user@example.com')).toBe('see https://host.example?email=user@example.com');
+        expect(redactText('see https://host.example#user@example.com')).toBe('see https://host.example#user@example.com');
+    });
+
+    it('masks a sensitive query pair inside the quoted value of an ordinary one', () => {
+        expect(redactText("GET https://host.example/?q='public&to%6ben=secret'")).not.toContain('secret');
+    });
+
+    it('masks a whole quoted credential whose value looks like a query', () => {
+        const json = JSON.stringify({ password: 'prefix?token=abc"private-tail' });
+        expect(redactText(json)).toBe('{"password"=***}');
     });
 
     it('masks a sensitive value after a run of question marks', () => {

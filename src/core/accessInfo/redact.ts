@@ -65,24 +65,28 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
     return end;
 }
 
-/** Mask the value of every `key=value` / `key: value` pair whose key names a secret. A pair with an
- *  ordinary key keeps its value, and scanning goes on inside it (`a=token=x` masks `token`'s value).
- *  Linear in the text's length. */
-function maskSensitivePairs(text: string): string {
+/** Mask the value of every `key=value` / `key: value` pair whose key names a secret, as `key=***`. With
+ *  `quotedOnly`, only quoted values are masked, and each stays quoted (`"token":"***"`), so a later full
+ *  pass consumes just that quoted value rather than the text after it. A pair with an ordinary key keeps
+ *  its value, and scanning goes on inside it (`a=token=x` masks `token`'s value). Linear in the text's
+ *  length. */
+function maskSensitivePairs(text: string, quotedOnly = false): string {
     let out = '';
     let copied = 0;
     const unclosed = new Map<string, number>();
     KEY_SEPARATOR.lastIndex = 0;
     for (let pair = KEY_SEPARATOR.exec(text); pair !== null; pair = KEY_SEPARATOR.exec(text)) {
         const start = KEY_SEPARATOR.lastIndex;
-        if (!SENSITIVE_KEY.test(pair[1])) {
+        if (!SENSITIVE_KEY.test(pair[1]) || (quotedOnly && !VALUE_QUOTE.test(text[start] ?? ''))) {
             continue;
         }
         const end = valueEnd(text, start, NON_SPACE, unclosed);
         if (end === start) {
             continue;
         }
-        out += `${text.slice(copied, pair.index)}${pair[1]}=***`;
+        out += quotedOnly
+            ? `${text.slice(copied, start)}${text[start]}***${text[start]}`
+            : `${text.slice(copied, pair.index)}${pair[1]}=***`;
         copied = end;
         KEY_SEPARATOR.lastIndex = end;
     }
@@ -103,7 +107,6 @@ const SCHEME_CHAR = /[a-z0-9+.-]/i;
 const LETTER = /[a-z]/i;
 /** Characters that end a URL in free-form text. */
 const URL_TERMINATOR = /[\s"'`<>]/;
-const QUOTE = /["'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
@@ -126,25 +129,26 @@ function schemeStart(text: string, separator: number): number | undefined {
     return start < separator && LETTER.test(text[start]) ? start : undefined;
 }
 
-/** Mask every URL's userinfo before anything else touches the text, so neither the query pass nor URL
- *  splitting can cut it apart (`https://alice:private&token=abc@host` would otherwise lose its `@` to the
- *  query pass). A well-formed userinfo, up to the last `@` before the first `/`, becomes `***:***@` or
- *  `***@`, which {@link redactEndpoint} later keeps. A malformed one runs further and becomes `***@`. That
- *  is one holding a quote, backtick or angle bracket (`https://alice:p"ass@host`), or a nested `://`
- *  (`https://alice:p://ss@host`), or one in a URL that does not parse. A `://` before any `/` can only sit
- *  inside a malformed authority, so the scan goes on past it instead of starting a new URL. When a `:`
- *  comes before the first `/`, the userinfo is a `user:password` whose password may hold `/`, so a
- *  malformed one runs to the last `@` before whitespace or a later `://`. Over-matching hides more, never
- *  less. Linear: each character is visited once. */
+/** Mask every URL's userinfo before the query pass or URL splitting can cut it apart
+ *  (`https://alice:private&token=abc@host` would otherwise lose its `@` to the query pass). A URL that
+ *  parses has the standard authority, ending at `/`, `?` or `#`. Its userinfo, up to the last `@` there,
+ *  becomes `***:***@` or `***@`, which {@link redactEndpoint} later keeps, and an `@` in its query or
+ *  fragment is left alone. A URL that does not parse is malformed (`https://alice:p"ass@host/`,
+ *  `https://alice:p://ss@host`), and its userinfo becomes `***@`, running to the last `@` before the first
+ *  `/`. When a `:` comes before that `/`, the userinfo is a `user:password` whose password may hold `/`,
+ *  so it runs to the last `@` before whitespace or a later `://`. A `://` before any `/` can only sit
+ *  inside a malformed authority, so the scan goes on past it instead of starting a new URL. Over-matching
+ *  hides more, never less. Linear: each character is visited once. */
 function maskUserinfo(text: string): string {
     let out = '';
     let copied = 0;
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
         const body = at + 3;
         let slash = -1;
+        let authorityEnd = -1;
         let colonBeforeSlash = false;
-        let quote = -1;
         let atBeforeSlash = -1;
+        let atInAuthority = -1;
         let lastAt = -1;
         let nested = -1;
         let i = body;
@@ -156,6 +160,9 @@ function maskUserinfo(text: string): string {
                 nested = i;
             }
             const c = text[i];
+            if ((c === '/' || c === '?' || c === '#') && authorityEnd === -1) {
+                authorityEnd = i;
+            }
             if (c === '/' && slash === -1) {
                 slash = i;
             } else if (c === ':' && slash === -1) {
@@ -163,17 +170,16 @@ function maskUserinfo(text: string): string {
             } else if (c === '@') {
                 lastAt = i;
                 atBeforeSlash = slash === -1 ? i : atBeforeSlash;
-            } else if (quote === -1 && QUOTE.test(c)) {
-                quote = i;
+                atInAuthority = authorityEnd === -1 ? i : atInAuthority;
             }
         }
         const start = schemeStart(text, at);
-        const looseEnd = colonBeforeSlash ? lastAt : atBeforeSlash;
-        const malformed = (quote !== -1 && looseEnd > quote) || (nested !== -1 && looseEnd > nested) ||
-            (atBeforeSlash === -1 && looseEnd !== -1 && start !== undefined && !URL.canParse(text.slice(start, i)));
-        const end = malformed ? looseEnd : atBeforeSlash;
+        // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
+        // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
+        const parsable = start !== undefined && URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
+        const end = parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
         if (start !== undefined && end !== -1 && body >= copied) {
-            const masked = malformed || !text.slice(body, end).includes(':') ? '***@' : '***:***@';
+            const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
             out += text.slice(copied, body) + masked;
             copied = end + 1;
         }
@@ -236,11 +242,13 @@ function maskQueryPairs(text: string): string {
     const unclosed = new Map<string, number>();
     QUERY_NAME.lastIndex = 0;
     for (let pair = QUERY_NAME.exec(text); pair !== null; pair = QUERY_NAME.exec(text)) {
-        const end = valueEnd(text, QUERY_NAME.lastIndex, QUERY_UNQUOTED, unclosed);
-        if (isSensitiveQueryName(pair[2])) {
-            out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=***`;
-            copied = end;
+        // An ordinary pair keeps its value, and scanning goes on inside it (`?q='public&token=x'`).
+        if (!isSensitiveQueryName(pair[2])) {
+            continue;
         }
+        const end = valueEnd(text, QUERY_NAME.lastIndex, QUERY_UNQUOTED, unclosed);
+        out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=***`;
+        copied = end;
         QUERY_NAME.lastIndex = end;
     }
     return out + text.slice(copied);
@@ -256,9 +264,11 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
-    // 0. Userinfo first, so no later pass can cut it apart; then query values, which a quote, backtick or
-    //    angle bracket would otherwise cut off from their URL.
-    const prepared = maskQueryPairs(maskUserinfo(text).replace(NETWORK_PATH_USERINFO, '//***@'));
+    // 0. Whole quoted credentials first (`{"password":"a?token=b\"tail"}`), so no later pass can eat an escape
+    //    inside one; then userinfo, so nothing can cut it apart; then query values, which a quote, backtick
+    //    or angle bracket would otherwise cut off from their URL.
+    const quotedMasked = maskSensitivePairs(text, true);
+    const prepared = maskQueryPairs(maskUserinfo(quotedMasked).replace(NETWORK_PATH_USERINFO, '//***@'));
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {
