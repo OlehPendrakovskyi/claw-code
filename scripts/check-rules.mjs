@@ -39,6 +39,8 @@ const BOOLEAN_OPERATORS = new Set([
     ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.InstanceOfKeyword, ts.SyntaxKind.InKeyword,
 ]);
 const SHELL_EXECUTORS = new Set(['exec', 'execSync']);
+/** Function methods that invoke the function they are called on: `f.call(this, …)`, `f.apply(this, […])`. */
+const INVOKERS = new Set(['call', 'apply']);
 /** child_process functions that take an options object, where `shell` would apply. */
 const PROCESS_SPAWNERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']);
 /** `shell` values that do not turn a shell on. */
@@ -52,16 +54,21 @@ function moduleName(text) {
 /** What an expression denotes in module terms: `{ module }` for a module namespace, `{ module, member }`
  *  for one of its exports, or undefined. An identifier is followed through its TypeScript symbol to its
  *  declaration, so lexical scope decides: a parameter or local that shadows an import resolves to
- *  itself, not to the import. Aliases (`const run = cp.exec`), destructuring, `require`, `import()`,
- *  `import x = require()` and `fs.promises` resolve the same way. */
+ *  itself, not to the import. Aliases (`const run = cp.exec`), bound copies (`cp.exec.bind(cp)`),
+ *  destructuring, `require`, `import()`, `import x = require()` and `fs.promises` resolve the same way. */
 function resolveValue(node, checker, depth = 0) {
     if (depth > 8) {
         return undefined;
     }
     node = unwrap(node);
-    const loaded = loadedModule(node);
+    const loaded = loadedModule(node, checker);
     if (loaded !== undefined) {
         return { module: moduleName(loaded) };
+    }
+    const bound = boundFunction(node);
+    if (bound !== undefined) {
+        const target = resolveValue(bound, checker, depth + 1);
+        return target?.member !== undefined ? target : undefined;
     }
     if (ts.isIdentifier(node)) {
         const declaration = checker.getSymbolAtLocation(node)?.declarations?.[0];
@@ -146,8 +153,20 @@ function calledExport(node, module, checker) {
     if (!ts.isCallExpression(node)) {
         return undefined;
     }
-    const target = resolveValue(node.expression, checker);
+    const target = resolveValue(invokedFunction(node.expression), checker);
     return target?.module === module ? target.member : undefined;
+}
+
+/** The function a callee runs: `cp.exec` for `cp.exec.call(…)` and `cp.exec.apply(…)`, else the callee. */
+function invokedFunction(callee) {
+    const value = unwrap(callee);
+    const object = memberObject(value);
+    return object !== undefined && INVOKERS.has(lastName(value) ?? '') ? object : callee;
+}
+
+/** The function `f` of a `f.bind(…)` call, or undefined. */
+function boundFunction(node) {
+    return ts.isCallExpression(node) && lastName(node.expression) === 'bind' ? memberObject(unwrap(node.expression)) : undefined;
 }
 
 /** A declaration that binds `exec`/`execSync` from child_process, called or not: a named import,
@@ -204,13 +223,17 @@ function unwrap(node) {
     return node;
 }
 
-/** The module a `require('m')` or `import('m')` expression loads, through any unwrap()-able wrapper. */
-function loadedModule(node) {
+/** The module a `require('m')` or `import('m')` expression loads, through any unwrap()-able wrapper.
+ *  `require` is the CommonJS loader only when nothing in scope declares it; a parameter or local of that
+ *  name is some other function. */
+function loadedModule(node, checker) {
     node = unwrap(node);
     if (!ts.isCallExpression(node) || node.arguments.length < 1) {
         return undefined;
     }
-    const isLoader = (ts.isIdentifier(node.expression) && node.expression.text === 'require') || node.expression.kind === ts.SyntaxKind.ImportKeyword;
+    const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require' &&
+        checker.getSymbolAtLocation(node.expression)?.declarations === undefined;
+    const isLoader = isRequire || node.expression.kind === ts.SyntaxKind.ImportKeyword;
     const [specifier] = node.arguments;
     return isLoader && (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier)) ? specifier.text : undefined;
 }

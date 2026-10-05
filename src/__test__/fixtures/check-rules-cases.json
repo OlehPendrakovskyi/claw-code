@@ -768,6 +768,42 @@
             "file": "src/__test__/e.test.ts",
             "line": "import { execSync } from 'child_process'; execSync('node build.mjs');",
             "expect": "R36"
+        },
+        {
+            "name": "R36: exec bound to a local with bind",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.exec.bind(cp); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec bound and called inline",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.exec.bind(cp)(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec invoked through call",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.exec.call(cp, cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync invoked through apply",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.execSync.apply(cp, [cmd]);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile bound with bind",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.execFile.bind(cp)(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: a parameter named require is not the CommonJS loader",
+            "file": "src/a.ts",
+            "line": "function load(require: (id: string) => { exec(cmd: string): void }) { const api = require('child_process'); api.exec('x'); }",
+            "expect": null
         }
     ]
 }
