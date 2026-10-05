@@ -677,13 +677,33 @@ function loggerMethodBoundArguments(node, context, depth = 0) {
         return undefined;
     }
     const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
-    // `const { info } = console`, `const { info: write } = console`: the property read from the source.
-    if (declaration !== undefined && ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+    return declaration === undefined ? undefined : declarationBoundArguments(declaration, context, depth + 1);
+}
+
+/** {@link loggerMethodBoundArguments} for what a declaration binds: a variable's values, a destructured
+ *  property (`const { info } = console`, `{ info: write }`), or an import, followed to the declaration it
+ *  names in another file of the program, through re-exports and `export default`. */
+function declarationBoundArguments(declaration, context, depth) {
+    if (depth > 8) {
+        return undefined;
+    }
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
+        const exported = exportedDeclaration(declaration, context.checker);
+        return exported === undefined ? undefined : declarationBoundArguments(exported, context, depth + 1);
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const local = context.checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local === undefined ? undefined : declarationBoundArguments(local, context, depth + 1);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return loggerMethodBoundArguments(declaration.expression, context, depth + 1);
+    }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
         ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer !== undefined) {
         const method = lastName(declaration.propertyName ?? declaration.name);
         return LOG_METHODS.has(method ?? '') && isLoggerReceiver(declaration.parent.parent.initializer, context) ? [] : undefined;
     }
-    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
+    if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
         return undefined;
     }
     const symbol = context.checker.getSymbolAtLocation(declaration.name);

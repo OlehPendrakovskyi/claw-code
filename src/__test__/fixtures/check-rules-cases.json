@@ -1146,6 +1146,34 @@
             "file": "src/a.ts",
             "line": "import * as cp from 'child_process'; cp.spawn.bind(cp, cmd, args, { shell: false })();",
             "expect": null
+        },
+        {
+            "name": "R10: a bound logger method imported from another file",
+            "file": "src/a.ts",
+            "line": "import { write } from './logger'; write(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\n"
+            }
+        },
+        {
+            "name": "R10: a logger method re-exported and imported under another name",
+            "file": "src/a.ts",
+            "line": "import { out } from './shim'; out(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\n",
+                "src/shim.ts": "export { write as out } from './logger';\n"
+            }
+        },
+        {
+            "name": "R10 clean: an imported logger method logging a length",
+            "file": "src/a.ts",
+            "line": "import { write } from './logger'; write(`chars=${prompt.length}`);",
+            "expect": null,
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\n"
+            }
         }
     ]
 }

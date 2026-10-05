@@ -486,6 +486,7 @@ describe('redactText', () => {
 
     it('masks a userinfo holding a nested ://', () => {
         expect(redactText('failed https://alice:p://ss@host.example/x')).toBe('failed https://***@host.example/x');
+        expect(redactText('failed https://alice:p://ss://tail@host.example/x')).toBe('failed https://***@host.example/x');
     });
 
     it('still redacts adjacent URLs one by one', () => {

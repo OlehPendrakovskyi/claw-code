@@ -175,11 +175,16 @@ function maskUserinfo(text: string): string {
         let nested = -1;
         let i = body;
         for (; i < text.length && !WHITESPACE.test(text[i]); i++) {
+            // A `://` before any `/` sits inside a malformed authority (`alice:p://ss://x@host`): skip its `//`,
+            // which is no path, and go on. One after a `/` starts the next URL.
             if (text.startsWith('://', i)) {
-                if (slash !== -1 || nested !== -1) {
+                if (slash !== -1) {
                     break;
                 }
-                nested = i;
+                nested = nested === -1 ? i : nested;
+                colonBeforeSlash = true;
+                i += 2;
+                continue;
             }
             const c = text[i];
             if ((c === '/' || c === '?' || c === '#') && authorityEnd === -1) {
