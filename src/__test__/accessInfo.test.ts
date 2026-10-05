@@ -388,6 +388,14 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).toContain('```\ncli output\n```');
     });
 
+    it('redacts a malformed endpoint from CLI output everywhere in the report', () => {
+        const cliOutput = 'gateway https://alice:secret@[bad';
+        const info = extractAccessInfoFromCli(cliOutput);
+        const markdown = formatAccessSummaryMarkdown(info, undefined, undefined, cliOutput);
+        expect(markdown).not.toContain('secret');
+        expect(markdown).not.toContain('alice');
+    });
+
     it('surfaces config and CLI issues', () => {
         const markdown = formatAccessSummaryMarkdown(createEmptyAccessInfo(), 'no config', 'cli exploded');
         expect(markdown).toContain('Config issue: no config');

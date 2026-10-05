@@ -68,7 +68,8 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     lines.push('## Network endpoints');
-    lines.push(formatList(info.networkEndpoints, 'No network endpoints detected.'));
+    // Endpoints come through redactEndpoint, which leaves a malformed URL unchanged: redact them as text too.
+    lines.push(formatList(info.networkEndpoints.map(redactText), 'No network endpoints detected.'));
     lines.push('');
 
     lines.push('## Local files');

@@ -145,21 +145,45 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
     return out + text.slice(copied);
 }
 
-/** The sensitive quoted value (`password="…`) that is still open at `cut`, if any: where its key starts,
- *  its quote, and the index just past its closing quote, or -1 when it does not close within `text`. A
- *  caller that drops `text` before `cut`, such as a bounded stderr window, uses this so it never keeps a
- *  value whose label it has dropped. Linear: each quoted value is scanned once. */
-export function openCredentialAt(text: string, cut: number): { keyStart: number; quote: string; end: number } | undefined {
-    KEY_SEPARATOR.lastIndex = 0;
-    for (let pair = KEY_SEPARATOR.exec(text); pair !== null && pair.index < cut; pair = KEY_SEPARATOR.exec(text)) {
-        const start = KEY_SEPARATOR.lastIndex;
+/** A sensitive quoted value still open at some cut: where its key starts, its quote, the index just past
+ *  its closing quote (-1 when it does not close within the text), and whether the text ends inside a
+ *  backslash escape, so a caller reading on knows the next character is escaped. */
+export interface OpenCredential {
+    keyStart: number;
+    quote: string;
+    end: number;
+    escapePending: boolean;
+}
+
+/** The sensitive quoted value (`password="…`, `?to%6ben="…`) still open at `cut`, if any, by the same
+ *  sensitivity rules as the plain-text and query passes. A caller that drops `text` before `cut`, such as a
+ *  bounded stderr window, uses this so it never keeps a value whose label it has dropped. Linear: each
+ *  quoted value is scanned once per pass. */
+export function openCredentialAt(text: string, cut: number): OpenCredential | undefined {
+    const plain = openQuotedValue(text, cut, KEY_SEPARATOR, pair => SENSITIVE_KEY.test(pair[1]) || CREDENTIAL_HEADER_KEY.test(pair[1]));
+    const query = openQuotedValue(text, cut, QUERY_NAME, pair => isSensitiveQueryName(pair[2]));
+    if (plain === undefined || query === undefined) {
+        return plain ?? query;
+    }
+    return plain.keyStart <= query.keyStart ? plain : query;
+}
+
+function openQuotedValue(text: string, cut: number, opener: RegExp, isSensitive: (pair: RegExpExecArray) => boolean): OpenCredential | undefined {
+    opener.lastIndex = 0;
+    for (let pair = opener.exec(text); pair !== null && pair.index < cut; pair = opener.exec(text)) {
+        let start = opener.lastIndex;
+        while (WHITESPACE.test(text[start] ?? '')) {
+            start++;
+        }
         const quote = text[start] ?? '';
-        if (start >= cut || !VALUE_QUOTE.test(quote) || !(SENSITIVE_KEY.test(pair[1]) || CREDENTIAL_HEADER_KEY.test(pair[1]))) {
+        if (start >= cut || !VALUE_QUOTE.test(quote) || !isSensitive(pair)) {
             continue;
         }
         let close = -1;
+        let escapePending = false;
         for (let i = start + 1; i < text.length; i++) {
             if (text[i] === '\\') {
+                escapePending = i + 1 === text.length;
                 i++;
             } else if (text[i] === quote) {
                 close = i;
@@ -167,9 +191,9 @@ export function openCredentialAt(text: string, cut: number): { keyStart: number;
             }
         }
         if (close === -1 || close >= cut) {
-            return { keyStart: pair.index, quote, end: close === -1 ? -1 : close + 1 };
+            return { keyStart: pair.index, quote, end: close === -1 ? -1 : close + 1, escapePending };
         }
-        KEY_SEPARATOR.lastIndex = close + 1;
+        opener.lastIndex = close + 1;
     }
     return undefined;
 }

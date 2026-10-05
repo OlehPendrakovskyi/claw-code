@@ -327,9 +327,9 @@ class AcpxRun {
     private stderrRaw = '';
     /** True while discarding the rest of a stderr line whose start, and any label it held, was dropped. */
     private droppingStderrLine = false;
-    /** The quote of a credential whose label was dropped before its value closed: stderr is discarded until
-     *  that quote, then to the end of its line. */
-    private droppingStderrUntilQuote: string | undefined;
+    /** A credential whose label was dropped before its value closed: stderr is discarded until its unescaped
+     *  closing quote, then to the end of that line. `escaped` carries a pending backslash across chunks. */
+    private droppingStderrCredential: { quote: string; escaped: boolean } | undefined;
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -409,12 +409,12 @@ class AcpxRun {
      *  dropped through its closing quote, across lines and chunks, so no value outlives its label. */
     private onStderr(text: string): void {
         let incoming = text;
-        if (this.droppingStderrUntilQuote !== undefined) {
-            const close = incoming.indexOf(this.droppingStderrUntilQuote);
+        if (this.droppingStderrCredential !== undefined) {
+            const close = this.closingQuoteIndex(incoming, this.droppingStderrCredential);
             if (close === -1) {
                 return;
             }
-            this.droppingStderrUntilQuote = undefined;
+            this.droppingStderrCredential = undefined;
             this.droppingStderrLine = true;
             incoming = incoming.slice(close + 1);
         }
@@ -431,18 +431,31 @@ class AcpxRun {
             this.stderrRaw = raw;
             return;
         }
-        let lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
-        const open = lineBreak === -1 ? undefined : openCredentialAt(raw, lineBreak + 1);
+        const lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
+        // With no line break left, the whole window is dropped, so a value open anywhere in it counts.
+        const open = openCredentialAt(raw, lineBreak === -1 ? raw.length : lineBreak + 1);
         if (open !== undefined && open.end === -1) {
             this.stderrRaw = '';
-            this.droppingStderrUntilQuote = open.quote;
+            this.droppingStderrCredential = { quote: open.quote, escaped: open.escapePending };
             return;
         }
-        if (open !== undefined) {
-            lineBreak = raw.indexOf('\n', open.end);
+        const keepAfter = open === undefined ? lineBreak : raw.indexOf('\n', open.end);
+        this.stderrRaw = keepAfter === -1 ? '' : raw.slice(keepAfter + 1);
+        this.droppingStderrLine = keepAfter === -1;
+    }
+
+    /** The index of the credential's unescaped closing quote in `text`, or -1; updates its escape state. */
+    private closingQuoteIndex(text: string, credential: { quote: string; escaped: boolean }): number {
+        for (let i = 0; i < text.length; i++) {
+            if (credential.escaped) {
+                credential.escaped = false;
+            } else if (text[i] === '\\') {
+                credential.escaped = true;
+            } else if (text[i] === credential.quote) {
+                return i;
+            }
         }
-        this.stderrRaw = lineBreak === -1 ? '' : raw.slice(lineBreak + 1);
-        this.droppingStderrLine = lineBreak === -1;
+        return -1;
     }
 
     /** The end of stderr, redacted over the whole raw window first, then cut to STDERR_TAIL_MAX_CHARS. */

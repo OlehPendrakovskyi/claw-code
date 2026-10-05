@@ -208,6 +208,32 @@ describe('ChatService buffer and abort bounds', () => {
             expect(message).toBe('real failure');
         });
 
+        it('keeps discarding past an escaped quote, also when the escape is split across chunks', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\n`));
+            child.stderr.emit('data', Buffer.from('PRIV\\"ATE_\\'));
+            child.stderr.emit('data', Buffer.from('"\nSUFFIX"\nreal failure'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toMatch(/PRIV|SUFFIX/);
+            expect(message).toBe('real failure');
+        });
+
+        it('drops an open credential that fills the window before its first line break', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`password="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}`));
+            child.stderr.emit('data', Buffer.from('\nPRIVATE_SUFFIX"\nreal failure'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('real failure');
+        });
+
+        it('drops an open credential under an encoded query name', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`GET https://host/?to%6ben="${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}\nPRIVATE_SUFFIX"\nreal failure`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('real failure');
+        });
+
         it('prefers an agent failure message over the stderr tail', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('stderr noise'));
