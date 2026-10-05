@@ -447,6 +447,14 @@ describe('redactText', () => {
         expect(redactText('bad https://alice:p@ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
     });
 
+    it('masks a password containing / when the URL cannot be parsed', () => {
+        expect(redactText('failed https://alice:p/ss@[not-a-host/x')).toBe('failed https://***@[not-a-host/x');
+    });
+
+    it('leaves an @ in the path of a parsable URL without userinfo alone', () => {
+        expect(redactText('see https://github.com/@scope/pkg')).toBe('see https://github.com/@scope/pkg');
+    });
+
     it('redacts a URL glued to a preceding underscore or word', () => {
         expect(redactText('endpoint_https://alice:secret@host.example/x')).toBe('endpoint_https://***:***@host.example/x');
     });

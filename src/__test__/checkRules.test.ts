@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { makeTempDir } from './helpers/tempDir';
 
-type Case = { name: string; file: string; line: string; expect: string | null };
+/** `others` are further files in the same tree, for checks that follow imports across files. */
+type Case = { name: string; file: string; line: string; expect: string | null; others?: Record<string, string> };
 
 const SCRIPT = path.resolve(process.cwd(), 'scripts/check-rules.mjs');
 const { cases } = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/check-rules-cases.json'), 'utf8')) as { cases: Case[] };
@@ -30,8 +31,8 @@ function runOn(files: Record<string, string>): { status: number; output: string 
 }
 
 describe('scripts/check-rules.mjs', () => {
-    it.each(cases)('$name', ({ file, line, expect: rule }) => {
-        const result = runOn({ [file]: `${line}\n` });
+    it.each(cases)('$name', ({ file, line, expect: rule, others }) => {
+        const result = runOn({ ...others, [file]: `${line}\n` });
 
         if (rule === null) {
             expect(result).toEqual({ status: 0, output: expect.stringContaining('clean') });

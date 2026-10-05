@@ -1,5 +1,5 @@
 {
-    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it; `expect` is the rule reported at line 1, or null for a clean run.",
+    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it; `expect` is the rule reported at line 1 of `file`, or null for a clean run; `others` holds further files for checks that follow imports.",
     "cases": [
         {
             "name": "R10: template interpolation of prompt text",
@@ -804,6 +804,51 @@
             "file": "src/a.ts",
             "line": "function load(require: (id: string) => { exec(cmd: string): void }) { const api = require('child_process'); api.exec('x'); }",
             "expect": null
+        },
+        {
+            "name": "R36: shell option in spawn options imported from another file",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import { options } from './opts';\nspawn(cmd, args, options);\n"
+            }
+        },
+        {
+            "name": "R36: shell option in spawn options imported under another name",
+            "file": "src/opts.ts",
+            "line": "const base = { shell: true }; export { base as options };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import { options as opts } from './opts';\nspawn(cmd, args, opts);\n"
+            }
+        },
+        {
+            "name": "R36: shell option in default-exported spawn options",
+            "file": "src/opts.ts",
+            "line": "export default { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import opts from './opts';\nspawn(cmd, args, opts);\n"
+            }
+        },
+        {
+            "name": "R36: shell assigned on imported spawn options",
+            "file": "src/run.ts",
+            "line": "import { spawn } from 'child_process'; import { options } from './opts'; options.shell = true; spawn(cmd, args, options);",
+            "expect": "R36",
+            "others": {
+                "src/opts.ts": "export const options = {};\n"
+            }
+        },
+        {
+            "name": "R36 clean: exported shell option that never reaches a spawn call",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": null,
+            "others": {
+                "src/run.ts": "import { options } from './opts';\nconfigure(options);\n"
+            }
         }
     ]
 }

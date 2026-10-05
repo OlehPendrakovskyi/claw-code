@@ -364,8 +364,8 @@ function isSpawnCall(node, context) {
     return ts.isCallExpression(node) && PROCESS_SPAWNERS.has(calledExport(node, 'child_process', context.checker) ?? '');
 }
 
-/** Whether an object literal is the options of a spawn call: passed inline, or held in a variable that
- *  the same file passes to one (`const opts = { … }; spawn(cmd, args, opts)`). */
+/** Whether an object literal is the options of a spawn call: passed inline, held in a variable passed to
+ *  one (`const opts = { … }; spawn(cmd, args, opts)`), or default-exported to a file that passes it. */
 function isSpawnOptions(object, context) {
     if (!ts.isObjectLiteralExpression(object)) {
         return false;
@@ -381,19 +381,39 @@ function isSpawnOptions(object, context) {
         // `options = { … }` for a variable that reaches a spawn call.
         return isOptionsVariable(node.parent.left, context);
     }
+    if (ts.isExportAssignment(node.parent)) {
+        return [...context.spawnOptions].some(symbol => symbol.declarations?.includes(node.parent));
+    }
     return ts.isVariableDeclaration(node.parent) && isOptionsVariable(node.parent.name, context);
 }
 
-/** The symbols of variables that hold spawn options, by TypeScript symbol rather than name, so two
- *  scopes' `options` never collide. Starts from identifiers passed to a spawn call (and spread into
- *  one's options), then closes over composition: a plain alias (`const alias = options`) links both
- *  ways, because either name can then mutate the same object; a spread (`{ ...base }`) links one way,
- *  from the options to their source. */
-function spawnOptionSymbols(source, context) {
-    const symbolOf = node => {
-        const value = unwrap(node);
-        return ts.isIdentifier(value) ? context.checker.getSymbolAtLocation(value) : undefined;
-    };
+/** The symbol of the variable an identifier denotes, followed through imports to the exporting file's
+ *  declaration (`import { options } from './spawnOptions'`, a renamed or `export default` binding). */
+function valueSymbol(node, checker, depth = 0) {
+    const value = unwrap(node);
+    if (!ts.isIdentifier(value)) {
+        return undefined;
+    }
+    let symbol = checker.getSymbolAtLocation(value);
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+        symbol = checker.getAliasedSymbol(symbol);
+    }
+    const declaration = symbol?.declarations?.[0];
+    // `export default options`: the default export is that variable.
+    if (declaration !== undefined && ts.isExportAssignment(declaration) && ts.isIdentifier(declaration.expression) && depth < 8) {
+        return valueSymbol(declaration.expression, checker, depth + 1) ?? symbol;
+    }
+    return symbol;
+}
+
+/** The symbols of variables that hold spawn options, across the whole program and by TypeScript symbol
+ *  rather than name, so two scopes' `options` never collide and options imported from another file are
+ *  the exporting file's variable. Starts from identifiers passed to a spawn call (and spread into one's
+ *  options), then closes over composition: a plain alias (`const alias = options`) links both ways,
+ *  because either name can then mutate the same object; a spread (`{ ...base }`) links one way, from
+ *  the options to their source. */
+function spawnOptionSymbols(sources, context) {
+    const symbolOf = node => valueSymbol(node, context.checker);
     const edges = new Map();
     const link = (from, to) => {
         if (from !== undefined && to !== undefined) {
@@ -436,7 +456,7 @@ function spawnOptionSymbols(source, context) {
         }
         ts.forEachChild(node, visit);
     };
-    visit(source);
+    sources.forEach(visit);
     const pending = [...options];
     while (pending.length > 0) {
         for (const next of edges.get(pending.pop()) ?? []) {
@@ -449,10 +469,10 @@ function spawnOptionSymbols(source, context) {
     return options;
 }
 
-/** Whether an identifier is one of the file's spawn-options variables. */
+/** Whether an identifier is one of the program's spawn-options variables. */
 function isOptionsVariable(node, context) {
-    const value = unwrap(node);
-    return ts.isIdentifier(value) && context.spawnOptions.has(context.checker.getSymbolAtLocation(value));
+    const symbol = valueSymbol(node, context.checker);
+    return symbol !== undefined && context.spawnOptions.has(symbol);
 }
 
 /** Whether a value is an output channel created here: `….createOutputChannel(…)`. */
@@ -581,6 +601,7 @@ const checker = program.getTypeChecker();
 for (const file of files) {
     collectAssignments(program.getSourceFile(file), checker);
 }
+const spawnOptions = spawnOptionSymbols(files.map(file => program.getSourceFile(file)), { checker });
 for (const file of files) {
     const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
     const checks = CHECKS.filter(check => check.scope === scope || check.scope === 'all');
@@ -589,8 +610,8 @@ for (const file of files) {
         file,
         checker,
         outputChannels: outputChannelBindings(source),
+        spawnOptions,
     };
-    context.spawnOptions = spawnOptionSymbols(source, context);
     const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
     const visit = node => {
         for (const check of checks) {
