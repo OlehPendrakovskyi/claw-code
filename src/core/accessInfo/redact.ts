@@ -1,5 +1,5 @@
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
-const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|secret|credential|access_key|signature|authorization)/i;
+const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|secret|credential|access_key|signature|authorization|cookie)/i;
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
@@ -32,7 +32,13 @@ const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|crede
  *  long run is tried once rather than from each of its characters. */
 const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(["']?[A-Za-z0-9_.-]+["']?)\s*[:=]\s*/g;
 const VALUE_QUOTE = /["'`]/;
-const AUTHORIZATION_KEY = /authorization/i;
+/** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
+const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
+/** A credential header and its whole value (quoted, or the rest of the line), masked as `Name=***`. A value
+ *  that is already a bare `***` (a quoted value masked by an earlier pass) is left alone, so the fields
+ *  after it survive. A quoted value stays on its line, so an unterminated one never sends the match
+ *  scanning to the end of the text. */
+const CREDENTIAL_HEADER = /(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\*\*\*(?:[\s,;)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
 const NON_SPACE = /\S/;
 
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
@@ -79,8 +85,8 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
     for (let pair = KEY_SEPARATOR.exec(text); pair !== null; pair = KEY_SEPARATOR.exec(text)) {
         const start = KEY_SEPARATOR.lastIndex;
         const quoted = VALUE_QUOTE.test(text[start] ?? '');
-        // A quoted Authorization value is a credential too; unquoted ones are left to the Authorization rule.
-        const sensitive = SENSITIVE_KEY.test(pair[1]) || (quoted && AUTHORIZATION_KEY.test(pair[1]));
+        // A quoted Authorization or Cookie value is a credential too; unquoted ones are left to CREDENTIAL_HEADER.
+        const sensitive = SENSITIVE_KEY.test(pair[1]) || (quoted && CREDENTIAL_HEADER_KEY.test(pair[1]));
         if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }
@@ -100,7 +106,7 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
 export function redactPlainSecrets(text: string): string {
     return maskSensitivePairs(text)
-        .replace(/(["']?authorization["']?)\s*[:=]\s*("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\S+.*)/gi, '$1=***')
+        .replace(CREDENTIAL_HEADER, '$1=***')
         // Any length: a short Bearer token or `Basic YTo=` is still a credential. Basic is held to
         // base64 shape (whole 4-character groups, valid padding), so prose such as "basic usage" is left alone.
         .replace(/\b(bearer)\s+[A-Za-z0-9._~+/-]+=*/gi, '$1 ***')
@@ -114,10 +120,12 @@ const URL_TERMINATOR = /[\s"'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
- *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, or
- *  spaces up to the first `@` on its line, which fails toward hiding. Linear: a match never crosses a `/`
- *  or a line break. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n@]*@))/g;
+ *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
+ *  up to the first `@` on its line, or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  whitespace or a character that could start another reference). This fails toward hiding, so a
+ *  `//host:port/…@…` can be over-masked. Linear: no match crosses a line break or a character that could
+ *  start another match. */
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n@]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
@@ -173,13 +181,21 @@ function maskUserinfo(text: string): string {
         let atInAuthority = -1;
         let lastAt = -1;
         let nested = -1;
+        let malformedTail = false;
+        const start = schemeStart(text, at);
         let i = body;
         for (; i < text.length && !WHITESPACE.test(text[i]); i++) {
             // A `://` before any `/` sits inside a malformed authority (`alice:p://ss://x@host`): skip its `//`,
-            // which is no path, and go on. One after a `/` starts the next URL.
+            // which is no path, and go on. One after a `/` starts the next URL, unless what came before is an
+            // unparsable `user:…` with no `@` yet (`alice:P/ss://tail@host`): then the whole run stays one
+            // malformed userinfo, so its prefix is not left behind.
             if (text.startsWith('://', i)) {
-                if (slash !== -1) {
-                    break;
+                if (slash !== -1 && !malformedTail) {
+                    const ambiguous = start !== undefined && colonBeforeSlash && lastAt === -1 && !URL.canParse(text.slice(start, i));
+                    if (!ambiguous) {
+                        break;
+                    }
+                    malformedTail = true;
                 }
                 nested = nested === -1 ? i : nested;
                 colonBeforeSlash = true;
@@ -213,7 +229,6 @@ function maskUserinfo(text: string): string {
                 i = j;
             }
         }
-        const start = schemeStart(text, at);
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
         // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.

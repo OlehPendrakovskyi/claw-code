@@ -542,6 +542,24 @@ describe('redactText', () => {
         expect(redactText(json)).not.toContain('private-tail');
     });
 
+    it('masks cookie headers and cookie query values', () => {
+        expect(redactText('Cookie: theme=dark; session=abc123')).toBe('Cookie=***');
+        expect(redactText('Set-Cookie: session=abc123; Path=/; HttpOnly\nnext')).toBe('Set-Cookie=***\nnext');
+        expect(redactText('{"Cookie":"theme=dark; session=abc123","ok":1}')).toBe('{"Cookie"=***,"ok":1}');
+        expect(redactText('{"Authorization":"Bearer abc","ok":1}')).toBe('{"Authorization"=***,"ok":1}');
+        expect(redactText('GET https://host.example/?cookie=session-secret')).not.toContain('session-secret');
+        expect(redactText('GET https://[bad/x?cookie=session-secret ok')).toBe('GET https://[bad/x?cookie=*** ok');
+    });
+
+    it('masks a network-path userinfo whose password holds a slash', () => {
+        expect(redactText('clone failed: //alice:p/ss@host.example/repo.git')).toBe('clone failed: //***@host.example/repo.git');
+        expect(redactText('see a//b@c')).toBe('see a//b@c');
+    });
+
+    it('masks a userinfo with a slash before a nested ://', () => {
+        expect(redactText('failed https://alice:PRIVATE_PREFIX/ss://tail@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
     it('masks a userinfo holding spaces', () => {
         expect(redactText('failed https://alice:pass word@host.example/x')).toBe('failed https://***@host.example/x');
         expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
@@ -611,6 +629,8 @@ describe('redactText', () => {
             ' //'.repeat(size / 3),
             'x://a: '.repeat(size / 7),
             ' //a: '.repeat(size / 6),
+            '=//a:'.repeat(size / 5),
+            'cookie: "'.repeat(size / 9) + '\n',
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),
             'token="'.repeat(size / 7),
