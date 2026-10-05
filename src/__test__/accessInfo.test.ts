@@ -593,6 +593,20 @@ describe('redactText', () => {
         expect(redactText('GET https://[bad/x?cookie=session-secret ok')).toBe('GET https://[bad/x?cookie=*** ok');
     });
 
+    it('masks a bare value under any key naming a cookie, to the end of its line', () => {
+        expect(redactText('cookie_header=PRIVATE_VALUE')).toBe('cookie_header=***');
+        expect(redactText('cookieHeader=PRIVATE_VALUE\nnext')).toBe('cookieHeader=***\nnext');
+        expect(redactText('session_cookie: theme=dark; session=PRIVATE')).toBe('session_cookie=***');
+    });
+
+    it('masks a single-quoted credential whose escaped quote JSON serialisation doubled the backslash of', () => {
+        expect(redactText(JSON.stringify({ reason: "password='prefix\\'PRIVATE_SUFFIX'" }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: "sent Bearer 'prefix\\'PRIVATE_SUFFIX'" }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: 'token=`prefix\\`PRIVATE_SUFFIX`' }))).not.toContain('PRIVATE');
+        // Unserialised, the same values are masked whole and the text after them survives.
+        expect(redactText("password='prefix\\'PRIVATE_SUFFIX' ok")).toBe('password=*** ok');
+    });
+
     it('masks a network-path userinfo whose password holds a slash', () => {
         expect(redactText('clone failed: //alice:p/ss@host.example/repo.git')).toBe('clone failed: //***@host.example/repo.git');
         expect(redactText('see a//b@c')).toBe('see a//b@c');
@@ -813,6 +827,9 @@ describe('redactText', () => {
             '?a="'.repeat(size / 4),
             'a=b'.repeat(size / 3),
             'a://'.repeat(size / 4),
+            'https://h.example/?' + Array.from({ length: size / 16 }, (_, i) => `token${i}=x`).join('&'),
+            "password='" + '\\\\'.repeat(size / 2),
+            "bearer '" + '\\\\'.repeat(size / 2) + '\n',
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
             'x://a: '.repeat(size / 7),
@@ -896,6 +913,10 @@ describe('redactText', () => {
 });
 
 describe('redactEndpoint', () => {
+    it('masks each sensitive name once, in its first place, as searchParams.set did', () => {
+        expect(redactEndpoint('https://h.example/?token=a&q=x%20y&token=b&page=2')).toBe('https://h.example/?token=***&q=x+y&page=2');
+    });
+
     it('redacts userinfo from URLs', () => {
         expect(redactEndpoint('https://user:secret@example.com/mcp')).toBe(
             'https://***:***@example.com/mcp'

@@ -14,11 +14,22 @@ export function redactEndpoint(endpoint: string): string {
             url.password = '***';
             redacted = true;
         }
-        for (const key of [...url.searchParams.keys()]) {
-            if (SENSITIVE_PARAM.test(key)) {
-                url.searchParams.set(key, '***');
-                redacted = true;
+        // One detached pass, assigned once: `searchParams.set` per name rescans the list and reserialises the
+        // URL, which is quadratic in the number of sensitive names. As `set` does, the first of a sensitive
+        // name's entries keeps its place, masked, and the others go.
+        const query = new URLSearchParams();
+        const masked = new Set<string>();
+        for (const [key, value] of url.searchParams) {
+            if (!SENSITIVE_PARAM.test(key)) {
+                query.append(key, value);
+            } else if (!masked.has(key)) {
+                masked.add(key);
+                query.append(key, '***');
             }
+        }
+        if (masked.size > 0) {
+            url.search = query.toString();
+            redacted = true;
         }
         return redacted ? url.toString() : endpoint;
     } catch {
@@ -109,12 +120,12 @@ function escapedValueEnd(text: string, start: number): number {
 
 /** Where an unquoted secret ends. A password may hold spaces (`password=correct horse battery staple`),
  *  so the value runs to the end of its line, or to just before the next `key=` / `key:` pair on it, so that
- *  pair is still scanned (`key=a signature=b page=2`). Trailing whitespace is left outside. Linear: each
+ *  pair is still scanned (`key=a signature=b page=2`); with `wholeLine`, always to the end of its line. Trailing whitespace is left outside. Linear: each
  *  space is followed by at most one name run, and no two runs overlap. */
-function unquotedSecretEnd(text: string, start: number): number {
+function unquotedSecretEnd(text: string, start: number, wholeLine = false): number {
     let end = start;
     while (end < text.length && text[end] !== '\n' && text[end] !== '\r') {
-        if (text[end] === ' ' || text[end] === '\t') {
+        if (!wholeLine && (text[end] === ' ' || text[end] === '\t')) {
             NEXT_PAIR.lastIndex = end + 1;
             if (NEXT_PAIR.test(text)) {
                 break;
@@ -178,9 +189,15 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
         }
         return end;
     }
+    // JSON escapes neither `'` nor a backtick but doubles the backslash before one (`'a\\'b'` becomes
+    // `'a\\\\'b'`), so for these any backslash run before the quote escapes it: this fails toward hiding.
+    const anyRunEscapes = quote !== '"';
     if ((unclosed.get(quote) ?? text.length) > start) {
         for (let i = start + 1; i < text.length; i++) {
             if (text[i] === '\\') {
+                while (anyRunEscapes && text[i + 1] === '\\') {
+                    i++;
+                }
                 i++;
             } else if (text[i] === quote) {
                 return i + 1;
@@ -207,9 +224,11 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         const escaped = isEscapedQuote(text, start);
         const quoted = escaped || VALUE_QUOTE.test(text[start] ?? '');
         const composite = text[start] === '[' || text[start] === '{';
-        // A quoted, array or object Authorization or Cookie value is a credential too, masked whole; a bare one
+        // An Authorization or Cookie value is a credential too, under any key naming one (`cookie_header`), masked
+        // whole: a bare one to the end of its line, since a cookie list holds `name=value` pairs of its own.
         // is left to CREDENTIAL_HEADER, which takes the rest of its line.
-        const sensitive = SENSITIVE_KEY.test(pair[1]) || ((quoted || composite) && CREDENTIAL_HEADER_KEY.test(pair[1]));
+        const header = CREDENTIAL_HEADER_KEY.test(pair[1]);
+        const sensitive = header || SENSITIVE_KEY.test(pair[1]);
         if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }
@@ -217,7 +236,7 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         if (!quoted && !composite && MASKED_VALUE.test(text)) {
             continue;
         }
-        const end = quoted || composite ? valueEnd(text, start, NON_SPACE, unclosed) : unquotedSecretEnd(text, start);
+        const end = quoted || composite ? valueEnd(text, start, NON_SPACE, unclosed) : unquotedSecretEnd(text, start, header);
         if (end === start) {
             continue;
         }
@@ -254,8 +273,9 @@ export function stripTerminalCodes(text: string): string {
 }
 
 const BEARER = /\b(bearer)\s+/gi;
-/** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. */
-const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\.|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*/y;
+/** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. In a
+ *  single-quoted one, any backslash run escapes the quote after it, as in {@link valueEnd}. */
+const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*/y;
 
 /** Mask every Bearer token, of any length (a short one is still a credential), as `Bearer ***`. A token
  *  opened by an escaped quote, as in serialized error details (`"sent Bearer \\"a b\\""`), runs to its matching

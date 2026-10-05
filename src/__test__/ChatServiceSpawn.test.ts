@@ -893,6 +893,14 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
         });
 
+        it('redacts a single-quoted credential with an escaped quote in structured details', () => {
+            const { child, events } = start();
+            const details = { reason: "password='prefix\\'PRIVATE_SUFFIX'", ok: 1 };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
