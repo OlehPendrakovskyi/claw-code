@@ -504,6 +504,21 @@ describe('redactText', () => {
         expect(redactText("bad https://[bad/x?page=2&to%6ben='super-secret'")).toBe('bad https://[bad/x?page=2&to%6ben=***');
     });
 
+    it('masks a closed quoted value that spans lines', () => {
+        expect(redactText("secret='first-line\nprivate-second-line' next")).toBe('secret=*** next');
+        expect(redactText('GET https://[bad/x?token="first\nsecond" ok')).toBe('GET https://[bad/x?token=*** ok');
+    });
+
+    it('masks a backtick-quoted query value', () => {
+        expect(redactText('GET https://host.example/?token=`secret value` ok')).toBe('GET https://host.example/?token=*** ok');
+        expect(redactText('GET https://[bad/x?to%6ben=`secret value` ok')).toBe('GET https://[bad/x?to%6ben=*** ok');
+    });
+
+    it('masks a userinfo whose password holds a query-like pair', () => {
+        expect(redactText('failed https://alice:private&token=abc@host.example/x')).toBe('failed https://***:***@host.example/x');
+        expect(redactText('failed //alice:private&token=abc@host.example/x')).toBe('failed //***@host.example/x');
+    });
+
     it('masks the tail of an unterminated quoted value, as in truncated stderr', () => {
         expect(redactText('failed: password="correct horse battery staple\nnext line')).toBe('failed: password=***\nnext line');
         expect(redactText("failed: token='correct horse battery staple")).toBe('failed: token=***');
@@ -536,6 +551,8 @@ describe('redactText', () => {
             ' //'.repeat(size / 3),
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),
+            'token="'.repeat(size / 7),
+            'token=`'.repeat(size / 7) + "?a='".repeat(size / 4),
             '?a="'.repeat(size / 4) + '\n',
         ];
         for (const input of inputs) {

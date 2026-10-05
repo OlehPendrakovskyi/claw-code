@@ -1026,6 +1026,24 @@
             "file": "src/a.ts",
             "line": "import out from './buffer'; out.append(text);",
             "expect": null
+        },
+        {
+            "name": "R36 clean: a computed key held in a variable is not read by its spelling",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; const exec = 'execFile'; cp[exec](file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: a computed property name held in a variable",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const shell = 'cwd'; spawn(cmd, args, { [shell]: true });",
+            "expect": null
+        },
+        {
+            "name": "R36: a literal computed key still resolves",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp[('exec')](cmd);",
+            "expect": "R36"
         }
     ]
 }

@@ -253,13 +253,23 @@ function lastName(node) {
     if (ts.isPropertyAccessExpression(node)) {
         return node.name.text;
     }
+    // `a['b']` and `{ ['b']: … }` name `b`; `a[key]` names whatever `key` holds, which is out of scope.
     if (ts.isElementAccessExpression(node)) {
-        return lastName(node.argumentExpression);
+        return literalText(node.argumentExpression);
     }
-    if (ts.isComputedPropertyName(node) || ts.isParenthesizedExpression(node)) {
+    if (ts.isComputedPropertyName(node)) {
+        return literalText(node.expression);
+    }
+    if (ts.isParenthesizedExpression(node)) {
         return lastName(node.expression);
     }
     return undefined;
+}
+
+/** The text of a string or plain template literal, through unwrap()-able wrappers; undefined otherwise. */
+function literalText(node) {
+    const value = unwrap(node);
+    return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) ? value.text : undefined;
 }
 
 /** The expression under wrappers that do not change the value: parentheses, `await`, and
