@@ -79,6 +79,28 @@ function escapedValueEnd(text: string, start: number): number {
     return i;
 }
 
+/** Where an array or object value (`[ "a", "b" ]`, `{ "value": "x" }`) ends: after its matching bracket,
+ *  skipping quoted strings and their escapes, so nested and spaced contents are masked with it. One that
+ *  never closes, or holds an unclosed string, runs to the end of the text. A pass consumes the value it
+ *  measures, so no stretch is scanned twice. */
+function compositeValueEnd(text: string, start: number): number {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+        const c = text[i];
+        if (VALUE_QUOTE.test(c)) {
+            i++;
+            while (i < text.length && text[i] !== c) {
+                i += text[i] === '\\' ? 2 : 1;
+            }
+        } else if (c === '[' || c === '{') {
+            depth++;
+        } else if ((c === ']' || c === '}') && --depth === 0) {
+            return i + 1;
+        }
+    }
+    return text.length;
+}
+
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
  *  quote, across lines. One with no closing quote, as in truncated stderr, runs to the end of its line,
  *  so its tail is masked too. An unquoted value is a run of `unquoted` characters. `unclosed` records,
@@ -88,6 +110,9 @@ function escapedValueEnd(text: string, start: number): number {
 function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<string, number>): number {
     if (isEscapedQuote(text, start)) {
         return escapedValueEnd(text, start);
+    }
+    if (text[start] === '[' || text[start] === '{') {
+        return compositeValueEnd(text, start);
     }
     const quote = text[start];
     let end = start;
@@ -180,9 +205,11 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
  *  (running to the last `@` before a `/` or the end of its line), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
- *  `//host:port/…@…` can be over-masked. Linear: no match crosses a line break or a character that could
+ *  `//host:port/…@…` can be over-masked. When what follows `user:` cannot be a port (it holds a non-digit),
+ *  the password may hold both spaces and `/`, and the match runs to the last `@` within 256 characters on
+ *  its line. Linear: no match crosses a line break, and the unbounded forms stop at a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@|(?=[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@])[^\r\n]{0,256}@))/g;
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
@@ -277,10 +304,13 @@ function maskUserinfo(text: string): string {
         // `https://alice:pass word@host`: a space ended the scan inside a `user:password`. Fail toward hiding by
         // running on to the last `@` before a `/`, the end of the line or another `://`, since the password may
         // hold `@` too.
+        // When the text before the space does not parse (`alice:PRIVATE` is no port), the password may hold `/`
+        // as well, so the scan runs past `/` too.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && colonBeforeSlash && lastAt === -1) {
+            const stops = start !== undefined && !URL.canParse(text.slice(start, i)) ? '\r\n' : '/\r\n';
             let j = i;
-            while (j < text.length && !'/\r\n'.includes(text[j]) && !text.startsWith('://', j)) {
+            while (j < text.length && !stops.includes(text[j]) && !text.startsWith('://', j)) {
                 spacedAt = text[j] === '@' ? j : spacedAt;
                 j++;
             }

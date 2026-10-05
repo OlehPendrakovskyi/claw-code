@@ -881,6 +881,18 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('redacts an array credential in pretty-printed structured details and in stderr', () => {
+            const details = { tokens: ['PRIVATE_A', 'PRIVATE_B'], credentials: { value: 'PRIVATE_C' } };
+            const first = start();
+            first.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stderr.emit('data', Buffer.from(`${JSON.stringify(details, null, 2)}\nreal failure`));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts the error message itself', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));

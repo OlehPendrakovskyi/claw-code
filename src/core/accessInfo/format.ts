@@ -105,13 +105,16 @@ export function formatList(items: string[], emptyMessage: string) {
 
 /** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
+    // Every label this returns reaches the UI (Overview, reports), so each part is redacted.
+    const safeFallback = fallbackName === undefined ? undefined : redactText(fallbackName);
     if (typeof entry === 'string') {
         return redactText(entry);
     }
     if (!isRecord(entry)) {
-        return fallbackName;
+        return safeFallback;
     }
-    const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
+    const rawName = asString(entry.name) ?? asString(entry.id);
+    const name = rawName !== undefined ? redactText(rawName) : safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
     // redactText, not redactEndpoint, which leaves a malformed URL unchanged.
@@ -119,7 +122,7 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     if (name && endpoint) {
         return `${name} (${endpoint})`;
     }
-    return name ?? endpoint ?? fallbackName ?? '';
+    return name ?? endpoint ?? safeFallback ?? '';
 }
 
 /** Categorize key sources into env / file / config buckets for compact display. */

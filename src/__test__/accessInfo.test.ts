@@ -396,6 +396,13 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toContain('alice');
     });
 
+    it('redacts names, ids and fallbacks in named entries', () => {
+        expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
+        expect(formatNamedEntry({}, 'token=PRIVATE')).not.toContain('PRIVATE');
+        expect(formatNamedEntry(42, 'token=PRIVATE')).not.toContain('PRIVATE');
+    });
+
     it('redacts malformed endpoints in MCP server and tool labels', () => {
         const info = infoWith({
             mcpServers: [formatNamedEntry({ name: 'remote', url: 'https://alice:secret@[bad' }) ?? ''],
@@ -609,6 +616,12 @@ describe('redactText', () => {
         expect(redacted).toContain('page');
     });
 
+    it('masks a whole array or object credential value, spaced and nested', () => {
+        expect(redactText('{ "tokens": [ "PRIVATE" ], "ok": 1 }')).toBe('{ "tokens"=***, "ok": 1 }');
+        expect(redactText('{ "credentials": { "value": "PRIVATE", "more": [1, "]"] }, "ok": 1 }')).toBe('{ "credentials"=***, "ok": 1 }');
+        expect(redactText('token: [ "PRIVATE"')).not.toContain('PRIVATE');
+    });
+
     it('masks unpadded or truncated Basic values but keeps prose', () => {
         expect(redactText('sent Basic Zm9vOmJhcg')).toBe('sent Basic ***');
         expect(redactText('sent Basic dXNlcjpwYXN')).toBe('sent Basic ***');
@@ -632,6 +645,9 @@ describe('redactText', () => {
         expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
         expect(redactText('failed //alice:part one@PRIVATE_SUFFIX@host.example/x')).toBe('failed //***@host.example/x');
         expect(redactText('failed https://alice:part one@PRIVATE_SUFFIX@host.example/x')).toBe('failed https://***@host.example/x');
+        expect(redactText('clone failed: https://alice:PRIVATE_PREFIX PRIVATE_SUFFIX/word@host.example/repo')).not.toMatch(/PRIVATE|alice/);
+        expect(redactText('clone failed: //alice:PRIVATE_PREFIX PRIVATE_SUFFIX/word@host.example/repo')).not.toMatch(/PRIVATE|alice/);
+        expect(redactText('see https://example.com: docs/a@b')).toBe('see https://example.com: docs/a@b');
     });
 
     it('masks a query value that follows whitespace after the =', () => {
