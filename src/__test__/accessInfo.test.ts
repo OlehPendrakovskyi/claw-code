@@ -467,6 +467,14 @@ describe('redactText', () => {
         expect(redactText('see a//b@c and https://host.example//x@y')).toBe('see a//b@c and https://host.example//x@y');
     });
 
+    it('masks a userinfo holding a nested ://', () => {
+        expect(redactText('failed https://alice:p://ss@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
+    it('still redacts adjacent URLs one by one', () => {
+        expect(redactText('a,https://alice:secret@host.example/x,wss://bob:pw@other.example/y')).toBe('a,https://***:***@host.example/x,wss://***:***@other.example/y');
+    });
+
     it('masks a userinfo holding both a slash and a quote', () => {
         expect(redactText('failed https://alice:p/"ass@host/x')).toBe('failed https://***@host/x');
     });
@@ -510,6 +518,7 @@ describe('redactText', () => {
             'a://'.repeat(size / 4),
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
+            'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),
             '?a="'.repeat(size / 4) + '\n',
         ];

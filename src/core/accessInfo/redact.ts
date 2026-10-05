@@ -91,12 +91,14 @@ function schemeStart(text: string, separator: number): number | undefined {
     return start < separator && LETTER.test(text[start]) ? start : undefined;
 }
 
-/** Mask a userinfo holding a quote or angle bracket, which would end a URL found by {@link urlSpans} before
- *  its `@` (`https://alice:p"ass@host`, `https://alice:p/"ass@host`). The mask runs from the scheme to the
- *  last `@` before the first `/`. When a `:` comes before that `/`, the userinfo is a `user:password`
- *  whose password may hold `/`, so the mask runs to the last `@` before whitespace or the next `://`.
+/** Mask a malformed userinfo that would split a URL found by {@link urlSpans} before its `@`: one holding a
+ *  quote or angle bracket (`https://alice:p"ass@host`, `https://alice:p/"ass@host`), or a nested `://`
+ *  (`https://alice:p://ss@host`). A `://` before any `/` can only sit inside a malformed authority, so the
+ *  scan goes on past it instead of starting a new URL. The mask runs from the scheme to the last `@`
+ *  before the first `/`. When a `:` comes before that `/`, the userinfo is a `user:password` whose
+ *  password may hold `/`, so the mask runs to the last `@` before whitespace or a later `://`.
  *  Over-matching hides more, never less. Linear: each character is visited once. */
-function maskQuotedUserinfo(text: string): string {
+function maskMalformedUserinfo(text: string): string {
     let out = '';
     let copied = 0;
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
@@ -106,8 +108,15 @@ function maskQuotedUserinfo(text: string): string {
         let quote = -1;
         let atBeforeSlash = -1;
         let lastAt = -1;
+        let nested = -1;
         let i = body;
-        for (; i < text.length && !WHITESPACE.test(text[i]) && !text.startsWith('://', i); i++) {
+        for (; i < text.length && !WHITESPACE.test(text[i]); i++) {
+            if (text.startsWith('://', i)) {
+                if (slash !== -1 || nested !== -1) {
+                    break;
+                }
+                nested = i;
+            }
             const c = text[i];
             if (c === '/' && slash === -1) {
                 slash = i;
@@ -121,7 +130,8 @@ function maskQuotedUserinfo(text: string): string {
             }
         }
         const end = colonBeforeSlash ? lastAt : atBeforeSlash;
-        if (schemeStart(text, at) !== undefined && quote !== -1 && end > quote) {
+        const malformed = (quote !== -1 && end > quote) || (nested !== -1 && end > nested);
+        if (schemeStart(text, at) !== undefined && malformed) {
             out += `${text.slice(copied, body)}***@`;
             copied = end + 1;
         }
@@ -197,7 +207,7 @@ function maskSensitiveQuery(url: string): string {
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
     // 0. A quote or angle bracket would cut a URL short of its `@` or of a query value: mask those first.
-    const prepared = maskQuotedUserinfo(maskQueryPairs(text)).replace(NETWORK_PATH_USERINFO, '//***@');
+    const prepared = maskMalformedUserinfo(maskQueryPairs(text)).replace(NETWORK_PATH_USERINFO, '//***@');
     let out = '';
     let copied = 0;
     for (const [start, end] of urlSpans(prepared)) {
