@@ -698,6 +698,24 @@
             "expect": null
         },
         {
+            "name": "R54: an alias of the global Vitest hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "const setup = beforeEach; setup(() => vi.useFakeTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54 clean: an alias of a local function named beforeEach",
+            "file": "src/__test__/d.test.ts",
+            "line": "const beforeEach = (f: () => unknown) => f; const setup = beforeEach; setup(() => 1);",
+            "expect": null
+        },
+        {
+            "name": "R54 clean: an alias of the global Vitest hook with a block body",
+            "file": "src/__test__/d.test.ts",
+            "line": "const setup = beforeEach; setup(() => { vi.useFakeTimers(); });",
+            "expect": null
+        },
+        {
             "name": "R54 clean: a local function named beforeEach",
             "file": "src/__test__/d.test.ts",
             "line": "const beforeEach = (f: () => unknown) => f; beforeEach(() => 1);",

@@ -77,6 +77,16 @@ const MASK = '\u0000';
 // eslint-disable-next-line no-control-regex
 const MASKS = /\u0000/g;
 
+/** A JSON `\\u00XX` escape, at any depth (with its whole backslash run), of a character a key name can hold. */
+const NAME_ESCAPE = /(?<!\\)\\+u00(2[de]|3\d|[46][1-9a-f]|[57][0-9a]|5f)/gi;
+
+/** Text with the JSON escapes of name characters decoded (`"to\\u006ben"` is `"token"`), at any depth, so a
+ *  key spelled with them is still recognised. Only letters, digits, `_`, `.` and `-` are decoded; a quote or
+ *  backslash escape is left as it is, so no string's structure changes. */
+function decodeNameEscapes(text: string): string {
+    return text.replace(NAME_ESCAPE, (_escape, code: string) => String.fromCharCode(parseInt(code, 16)));
+}
+
 /** Text with every {@link MASK} shown as `***`. */
 function unmask(text: string): string {
     return text.replace(MASKS, '***');
@@ -333,7 +343,7 @@ function maskBearerTokens(text: string): string {
 
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
 export function redactPlainSecrets(text: string): string {
-    return unmask(maskPlainSecrets(text.replace(MASKS, '')));
+    return unmask(maskPlainSecrets(decodeNameEscapes(text.replace(MASKS, ''))));
 }
 
 /** {@link redactPlainSecrets}, leaving each value it masks as {@link MASK}. */
@@ -673,6 +683,14 @@ function maskUserinfo(text: string): string {
                 colonSeen ||= text[j] === ':';
                 spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
             }
+            // `https://alice:123 PRIVATE/part@host`: the prefix parses as a host and port, so the scan above stopped
+            // at the `/`. A run with no whitespace from there to an `@` is still the password: fail toward hiding.
+            // A `:` with nothing after it before the space (`https://example.com: docs/a@b`) is prose punctuation.
+            if (spacedAt === -1 && !ambiguous && colonBeforeSlash && text[j] === '/' && text[i - 1] !== ':') {
+                for (let k = j; k < text.length && !WHITESPACE.test(text[k]) && !text.startsWith('://', k); k++) {
+                    spacedAt = text[k] === '@' ? k : spacedAt;
+                }
+            }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
@@ -781,7 +799,7 @@ export function redactText(text: string): string {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
-    const plain = normalizeSpecialSchemes(stripTerminalCodes(text));
+    const plain = normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
     const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';

@@ -64,7 +64,8 @@ function moduleName(text) {
  *  for one of its exports, or undefined. An identifier is followed through its TypeScript symbol to its
  *  declaration, so lexical scope decides: a parameter or local that shadows an import resolves to
  *  itself, not to the import. Aliases (`const run = cp.exec`), bound copies (`cp.exec.bind(cp)`),
- *  destructuring, `require`, `import()`, `import x = require()` and `fs.promises` resolve the same way. */
+ *  destructuring, `require`, `import()`, `import x = require()` and `fs.promises` resolve the same way. An
+ *  undeclared Vitest hook (`beforeEach`) is the Vitest global's export. */
 function resolveValue(node, checker, depth = 0) {
     if (depth > 8) {
         return undefined;
@@ -89,7 +90,12 @@ function resolveValue(node, checker, depth = 0) {
     }
     if (ts.isIdentifier(node)) {
         const declaration = checker.getSymbolAtLocation(node)?.declarations?.[0];
-        return declaration === undefined ? undefined : resolveDeclaration(declaration, checker, depth + 1);
+        if (declaration === undefined) {
+            // A Vitest hook with nothing declaring it in scope is the Vitest global, so an alias of it
+            // (`const setup = beforeEach`) keeps its identity; a local of that name has a declaration.
+            return HOOKS.has(node.text) ? { module: 'vitest', member: node.text } : undefined;
+        }
+        return resolveDeclaration(declaration, checker, depth + 1);
     }
     const object = memberObject(node);
     if (object !== undefined) {

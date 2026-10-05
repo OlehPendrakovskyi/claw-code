@@ -868,6 +868,21 @@ describe('redactText', () => {
         );
     });
 
+    it('masks a credential whose JSON key is spelled with escapes', () => {
+        expect(redactText('{"to\\u006ben":"PRIVATE_VALUE","ok":1}')).toBe('{"token"=***,"ok":1}');
+        expect(redactText(JSON.stringify({ detail: '{"to\\u006Ben":"PRIVATE_VALUE"}' }))).not.toContain('PRIVATE');
+        expect(redactText('pass\\u0077ord=PRIVATE_VALUE')).toBe('password=***');
+        // A quote or backslash escape is no name character and stays escaped.
+        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\u0022q\\u0022","b":"\\u005c"}');
+    });
+
+    it('masks a spaced password with a slash after a prefix that parses as a port', () => {
+        expect(redactText('fetch https://alice:123 PRIVATE_SUFFIX/part@host.example/x failed')).toBe('fetch https://***@host.example/x failed');
+        expect(redactText(JSON.stringify({ error: 'fetch https://alice:123 PRIVATE_SUFFIX/part@host.example/x failed' }))).not.toContain('PRIVATE');
+        // Prose with a real port, or a bare `:`, keeps its text.
+        expect(redactText('https://host:8080 see /docs and mail bob@example.org')).toBe('https://host:8080 see /docs and mail bob@example.org');
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -1025,6 +1040,8 @@ describe('redactText', () => {
             ' //a' + '\n'.repeat(size / 2) + ':@',
             'https:/a:'.repeat(size / 9) + '\n@',
             'https:\n'.repeat(size / 7) + 'a',
+            '\\u0061'.repeat(size / 6) + '=',
+            'https://a:1 /'.repeat(size / 13) + '@',
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
