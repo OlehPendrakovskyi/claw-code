@@ -593,6 +593,24 @@ describe('redactText', () => {
         expect(redactText('GET https://[bad/x?cookie=session-secret ok')).toBe('GET https://[bad/x?cookie=*** ok');
     });
 
+    it('masks pass and passphrase values in URLs, plain text and JSON, but not bypass', () => {
+        expect(redactText('https://host.example/?pass=PRIVATE')).toBe('https://host.example/?pass=***');
+        expect(redactEndpoint('https://host.example/?pass=PRIVATE&page=2')).toBe('https://host.example/?pass=***&page=2');
+        expect(redactPlainSecrets('pass=PRIVATE')).toBe('pass=***');
+        expect(redactText('db_pass: PRIVATE')).toBe('db_pass=***');
+        expect(redactText('{"passphrase":"PRIVATE","ok":1}')).toBe('{"passphrase"=***,"ok":1}');
+        expect(redactText('?passphrase=PRIVATE')).toBe('?passphrase=***');
+        expect(redactText('bypass=ok passenger=yes')).toBe('bypass=ok passenger=yes');
+    });
+
+    it('masks a credential that serialised whitespace separates from its label', () => {
+        expect(redactText(JSON.stringify({ reason: 'token\t=PRIVATE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: 'token:\n PRIVATE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: 'sent Bearer\tPRIVATE', ok: 1 }))).toBe('{"reason":"sent Bearer ***","ok":1}');
+        expect(redactText(JSON.stringify({ reason: 'Authorization\r\n: PRIVATE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ detail: JSON.stringify({ reason: 'token\t=PRIVATE' }) }))).not.toContain('PRIVATE');
+    });
+
     it('masks a value opened by an escaped single quote or backtick past an escaped double quote', () => {
         expect(redactText('password=\\\'prefix\\"PRIVATE_SUFFIX\\\'')).toBe('password=***');
         expect(redactText('password=\\`prefix\\"PRIVATE_SUFFIX\\`')).toBe('password=***');
@@ -705,6 +723,13 @@ describe('redactText', () => {
         // An escape serialised again goes with its whole backslash run, so no quote is left escaped.
         expect(redactText('{"a":"x\\\\u0000","b":"keep"}')).toBe('{"a":"x","b":"keep"}');
         expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u0000=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
+    });
+
+    it('strips C1 control sequences and controls, raw and serialised, before matching credentials', () => {
+        expect(redactText('token\u009b0m=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('token\u009d0;title\u009c=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('to\u0085ken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('{"error":"token\\u009b0m=PRIVATE_VALUE"}')).not.toContain('PRIVATE');
     });
 
     it('strips terminal codes serialised more than once before matching credentials', () => {
@@ -852,6 +877,9 @@ describe('redactText', () => {
             "bearer '" + '\\\\'.repeat(size / 2) + '\n',
             'tokens=[\'' + '\\\\'.repeat(size / 2),
             '\\\\'.repeat(size / 2) + 'u001',
+            'token' + '\\\\'.repeat(size / 2) + '=',
+            'bearer' + '\\\\'.repeat(size / 2) + 'x',
+            '\u009d'.repeat(size / 2),
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
             'x://a: '.repeat(size / 7),

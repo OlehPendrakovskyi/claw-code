@@ -1,5 +1,5 @@
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
-const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|secret|credential|access_key|signature|authorization|cookie)/i;
+const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|secret|credential|access_key|signature|authorization|cookie)/i;
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
@@ -37,12 +37,16 @@ export function redactEndpoint(endpoint: string): string {
     }
 }
 
-/** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, … */
-const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|credential|access[_-]?key|signature/i;
+/** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare
+ *  `pass` must stand apart from other letters, so `bypass` and `passenger` are left alone. */
+const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|credential|access[_-]?key|signature/i;
+/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with up to 15 backslashes at deeper levels). The
+ *  bound keeps a long backslash run from being retried from each of its lengths. */
+const SPACE = String.raw`(?:\s|\\{1,15}[tnr])`;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
  *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
  *  long run is tried once rather than from each of its characters or backslashes. */
-const KEY_SEPARATOR = /(?<![A-Za-z0-9_.\\-])(\\*["']?[A-Za-z0-9_.-]+\\*["']?)\s*[:=]\s*/g;
+const KEY_SEPARATOR = new RegExp(String.raw`(?<![A-Za-z0-9_.\\-])(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
@@ -53,10 +57,13 @@ const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
  *  `?` or `&` is a query parameter, which the query passes handle. A quoted value stays on its line, so an unterminated one never sends the match
  *  scanning to the end of the text. */
 // eslint-disable-next-line no-control-regex
-const CREDENTIAL_HEADER = /(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)\s*[:=]\s*(?!\u0000(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|`(?:\\.|[^`\\\r\n])*`|\S+.*)/gi;
+const CREDENTIAL_HEADER = new RegExp(
+    String.raw`(?<![?&])(["']?(?:authorization|(?:set-)?cookie)["']?)${SPACE}*[:=]${SPACE}*(?!\u0000(?:[,)\]}]|$))("(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|${'`'}(?:\\.|[^${'`'}\\\r\n])*${'`'}|\S+.*)`,
+    'gi'
+);
 const NON_SPACE = /\S/;
 /** The key and separator of a pair that follows an unquoted secret on its line (`page=2`, `"name":`). */
-const NEXT_PAIR = /\\*["']?[A-Za-z0-9_.-]+\\*["']?[ \t]*[:=]/y;
+const NEXT_PAIR = new RegExp(String.raw`\\*["']?[A-Za-z0-9_.-]+\\*["']?(?:[ \t]|\\{1,15}t)*[:=]`, 'y');
 /** A value an earlier pass already masked, left bare (`?token=*** ok`). Only {@link MASK} counts: a `***` in the
  *  input is text like any other (`password=*** PRIVATE` is a password holding spaces). */
 // eslint-disable-next-line no-control-regex
@@ -263,8 +270,9 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
 }
 
 /** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
- *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`; or an OSC
- *  sequence (`ESC]0;title`) ended by BEL or ST (`ESC\\`). A truncated OSC runs to the next ESC, BEL or line
+ *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`, or opened
+ *  by the single C1 byte CSI (U+009B); or an OSC sequence (`ESC]0;title`, or C1 OSC, U+009D) ended by BEL or ST
+ *  (`ESC\\` or U+009C). A truncated OSC runs to the next ESC, BEL, ST or line
  *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
  *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), are stripped too; a serialised
  *  OSC stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
@@ -272,12 +280,12 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  backslash is left escaping the next character, a closing quote included. A match starts only where a
  *  run does, which keeps a long run linear. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b\r\n]*(?:\u0007|\u001b\\)?|(?<!\\)\\+(?:u001b|x1b)\[[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b\]|\u009d)[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:u001b|x1b)\][^\\"\r\n]*(?:\\(?:u0007|x07)|\\(?:u001b|x1b)\\\\)?/gi;
 
-/** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, …), raw or serialised
+/** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
 // eslint-disable-next-line no-control-regex
-const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]|(?<!\\)\\+(?:u00|x)(?:0[0-8bcef]|1[0-9a-f]|7f)/gi;
+const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!\\)\\+(?:u00|x)(?:0[0-8bcef]|1[0-9a-f]|7f|[89][0-9a-f])/gi;
 
 /** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
  *  which could sit between a label and its value (`token\u0000=…`). */
@@ -285,7 +293,7 @@ export function stripTerminalCodes(text: string): string {
     return text.replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
 }
 
-const BEARER = /\b(bearer)\s+/gi;
+const BEARER = new RegExp(String.raw`\b(bearer)${SPACE}+`, 'gi');
 /** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. In a
  *  single-quoted one, any backslash run escapes the quote after it, as in {@link valueEnd}. */
 const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|[A-Za-z0-9._~+/-]+=*/y;
@@ -329,11 +337,11 @@ function maskPlainSecrets(text: string): string {
     return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
         // Any length: `Basic YTo=` is still a credential. Basic is held to base64 shape (whole 4-character
         // groups, valid padding), so prose such as "basic usage" is left alone.
-        .replace(/\b(basic)\s+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])/gi, '$1 ***')
+        .replace(new RegExp(String.raw`\b(basic)${SPACE}+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])`, 'gi'), '$1 ***')
         // An unpadded or truncated value (`Basic Zm9vOmJhcg`) is still a credential when it looks encoded: eight or
         // more base64 characters holding a digit, `+`, `/` or a capital after the first. Case-sensitive on
         // purpose, so prose such as "Basic Authentication" is left alone.
-        .replace(/\b([Bb][Aa][Ss][Ii][Cc])\s+(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*(?![A-Za-z0-9+/=])/g, '$1 ***');
+        .replace(new RegExp(String.raw`\b([Bb][Aa][Ss][Ii][Cc])${SPACE}+(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*(?![A-Za-z0-9+/=])`, 'g'), '$1 ***');
 }
 
 const SCHEME_CHAR = /[a-z0-9+.-]/i;
