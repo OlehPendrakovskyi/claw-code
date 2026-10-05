@@ -987,6 +987,25 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts line-split query credentials in details before flattening them', () => {
+            for (const sep of ['\t', '\n', '\r\n']) {
+                const { child, events } = start();
+                const details = `fetch https://host.example/?token=PREFIX${sep}PRIVATE_SUFFIX failed`;
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                child.emit('close', 1, null);
+                const message = (events[0] as { message: string }).message;
+                expect(message).not.toContain('PRIVATE');
+                expect(message).toContain('failed');
+            }
+        });
+
+        it('redacts a query value whose name a line break splits, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https://host.example/?to\nken=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

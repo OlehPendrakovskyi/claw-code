@@ -420,8 +420,9 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
     }
     return out + text.slice(copied);
 }
-/** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
-const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
+/** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value.
+ *  A name may hold the tabs and line breaks a URL parser drops (`?to\nken=`). */
+const QUERY_NAME = /([?&])((?:[^=&#?\s"'`<>]|[\t\r\n])*)=/g;
 const QUERY_VALUE_STOP = /[&#\s]/;
 /** A run of whitespace, raw or serialised ({@link SPACE}), possibly empty. */
 const LEADING_SPACE = new RegExp(`${SPACE}*`, 'y');
@@ -672,7 +673,8 @@ const URL_QUERY_PARAM = /([?&])([^=&#?\s]*)=([^&#\s]*)/g;
  *  decode counts as sensitive, so this fails toward hiding. */
 function isSensitiveQueryName(name: string): boolean {
     try {
-        return SENSITIVE_PARAM.test(decodeURIComponent(name.replace(/\+/g, ' ')));
+        // A URL parser drops tabs and line breaks before decoding: `to\tken` is `token`.
+        return SENSITIVE_PARAM.test(decodeURIComponent(name.replace(PARSER_IGNORED, '').replace(/\+/g, ' ')));
     } catch {
         return true;
     }

@@ -843,6 +843,13 @@ describe('redactText', () => {
         expect(redactText('https://[bad/x?token=abc\n')).toBe('https://[bad/x?token=***\n');
     });
 
+    it('masks a query value whose name tabs or line breaks split, as a URL parser reads it', () => {
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`https://host.example/?to${sep}ken=PRIVATE_VALUE`)).not.toContain('PRIVATE');
+            expect(redactText(`see https://[bad/x?pass${sep}word=PRIVATE_VALUE ok`)).not.toContain('PRIVATE');
+        }
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -991,6 +998,7 @@ describe('redactText', () => {
             'https://a\n'.repeat(size / 10) + ':@',
             'Basic ' + 'ejpz'.repeat(size / 4),
             '?token=a' + '\n'.repeat(size),
+            '?a' + '\n'.repeat(size) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
             'Basic "' + 'A'.repeat(size),

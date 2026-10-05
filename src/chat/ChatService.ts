@@ -601,18 +601,24 @@ function withErrorDetails(message: string | undefined, details: unknown): string
     // Terminal codes come out of string values before serialising, which would turn ESC into a literal `\u001b`.
     const plainDetails = withoutTerminalCodes(details);
     const raw = typeof plainDetails === 'string' ? plainDetails : plainDetails === undefined || plainDetails === null ? '' : stringifyToolEvent(plainDetails);
-    // Terminal codes first, every CSI form (a code turned into a space would split a label from its value),
-    // then every other control run becomes one space.
-    // eslint-disable-next-line no-control-regex
-    const flat = stripTerminalCodes(raw).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     const safeMessage = message === undefined ? undefined : redactText(message);
+    const flat = flattenDetails(raw);
     if (flat === '' || flat === message) {
         return safeMessage;
     }
-    // Redact the whole detail before cutting it: a cut could separate a credential from what marks it as one.
-    const safe = redactText(flat);
+    // Redact the whole detail before flattening and cutting it. A line break that a URL parser drops, turned
+    // into a space, would split a credential (`?token=PREFIX\nSUFFIX`), and a cut could separate a credential
+    // from what marks it as one.
+    const safe = flattenDetails(redactText(raw));
     const bounded = safe.length > ERROR_DETAILS_MAX_CHARS ? `${safe.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : safe;
     return safeMessage === undefined ? bounded : `${safeMessage}: ${bounded}`;
+}
+
+/** Details on one line: terminal codes first, every CSI form (a code turned into a space would split a label
+ *  from its value), then every other control run becomes one space. */
+function flattenDetails(text: string): string {
+    // eslint-disable-next-line no-control-regex
+    return stripTerminalCodes(text).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
 }
 
 /** A copy of a JSON value with terminal codes stripped from every string in it, keys included. */

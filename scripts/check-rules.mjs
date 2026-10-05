@@ -27,6 +27,8 @@ const TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
 const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', 'payload', 'chunk', 'frame']);
 /** Methods whose result is a boolean or a number, not text. Any other method called on a text value
  *  (`slice`, `replace`, `split`, `padEnd`, …) is treated as still carrying text. */
+/** Property names that describe a value rather than hold it: `text.length`, `msg.body.type`. */
+const METADATA_NAMES = new Set(['length', 'size', 'type', 'kind', 'id', 'count']);
 const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search', 'charCodeAt', 'codePointAt', 'localeCompare', 'test']);
 /** Methods that write their arguments to a log or output surface, on a receiver that is a logger (`log`,
  *  `logger`, `this.logger`, `console`, …): the logger levels, VS Code's `OutputChannel` (`append`,
@@ -317,11 +319,14 @@ function carriesText(node, checker) {
         // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
         const key = unwrap(node.argumentExpression);
         return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
-            ? TEXT_NAMES.has(key.text)
+            ? memberCarriesText(node, key.text)
             : carriesText(node.expression, checker);
     }
-    if (ts.isIdentifier(node) || ts.isPropertyAccessExpression(node)) {
-        return TEXT_NAMES.has(lastName(node) ?? '');
+    if (ts.isPropertyAccessExpression(node)) {
+        return memberCarriesText(node, node.name.text);
+    }
+    if (ts.isIdentifier(node)) {
+        return TEXT_NAMES.has(node.text);
     }
     if (ts.isCallExpression(node)) {
         const method = lastName(node.expression);
@@ -362,6 +367,33 @@ function carriesText(node, checker) {
         found ||= carriesText(child, checker);
     });
     return found;
+}
+
+/** Whether a member read carries text: its own name is a text name (`request.text`), or, unless it names
+ *  metadata (`text.length`, `msg.body.type`), a property it is read through is (`msg.body.data`,
+ *  `msg['body']['data']`). The root of the chain is judged by the last name alone, so `msg.type` and
+ *  `msg.threadId` are not text. */
+function memberCarriesText(node, name) {
+    if (TEXT_NAMES.has(name)) {
+        return true;
+    }
+    if (METADATA_NAMES.has(name)) {
+        return false;
+    }
+    for (let receiver = unwrap(node.expression); ; receiver = unwrap(receiver.expression)) {
+        if (ts.isPropertyAccessExpression(receiver)) {
+            if (TEXT_NAMES.has(receiver.name.text)) {
+                return true;
+            }
+        } else if (ts.isElementAccessExpression(receiver)) {
+            const key = unwrap(receiver.argumentExpression);
+            if ((ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) && TEXT_NAMES.has(key.text)) {
+                return true;
+            }
+        } else {
+            return false;
+        }
+    }
 }
 
 /** Whether a callee is `JSON.stringify` under another name: `const encode = JSON.stringify` or

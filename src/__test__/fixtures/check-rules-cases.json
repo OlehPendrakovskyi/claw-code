@@ -1178,6 +1178,30 @@
             "expect": null
         },
         {
+            "name": "R10: a field read through a payload-named property",
+            "file": "src/a.ts",
+            "line": "console.info(msg.body.data);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a field read through a payload-named literal key",
+            "file": "src/a.ts",
+            "line": "console.info(msg['body']['data']);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: metadata read through a payload-named property",
+            "file": "src/a.ts",
+            "line": "console.info(msg.body.length, msg.body.type, request.text.length);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: metadata of a payload-named root",
+            "file": "src/a.ts",
+            "line": "console.info(msg.type, msg.threadId);",
+            "expect": null
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",
