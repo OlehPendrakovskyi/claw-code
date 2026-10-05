@@ -928,6 +928,18 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
         });
 
+        it('redacts a credential whose key follows serialised whitespace, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE' })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            const details = { reason: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE', ok: 1 };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

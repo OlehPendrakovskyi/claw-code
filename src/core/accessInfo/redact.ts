@@ -40,13 +40,15 @@ export function redactEndpoint(endpoint: string): string {
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare
  *  `pass` must stand apart from other letters, so `bypass` and `passenger` are left alone. */
 const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|credential|access[_-]?key|signature/i;
-/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with up to 15 backslashes at deeper levels). The
- *  bound keeps a long backslash run from being retried from each of its lengths. */
-const SPACE = String.raw`(?:\s|\\{1,15}[tnr])`;
+/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with a longer backslash run at any deeper level). A
+ *  serialised one is matched only from the start of its backslash run, so a long run is tried once. */
+const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnr])`;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
  *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
- *  long run is tried once rather than from each of its characters or backslashes. */
-const KEY_SEPARATOR = new RegExp(String.raw`(?<![A-Za-z0-9_.\\-])(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
+ *  long run is tried once rather than from each of its characters or backslashes. A key may also start right
+ *  after serialised whitespace (`failure\nOPENAI_API_KEY=…` inside a JSON string), though not at a backslash
+ *  there, so a run of escapes (`\n\n\n…`) does not start a match at each one. */
+const KEY_SEPARATOR = new RegExp(String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\[tnr])(?=["'A-Za-z0-9_.-]))(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
@@ -63,7 +65,7 @@ const CREDENTIAL_HEADER = new RegExp(
 );
 const NON_SPACE = /\S/;
 /** The key and separator of a pair that follows an unquoted secret on its line (`page=2`, `"name":`). */
-const NEXT_PAIR = new RegExp(String.raw`\\*["']?[A-Za-z0-9_.-]+\\*["']?(?:[ \t]|\\{1,15}t)*[:=]`, 'y');
+const NEXT_PAIR = new RegExp(String.raw`\\*["']?[A-Za-z0-9_.-]+\\*["']?(?:[ \t]|(?<!\\)\\+t)*[:=]`, 'y');
 /** A value an earlier pass already masked, left bare (`?token=*** ok`). Only {@link MASK} counts: a `***` in the
  *  input is text like any other (`password=*** PRIVATE` is a password holding spaces). */
 // eslint-disable-next-line no-control-regex

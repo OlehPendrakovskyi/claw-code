@@ -611,6 +611,23 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ detail: JSON.stringify({ reason: 'token\t=PRIVATE' }) }))).not.toContain('PRIVATE');
     });
 
+    it('masks a Bearer or Basic credential after whitespace serialised at any depth', () => {
+        let bearer = 'Bearer\tPRIVATE_VALUE';
+        let basic = 'Basic\tYTo=';
+        for (let depth = 0; depth < 6; depth++) {
+            bearer = JSON.stringify(bearer);
+            basic = JSON.stringify(basic);
+            expect(redactText(bearer)).not.toContain('PRIVATE');
+            expect(redactText(basic)).not.toContain('YTo=');
+        }
+    });
+
+    it('masks a credential whose key follows serialised whitespace', () => {
+        expect(redactText(JSON.stringify({ reason: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE' }))).toBe('{"reason":"failure\\nOPENAI_API_KEY=***');
+        expect(redactText(JSON.stringify({ reason: 'x\ttoken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify(JSON.stringify({ reason: 'failure\r\npassword: PRIVATE_VALUE' })))).not.toContain('PRIVATE');
+    });
+
     it('masks a value opened by an escaped single quote or backtick past an escaped double quote', () => {
         expect(redactText('password=\\\'prefix\\"PRIVATE_SUFFIX\\\'')).toBe('password=***');
         expect(redactText('password=\\`prefix\\"PRIVATE_SUFFIX\\`')).toBe('password=***');
@@ -880,6 +897,9 @@ describe('redactText', () => {
             'token' + '\\\\'.repeat(size / 2) + '=',
             'bearer' + '\\\\'.repeat(size / 2) + 'x',
             '\u009d'.repeat(size / 2),
+            '\\\\n'.repeat(size / 3) + 'token',
+            'a\\\\n'.repeat(size / 4) + '=',
+            'token' + '\\\\'.repeat(size / 2) + 't=',
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
             'x://a: '.repeat(size / 7),
