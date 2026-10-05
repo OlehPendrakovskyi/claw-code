@@ -820,6 +820,22 @@ describe('redactText', () => {
         expect(redactText('Basic "Authentication" mode')).toBe('Basic "Authentication" mode');
     });
 
+    it('masks an unpadded Basic credential that decodes to a user:password pair, bare and quoted', () => {
+        expect(redactText('sent Basic ejpzcmtkcw ok')).toBe('sent Basic *** ok');
+        expect(redactText('sent Basic "ejpzcmtkcw" ok')).toBe('sent Basic *** ok');
+        expect(redactText(JSON.stringify({ reason: 'sent Basic ejpzcmtkcw' }))).not.toContain('ejpzcmtkcw');
+        // Prose decodes to no pair and is left alone.
+        expect(redactText('basic usage, Basic Authentication, basic setup guide')).toBe('basic usage, Basic Authentication, basic setup guide');
+    });
+
+    it('masks URL userinfo that line breaks split anywhere in the authority', () => {
+        expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('see https://alice:P\r\nQ\rR@host.example/x ok')).toBe('see https://***@host.example/x ok');
+        // A username alone is no secret: the line boundary stays.
+        expect(redactText('https://example.com\nbob@example.org')).toBe('https://example.com\nbob@example.org');
+    });
+
     it('masks URL userinfo split by a line break, as a URL parser reads it', () => {
         for (const eol of ['\n', '\r', '\r\n']) {
             expect(redactText(`https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
@@ -957,6 +973,8 @@ describe('redactText', () => {
             'https://a b '.repeat(size / 12) + '@',
             'https://a:b\n'.repeat(size / 12) + '@',
             'https://a:1\n'.repeat(size / 12) + '@',
+            'https://a\n'.repeat(size / 10) + ':@',
+            'Basic ' + 'ejpz'.repeat(size / 4),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
             'Basic "' + 'A'.repeat(size),
             '?token=' + '\\\\t'.repeat(size / 3) + '"',

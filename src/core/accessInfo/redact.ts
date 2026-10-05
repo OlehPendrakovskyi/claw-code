@@ -336,23 +336,38 @@ function maskPlainSecrets(text: string): string {
     return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
         // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
         // base64 tests as a bare one below, to its closing quote or the end of its run.
+        // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
+        // tests as a bare one, to its closing quote or the end of its run.
         .replace(QUOTED_BASIC, (match, word: string, _escape: string, _quote: string, value: string) =>
-            BASE64_WHOLE.test(value) || BASE64_ENCODED.test(value) ? `${word} ***` : match)
-        // Any length: `Basic YTo=` is still a credential. Basic is held to base64 shape (whole 4-character
-        // groups, valid padding), so prose such as "basic usage" is left alone.
-        .replace(new RegExp(String.raw`\b(basic)${SPACE}+(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)(?![A-Za-z0-9+/=])`, 'gi'), '$1 ***')
-        // An unpadded or truncated value (`Basic Zm9vOmJhcg`) is still a credential when it looks encoded: eight or
-        // more base64 characters holding a digit, `+`, `/` or a capital after the first. Case-sensitive on
-        // purpose, so prose such as "Basic Authentication" is left alone.
-        .replace(new RegExp(String.raw`\b([Bb][Aa][Ss][Ii][Cc])${SPACE}+(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*(?![A-Za-z0-9+/=])`, 'g'), '$1 ***');
+            isBasicCredential(value) ? `${word} ***` : match)
+        .replace(BARE_BASIC, (match, word: string, value: string) => isBasicCredential(value) ? `${word} ***` : match);
+}
+
+/** Whether a value after `Basic` is a credential (see {@link BASE64_WHOLE}, {@link BASE64_ENCODED} and
+ *  {@link decodesToPair}), so prose such as "basic usage" or "Basic Authentication" is left alone. */
+function isBasicCredential(value: string): boolean {
+    return BASE64_WHOLE.test(value) || BASE64_ENCODED.test(value) || decodesToPair(value);
+}
+
+/** Whether base64, padded or not, decodes to printable text holding a `:`, as a `user:password` pair does
+ *  (`ejpzcmtkcw` is `z:srkds`), whatever its letters look like. */
+function decodesToPair(value: string): boolean {
+    if (value.length < 4) {
+        return false;
+    }
+    return PRINTABLE_PAIR.test(Buffer.from(value, 'base64').toString('latin1'));
 }
 
 /** `Basic` and a quoted or escaped-quoted value: the word, then the value inside its quotes. */
 const QUOTED_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+(\\*)(["'${'`'}])([A-Za-z0-9+/]+=*)(?:\2\3)?(?![A-Za-z0-9+/=])`, 'gi');
-/** Whole base64: 4-character groups with valid padding. */
+/** `Basic` and a bare value. */
+const BARE_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+([A-Za-z0-9+/]+=*)(?![A-Za-z0-9+/=])`, 'gi');
+/** Printable ASCII holding a `:`. */
+const PRINTABLE_PAIR = /^[ -~]*:[ -~]*$/;
+/** Whole base64: 4-character groups with valid padding. Any length: `Basic YTo=` is still a credential. */
 const BASE64_WHOLE = /^(?:(?:[A-Za-z0-9+/]{4})+(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?|[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)$/;
 /** Unpadded or truncated base64 that looks encoded: eight or more characters holding a digit, `+`, `/` or a
- *  capital after the first. */
+ *  capital after the first (`Zm9vOmJhcg`). Case-sensitive on purpose, so "Authentication" is left alone. */
 const BASE64_ENCODED = /^(?=[A-Za-z0-9+/]{8})(?=[A-Za-z0-9+/]*[0-9+/]|[A-Za-z0-9+/][A-Za-z0-9+/]*[A-Z])[A-Za-z0-9+/]+=*$/;
 
 const SCHEME_CHAR = /[a-z0-9+.-]/i;
@@ -477,6 +492,43 @@ function normalizeSpecialSchemes(text: string): string {
     return out + text.slice(copied);
 }
 
+/** A tab or line break, which a URL parser drops anywhere in a URL. */
+const PARSER_IGNORED = /[\t\r\n]/g;
+
+/** Mask a URL userinfo that tabs or line breaks split, as a URL parser reads it: it drops them anywhere in a
+ *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password. The authority
+ *  runs, across them, to the first `/`, `?`, `#`, other whitespace or `://`; its userinfo runs to the last `@`
+ *  there and is masked as `***@` when, rejoined, it holds a `:`. A username alone is no secret, so
+ *  `https://example.com\nbob@example.org` keeps its line boundary. Linear: no scan crosses a `://`, and the
+ *  search for the next one resumes where a scan stopped. */
+function maskBrokenUserinfo(text: string): string {
+    let out = '';
+    let copied = 0;
+    for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
+        const body = at + 3;
+        let broken = false;
+        let lastAt = -1;
+        let k = body;
+        for (; k < text.length && !text.startsWith('://', k); k++) {
+            const c = text[k];
+            if (c === '\t' || c === '\r' || c === '\n') {
+                broken = true;
+            } else if (c === '/' || c === '?' || c === '#' || WHITESPACE.test(c)) {
+                break;
+            } else if (c === '@') {
+                lastAt = k;
+            }
+        }
+        if (broken && lastAt !== -1 && schemeStart(text, at) !== undefined &&
+            text.slice(body, lastAt).replace(PARSER_IGNORED, '').includes(':')) {
+            out += `${text.slice(copied, body)}***@`;
+            copied = lastAt + 1;
+        }
+        at = Math.max(at, k - 3);
+    }
+    return out + text.slice(copied);
+}
+
 /** Mask every URL's userinfo before the query pass or URL splitting can cut it apart
  *  (`https://alice:private&token=abc@host` would otherwise lose its `@` to the query pass). A URL that
  *  parses has the standard authority, ending at `/`, `?` or `#`. Its userinfo, up to the last `@` there,
@@ -553,21 +605,6 @@ function maskUserinfo(text: string): string {
                 }
                 colonSeen ||= text[j] === ':';
                 spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
-            }
-            // A URL parser drops line breaks inside a URL (`https://alice:P\nQ@host` has the password `PQ`), so a
-            // CR, LF or CRLF right where the scan stopped, after a `:`, does not end it: the next line's first run
-            // goes on, to its last `@`. That holds when the text before the break parses too (`alice:123` reads
-            // as a port, yet `https://alice:123\nQ@host` has the password `123Q`), so a `host:port` ending a line
-            // with `x@y` starting the next is masked as userinfo, as the parser reads it. Without a `:` before
-            // the break, the break ends the URL.
-            if (spacedAt === -1 && colonBeforeSlash && j === i) {
-                let k = j;
-                while (text[k] === '\r' || text[k] === '\n') {
-                    k++;
-                }
-                for (; k < text.length && !WHITESPACE.test(text[k]); k++) {
-                    spacedAt = text[k] === '@' ? k : spacedAt;
-                }
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
@@ -675,7 +712,7 @@ export function redactText(text: string): string {
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
     const plain = normalizeSpecialSchemes(stripTerminalCodes(text));
-    const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(plain).replace(NETWORK_PATH_USERINFO, '//***@'));
+    const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';
     let copied = 0;

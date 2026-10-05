@@ -973,6 +973,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE_SUFFIX');
         });
 
+        it('redacts an unpadded Basic credential and line-split URL userinfo on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('sent Basic ejpzcmtkcw\nfetch https://ali\nce:PRIVATE@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toMatch(/PRIVATE|ejpzcmtkcw/);
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
