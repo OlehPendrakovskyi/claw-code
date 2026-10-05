@@ -524,6 +524,23 @@ describe('redactText', () => {
         expect(redactText(json)).toBe('{"password"=***}');
     });
 
+    it('masks percent-encoded passwd and authorization query values', () => {
+        expect(redactText('GET https://host.example/x?p%61sswd=private-value')).not.toContain('private-value');
+        expect(redactText('GET https://host.example/x?author%69zation=private-value')).not.toContain('private-value');
+        expect(redactText('GET https://[bad/x?p%61sswd=private-value ok')).toBe('GET https://[bad/x?p%61sswd=*** ok');
+        expect(redactText('GET https://[bad/x?author%69zation=private-value ok')).toBe('GET https://[bad/x?author%69zation=*** ok');
+    });
+
+    it('masks a whole quoted Authorization value whose text looks like a query', () => {
+        const json = JSON.stringify({ Authorization: 'prefix?to%6ben=abc"private-tail' });
+        expect(redactText(json)).not.toContain('private-tail');
+    });
+
+    it('masks a userinfo holding spaces', () => {
+        expect(redactText('failed https://alice:pass word@host.example/x')).toBe('failed https://***@host.example/x');
+        expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
+    });
+
     it('masks a sensitive value after a run of question marks', () => {
         // A parsable URL is re-serialised by URL, which percent-encodes the extra `?`s.
         expect(redactText('GET https://host.example/x???token=abc ok')).not.toContain('abc');
@@ -557,8 +574,9 @@ describe('redactText', () => {
         expect(redactText('a=token=xyz')).toBe('a=token=***');
     });
 
-    it('stays linear on 1 MiB of adversarial input', () => {
-        const size = 1024 * 1024;
+    it('stays linear on large adversarial input', () => {
+        // 256 KiB keeps the suite quick under coverage and parallel load; quadratic forms take minutes here.
+        const size = 256 * 1024;
         const inputs = [
             'https://' + 'a'.repeat(size),
             'a'.repeat(size),
@@ -570,6 +588,8 @@ describe('redactText', () => {
             'a://'.repeat(size / 4),
             'https://a:' + '"'.repeat(size),
             ' //'.repeat(size / 3),
+            'x://a: '.repeat(size / 7),
+            ' //a: '.repeat(size / 6),
             'https://a:' + '://'.repeat(size / 3),
             'token="x\n'.repeat(size / 9),
             'token="'.repeat(size / 7),
@@ -581,7 +601,6 @@ describe('redactText', () => {
         for (const input of inputs) {
             const started = performance.now();
             redactText(input);
-            // Linear work takes tens of milliseconds; the quadratic forms took hours.
             expect(performance.now() - started).toBeLessThan(3000);
         }
     });

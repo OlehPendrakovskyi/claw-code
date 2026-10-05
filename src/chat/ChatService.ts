@@ -28,6 +28,9 @@ export const STDOUT_LINE_MAX_CHARS = 16 * 1024 * 1024;
 
 /** Stderr only surfaces as a failure message, so only its tail is kept. */
 export const STDERR_TAIL_MAX_CHARS = 16 * 1024;
+/** Raw stderr kept for redaction. Redaction sees this much more than the tail it reports, so a
+ *  credential's label is still there when its value is redacted. */
+export const STDERR_RAW_WINDOW_CHARS = 4 * STDERR_TAIL_MAX_CHARS;
 
 /** How long an aborted acpx gets after SIGTERM before it is SIGKILLed. */
 export const ABORT_KILL_GRACE_MS = 3000;
@@ -321,7 +324,9 @@ class AcpxRun {
     private readonly pendingLine: string[] = [];
     private pendingLineLength = 0;
     private droppingOversizedLine = false;
-    private stderrTail = '';
+    private stderrRaw = '';
+    /** True while discarding the rest of a stderr line whose start, and any label it held, was dropped. */
+    private droppingStderrLine = false;
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -396,8 +401,31 @@ class AcpxRun {
         return line;
     }
 
+    /** Keeps the raw end of stderr within STDERR_RAW_WINDOW_CHARS. An overflow is cut at a line break, and a
+     *  line whose start was cut off is dropped up to its newline, so no value outlives its label. */
     private onStderr(text: string): void {
-        this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL_MAX_CHARS);
+        let incoming = text;
+        if (this.droppingStderrLine) {
+            const lineBreak = incoming.indexOf('\n');
+            if (lineBreak === -1) {
+                return;
+            }
+            this.droppingStderrLine = false;
+            incoming = incoming.slice(lineBreak + 1);
+        }
+        const raw = this.stderrRaw + incoming;
+        if (raw.length <= STDERR_RAW_WINDOW_CHARS) {
+            this.stderrRaw = raw;
+            return;
+        }
+        const lineBreak = raw.indexOf('\n', raw.length - STDERR_RAW_WINDOW_CHARS);
+        this.stderrRaw = lineBreak === -1 ? '' : raw.slice(lineBreak + 1);
+        this.droppingStderrLine = lineBreak === -1;
+    }
+
+    /** The end of stderr, redacted over the whole raw window first, then cut to STDERR_TAIL_MAX_CHARS. */
+    private redactedStderrTail(): string {
+        return redactText(this.stderrRaw.trim()).slice(-STDERR_TAIL_MAX_CHARS);
     }
 
     private emitLine(line: string): void {
@@ -409,8 +437,9 @@ class AcpxRun {
         clearTimeout(this.killTimer);
         this.onStdout(this.stdoutDecoder.end());
         this.onStderr(this.stderrDecoder.end());
-        if (this.stderrTail.trim()) {
-            log.info(`acpx stderr: ${redactText(this.stderrTail.trim())}`);
+        const stderrTail = this.redactedStderrTail();
+        if (stderrTail) {
+            log.info(`acpx stderr: ${stderrTail}`);
         }
         if (!this.finished && !this.droppingOversizedLine) {
             this.emitLine(this.takePendingLine());
@@ -443,8 +472,9 @@ class AcpxRun {
         if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
-        // The tail is the child's raw stderr, shown in the chat and the log: redact credentials first.
-        const message = redactText(this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal)));
+        // Shown in the chat and the log: the agent's message is redacted here, the stderr tail already is.
+        const failure = this.parser.failureMessage;
+        const message = failure !== undefined ? redactText(failure) : this.redactedStderrTail() || exitReason(code, signal);
         log.error(`acpx error: ${message}`);
         return { type: 'error', message };
     }

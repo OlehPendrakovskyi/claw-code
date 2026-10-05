@@ -1,5 +1,5 @@
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
-const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|secret|credential|access_key|signature)/i;
+const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|secret|credential|access_key|signature|authorization)/i;
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
@@ -32,6 +32,7 @@ const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|crede
  *  long run is tried once rather than from each of its characters. */
 const KEY_SEPARATOR = /(?<![A-Za-z0-9_.-])(["']?[A-Za-z0-9_.-]+["']?)\s*[:=]\s*/g;
 const VALUE_QUOTE = /["'`]/;
+const AUTHORIZATION_KEY = /authorization/i;
 const NON_SPACE = /\S/;
 
 /** Where a value that starts at `start` ends. A quoted value (with backslash escapes) runs to its closing
@@ -77,7 +78,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
     KEY_SEPARATOR.lastIndex = 0;
     for (let pair = KEY_SEPARATOR.exec(text); pair !== null; pair = KEY_SEPARATOR.exec(text)) {
         const start = KEY_SEPARATOR.lastIndex;
-        if (!SENSITIVE_KEY.test(pair[1]) || (quotedOnly && !VALUE_QUOTE.test(text[start] ?? ''))) {
+        const quoted = VALUE_QUOTE.test(text[start] ?? '');
+        // A quoted Authorization value is a credential too; unquoted ones are left to the Authorization rule.
+        const sensitive = SENSITIVE_KEY.test(pair[1]) || (quoted && AUTHORIZATION_KEY.test(pair[1]));
+        if (!sensitive || (quotedOnly && !quoted)) {
             continue;
         }
         const end = valueEnd(text, start, NON_SPACE, unclosed);
@@ -110,9 +114,10 @@ const URL_TERMINATOR = /[\s"'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
- *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, which
- *  fails toward hiding. Linear: a match never crosses a `/`. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*|(?=[^\s/@:"'`<>]*:)[^\s/]*)@/g;
+ *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, or
+ *  spaces up to the first `@` on its line, which fails toward hiding. Linear: a match never crosses a `/`
+ *  or a line break. */
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n@]*@))/g;
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
@@ -173,11 +178,26 @@ function maskUserinfo(text: string): string {
                 atInAuthority = authorityEnd === -1 ? i : atInAuthority;
             }
         }
+        // `https://alice:pass word@host`: a space ended the scan inside a `user:password`. Fail toward hiding by
+        // running on to the first `@` on the line, unless a `/` or another `://` comes first.
+        let spacedAt = -1;
+        if (i < text.length && slash === -1 && colonBeforeSlash && lastAt === -1) {
+            let j = i;
+            while (j < text.length && !'/\r\n@'.includes(text[j]) && !text.startsWith('://', j)) {
+                j++;
+            }
+            if (text[j] === '@') {
+                spacedAt = j;
+                i = j;
+            }
+        }
         const start = schemeStart(text, at);
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
-        const parsable = start !== undefined && URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
-        const end = parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
+        // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.
+        const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined &&
+            URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
+        const end = spacedAt !== -1 ? spacedAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
         if (start !== undefined && end !== -1 && body >= copied) {
             const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
             out += text.slice(copied, body) + masked;

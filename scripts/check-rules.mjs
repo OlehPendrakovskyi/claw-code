@@ -591,12 +591,23 @@ function isLoggerDeclaration(declaration, context, depth) {
     if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
         const symbol = context.checker.getSymbolAtLocation(declaration.name);
         const values = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])].filter(v => v !== undefined);
-        if (values.length > 0) {
-            return values.some(v => isChannelCreation(v) || isLoggerReceiver(v, context, depth + 1));
+        if (values.some(v => isChannelCreation(v) || isLoggerReceiver(v, context, depth + 1))) {
+            return true;
+        }
+        // A value the check cannot follow, such as a factory call (`const log = makeLogger()`), leaves the
+        // decision to the naming convention below; a value it can follow, such as `const out = 1`, does not.
+        if (values.length > 0 && !values.some(v => isOpaqueValue(v))) {
+            return false;
         }
     }
     const name = declaration.name !== undefined ? lastName(declaration.name) : undefined;
     return LOGGER_NAME.test(name ?? '');
+}
+
+/** Whether a value comes out of a call or `new`, whose result the check cannot see. */
+function isOpaqueValue(node) {
+    const value = unwrap(node);
+    return ts.isCallExpression(value) || ts.isNewExpression(value);
 }
 
 /** Whether an import binds a logger, under any local name. An import from another file of the program is

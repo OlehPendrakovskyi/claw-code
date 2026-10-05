@@ -1056,6 +1056,24 @@
             "file": "src/a.ts",
             "line": "class A { send(prompt: string, key: string) { this[key].info(prompt); } }",
             "expect": null
+        },
+        {
+            "name": "R10: a logger from a factory call",
+            "file": "src/a.ts",
+            "line": "function makeLogger() { return console; } const log = makeLogger(); log.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a factory result under a non-logger name",
+            "file": "src/a.ts",
+            "line": "function makeBuffer() { return []; } const out = makeBuffer(); out.append(prompt);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a logger-named local holding a plain value",
+            "file": "src/a.ts",
+            "line": "const log = { info(x: string) {} }; log.info(prompt);",
+            "expect": null
         }
     ]
 }

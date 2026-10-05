@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
-import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_TAIL_MAX_CHARS, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
+import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_RAW_WINDOW_CHARS, STDERR_TAIL_MAX_CHARS, STDOUT_LINE_MAX_CHARS, ABORT_KILL_GRACE_MS } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
 
 vi.mock('child_process', () => ({ spawn: vi.fn() }));
@@ -155,6 +155,37 @@ describe('ChatService buffer and abort bounds', () => {
             child.stderr.emit('data', Buffer.from(head + 'x'.repeat(STDERR_TAIL_MAX_CHARS - head.length - 1)));
             child.emit('close', 1, null);
             expect((events[0] as { message: string }).message).toBe(`the real failure  \n${'x'.repeat(STDERR_TAIL_MAX_CHARS - head.length - 1)}`);
+        });
+
+        it('redacts before truncating, so a label just outside the tail still masks its value', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`token=top-secret\n${'x'.repeat(STDERR_TAIL_MAX_CHARS - 11)}`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('top-secret');
+        });
+
+        it('masks a credential split across chunks', () => {
+            const { child, events } = start();
+            ['auth failed: tok', 'en=top', '-secret\n'].forEach(part => child.stderr.emit('data', Buffer.from(part)));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('auth failed: token=***');
+        });
+
+        it('masks a multiline quoted credential split across chunks', () => {
+            const { child, events } = start();
+            ['password="first-line\n', 'second-line" done\n'].forEach(part => child.stderr.emit('data', Buffer.from(part)));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('first-line');
+            expect(message).not.toContain('second-line');
+        });
+
+        it('drops a line whose start, and its label, fell out of the raw window', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`token=${'a'.repeat(STDERR_RAW_WINDOW_CHARS)}`));
+            child.stderr.emit('data', Buffer.from('secret-tail\nthe real error'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('the real error');
         });
 
         it('prefers an agent failure message over the stderr tail', () => {
