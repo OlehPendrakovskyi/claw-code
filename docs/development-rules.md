@@ -8,7 +8,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 - **Grouped by topic, not by date.** Position in the file carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project and are the portable part of this file; *claw-code* rules apply to this repository. A General rule's principle carries over as written, but its examples, file paths, issue references and Check line are this repository's and must be adapted when the rule is copied elsewhere.
-- **Check** says how a rule is verified: the compiler, the linter, CI, a test, or the review checklist at the end of this file.
+- **Check** says how a rule is verified: the compiler, the linter, CI, a test, or the review checklist at the end of this file. Mechanical checks live in `scripts/check-rules.mjs`, which parses the code and catches the ordinary ways a rule is broken (any local name, import style, dot or literal-key access) but not deliberate obfuscation, which is review's job; the PR template (`.github/pull_request_template.md`) carries the review items; `AGENTS.md` points coding agents here.
 
 | Topic | Rules |
 | --- | --- |
@@ -35,7 +35,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist; interleaving tests (R7).
 
 **R4. A Promise is never checked as a boolean.** *General, MUST.* Async validation happens only via `await`. An unchecked Promise is always truthy.
-*Check:* review checklist.
+*Check:* `pnpm run lint` (type-aware oxlint; `no-floating-promises` and `no-misused-promises` are errors).
 
 **R11. Background process infrastructure.** *General, MUST.* Interval ≥ maximum run duration (no overlaps); durable progress markers; single-flight.
 *Check:* review checklist.
@@ -111,13 +111,13 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review checklist.
 
 **R10. Log hygiene.** *General, MUST.* Never log secrets, prompts or file contents; log only counters, keys and ids.
-*Check:* review checklist. Known open violations are tracked as SEC-2 in the [roadmap](roadmap.md).
+*Check:* `pnpm run check:rules` parses each source file and flags any logger call (`log`, `logger`, `this.logger`, `console`, …) with a prompt- or payload-named value (`text`, `prompt`, `body`, …) or `JSON.stringify` in any argument. It judges by name, not by type, so review still applies.
 
 **R35. Credentials are redacted on every egress surface, not only in logs.** *General, MUST.* UI labels, tree descriptions, reports, error messages, and prompt wrappers pass a sanitiser (URL forms: userinfo and `?key=***`; plaintext: `key=…`, `OPENAI_API_KEY=…`, `"token":"…"`, `Bearer …`); a child process's `stderr` is sanitised too; never echo the raw value of a workspace setting back in an error. R10 covers logs only; this is the separate, equally mandatory surface. (Recurring class: 30 findings across PRs #1, #8, #11.)
 *Check:* review checklist.
 
 **R36. Workspace-configurable values are untrusted command/URL input.** *General, MUST.* Never interpolate a workspace setting into a shell; only `execFile` with an argv vector and a quote-aware parser. An action that executes or connects in a workspace context is gated on workspace trust, and a setting that can choose such an action is user-scoped so a workspace can neither supply nor disable it. A URL taken from settings is scheme-validated (allow-list) before it is opened. Do not conflate user-scope secret protection (R31) with workspace-trust gating. *In claw-code:* `autoConnect` and the hardening command are gated on `workspace.isTrusted` and are application-scoped user settings; `openDashboard` is deliberately not trust-gated, because its http/https allow-list before `openExternal` is the entire protection for that path. (PR #1.)
-*Check:* review checklist.
+*Check:* `pnpm run check:rules` flags `exec`/`execSync` from `child_process` under any binding, and a `shell` option other than `false`, `null` or `undefined` on spawn options; trust gating and URL validation need review.
 
 **R30. External commands run only from absolute paths.** *General, MUST.* PATH entries without an absolute path (relative, repo-planted) are ignored (protection against planted `node.exe`/`cli.js`); npm/pnpm shims on Windows resolve to the JS entry and run through node without a shell; children never receive an empty PATH; PATH is read case-sensitively on POSIX.
 *Check:* review checklist; `searchPath` / `cliLauncher` tests.
@@ -146,8 +146,8 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 **R7. Tests exercise interleavings, not the happy path.** *General, MUST.* Send during abort, rebind during send, reconnect during a run, duplicate frames. Every fixed race gets a regression test that fails without the fix. A test that codifies wrong behaviour is a bug; when semantics change, re-read the test contracts.
 *Check:* review checklist.
 
-**R34. Every block of code gets unit tests.** *General, MUST.* Logic, branches, guards, parsers and error handlers are tested: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them. Coverage is not measured in CI yet, so until it is, this is a review obligation.
-*Check:* review checklist.
+**R34. Every block of code gets unit tests.** *General, MUST.* Logic, branches, guards, parsers and error handlers are tested: all condition branches, error paths and edge cases (empty/zero/NaN/missing values), interleavings and races, destructive lifecycle transitions (register/retire/replace), limit and budget boundaries. New code without tests is unfinished work; fixes ship with a regression test that fails without the fix. Integration/E2E tests complement unit tests but do not replace them.
+*Check:* coverage thresholds in `vitest.config.ts` (never below 90% on any metric), enforced on CI's Linux leg (`pnpm run test:coverage` locally); per-change coverage is a review item.
 
 **R49. A refactor that changes behaviour needs a test that fails without the change.** *General, MUST.* A green suite can still hide a semantic change: the change compiles, the old tests pass, and nothing exercises the edge. When a commit message says a caller "now observes" something different, that sentence is a test obligation. Cover the boundary explicitly — a rejected value, and what the caller sees instead. This matters most for extraction PRs, where the code looks unchanged because lines only moved between files. (PR #26 changed the token-count validator from "positive finite" to "positive safe integer" and moved a truncation suffix between layers; three of four findings were the untested new behaviour — a rejected count reads as `0`, not as the sent value.)
 *Check:* review checklist.
@@ -168,7 +168,7 @@ Living document, last updated 2026-10-04. It started as the claw-code retrospect
 *Check:* review — grep the diff for `await <call>(…).<prop>`.
 
 **R54. A test hook's return value is an instruction, not a leftover.** *General, MUST.* `beforeEach(() => spy.mockReset().mockResolvedValue(…))` returns the mock itself. Vitest runs a **returned function** as the test's teardown, so the same line calls the mock once more after every test, and the damage lands on whichever test that extra call breaks — it reads as an unrelated or flaky failure. Write hooks that perform work with braces, so they return nothing; where the value is wanted, assign it to a named local. Audit the whole suite for expression-bodied hooks, not just the one that failed: `beforeEach(() => vi.useFakeTimers())` returns the `vi` object, not a function — harmless by accident, not by design.
-*Check:* review checklist.
+*Check:* `pnpm run check:rules` flags expression-bodied hooks.
 
 ## Cross-platform and CI
 
@@ -184,7 +184,7 @@ Basis: PR #16 turned a copied Windows job into a ubuntu/windows/macos matrix and
 *Check:* `.github/workflows/ci.yml`.
 
 **R43. Tests own no absolute temp path.** *General, MUST.* Never `mkdtempSync('/tmp/...')` — `/tmp` does not exist on Windows, and on macOS `os.tmpdir()` is reached through a `/var → /private/var` symlink that a realpath-sensitive reader rejects. Use the shared helper that returns the **canonical** root, `fs.realpathSync.native(os.tmpdir())` (`src/__test__/helpers/tempDir.ts`), and build children with `path.join`. Build every path with `path.join`/`path.resolve`, never string `+ '/' +`. A fixture byte-compared across checkouts needs `.gitattributes: * text=auto eol=lf`, or Windows git rewrites it to CRLF.
-*Check:* review checklist; the Windows and macOS CI legs.
+*Check:* `pnpm run check:rules` flags `os.tmpdir()` outside the helper and `/tmp` in `mkdtemp`; the Windows and macOS CI legs.
 
 **R45. Paths shown to a user are normalised to forward slashes on every OS.** *General, MUST.* A `relativePath` compared against a query typed as `src/app` must be `path.relative(...).split(path.sep).join('/')` — otherwise it matches on POSIX and fails on Windows, which is a product bug (file search), not just a test concern.
 *Check:* the `handleFileSearch` tests in `viewMessagingHandlers.test.ts`, on the Windows CI leg.
@@ -234,7 +234,7 @@ The refactor phases (PRs #17, #20, #21, #26) produced bookkeeping faults rather 
 **R60. Copilot review protocol.** *General, MUST.* Verify every finding against HEAD (review snapshots are often stale). Reply in every thread, then resolve it: for a valid finding, what was done and the fixing commit; for an invalid one, the evidence (file, line, test or documentation) and no change. Read each review overview's **Open** and **Previously missed** sections as well as the inline threads. "Previously missed" findings have no thread, so answer them in one PR comment per review, finding by finding (valid → fixed in `<sha>`; invalid → the evidence). A finding that needs a code or dependency change outside the PR's scope is tracked (roadmap ID or issue), not silently dropped. Stop rule: a round that produces no commits ends the loop.
 *Check:* zero unresolved threads, and a disposition comment for every review with "Previously missed" items.
 
-**S6. Repository process.** *claw-code, MUST.* Explicit branch fetch (refspec hygiene, `git remote prune`); rebase onto the remote tip before pushing (verify with `ls-remote`); Conventional Commits; run the CI gates before every commit, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run compile`, `pnpm exec vitest run`, `pnpm run license:check`. Run the test runner directly as CI does: `pnpm run test` would repeat compile and lint through `pretest`. Diagnose hangs explicitly rather than force-terminating runs. Copilot reviews follow R60.
+**S6. Repository process.** *claw-code, MUST.* Explicit branch fetch (refspec hygiene, `git remote prune`); rebase onto the remote tip before pushing (verify with `ls-remote`); Conventional Commits; run the CI gates before every commit, in CI's order: `pnpm run typecheck`, `pnpm run lint`, `pnpm run check:rules`, `pnpm run compile`, `pnpm run test:coverage`, `pnpm run license:check`. `test:coverage` runs Vitest with the coverage thresholds that CI's Linux leg enforces; `pnpm run test` would repeat compile and lint through `pretest` and skip coverage. Diagnose hangs explicitly rather than force-terminating runs. Copilot reviews follow R60.
 *Check:* `.github/workflows/ci.yml` runs the same gates in the same order.
 
 **R55. Removing a tool is only complete when nothing names it.** *General, MUST.* After removing a tool, search the whole repository for its name — config, scripts, workflows, docs, and `/// <reference types="…" />` directives (which keep a removed package's types alive and hide the removal from `tsc`) — and change every invocation, not only the source that used it. Verify by running what CI runs, not what you just typed. (The Jest → Vitest migration went green locally while a CI step and a package script still named the old binary.)

@@ -8,7 +8,7 @@ export type HardeningMode = 'full' | 'audit' | 'auditFix';
 
 export async function readOpenClawConfig(
     configPath: string
-): Promise<{ config: unknown | null; error?: string }> {
+): Promise<{ config: unknown; error?: string }> {
     const uri = vscode.Uri.file(configPath);
     try {
         const raw = await vscode.workspace.fs.readFile(uri);

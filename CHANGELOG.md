@@ -8,6 +8,18 @@ Semantic Versioning.
 
 ## Unreleased
 
+### Fixed
+
+- Stop logging prompt text: a sent prompt is logged by length only, and the debug panel logs only a message's type.
+- Redact credentials, including URL userinfo such as `https://user:pass@host`, from the acpx stderr tail, in the log and in the error shown in the chat. One helper (`redactText`) now does this for the acpx stderr and run error, the Connect failure, Gateway transport errors, the access summary report and the hardening status output.
+- Wait for the tools view to refresh before confirming a tool toggle or uninstall, and report a failed refresh instead of dropping it.
+- Show a readable, redacted error when Connect fails, instead of the raw error value.
+
+### Changed
+
+- CI enforces more of the development rules: type-aware linting across the codebase (`pnpm run lint`), syntax-aware rule checks (`pnpm run check:rules`, using the TypeScript parser), and test-coverage thresholds of at least 90% on the Linux leg (`pnpm run test:coverage`). New tests for the setup, hardening, Overview, terminal, status bar and recommendation code raise coverage from 88% to 95% of statements.
+- Add a pull-request checklist and `AGENTS.md` for contributors and coding agents.
+
 ### Docs
 
 - Reorganise `docs/development-rules.md` by topic with stable rule IDs (R1–R55 keep their numbers; the former "claw-code specifics" become S1–S6), add strength, scope and a check to each rule, correct stale references, and add rules R56–R60 from the roadmap review.

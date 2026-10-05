@@ -302,6 +302,19 @@ describe('ChatViewProvider send lifecycle', () => {
             expect(threadOf(webview, 'thread-1').status).toBe('running');
         });
 
+        it('logs the size of a prompt, never its text', async () => {
+            const info = vi.mocked(viewMessaging.log.info);
+            info.mockClear();
+            const webview = makeProvider();
+
+            await webview.send({ type: 'send', threadId: 'thread-1', text: 'my private prompt' });
+            await flush();
+
+            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('handleSend: thread=thread-1, chars=17');
+            expect(logged).not.toContain('my private prompt');
+        });
+
         it('reports a failing backend resolve in the thread', async () => {
             const webview = makeProvider();
             mockResolve.mockRejectedValue(new Error('invalid gateway URL'));

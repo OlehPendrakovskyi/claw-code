@@ -1,0 +1,1031 @@
+{
+    "_comment": "Cases for scripts/check-rules.mjs. Kept as JSON, not .ts, so the script's own scan of src/ never sees these deliberate violations. Each case is written into a temporary tree and the script runs on it; `expect` is the rule reported at line 1 of `file`, or null for a clean run; `others` holds further files for checks that follow imports.",
+    "cases": [
+        {
+            "name": "R10: template interpolation of prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(`send: ${prompt}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: member access to prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(`prompt=${request.text}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: optional member access",
+            "file": "src/a.ts",
+            "line": "log.warn(`turn ${turn?.prompt}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: truncated prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(`text=\"${text.slice(0, 80)}\"`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as a direct argument",
+            "file": "src/a.ts",
+            "line": "log.info(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: payload as the first of several arguments",
+            "file": "src/a.ts",
+            "line": "log.error(msg.body, extra);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: serialised message",
+            "file": "src/a.ts",
+            "line": "log.info(`in: ${JSON.stringify(msg)}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a length",
+            "file": "src/a.ts",
+            "line": "log.info(`chars=${text.length}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: an error message",
+            "file": "src/a.ts",
+            "line": "log.error(`connect failed: ${message}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a name that only starts like a text name",
+            "file": "src/a.ts",
+            "line": "log.info(`ctx=${contextId}`);",
+            "expect": null
+        },
+        {
+            "name": "R10: a call split across lines",
+            "file": "src/a.ts",
+            "line": "log.info(\n    `p=${prompt}`\n);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 scope: test files may log anything",
+            "file": "src/__test__/a.test.ts",
+            "line": "log.info(text);",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec import",
+            "file": "src/b.ts",
+            "line": "import { exec } from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync import with node: prefix",
+            "file": "src/b.ts",
+            "line": "import { spawn, execSync } from 'node:child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile import",
+            "file": "src/b.ts",
+            "line": "import { execFile } from 'child_process';",
+            "expect": null
+        },
+        {
+            "name": "R43: os.tmpdir() in a test",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as os from 'os'; const dir = os.tmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: literal /tmp in mkdtemp",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R43 clean: the temp helper itself",
+            "file": "src/__test__/helpers/tempDir.ts",
+            "line": "import * as os from 'os'; export const TEMP_ROOT = fs.realpathSync.native(os.tmpdir());",
+            "expect": null
+        },
+        {
+            "name": "R43 scope: source files are not checked",
+            "file": "src/c.ts",
+            "line": "import * as os from 'os'; const dir = os.tmpdir();",
+            "expect": null
+        },
+        {
+            "name": "R54: expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "beforeEach(() => vi.useFakeTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: async expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach(async () => reset());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: hook with a bare context parameter",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach(ctx => ctx.cleanup);",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: hook with a parenthesised context parameter",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach((ctx) => ctx.cleanup);",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: hook with a typed parameter",
+            "file": "src/__test__/d.test.ts",
+            "line": "beforeEach(async (ctx: TestContext) => ctx.skip());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54 clean: block-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "beforeEach(() => {",
+            "expect": null
+        },
+        {
+            "name": "R54 clean: block-bodied hook with a context parameter",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach((ctx) => {",
+            "expect": null
+        },
+        {
+            "name": "R10: this.logger receiver",
+            "file": "src/a.ts",
+            "line": "this.logger.info(`prompt=${request.text}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as a later argument",
+            "file": "src/a.ts",
+            "line": "log.info('send', prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: console receiver",
+            "file": "src/a.ts",
+            "line": "console.log(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: text passed through a helper call",
+            "file": "src/a.ts",
+            "line": "log.info(`p=${shorten(prompt)}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: transformed text",
+            "file": "src/a.ts",
+            "line": "log.debug(`p=${prompt.trim().toLowerCase()}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a field of a payload that is not text",
+            "file": "src/a.ts",
+            "line": "log.info(`type=${msg.type}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: an error message through a helper",
+            "file": "src/a.ts",
+            "line": "log.error(`failed: ${errorMessage(err)}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a non-logger receiver",
+            "file": "src/a.ts",
+            "line": "panel.info(text);",
+            "expect": null
+        },
+        {
+            "name": "R36: exec import split across lines",
+            "file": "src/b.ts",
+            "line": "import {\n    spawn,\n    exec,\n} from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: renamed exec import",
+            "file": "src/b.ts",
+            "line": "import { exec as run } from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: tmpdir() through a destructured import",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { tmpdir } from 'node:os'; const dir = tmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R54: expression body on the next line",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach(() =>\n    vi.useRealTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R36: quoted shell option",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { \"shell\": true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec through a namespace import",
+            "file": "src/b.ts",
+            "line": "import * as childProcess from 'node:child_process'; childProcess.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync through a default import",
+            "file": "src/b.ts",
+            "line": "import cp from 'child_process'; cp.execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec through require",
+            "file": "src/b.ts",
+            "line": "const cp = require('child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: renamed exec through destructured require",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = require('child_process'); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile through a namespace import",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; cp.execFile(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: exec on an unrelated object",
+            "file": "src/b.ts",
+            "line": "const match = pattern.exec(text);",
+            "expect": null
+        },
+        {
+            "name": "R43: aliased tmpdir import",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { tmpdir as systemTmpdir } from 'node:os'; const dir = systemTmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: tmpdir through a namespace import with another name",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as system from 'os'; const dir = system.tmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R10: literal-key access to prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(request['text']);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: literal-key logger method",
+            "file": "src/a.ts",
+            "line": "log['info'](prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R36: exec through literal-key access",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; cp['exec'](cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10 out of scope: a key held in a variable",
+            "file": "src/a.ts",
+            "line": "const key = 'text'; log.info(request[key]);",
+            "expect": null
+        },
+        {
+            "name": "R10: output channel receiver",
+            "file": "src/a.ts",
+            "line": "outputChannel.appendLine(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a createOutputChannel binding under any name",
+            "file": "src/a.ts",
+            "line": "const out = vscode.window.createOutputChannel('x'); out.appendLine(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: shorthand property carries the value",
+            "file": "src/a.ts",
+            "line": "log.info({ text });",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a structured length under a text key",
+            "file": "src/a.ts",
+            "line": "log.info({ text: text.length });",
+            "expect": null
+        },
+        {
+            "name": "R36: exec through an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "const cp = await import('node:child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec destructured from a dynamic import",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = await import('child_process'); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: aliased mkdtempSync import",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { mkdtempSync as makeTemp } from 'node:fs'; makeTemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: mkdtemp through fs/promises namespace",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fsp from 'fs/promises'; await fsp.mkdtemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R36: computed literal shell key",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { ['shell']: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec on a require expression",
+            "file": "src/b.ts",
+            "line": "require('child_process').exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync on an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "(await import('node:child_process')).execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile on a require expression",
+            "file": "src/b.ts",
+            "line": "require('child_process').execFile(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R43: /tmp inside path.join",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(path.join('/tmp', 'x-'));",
+            "expect": "R43"
+        },
+        {
+            "name": "R43 clean: a path merely containing tmp",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(path.join(TEMP_ROOT, 'tmpfiles-'));",
+            "expect": null
+        },
+        {
+            "name": "R36: shell given as a path",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: '/bin/bash' });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shell from a variable",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: useShell });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shorthand shell option",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: shell explicitly false",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: false });",
+            "expect": null
+        },
+        {
+            "name": "R10: replace keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(prompt.replace(/\\s+/g, ' '));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: replaceAll keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(`p=${text.replaceAll('\\n', ' ')}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: split keeps the text",
+            "file": "src/a.ts",
+            "line": "log.info(prompt.split(' '));",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: an imported logger under another name",
+            "file": "src/a.ts",
+            "line": "import { log as out } from './shared'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a boolean about the text",
+            "file": "src/a.ts",
+            "line": "log.info(`slash=${text.startsWith('/')}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: an imported non-logger",
+            "file": "src/a.ts",
+            "line": "import { panel as out } from './view'; out.info(prompt);",
+            "expect": null
+        },
+        {
+            "name": "R36: require behind a type assertion",
+            "file": "src/b.ts",
+            "line": "const cp = require('child_process') as typeof import('child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: dynamic import behind satisfies and await",
+            "file": "src/b.ts",
+            "line": "const cp = (await import('node:child_process')) satisfies object; cp.execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R43: /tmp in a template literal head",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(`/tmp/openclaw-${id}-`);",
+            "expect": "R43"
+        },
+        {
+            "name": "R43 clean: a template under the canonical root",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; fs.mkdtempSync(`${TEMP_ROOT}/openclaw-${id}-`);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: an unrelated object with a shell field",
+            "file": "src/b.ts",
+            "line": "const profile = { shell: 'zsh', theme: 'dark' };",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: shell left undefined",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { shell: undefined });",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option in a variable passed to spawn",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const opts = { shell: true }; spawn(cmd, args, opts);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: import-only destructure behind a type assertion",
+            "file": "src/b.ts",
+            "line": "const { exec: run } = require('child_process') as typeof import('child_process');",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: import-only destructure from an awaited dynamic import",
+            "file": "src/b.ts",
+            "line": "const { execSync } = await import('node:child_process');",
+            "expect": "R36"
+        },
+        {
+            "name": "R43 clean: an unrelated function named tmpdir",
+            "file": "src/__test__/c.test.ts",
+            "line": "const tmpdir = vi.fn(); tmpdir();",
+            "expect": null
+        },
+        {
+            "name": "R43: tmpdir from a destructured require",
+            "file": "src/__test__/c.test.ts",
+            "line": "const { tmpdir } = require('os'); tmpdir();",
+            "expect": "R43"
+        },
+        {
+            "name": "R10: indexing into prompt text",
+            "file": "src/a.ts",
+            "line": "log.info(text[0]);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: indexing into a text field",
+            "file": "src/a.ts",
+            "line": "log.info(request.text[i]);",
+            "expect": "R10"
+        },
+        {
+            "name": "R36 clean: a local function named spawn",
+            "file": "src/b.ts",
+            "line": "function spawn(profile: object) {} spawn({ shell: 'zsh' });",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option spread into spawn options",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const opts = { shell: true }; spawn(cmd, args, { ...opts });",
+            "expect": "R36"
+        },
+        {
+            "name": "R43 clean: a local function named mkdtempSync",
+            "file": "src/__test__/c.test.ts",
+            "line": "const mkdtempSync = (p: string) => p; mkdtempSync('/tmp/x-');",
+            "expect": null
+        },
+        {
+            "name": "R36: exec member assigned from a require expression",
+            "file": "src/b.ts",
+            "line": "const run = require('child_process').exec;",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec member assigned from a namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.exec; run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile member assigned from a namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.execFile; run(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36: exec on a parenthesised namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; (cp).exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync on an asserted namespace",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; (cp as typeof cp).execSync(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10 clean: a RegExp test result",
+            "file": "src/a.ts",
+            "line": "log.info(`secret=${/secret/.test(text)}`);",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option composed through a spread chain",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; const options = { ...base }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shell option through an alias",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: '/bin/sh' }; const options = base; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a spread chain that never reaches spawn",
+            "file": "src/b.ts",
+            "line": "const base = { shell: 'zsh' }; const profile = { ...base };",
+            "expect": null
+        },
+        {
+            "name": "R36: shell assigned on an options object",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const options: SpawnOptions = {}; options.shell = true; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: shell assigned on an unrelated object",
+            "file": "src/b.ts",
+            "line": "const profile = {} as { shell?: string }; profile.shell = 'zsh';",
+            "expect": null
+        },
+        {
+            "name": "R43: fs.promises.mkdtemp through a namespace",
+            "file": "src/__test__/c.test.ts",
+            "line": "import * as fs from 'fs'; await fs.promises.mkdtemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R43: promises destructured from fs",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { promises } from 'node:fs'; await promises.mkdtemp('/tmp/x-');",
+            "expect": "R43"
+        },
+        {
+            "name": "R54: aliased Vitest hook import",
+            "file": "src/__test__/d.test.ts",
+            "line": "import { beforeEach as setup } from 'vitest'; setup(() => vi.useFakeTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: hook through a vitest namespace",
+            "file": "src/__test__/d.test.ts",
+            "line": "import * as vitest from 'vitest'; vitest.afterEach(() => vi.useRealTimers());",
+            "expect": "R54"
+        },
+        {
+            "name": "R36: exec through a TypeScript import-equals",
+            "file": "src/b.ts",
+            "line": "import cp = require('node:child_process'); cp.exec(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options assigned after declaration",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; let options; options = { shell: true }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options assigned from a spread",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; let options; options = { ...base }; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R10: inline output channel",
+            "file": "src/a.ts",
+            "line": "vscode.window.createOutputChannel('x').appendLine(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: output channel assigned to a field",
+            "file": "src/a.ts",
+            "line": "this.output = vscode.window.createOutputChannel('x'); this.output.appendLine(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: output channel assigned after declaration",
+            "file": "src/a.ts",
+            "line": "let out; out = vscode.window.createOutputChannel('x'); out.info(text);",
+            "expect": "R10"
+        },
+        {
+            "name": "R36 clean: a parameter shadowing an imported spawn",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function each(spawn: (o: object) => void) { spawn({ shell: 'zsh' }); }",
+            "expect": null
+        },
+        {
+            "name": "R36: the imported spawn outside the shadowing scope",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function each(spawn: (o: object) => void) {} spawn(cmd, args, { shell: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R43 clean: a parameter shadowing an imported tmpdir",
+            "file": "src/__test__/c.test.ts",
+            "line": "import { tmpdir } from 'os'; function at(tmpdir: () => string) { return tmpdir(); }",
+            "expect": null
+        },
+        {
+            "name": "R54 clean: a local function named beforeEach",
+            "file": "src/__test__/d.test.ts",
+            "line": "const beforeEach = (f: () => unknown) => f; beforeEach(() => 1);",
+            "expect": null
+        },
+        {
+            "name": "R36: shell set through an alias of the options",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; const options = {}; const alias = options; alias.shell = true; spawn(cmd, args, options);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: same-named options in an unrelated scope",
+            "file": "src/b.ts",
+            "line": "import { spawn } from 'child_process'; function a(options: object) { spawn(cmd, args, options); } function b() { const options = { shell: 'zsh' }; return options; }",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a comparison on the text",
+            "file": "src/a.ts",
+            "line": "log.info(`empty=${text === ''}`);",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a negation and a typeof",
+            "file": "src/a.ts",
+            "line": "log.info(`missing=${!prompt} kind=${typeof body}`);",
+            "expect": null
+        },
+        {
+            "name": "R10: a logical operator returns the text itself",
+            "file": "src/a.ts",
+            "line": "log.info(text || 'none');",
+            "expect": "R10"
+        },
+        {
+            "name": "R54: a parenthesised expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "beforeEach((() => vi.useFakeTimers()));",
+            "expect": "R54"
+        },
+        {
+            "name": "R54: an asserted expression-bodied hook",
+            "file": "src/__test__/d.test.ts",
+            "line": "afterEach((() => vi.useRealTimers()) as () => void);",
+            "expect": "R54"
+        },
+        {
+            "name": "R10: a local alias of an imported logger",
+            "file": "src/a.ts",
+            "line": "import { log } from './shared'; const out = log; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a parameter shadowing a channel variable",
+            "file": "src/a.ts",
+            "line": "const out = vscode.window.createOutputChannel('x'); function show(out: { info(v: unknown): void }) { out.info(prompt); }",
+            "expect": null
+        },
+        {
+            "name": "R36: an executor assigned after declaration",
+            "file": "src/b.ts",
+            "line": "import * as cp from 'child_process'; let run; run = cp.exec; run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 scope: test files are checked too",
+            "file": "src/__test__/e.test.ts",
+            "line": "import { execSync } from 'child_process'; execSync('node build.mjs');",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec bound to a local with bind",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; const run = cp.exec.bind(cp); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec bound and called inline",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.exec.bind(cp)(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: exec invoked through call",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.exec.call(cp, cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: execSync invoked through apply",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.execSync.apply(cp, [cmd]);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile bound with bind",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; cp.execFile.bind(cp)(file, args);",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: a parameter named require is not the CommonJS loader",
+            "file": "src/a.ts",
+            "line": "function load(require: (id: string) => { exec(cmd: string): void }) { const api = require('child_process'); api.exec('x'); }",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option in spawn options imported from another file",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import { options } from './opts';\nspawn(cmd, args, options);\n"
+            }
+        },
+        {
+            "name": "R36: shell option in spawn options imported under another name",
+            "file": "src/opts.ts",
+            "line": "const base = { shell: true }; export { base as options };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import { options as opts } from './opts';\nspawn(cmd, args, opts);\n"
+            }
+        },
+        {
+            "name": "R36: shell option in default-exported spawn options",
+            "file": "src/opts.ts",
+            "line": "export default { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import opts from './opts';\nspawn(cmd, args, opts);\n"
+            }
+        },
+        {
+            "name": "R36: shell assigned on imported spawn options",
+            "file": "src/run.ts",
+            "line": "import { spawn } from 'child_process'; import { options } from './opts'; options.shell = true; spawn(cmd, args, options);",
+            "expect": "R36",
+            "others": {
+                "src/opts.ts": "export const options = {};\n"
+            }
+        },
+        {
+            "name": "R36 clean: exported shell option that never reaches a spawn call",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": null,
+            "others": {
+                "src/run.ts": "import { options } from './opts';\nconfigure(options);\n"
+            }
+        },
+        {
+            "name": "R10: prompt text replacing an output channel's content",
+            "file": "src/a.ts",
+            "line": "channel.replace(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: payload through console.dir",
+            "file": "src/a.ts",
+            "line": "console.dir(payload);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: message body through console.table",
+            "file": "src/a.ts",
+            "line": "console.table(msg.body);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: prompt text as console.assert's message",
+            "file": "src/a.ts",
+            "line": "console.assert(ok, `bad: ${prompt}`);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a length through console.dir",
+            "file": "src/a.ts",
+            "line": "console.dir({ chars: text.length });",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: replace on text that is not logged",
+            "file": "src/a.ts",
+            "line": "const clean = text.replace(/x/g, '');",
+            "expect": null
+        },
+        {
+            "name": "R36: exec through a re-export shim",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "export { exec as run } from 'child_process';\n"
+            }
+        },
+        {
+            "name": "R36: exec through an exported alias in another file",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "import * as cp from 'child_process';\nexport const run = cp.exec;\n"
+            }
+        },
+        {
+            "name": "R36: exec through a default export in another file",
+            "file": "src/run.ts",
+            "line": "import run from './shim'; run(cmd);",
+            "expect": "R36",
+            "others": {
+                "src/shim.ts": "import * as cp from 'child_process';\nexport default cp.exec;\n"
+            }
+        },
+        {
+            "name": "R36: re-exporting exec",
+            "file": "src/shim.ts",
+            "line": "export { exec as run } from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: re-exporting all of child_process",
+            "file": "src/shim.ts",
+            "line": "export * from 'child_process';",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: execFile through a re-export shim",
+            "file": "src/run.ts",
+            "line": "import { run } from './shim'; run(file, args);",
+            "expect": null,
+            "others": {
+                "src/shim.ts": "export { execFile as run } from 'child_process';\n"
+            }
+        },
+        {
+            "name": "R10: a parameter typed as a log output channel",
+            "file": "src/a.ts",
+            "line": "function write(out: vscode.LogOutputChannel, text: string) { out.info(text); }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a parameter typed as an output channel",
+            "file": "src/a.ts",
+            "line": "function write(sink: OutputChannel, prompt: string) { sink.appendLine(prompt); }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a constructor parameter property typed as a logger",
+            "file": "src/a.ts",
+            "line": "class A { constructor(private readonly out: Logger) {} send(text: string) { this.out.info(text); } }",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: a typed logger parameter logging a length",
+            "file": "src/a.ts",
+            "line": "function write(out: vscode.LogOutputChannel, text: string) { out.info(`chars=${text.length}`); }",
+            "expect": null
+        },
+        {
+            "name": "R10 clean: a parameter of an unrelated type",
+            "file": "src/a.ts",
+            "line": "function write(buffer: TextBuffer, text: string) { buffer.append(text); }",
+            "expect": null
+        },
+        {
+            "name": "R36: shell option through a promisified execFile",
+            "file": "src/a.ts",
+            "line": "import { execFile } from 'child_process'; import { promisify } from 'util'; const run = promisify(execFile); run(file, args, { shell: '/bin/sh' });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: promisified exec through util.promisify",
+            "file": "src/a.ts",
+            "line": "import * as cp from 'child_process'; import * as util from 'util'; const run = util.promisify(cp.exec); run(cmd);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: shell option through a promisified execFile imported from another file",
+            "file": "src/run.ts",
+            "line": "import { execFileAsync } from './shared'; execFileAsync(file, args, { shell: true });",
+            "expect": "R36",
+            "others": {
+                "src/shared.ts": "import { execFile } from 'child_process';\nimport { promisify } from 'util';\nexport const execFileAsync = promisify(execFile);\n"
+            }
+        },
+        {
+            "name": "R36 clean: a promisified execFile without a shell",
+            "file": "src/a.ts",
+            "line": "import { execFile } from 'child_process'; import { promisify } from 'util'; const run = promisify(execFile); run(file, args, { shell: false });",
+            "expect": null
+        },
+        {
+            "name": "R10: a renamed default import of a logger module",
+            "file": "src/a.ts",
+            "line": "import out from './logger'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a namespace import of a logger module",
+            "file": "src/a.ts",
+            "line": "import * as out from './log'; out.info(prompt);",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a renamed default import of a logger from another file",
+            "file": "src/a.ts",
+            "line": "import out from './shared'; out.info(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "export const log = vscode.window.createOutputChannel('x', { log: true });\nexport default log;\n"
+            }
+        },
+        {
+            "name": "R10: a renamed import of an exported output channel from another file",
+            "file": "src/a.ts",
+            "line": "import { channel as out } from './shared'; out.appendLine(text);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "export const channel = vscode.window.createOutputChannel('x');\n"
+            }
+        },
+        {
+            "name": "R10 clean: a default import of a non-logger module",
+            "file": "src/a.ts",
+            "line": "import out from './buffer'; out.append(text);",
+            "expect": null
+        }
+    ]
+}

@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
-import { redactEndpoint, redactPlainSecrets } from './accessInfo/redact';
+import { redactText } from './accessInfo/redact';
 import type { ClientHello, GatewayProtocolAdapter, WireRequest } from './gatewayProtocol/adapter';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
 import type { WebSocketFactory, WebSocketLike } from './wsSocket';
@@ -218,7 +218,6 @@ const LIVE_RUN_LIMIT = 50;
 const UNCLAIMED_EVENT_LIMIT = 200;
 const ALIAS_LIMIT = 256;
 const IDLE_SESSION_LIMIT = 100;
-const URL_IN_TEXT = /\b(?:wss?|https?):\/\/[^\s"'<>]+/gi;
 
 const NOT_CONNECTED_MESSAGE =
   'Gateway is not connected. Run "OpenClaw: Connect to Gateway" to configure a token, or check openclaw.gateway.url.';
@@ -1173,7 +1172,7 @@ export class GatewayChatService {
   /** Strip URL userinfo, sensitive query params and the token from a
    *  transport error: `ws` echoes the full URL in messages like "Invalid URL". */
   private redactCredentials(message: string): string {
-    const redacted = redactPlainSecrets(message.replace(URL_IN_TEXT, (url) => redactEndpoint(url)));
+    const redacted = redactText(message);
     return this.token ? redacted.split(this.token).join('***') : redacted;
   }
 

@@ -29,8 +29,14 @@ export type AgentSessionItem = {
 /** The bare default alias the gateway resolves to its default agent's main session. */
 const DEFAULT_MAIN_KEY = 'main';
 
+declare const mainAgentSessionKey: unique symbol;
+
+/** A session key that passed {@link isMainAgentSessionKey}. Branded so that a `false` result
+ *  narrows a string key to "not a main key", not to `never`: most strings are not main keys. */
+export type MainAgentSessionKey = string & { readonly [mainAgentSessionKey]: true };
+
 /** Main sessions use the `agent:<id>:main` key shape; the bare `main` alias is also accepted. */
-export function isMainAgentSessionKey(key: unknown): key is string {
+export function isMainAgentSessionKey(key: unknown): key is MainAgentSessionKey {
   if (typeof key !== 'string' || !key) {
     return false;
   }

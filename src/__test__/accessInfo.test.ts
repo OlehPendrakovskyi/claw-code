@@ -5,6 +5,7 @@ import {
     extractAccessInfoFromConfig,
     redactEndpoint,
     redactPlainSecrets,
+    redactText,
     extractEnvVarName,
     extractMcpServers,
     extractTools,
@@ -392,6 +393,202 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).toContain('Config issue: no config');
         expect(markdown).toContain('CLI issue: cli exploded');
         expect(markdown).toContain('No CLI output captured.');
+    });
+});
+
+describe('redactText', () => {
+    it('redacts URL userinfo inside free-form text', () => {
+        expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
+            'failed: https://***:***@host.example/repo.git (exit 1)'
+        );
+    });
+
+    it('redacts URLs of any scheme, including ssh and git+https', () => {
+        expect(redactText('ssh://bob:pw@git.example/x and git+https://carol:tok@h.example/y')).toBe(
+            'ssh://***:***@git.example/x and git+https://***:***@h.example/y'
+        );
+    });
+
+    it('redacts sensitive query values and plain-text secrets in the same text', () => {
+        // The plain-text pass treats everything after `api_key=` up to whitespace as the value,
+        // so later query params go too: it errs toward hiding, never toward showing.
+        expect(redactText('GET https://api.example/v1?api_key=abc&page=2 with token=xyz')).toBe(
+            'GET https://api.example/v1?api_key=*** with token=***'
+        );
+    });
+
+    it('leaves text without credentials unchanged', () => {
+        expect(redactText('connect ECONNREFUSED http://127.0.0.1:18789')).toBe('connect ECONNREFUSED http://127.0.0.1:18789');
+    });
+
+    it('redacts a URL that ends in brackets or sentence punctuation, keeping the punctuation', () => {
+        expect(redactText('failed [https://alice:secret@host.example]')).toBe('failed [https://***:***@host.example/]');
+        expect(redactText('see (https://alice:secret@host.example/x).')).toBe('see (https://***:***@host.example/x).');
+    });
+
+    it('still masks userinfo when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:secret@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
+
+    it('masks a percent-encoded sensitive query name when the URL cannot be parsed', () => {
+        expect(redactText('bad https://[not-a-host/x?to%6ben=secret&page=2')).toBe('bad https://[not-a-host/x?to%6ben=***&page=2');
+    });
+
+    it('masks a query value whose name does not decode, failing toward hiding', () => {
+        expect(redactText('bad https://[not-a-host/x?a%E0=secret')).toBe('bad https://[not-a-host/x?a%E0=***');
+    });
+
+    it('masks a password containing ? or # when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:p?ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+        expect(redactText('bad https://alice:p#ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
+
+    it('masks a password containing @ when the URL cannot be parsed', () => {
+        expect(redactText('bad https://alice:p@ss@[not-a-host/x')).toBe('bad https://***@[not-a-host/x');
+    });
+
+    it('masks a password containing / when the URL cannot be parsed', () => {
+        expect(redactText('failed https://alice:p/ss@[not-a-host/x')).toBe('failed https://***@[not-a-host/x');
+    });
+
+    it('masks a userinfo holding a quote or angle bracket', () => {
+        expect(redactText('failed https://alice:p"ass@host/x')).toBe('failed https://***@host/x');
+        expect(redactText("failed https://alice:p'ass@host/x")).toBe('failed https://***@host/x');
+        expect(redactText('failed https://alice:p<ss@host/x')).toBe('failed https://***@host/x');
+    });
+
+    it('masks the userinfo of a network-path reference', () => {
+        expect(redactText('request //alice:secret@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText('url="//alice:secret@host.example/x"')).toBe('url="//***@host.example/x"');
+        expect(redactText('request //alice:p@ss@host.example/x failed')).toBe('request //***@host.example/x failed');
+    });
+
+    it('masks a network-path userinfo holding a quote, backtick or angle bracket', () => {
+        expect(redactText('request //alice:p"ass@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText("request //alice:p'ass@host.example/x failed")).toBe('request //***@host.example/x failed');
+        expect(redactText('request //alice:p`ass@host.example/x failed')).toBe('request //***@host.example/x failed');
+        expect(redactText('request //alice:p<ss@host.example/x failed')).toBe('request //***@host.example/x failed');
+    });
+
+    it('leaves a path with a double slash and an @ alone', () => {
+        expect(redactText('see a//b@c and https://host.example//x@y')).toBe('see a//b@c and https://host.example//x@y');
+    });
+
+    it('keeps the backticks around a Markdown-wrapped URL', () => {
+        expect(redactText('see `https://alice:secret@host.example/x` here')).toBe('see `https://***:***@host.example/x` here');
+        expect(redactText('see `//alice:secret@host.example/x`')).toBe('see `//***@host.example/x`');
+    });
+
+    it('masks a userinfo holding a backtick', () => {
+        expect(redactText('failed https://alice:p`ass@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
+    it('masks a userinfo holding a nested ://', () => {
+        expect(redactText('failed https://alice:p://ss@host.example/x')).toBe('failed https://***@host.example/x');
+    });
+
+    it('still redacts adjacent URLs one by one', () => {
+        expect(redactText('a,https://alice:secret@host.example/x,wss://bob:pw@other.example/y')).toBe('a,https://***:***@host.example/x,wss://***:***@other.example/y');
+    });
+
+    it('masks a userinfo holding both a slash and a quote', () => {
+        expect(redactText('failed https://alice:p/"ass@host/x')).toBe('failed https://***@host/x');
+    });
+
+    it('leaves a JSON URL followed by an email alone', () => {
+        expect(redactText('{"url":"https://host.example/x","email":"a@b.example"}')).toBe('{"url":"https://host.example/x","email":"a@b.example"}');
+    });
+
+    it('masks a quoted value under an encoded sensitive key in an unparsable URL', () => {
+        expect(redactText('bad https://[bad/x?to%6ben="super-secret"')).toBe('bad https://[bad/x?to%6ben=***');
+        expect(redactText("bad https://[bad/x?page=2&to%6ben='super-secret'")).toBe('bad https://[bad/x?page=2&to%6ben=***');
+    });
+
+    it('masks the tail of an unterminated quoted value, as in truncated stderr', () => {
+        expect(redactText('failed: password="correct horse battery staple\nnext line')).toBe('failed: password=***\nnext line');
+        expect(redactText("failed: token='correct horse battery staple")).toBe('failed: token=***');
+    });
+
+    it('masks the tail of an unterminated quoted query value', () => {
+        expect(redactText('GET https://host.example/?token="correct horse battery staple\nok')).toBe('GET https://host.example/?token=***\nok');
+    });
+
+    it('masks a quoted query value containing spaces', () => {
+        expect(redactText('bad https://[bad/x?password="super secret" next')).toBe('bad https://[bad/x?password=*** next');
+    });
+
+    it('masks a sensitive pair inside the value of an ordinary one', () => {
+        expect(redactText('a=token=xyz')).toBe('a=token=***');
+    });
+
+    it('stays linear on 1 MiB of adversarial input', () => {
+        const size = 1024 * 1024;
+        const inputs = [
+            'https://' + 'a'.repeat(size),
+            'a'.repeat(size),
+            'x'.repeat(size) + '=1',
+            'bearer ' + 'a'.repeat(size),
+            'https://x' + '.'.repeat(size) + 'a',
+            '?a="'.repeat(size / 4),
+            'a=b'.repeat(size / 3),
+            'a://'.repeat(size / 4),
+            'https://a:' + '"'.repeat(size),
+            ' //'.repeat(size / 3),
+            'https://a:' + '://'.repeat(size / 3),
+            'token="x\n'.repeat(size / 9),
+            '?a="'.repeat(size / 4) + '\n',
+        ];
+        for (const input of inputs) {
+            const started = performance.now();
+            redactText(input);
+            // Linear work takes tens of milliseconds; the quadratic forms took hours.
+            expect(performance.now() - started).toBeLessThan(3000);
+        }
+    });
+
+    it('leaves a quoted URL without userinfo alone', () => {
+        expect(redactText('<a href="https://host.example/x">docs</a>')).toBe('<a href="https://host.example/x">docs</a>');
+    });
+
+    it('leaves an @ in the path of a parsable URL without userinfo alone', () => {
+        expect(redactText('see https://github.com/@scope/pkg')).toBe('see https://github.com/@scope/pkg');
+    });
+
+    it('redacts a URL glued to a preceding underscore or word', () => {
+        expect(redactText('endpoint_https://alice:secret@host.example/x')).toBe('endpoint_https://***:***@host.example/x');
+    });
+
+    it('masks a JSON credential value that contains escaped quotes', () => {
+        expect(redactText('{"token":"abc\\"def","page":2}')).toBe('{"token"=***,"page":2}');
+        expect(redactText("{'secret':'a\\'b'}")).not.toContain('b\'');
+    });
+
+    it('masks short Basic and Bearer credentials, but not prose after the word basic', () => {
+        expect(redactText('auth failed: Basic YTo=')).toBe('auth failed: Basic ***');
+        expect(redactText('header Bearer abc')).toBe('header Bearer ***');
+        expect(redactText('see the basic usage guide')).toBe('see the basic usage guide');
+    });
+
+    it('masks plain-text key and signature values outside URLs', () => {
+        expect(redactText('failed: key=abc signature=def page=2')).toBe('failed: key=*** signature=*** page=2');
+    });
+
+    it('masks punctuation that belongs to a sensitive query value', () => {
+        expect(redactText('GET https://api.example/?signature=!!!')).toBe('GET https://api.example/?signature=***');
+    });
+
+    it('redacts adjacent URLs one by one', () => {
+        expect(redactText('https://public.example/a,https://alice:secret@private.example/b')).toBe(
+            'https://public.example/a,https://***:***@private.example/b'
+        );
+    });
+
+    it('still masks sensitive query values when the URL cannot be parsed', () => {
+        // The plain-text pass then also recognises `signature=` and, as with `api_key=` above, treats
+        // the rest of the token as its value: it errs toward hiding.
+        expect(redactText('bad https://[not-a-host/x?signature=grant-access&page=2&key=zz')).toBe(
+            'bad https://[not-a-host/x?signature=***'
+        );
     });
 });
 

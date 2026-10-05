@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 import { JSDOM } from 'jsdom';
 import { openDebugChatPanel } from '../webview/debugPanel';
+import { outputChannelNamed } from './helpers/outputChannels';
+
+const debugLog = outputChannelNamed('OpenClaw Debug');
 
 type Message = Record<string, unknown>;
 
@@ -27,6 +30,24 @@ describe('openDebugChatPanel', () => {
         const html = openDebugChatPanel(vscode.Uri.file('/ext')).webview.html;
         const nonce = html.match(/<script nonce="([0-9a-f]+)">/)?.[1];
         expect(html).toContain(`content="default-src 'none'; img-src vscode-webview:; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}';"`);
+    });
+
+    describe('logging', () => {
+        it('logs only the type of a webview message, never the prompt it carries', () => {
+            const info = vi.mocked(debugLog.info);
+            info.mockClear();
+            const panel = openDebugChatPanel(vscode.Uri.file('/ext'));
+            const onMessage = vi.mocked(panel.webview.onDidReceiveMessage).mock.calls[0][0] as (message: unknown) => void;
+
+            onMessage({ type: 'send', text: 'my private prompt', clientId: 'debug-1' });
+            onMessage('not a record');
+            onMessage({ type: 'my private prompt\u001b[2J' });
+
+            const logged = info.mock.calls.map(call => String(call[0]));
+            expect(logged).toContain('[DebugPanel] message from webview: type=send');
+            expect(logged.filter(line => line === '[DebugPanel] message from webview: type=unknown')).toHaveLength(2);
+            expect(logged.join('\n')).not.toContain('my private prompt');
+        });
     });
 
     describe('host messages', () => {
