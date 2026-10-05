@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { redactText } from '../core/accessInfo/redact';
+import { redactText, stripTerminalCodes } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -599,9 +599,10 @@ function encodePrompt(blocks: PromptBlock[]): Buffer {
 /** An ACP error message with its `data.details`, flattened to one bounded line. */
 function withErrorDetails(message: string | undefined, details: unknown): string | undefined {
     const raw = typeof details === 'string' ? details : details === undefined || details === null ? '' : stringifyToolEvent(details);
-    // Terminal colour codes first, then every other control run becomes one space.
+    // Terminal codes first, every CSI form (a code turned into a space would split a label from its value),
+    // then every other control run becomes one space.
     // eslint-disable-next-line no-control-regex
-    const flat = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    const flat = stripTerminalCodes(raw).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     const safeMessage = message === undefined ? undefined : redactText(message);
     if (flat === '' || flat === message) {
         return safeMessage;

@@ -630,6 +630,8 @@ describe('redactText', () => {
     it('masks a userinfo holding spaces', () => {
         expect(redactText('failed https://alice:pass word@host.example/x')).toBe('failed https://***@host.example/x');
         expect(redactText('failed //alice:pass word@host.example/x')).toBe('failed //***@host.example/x');
+        expect(redactText('failed //alice:part one@PRIVATE_SUFFIX@host.example/x')).toBe('failed //***@host.example/x');
+        expect(redactText('failed https://alice:part one@PRIVATE_SUFFIX@host.example/x')).toBe('failed https://***@host.example/x');
     });
 
     it('masks a query value that follows whitespace after the =', () => {

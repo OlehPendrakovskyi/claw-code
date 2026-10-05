@@ -178,11 +178,11 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
- *  up to the first `@` on its line, or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  (running to the last `@` before a `/` or the end of its line), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
  *  `//host:port/…@…` can be over-masked. Linear: no match crosses a line break or a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n@]*@|[^\s"'`<>([{=,]*@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value. */
 const QUERY_NAME = /([?&])([^=&#?\s"'`<>]*)=/g;
@@ -275,17 +275,16 @@ function maskUserinfo(text: string): string {
             }
         }
         // `https://alice:pass word@host`: a space ended the scan inside a `user:password`. Fail toward hiding by
-        // running on to the first `@` on the line, unless a `/` or another `://` comes first.
+        // running on to the last `@` before a `/`, the end of the line or another `://`, since the password may
+        // hold `@` too.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && colonBeforeSlash && lastAt === -1) {
             let j = i;
-            while (j < text.length && !'/\r\n@'.includes(text[j]) && !text.startsWith('://', j)) {
+            while (j < text.length && !'/\r\n'.includes(text[j]) && !text.startsWith('://', j)) {
+                spacedAt = text[j] === '@' ? j : spacedAt;
                 j++;
             }
-            if (text[j] === '@') {
-                spacedAt = j;
-                i = j;
-            }
+            i = spacedAt === -1 ? i : spacedAt;
         }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).

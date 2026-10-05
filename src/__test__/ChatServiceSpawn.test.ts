@@ -872,6 +872,15 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential that any CSI form separates from its label in the details', () => {
+            for (const code of ['\u001b[?25h', '\u001b[38:2:1:2:3m']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: `token${code}=PRIVATE_VALUE` } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            }
+        });
+
         it('redacts the error message itself', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));
