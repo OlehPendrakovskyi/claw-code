@@ -108,7 +108,8 @@ export function formatList(items: string[], emptyMessage: string) {
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
     // may be a whole endpoint: see redactEndpointText.
-    const safeFallback = fallbackName === undefined ? undefined : redactText(fallbackName);
+    // Names, ids and fallbacks (tool and MCP map keys) can be whole URLs too, so they are redacted as endpoints.
+    const safeFallback = fallbackName === undefined ? undefined : redactEndpointText(fallbackName);
     if (typeof entry === 'string') {
         return redactEndpointText(entry);
     }
@@ -116,7 +117,7 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         return safeFallback;
     }
     const rawName = asString(entry.name) ?? asString(entry.id);
-    const name = rawName !== undefined ? redactText(rawName) : safeFallback;
+    const name = rawName !== undefined ? redactEndpointText(rawName) : safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
     const endpoint = rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined;

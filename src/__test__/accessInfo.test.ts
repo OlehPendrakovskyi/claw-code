@@ -445,6 +445,14 @@ describe('formatAccessSummaryMarkdown', () => {
         }
     });
 
+    it('redacts names, ids and fallbacks that are whole URLs as endpoints', () => {
+        const url = 'https://host.example/?token=PREFIX PRIVATE_SUFFIX';
+        expect(formatNamedEntry({ name: url })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ id: url })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({}, url)).not.toContain('PRIVATE');
+        expect(formatNamedEntry(42, url)).not.toContain('PRIVATE');
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -854,6 +862,13 @@ describe('redactText', () => {
         expect(redactText('token: PRIVATE_PREFIX PRIVATE_SUFFIX')).toBe('token=***');
     });
 
+    it('masks a quoted Bearer token across lines to its closing quote', () => {
+        expect(redactText('sent Bearer "PRIVATE_PREFIX\nPRIVATE_SUFFIX" ok')).toBe('sent Bearer *** ok');
+        expect(redactText("sent Bearer 'PRIVATE_PREFIX\r\nPRIVATE_SUFFIX' ok")).toBe('sent Bearer *** ok');
+        // Unterminated, it runs to the end of the text, as a quoted value does.
+        expect(redactText('sent Bearer "PRIVATE_PREFIX\nPRIVATE_SUFFIX')).toBe('sent Bearer ***');
+    });
+
     it('masks a backtick-quoted Bearer token, raw, escaped and unterminated', () => {
         expect(redactText('sent Bearer `PRIVATE_VALUE` ok')).toBe('sent Bearer *** ok');
         expect(redactText('sent Bearer `a\\`PRIVATE b` ok')).toBe('sent Bearer *** ok');
@@ -1159,6 +1174,7 @@ describe('redactText', () => {
             'bearer ' + '\\'.repeat(size) + 'x',
             '\\u0009'.repeat(size / 6) + '=',
             '"?token=a\n'.repeat(size / 10),
+            'bearer "a\n'.repeat(size / 10),
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

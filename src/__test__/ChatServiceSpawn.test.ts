@@ -1104,6 +1104,15 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a quoted Bearer token spanning stderr lines', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('sent Bearer "PRIVATE_PREFIX\nPRIVATE_SUFFIX"\nreal failure\n'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).toContain('real failure');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

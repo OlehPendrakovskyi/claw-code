@@ -323,12 +323,15 @@ const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^
 function maskBearerTokens(text: string): string {
     let out = '';
     let copied = 0;
+    const unclosed = new Map<string, number>();
     BEARER.lastIndex = 0;
     for (let match = BEARER.exec(text); match !== null; match = BEARER.exec(text)) {
         const start = BEARER.lastIndex;
         let end = start;
-        if (isEscapedQuote(text, start)) {
-            end = escapedValueEnd(text, start);
+        // A quoted token is measured like a quoted value (valueEnd): to its closing quote across lines, or with
+        // none to the end of the text; one opened by an escaped quote to the end of its enclosing string.
+        if (isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '')) {
+            end = valueEnd(text, start, NON_SPACE, unclosed);
         } else {
             BEARER_TOKEN.lastIndex = start;
             if (BEARER_TOKEN.test(text)) {
