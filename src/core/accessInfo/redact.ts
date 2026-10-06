@@ -970,7 +970,10 @@ export function joinBoundary(left: string): { left: string; maskRight: boolean }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
-    const probes = [`${left} (x@h)`, ...(OPEN_USERINFO.test(left) ? [`${left}x@h`] : [])];
+    // A URL parser drops tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`), so the no-delimiter
+    // probe reads the left part without them.
+    const joined = left.replace(PARSER_IGNORED, '');
+    const probes = [`${left} (x@h)`, ...(OPEN_USERINFO.test(joined) ? [`${joined}x@h`] : [])];
     for (const probe of probes) {
         const redacted = redactText(probe);
         if (redacted !== probe) {

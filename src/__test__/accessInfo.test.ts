@@ -426,6 +426,10 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ url: 'PRIVATE_SUFFIX@host.example/x' }, prefix)).toBe('https://*** (***)');
         // A prefix holding `/`, which the display delimiter would separate from the `@`.
         expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        // A prefix ending in a tab or line break, which a URL parser drops.
+        for (const eol of ['\t', '\n', '\r\n']) {
+            expect(formatNamedEntry({ name: `https://alice:PRIVATE_PREFIX${eol}`, url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
+        }
         // A plain URL name keeps its text.
         expect(formatNamedEntry({ name: 'https://gh.example', url: 'https://gh.example/mcp' })).toBe('https://gh.example (https://gh.example/mcp)');
         expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');

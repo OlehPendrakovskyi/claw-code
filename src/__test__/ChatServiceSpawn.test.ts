@@ -1132,6 +1132,15 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('https://***: ***');
         });
 
+        it('masks a URL userinfo split between message and details by a trailing line break', () => {
+            for (const eol of ['\t', '\n', '\r\n']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: `https://alice:PRIVATE_PREFIX${eol}`, data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
         it('redacts a credential behind a DCS control string on stderr', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('to\u001bPq\u001b\\ken=PRIVATE_VALUE\n'));
