@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { endsAtCredential, redactEndpoint, redactText, stripTerminalCodes } from './redact.js';
+import { endsAtCredential, redactEndpointText, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -107,10 +107,10 @@ export function formatList(items: string[], emptyMessage: string) {
 /** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
-    // may be a whole endpoint: see redactEndpointLabel.
+    // may be a whole endpoint: see redactEndpointText.
     const safeFallback = fallbackName === undefined ? undefined : redactText(fallbackName);
     if (typeof entry === 'string') {
-        return redactEndpointLabel(entry);
+        return redactEndpointText(entry);
     }
     if (!isRecord(entry)) {
         return safeFallback;
@@ -119,7 +119,7 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const name = rawName !== undefined ? redactText(rawName) : safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    const endpoint = rawEndpoint !== undefined ? redactEndpointLabel(rawEndpoint) : undefined;
+    const endpoint = rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined;
     if (name && endpoint) {
         // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
         // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, the endpoint is
@@ -127,16 +127,6 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         return endsAtCredential(name) ? `${name} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
-}
-
-/** Redact a value that may be one whole endpoint, before and after the URL parser serialises it. Terminal codes go first: the URL parser would percent-encode
- *  one that splits a query name (`to\u001b[0mken` becomes `to%1B[0mken`), and redactText could no longer read
- *  the name. redactEndpoint then masks the URL as a parser reads it (line breaks dropped, a query value holding
- *  a space masked whole), and redactText covers what does not parse, which redactEndpoint leaves unchanged. */
-function redactEndpointLabel(value: string): string {
-    // redactText runs on the raw text first too: the parser percent-encodes what marks a credential (the quotes
-    // of `?config={"token":"PRIVATE"}` become `%22`), so its output alone would hide the credential from it.
-    return redactText(redactEndpoint(redactText(stripTerminalCodes(value))));
 }
 
 /** Categorize key sources into env / file / config buckets for compact display. */

@@ -427,6 +427,15 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry(url)).not.toMatch(/PRIVATE|user:pw/);
     });
 
+    it('redacts an extracted endpoint before URL serialisation, through to the report', () => {
+        const url = 'https://user:pw@host.example/?config={"token":"PRIVATE_VALUE"}';
+        const info = extractAccessInfoFromConfig({ gateway: { url } }, '/tmp/openclaw.json');
+        expect(info.networkEndpoints.join('\n')).not.toMatch(/PRIVATE|user:pw/);
+        expect(formatAccessSummaryMarkdown(info)).not.toMatch(/PRIVATE|user:pw/);
+        const cli = extractAccessInfoFromCli(`gateway ${url}`);
+        expect(formatAccessSummaryMarkdown(cli)).not.toMatch(/PRIVATE|user:pw/);
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -964,6 +973,14 @@ describe('redactText', () => {
             expect(redactText(`fetch "https://host.example/?token=PREFIX${eol}PRIVATE_SUFFIX" failed`)).not.toContain('PRIVATE');
         }
         expect(redactText('fetch "https://host.example/?token=abc\nnext line')).toBe('fetch "https://host.example/?token=***\nnext line');
+    });
+
+    it('masks a special-scheme URL whose scheme a tab or line break splits', () => {
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`ht${sep}tps:alice:PRIVATE_VALUE@host.example/x`)).toBe('https://***:***@host.example/x');
+        }
+        // Prose keeps its text and its line boundary.
+        expect(redactText('the ht\ntp: thing, mail bob@example.org')).toBe('the ht\ntp: thing, mail bob@example.org');
     });
 
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {

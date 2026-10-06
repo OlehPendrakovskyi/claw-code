@@ -6,7 +6,7 @@ import {
     formatAccessSummaryShort,
     isRecord,
     mergeAccessInfo,
-    redactEndpoint,
+    redactEndpointText,
     redactText,
     uniqSorted,
     type AccessSummary
@@ -98,8 +98,8 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
 
     const combined = mergeAccessInfo(configInfo, cliInfo);
     combined.networkEndpoints = uniqSorted([
-        ...combined.networkEndpoints.map((e) => redactEndpoint(e)),
-        redactEndpoint(getDashboardUrl())
+        ...combined.networkEndpoints.map((e) => redactEndpointText(e)),
+        redactEndpointText(getDashboardUrl())
     ]);
 
     const short = formatAccessSummaryShort(combined, configResult.error, cliResult.error);

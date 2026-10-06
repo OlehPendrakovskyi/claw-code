@@ -1097,6 +1097,13 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a special-scheme URL whose scheme a line break splits, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch ht\ntps:alice:PRIVATE_VALUE@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

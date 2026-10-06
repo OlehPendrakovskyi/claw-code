@@ -1,5 +1,5 @@
 import { compact, get, map } from 'lodash-es';
-import { redactEndpoint } from './redact.js';
+import { redactEndpointText } from './redact.js';
 import { formatNamedEntry } from './format.js';
 import {
     createEmptyAccessInfo,
@@ -65,7 +65,7 @@ export function extractAccessInfoFromCli(output?: string): AccessInfo {
         return info;
     }
     const urls = output.match(/https?:\/\/\S+/g) ?? [];
-    info.networkEndpoints = uniqSorted(map(urls, redactEndpoint));
+    info.networkEndpoints = uniqSorted(map(urls, redactEndpointText));
     return info;
 }
 
@@ -163,7 +163,7 @@ export function scanAccessInfo(
     }
     if (typeof value === 'string') {
         if (isUrl(value)) {
-            endpoints.add(redactEndpoint(value));
+            endpoints.add(redactEndpointText(value));
         } else if (looksLikePath(value)) {
             localFiles.add(value);
         }

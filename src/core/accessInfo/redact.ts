@@ -526,8 +526,8 @@ function schemeStart(text: string, separator: number): number | undefined {
 /** A special scheme (`http`, `https`, `ws`, `wss`, `ftp`) and the slashes after it. A URL parser takes any run
  *  of `/` and `\` there, or none, as the start of the authority: `https:/alice:pw@host`, `https:\\alice:pw@host`
  *  and `https:alice:pw@host` all carry `alice:pw` as userinfo. It drops tabs and line breaks too, so they may
- *  sit in the run (`https:\nalice:pw@host`). */
-const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:https?|wss?|ftp):[/\\\t\r\n]*/gi;
+ *  sit in the run (`https:\nalice:pw@host`) and inside the scheme itself (`ht\ntps:alice:pw@host`). */
+const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p(?:[\t\r\n]*s)?|w[\t\r\n]*s(?:[\t\r\n]*s)?|f[\t\r\n]*t[\t\r\n]*p)[\t\r\n]*:[/\\\t\r\n]*/gi;
 const LINE_BREAK = /[\r\n]/g;
 /** What ends an authority for a URL parser: `/`, `\`, `?`, `#`, or whitespace other than a tab or line break. */
 const AUTHORITY_STOP = /[/\\?#]|[^\S\t\r\n]/g;
@@ -595,7 +595,7 @@ function normalizeSpecialSchemes(text: string): string {
         if (nextAt >= nextLineBreak && !userinfoAcrossBreaks(end, colon)) {
             continue;
         }
-        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon)}://`;
+        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon).replace(PARSER_IGNORED, '')}://`;
         copied = end;
     }
     return out + text.slice(copied);
@@ -901,6 +901,16 @@ function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, u
 function maskSensitiveQuery(url: string): string {
     return url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) =>
         isSensitiveQueryName(name) ? `${separator}${name}=***` : param);
+}
+
+/** Redact a value that may be one whole endpoint (a label, a report's endpoint list), before and after the URL
+ *  parser serialises it. Terminal codes go first: the URL parser would percent-encode one that splits a query name (`to\u001b[0mken` becomes `to%1B[0mken`), and redactText could no longer read
+ *  the name. redactEndpoint then masks the URL as a parser reads it (line breaks dropped, a query value holding
+ *  a space masked whole), and redactText covers what does not parse, which redactEndpoint leaves unchanged. */
+export function redactEndpointText(value: string): string {
+    // redactText runs on the raw text first too: the parser percent-encodes what marks a credential (the quotes
+    // of `?config={"token":"PRIVATE"}` become `%22`), so its output alone would hide the credential from it.
+    return redactText(redactEndpoint(redactText(stripTerminalCodes(value))));
 }
 
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
