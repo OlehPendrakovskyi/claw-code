@@ -436,6 +436,15 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatAccessSummaryMarkdown(cli)).not.toMatch(/PRIVATE|user:pw/);
     });
 
+    it('redacts CLI output before cutting URLs out of it, a userinfo split by a tab or line break included', () => {
+        for (const sep of ['\t', '\n', '\r\n']) {
+            const output = `Gateway: https://alice:PRIVATE_PREFIX${sep}PRIVATE_SUFFIX@host.example/x`;
+            const info = extractAccessInfoFromCli(output);
+            expect(info.networkEndpoints.join('\n')).not.toContain('PRIVATE');
+            expect(formatAccessSummaryMarkdown(info, undefined, undefined, output)).not.toContain('PRIVATE');
+        }
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);

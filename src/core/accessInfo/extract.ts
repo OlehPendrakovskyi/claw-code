@@ -1,5 +1,5 @@
 import { compact, get, map } from 'lodash-es';
-import { redactEndpointText } from './redact.js';
+import { redactEndpointText, redactText } from './redact.js';
 import { formatNamedEntry } from './format.js';
 import {
     createEmptyAccessInfo,
@@ -64,7 +64,9 @@ export function extractAccessInfoFromCli(output?: string): AccessInfo {
     if (!output) {
         return info;
     }
-    const urls = output.match(/https?:\/\/\S+/g) ?? [];
+    // The whole output is redacted before URLs are cut out of it: a cut ends at whitespace, so a userinfo that
+    // a tab or line break splits (`https://alice:PREFIX\nSUFFIX@host`) would otherwise lose its `@`.
+    const urls = redactText(output).match(/https?:\/\/\S+/g) ?? [];
     info.networkEndpoints = uniqSorted(map(urls, redactEndpointText));
     return info;
 }
