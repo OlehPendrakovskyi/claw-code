@@ -310,6 +310,11 @@ describe('GatewayChatService', () => {
                 // A token of URL syntax must not take apart the URL whose password it would hide.
                 [':', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
                 ['//', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
+                // A token inside a marker must not take the marker apart.
+                ['ear', 'authentication failed: Bearer PRIVATE_VALUE'],
+                ['Bas', 'authentication failed: Basic UFJJVkFURV9WQUxVRQ=='],
+                ['ok', 'authentication failed: token=PRIVATE_VALUE'],
+                ['$&', 'authentication failed: $& Bearer PRIVATE_VALUE'],
             ];
             for (const [token, message] of cases) {
                 const h = harness({ token, throwOnOpen: new Error(message) });

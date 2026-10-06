@@ -361,7 +361,9 @@ const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!
 /** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
  *  which could sit between a label and its value (`token\u0000=…`). */
 export function stripTerminalCodes(text: string): string {
-    return stripCsiSequences(text).replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
+    // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
+    // instead of losing only its ESC.
+    return stripCsiSequences(decodeNameEscapes(text)).replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
 }
 
 /** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -1176,17 +1178,35 @@ export function redactTextAndSecret(text: string, secret: string): string {
     // (a secret `:` leaves `https://alice:PRIVATE@host` a URL with a password). A secret that is itself a
     // credential marker (`Bearer`, `Basic`) makes what follows it a credential: its placeholder then ends in
     // `=`, so what follows is masked as the placeholder's value.
+    // Only an occurrence that stands alone is replaced: one inside a longer word (`ear` in `Bearer`) would take
+    // that word apart, and is masked after redaction instead.
     const marker = endsAtCredential(secret) ? '=' : '';
     const placeheld = forms.reduce(
-        (hidden, form) => hidden.split(form).join(form.replace(WORD_RUN, SECRET_PLACEHOLDER) + marker), text);
+        (hidden, form) => replaceStandalone(hidden, form, form.replace(WORD_RUN, SECRET_PLACEHOLDER) + marker), text);
     const redacted = forms.reduce((hidden, form) => hidden.split(form).join('***'), redactText(placeheld));
     return redacted.split(SECRET_PLACEHOLDER).join('***');
 }
 
-/** A run of a secret's characters other than whitespace, control characters and ASCII punctuation (`_` aside):
- *  letters and digits of any script, so no part of a non-ASCII secret is left out of the placeholder. */
-// eslint-disable-next-line no-control-regex
-const WORD_RUN = /[^\s\u0000-\u001f\u007f-\u009f!-/:-@[-^`{-~]+/g;
+/** A secret's character other than whitespace, control characters and ASCII punctuation (`_` aside): a letter
+ *  or digit of any script, so no part of a non-ASCII secret is left out of the placeholder. */
+const WORD_CHAR = String.raw`[^\s\u0000-\u001f\u007f-\u009f!-/:-@[-^${'`'}{-~]`;
+const WORD_RUN = new RegExp(`${WORD_CHAR}+`, 'g');
+const IS_WORD_CHAR = new RegExp(`^${WORD_CHAR}$`);
+
+/** `text` with every occurrence of `form` that has no word character right before or after it replaced. */
+function replaceStandalone(text: string, form: string, replacement: string): string {
+    let out = '';
+    let copied = 0;
+    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
+        const end = at + form.length;
+        if (at < copied || IS_WORD_CHAR.test(text[at - 1] ?? '') || IS_WORD_CHAR.test(text[end] ?? '')) {
+            continue;
+        }
+        out += text.slice(copied, at) + replacement;
+        copied = end;
+    }
+    return out + text.slice(copied);
+}
 
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */
 function secretForms(secret: string): string[] {

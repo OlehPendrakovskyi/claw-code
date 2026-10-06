@@ -627,6 +627,9 @@ describe('redactText', () => {
             expect(redactText(`to\u001b[${eol}ken=PRIVATE_VALUE`)).toBe('token=***');
             expect(redactText(`to\u001b[1${eol}ken=PRIVATE_VALUE`)).toBe('token=***');
         }
+        // A sequence whose printable bytes are escaped too, raw or in a details string.
+        expect(redactText('to\\u001b\\u005b0mken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ reason: 'to\\u001b\\u005b0mken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
         expect(redactText('to\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText('to\u001b[\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
     });

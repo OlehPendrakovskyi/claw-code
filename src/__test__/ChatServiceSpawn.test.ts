@@ -951,6 +951,18 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('redacts a credential name split by a serialised sequence with an escaped bracket, on stderr and in details', () => {
+            const text = 'to\\u001b\\u005b0mken=PRIVATE_VALUE';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${text}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: text } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {
             const first = start();
             first.child.stderr.emit('data', Buffer.from('{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}\n'));
