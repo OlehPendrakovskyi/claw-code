@@ -282,6 +282,15 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps a token that a credential pattern would partly mask out of errors, raw or serialised', async () => {
+            const token = 'opaque-\u001b[0mBearer PREFIX&PRIVATE_SUFFIX';
+            for (const echo of [token, JSON.stringify(token), JSON.stringify({ reason: JSON.stringify(token) })]) {
+                const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_SUFFIX|PREFIX/);
+            }
+        });
+
         it('masks another credential whose label is the token', async () => {
             const h = harness({ token: 'token', throwOnOpen: new Error('authentication failed: token=PRIVATE_VALUE') });
             const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;

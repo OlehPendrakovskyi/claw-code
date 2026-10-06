@@ -1144,16 +1144,29 @@ function normalizeForRedaction(text: string): string {
     return normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
 }
 
-/** {@link redactText}, with every form a known `secret` can take in its output masked too: as given,
- *  JSON-serialised, and either one as redactText normalises it (an escape decoded, a terminal code dropped).
- *  The text is redacted first, so a secret that is also a credential's label (`token`) cannot hide that
- *  credential's value. The longest form goes first, so no shorter one leaves part of it. */
+/** Stands in for a known secret while the text around it is redacted: name characters holding `token`, so a
+ *  secret that is also a credential's label (`token=PRIVATE`) still labels that credential's value. */
+const SECRET_PLACEHOLDER = 'redacted_secret_token';
+
+/** {@link redactText}, with a known `secret` masked in every form it can take: as given and JSON-serialised
+ *  (once or twice), and each of those as redactText normalises it (an escape decoded, a terminal code dropped).
+ *  The secret is replaced before redacting, so no pattern can mask part of it and leave the rest
+ *  (`opaque-Bearer PREFIX&SUFFIX`), and its normalised forms again after, for an escaped echo that only
+ *  normalisation reveals. The longest form goes first, so no shorter one leaves part of it. */
 export function redactTextAndSecret(text: string, secret: string): string {
+    const forms = secretForms(secret);
+    const hide = (from: string, by: string) => forms.reduce((hidden, form) => hidden.split(form).join(by), from);
+    return hide(redactText(hide(text, SECRET_PLACEHOLDER)), '***').split(SECRET_PLACEHOLDER).join('***');
+}
+
+/** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */
+function secretForms(secret: string): string[] {
     const serialised = JSON.stringify(secret).slice(1, -1);
-    const forms = [...new Set([secret, serialised, normalizeForRedaction(secret), normalizeForRedaction(serialised)])]
+    const serialisedTwice = JSON.stringify(serialised).slice(1, -1);
+    const raw = [secret, serialised, serialisedTwice];
+    return [...new Set([...raw, ...raw.map(normalizeForRedaction)])]
         .filter(form => form !== '')
         .sort((a, b) => b.length - a.length);
-    return forms.reduce((redacted, form) => redacted.split(form).join('***'), redactText(text));
 }
 
 /** A sensitive query value {@link redactUrl} masked: a whole `***` value, which the URL span ends or `&` or `#`
