@@ -468,10 +468,19 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry(42, url)).not.toContain('PRIVATE');
     });
 
+    it('judges a credential split across name and endpoint on the raw name, quoted forms included', () => {
+        expect(formatNamedEntry({ name: 'Bearer "PRIVATE_PREFIX', url: 'PRIVATE_SUFFIX"' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ id: 'Bearer "PRIVATE_PREFIX', url: 'PRIVATE_SUFFIX"' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ url: 'PRIVATE_SUFFIX"' }, 'Bearer "PRIVATE_PREFIX')).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ name: "token='PRIVATE_PREFIX", url: "PRIVATE_SUFFIX'" })).not.toContain('PRIVATE');
+    });
+
     it('uses the redacted fallback when redaction empties an entry or its name', () => {
         expect(formatNamedEntry('\u001b[0m', 'token=PRIVATE_VALUE')).toBe('token=***');
         expect(formatNamedEntry({ name: '\u001b[0m' }, 'token=PRIVATE_VALUE')).toBe('token=***');
         expect(formatNamedEntry({ name: '\u001b[0m', url: '\u001b[0m' }, 'token=PRIVATE_VALUE')).toBe('token=***');
+        // A fallback that redaction empties too becomes `***`, never empty.
+        expect(formatNamedEntry(true, '\u001b]0;token=PRIVATE_VALUE\u0007')).toBe('***');
     });
 
     it('redacts names, ids and fallbacks in named entries', () => {

@@ -76,6 +76,12 @@ describe('collectToolEntries', () => {
         expect(entries.find(e => e.label === 'zeta')?.enabled).toBe(false);
     });
 
+    it('never labels a tool with its raw key when redaction empties it', () => {
+        const key = '\u001b]0;token=PRIVATE_VALUE\u0007';
+        const entries = collectToolEntries(configRecord({ mcp: { tools: { [key]: true } } }));
+        expect(entries.map(entry => entry.label)).toEqual(['***']);
+    });
+
     it('sorts entries by label', () => {
         const entries = collectToolEntries(configRecord({ tools: ['c', 'a', 'b'] }));
         expect(entries.map(e => e.label)).toEqual(['a', 'b', 'c']);

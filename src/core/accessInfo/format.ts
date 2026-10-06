@@ -109,7 +109,9 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
     // may be a whole endpoint: see redactEndpointText.
     // Names, ids and fallbacks (tool and MCP map keys) can be whole URLs too, so they are redacted as endpoints.
-    const safeFallback = fallbackName === undefined ? undefined : redactEndpointText(fallbackName);
+    // A fallback that redaction empties (a key of nothing but a terminal sequence) becomes `***`, so no caller
+    // falls back to its raw key.
+    const safeFallback = fallbackName === undefined ? undefined : redactEndpointText(fallbackName) || '***';
     // A part that redaction empties (a label of nothing but terminal codes) counts as absent, so the redacted
     // fallback, never a caller's raw key, takes its place.
     if (typeof entry === 'string') {
@@ -129,8 +131,11 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         // when: the endpoint is then masked whole, and the name cut where the credential starts. The assembled
         // label is not redacted again: the parts' masks would be plain text to a second pass, which would cut a
         // masked endpoint's closing parenthesis.
-        const boundary = joinBoundary(name);
-        return boundary.maskRight ? `${boundary.left} (***)` : `${name} (${endpoint})`;
+        // The boundary is judged on the raw text the name came from: redaction may already have taken what marks
+        // the credential (`Bearer "PREFIX` loses its quote), and the part shown is redacted afterwards.
+        const rawLeft = rawName !== undefined && redactEndpointText(rawName) !== '' ? rawName : fallbackName;
+        const boundary = joinBoundary(rawLeft ?? name);
+        return boundary.maskRight ? `${redactEndpointText(boundary.left) || '***'} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }
