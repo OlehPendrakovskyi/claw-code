@@ -354,6 +354,10 @@ function carriesText(node, checker) {
         }
         return node.arguments.some(argument => carriesText(argument, checker));
     }
+    // `text ? 'present' : 'empty'`: only a branch is logged, never the condition.
+    if (ts.isConditionalExpression(node)) {
+        return carriesText(node.whenTrue, checker) || carriesText(node.whenFalse, checker);
+    }
     // `text === ''`, `text.length > 0`, `!text`, `typeof text`: a boolean or a type name, not the text.
     if (ts.isBinaryExpression(node) && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
         return false;

@@ -406,6 +406,14 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry('plain-name')).toBe('plain-name');
     });
 
+    it('redacts an endpoint whose query name a terminal code splits, with userinfo, string and structured', () => {
+        const url = 'https://alice:pw@host.example/?to\u001b[0mken=PRIVATE_QUERY&ok=1';
+        expect(formatNamedEntry(url)).not.toMatch(/PRIVATE|alice|pw@/);
+        expect(formatNamedEntry({ name: 'gh', url })).not.toMatch(/PRIVATE|alice|pw@/);
+        // The whole-URL handling of a value holding a space stays.
+        expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/?token=prefix PRIVATE_SUFFIX' })).toBe('gh (https://host.example/?token=***)');
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);

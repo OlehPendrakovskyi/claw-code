@@ -1247,6 +1247,24 @@
             }
         },
         {
+            "name": "R10 clean: a ternary on prompt text logging fixed strings",
+            "file": "src/a.ts",
+            "line": "console.info(text ? 'present' : 'empty');",
+            "expect": null
+        },
+        {
+            "name": "R10: a ternary whose branch logs prompt text",
+            "file": "src/a.ts",
+            "line": "console.info(ok ? prompt : 'empty');",
+            "expect": "R10"
+        },
+        {
+            "name": "R10: a ternary whose other branch logs prompt text",
+            "file": "src/a.ts",
+            "line": "console.info(ok ? 'empty' : `got ${text}`);",
+            "expect": "R10"
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",

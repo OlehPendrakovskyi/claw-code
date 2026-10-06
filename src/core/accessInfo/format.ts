@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { redactEndpoint, redactText } from './redact.js';
+import { redactEndpoint, redactText, stripTerminalCodes } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -107,11 +107,10 @@ export function formatList(items: string[], emptyMessage: string) {
 /** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
-    // may be a whole endpoint: redactEndpoint masks it as a URL parser reads it (a query value holding a
-    // space included), then redactText covers what does not parse.
+    // may be a whole endpoint: see redactEndpointLabel.
     const safeFallback = fallbackName === undefined ? undefined : redactText(fallbackName);
     if (typeof entry === 'string') {
-        return redactText(redactEndpoint(entry));
+        return redactEndpointLabel(entry);
     }
     if (!isRecord(entry)) {
         return safeFallback;
@@ -120,13 +119,19 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const name = rawName !== undefined ? redactText(rawName) : safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    // A structured endpoint is one URL: redactEndpoint masks it as a URL parser reads it (which drops line
-    // breaks inside it), then redactText covers what does not parse, which redactEndpoint leaves unchanged.
-    const endpoint = rawEndpoint !== undefined ? redactText(redactEndpoint(rawEndpoint)) : undefined;
+    const endpoint = rawEndpoint !== undefined ? redactEndpointLabel(rawEndpoint) : undefined;
     if (name && endpoint) {
         return `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
+}
+
+/** Redact a value that may be one whole endpoint. Terminal codes go first: the URL parser would percent-encode
+ *  one that splits a query name (`to\u001b[0mken` becomes `to%1B[0mken`), and redactText could no longer read
+ *  the name. redactEndpoint then masks the URL as a parser reads it (line breaks dropped, a query value holding
+ *  a space masked whole), and redactText covers what does not parse, which redactEndpoint leaves unchanged. */
+function redactEndpointLabel(value: string): string {
+    return redactText(redactEndpoint(stripTerminalCodes(value)));
 }
 
 /** Categorize key sources into env / file / config buckets for compact display. */
