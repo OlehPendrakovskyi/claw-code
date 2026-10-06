@@ -272,6 +272,22 @@ describe('GatewayChatService', () => {
             expect(error.message).not.toContain(escapedEcho);
         });
 
+        it('keeps a serialised echo of a token that normalisation would change out of errors', async () => {
+            for (const token of ['opaque-\\u0041PRIVATE_SUFFIX', 'opaque-\u001b[0mPRIVATE_SUFFIX']) {
+                for (const echo of [JSON.stringify(token), JSON.stringify({ reason: `failed ${token}` }), token]) {
+                    const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+                    const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                    expect(error.message).not.toContain('PRIVATE_SUFFIX');
+                }
+            }
+        });
+
+        it('masks another credential whose label is the token', async () => {
+            const h = harness({ token: 'token', throwOnOpen: new Error('authentication failed: token=PRIVATE_VALUE') });
+            const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+            expect(error.message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('reconnects with a new hello when the protocol setting changes', async () => {
             vi.useFakeTimers();
             const h = await connected();

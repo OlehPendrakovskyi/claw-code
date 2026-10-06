@@ -1143,6 +1143,18 @@ function normalizeForRedaction(text: string): string {
     return normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
 }
 
+/** {@link redactText}, with every form a known `secret` can take in its output masked too: as given,
+ *  JSON-serialised, and either one as redactText normalises it (an escape decoded, a terminal code dropped).
+ *  The text is redacted first, so a secret that is also a credential's label (`token`) cannot hide that
+ *  credential's value. The longest form goes first, so no shorter one leaves part of it. */
+export function redactTextAndSecret(text: string, secret: string): string {
+    const serialised = JSON.stringify(secret).slice(1, -1);
+    const forms = [...new Set([secret, serialised, normalizeForRedaction(secret), normalizeForRedaction(serialised)])]
+        .filter(form => form !== '')
+        .sort((a, b) => b.length - a.length);
+    return forms.reduce((redacted, form) => redacted.split(form).join('***'), redactText(text));
+}
+
 /** A sensitive query value {@link redactUrl} masked: a whole `***` value, which the URL span ends or `&` or `#`
  *  follows. The span ends at whitespace, so the value cannot go on past it. */
 const MASKED_QUERY_VALUE = /([?&][^=&#?\s]*=)\*\*\*(?=[&#]|$)/g;

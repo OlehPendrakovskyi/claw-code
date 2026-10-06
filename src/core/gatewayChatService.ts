@@ -15,7 +15,7 @@
 
 import { randomUUID } from 'crypto';
 import type { ChatEvent } from '../chat/ChatService';
-import { redactText } from './accessInfo/redact';
+import { redactText, redactTextAndSecret } from './accessInfo/redact';
 import type { ClientHello, GatewayProtocolAdapter, WireRequest } from './gatewayProtocol/adapter';
 import type { DeviceCredentialStore, DeviceIdentity, StoredDeviceToken } from './gatewayProtocol/deviceIdentity';
 import type { WebSocketFactory, WebSocketLike } from './wsSocket';
@@ -1172,13 +1172,7 @@ export class GatewayChatService {
   /** Strip URL userinfo, sensitive query params and the token from a
    *  transport error: `ws` echoes the full URL in messages like "Invalid URL". */
   private redactCredentials(message: string): string {
-    // The exact token goes before normalisation could change it (an escape decoded, a terminal code dropped),
-    // and again after, for an escaped echo that normalisation turns back into it.
-    return this.maskToken(redactText(this.maskToken(message)));
-  }
-
-  private maskToken(text: string): string {
-    return this.token ? text.split(this.token).join('***') : text;
+    return this.token ? redactTextAndSecret(message, this.token) : redactText(message);
   }
 
   /** A gateway message is shown to the user: strip credentials and cap its length. */
