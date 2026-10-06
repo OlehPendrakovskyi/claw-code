@@ -357,7 +357,8 @@ const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
 
 /** Text without its complete CSI sequences, innermost first: an opener inside an unfinished sequence starts a
  *  nested one, and once that one ends the outer one goes on, so `to\e[\e[0m0mken` is `token` rather than
- *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which stays as text.
+ *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which is dropped with
+ *  its parameters, so `to\e[0\0ken` is `token` too; the byte stays.
  *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
  *  sequence's bytes are dropped once. */
 function stripCsiSequences(text: string): string {
@@ -394,6 +395,8 @@ function stripCsiSequences(text: string): string {
             out.length = sequence.at;
             open.pop();
         } else {
+            out.length = open[0].at;
+            out.push(char);
             open.length = 0;
         }
     }
@@ -909,7 +912,7 @@ function maskQueryPairs(text: string): string {
     // the previous one started: the same token, same answer.
     let floor = 0;
     let floorToken: QueryToken = { opening: undefined, inQuery: false };
-    const unclosedUrls = new Map<string, number>();
+    const closeRuns = closeRunsOf(text);
     const tokenBefore = (index: number): QueryToken => {
         let inQuery = false;
         let token: QueryToken | undefined;
@@ -949,7 +952,7 @@ function maskQueryPairs(text: string): string {
         // runs to the end of the line, as a plain-text secret's does.
         const token = quoted ? undefined : tokenBefore(pair.index);
         const end = token === undefined ? valueEnd(text, start, NON_SPACE, unclosed)
-            : token.opening !== undefined ? quotedUrlValueEnd(text, start, token.opening, unclosedUrls)
+            : token.opening !== undefined ? quotedUrlValueEnd(text, start, token.opening, closeRuns)
                 : pair[1] === '?' || token.inQuery ? sensitiveQueryValueEnd(text, start) : unquotedSecretEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
@@ -974,17 +977,17 @@ interface QueryToken {
 /** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, or the quote that closes the string,
  *  one escaped no deeper than the opening one, so an escaped interior quote is passed. A URL parser drops line
  *  breaks, so the value runs across them to that close (`"https://host/?token=PREFIX\nSUFFIX"`). With no close
- *  ahead, it ends at its first line break. `unclosed` records, per quote and escape depth, a position after
- *  which no close exists, so no stretch is searched twice. */
-function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, unclosed: Map<string, number>): number {
-    const key = `${opening.quote}${opening.run}`;
+ *  ahead, it ends at its first line break. `closeRuns` says up front whether a close lies ahead, so a value
+ *  without one is never searched past that break. */
+function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, closeRuns: CloseRuns): number {
+    const hasClose = closeRuns(opening.quote)[start] <= opening.run;
     let firstBreak = -1;
     let i = start;
     for (; i < text.length && text[i] !== '&' && text[i] !== '#'; i++) {
         if (text[i] === '\n' || text[i] === '\r') {
             if (firstBreak === -1) {
                 firstBreak = i;
-                if ((unclosed.get(key) ?? text.length) <= start) {
+                if (!hasClose) {
                     return firstBreak;
                 }
             }
@@ -1001,11 +1004,37 @@ function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, u
             return i - run;
         }
     }
-    if (firstBreak === -1) {
-        return i;
-    }
-    unclosed.set(key, start);
-    return firstBreak;
+    return firstBreak === -1 ? i : firstBreak;
+}
+
+/** For a quote character, per position, the shortest backslash run before that quote anywhere from there up
+ *  to the next `&` or `#` ({@link NO_CLOSE} with none): a value opened at depth k has a close ahead exactly
+ *  when it is at most k. */
+type CloseRuns = (quote: string) => Uint32Array;
+const NO_CLOSE = 0xffffffff;
+
+/** {@link CloseRuns} for `text`, each quote's table built once, in two linear passes, on first use. */
+function closeRunsOf(text: string): CloseRuns {
+    const tables = new Map<string, Uint32Array>();
+    return quote => {
+        const known = tables.get(quote);
+        if (known !== undefined) {
+            return known;
+        }
+        const runBefore = new Uint32Array(text.length + 1);
+        for (let i = 0; i < text.length; i++) {
+            runBefore[i + 1] = text[i] === '\\' ? runBefore[i] + 1 : 0;
+        }
+        const table = new Uint32Array(text.length + 1);
+        table[text.length] = NO_CLOSE;
+        for (let i = text.length - 1; i >= 0; i--) {
+            const char = text[i];
+            table[i] = char === '&' || char === '#' ? NO_CLOSE
+                : char === quote ? Math.min(runBefore[i], table[i + 1]) : table[i + 1];
+        }
+        tables.set(quote, table);
+        return table;
+    };
 }
 
 /** Mask sensitive query values in an unparsable URL. */

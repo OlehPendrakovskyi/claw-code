@@ -556,8 +556,10 @@ describe('redactText', () => {
         expect(redactText('to\u001b[\u001b[0m0mken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText('to\u001b[1\u001b[\u001b[0m;2m3mken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText(JSON.stringify({ e: 'to\u001b[\u001b[0m0mken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
-        // A sequence broken by a byte that fits none stays text, its ESC dropped.
-        expect(redactText('a\u001b[\nb')).toBe('a[\nb');
+        // A sequence broken by a byte that fits none is dropped, its parameters too; the byte stays.
+        expect(redactText('a\u001b[\nb')).toBe('a\nb');
+        expect(redactText('to\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('to\u001b[\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
     });
 
     it('redacts URL userinfo inside free-form text', () => {
@@ -1266,6 +1268,8 @@ describe('redactText', () => {
             '\u001b[1'.repeat(size / 6) + 'm'.repeat(size / 6),
             '\\u001b['.repeat(size / 7) + '0m',
             'a&password='.repeat(size / 11),
+            // Each quoted URL opens at a new escape depth and has no close ahead.
+            Array.from({ length: 2000 }, (_, depth) => '\\'.repeat(depth + 1) + '"https://x/?token=x').join('\n'),
             '\\\\n'.repeat(size / 3) + 'token',
             'a\\\\n'.repeat(size / 4) + '=',
             '\\a'.repeat(size / 2) + '=',
