@@ -1090,6 +1090,8 @@ const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
 const OPEN_AUTHORITY = /\/\/[^\s@/?#\\]*$/;
 /** Text that opens with the rest of a userinfo: anything up to an `@`, before any `/`, `?`, `#` or whitespace. */
 const USERINFO_HEAD = /^[^\s/?#\\]*@/;
+/** Text that opens with the rest of a password: anything up to an `@` before whitespace, `/` included. */
+const PASSWORD_HEAD = /^[^\s@]*@/;
 /** What {@link joinBoundary} appends to close an open userinfo. */
 const USERINFO_TAIL = 'x@h';
 
@@ -1106,18 +1108,21 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`) come out and could join it to a word.
     // Both parts are read as redactText reads them (escapes decoded, terminal codes dropped), so an escaped `@`
     // (`SUFFIX\\u0040host`) still marks a userinfo.
+    // Only what actually follows completes a userinfo: a trailing `host:port` with no `@` after it is no password.
     const userinfoProbe = normalizeForRedaction(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
-    const opensUserinfo = OPEN_USERINFO.test(authority)
-        || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(normalizeForRedaction(right).replace(PARSER_IGNORED, '')));
+    const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
+    const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
+        || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(continuation));
     if (opensUserinfo && masksCredential(userinfoProbe)) {
         return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
+    // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
     const probe = `${left} (x@h)`;
-    if (!masksCredential(probe)) {
+    if (!PASSWORD_HEAD.test(continuation) || !masksCredential(probe)) {
         return { left, maskRight: false };
     }
     const redacted = redactText(probe);
@@ -1161,18 +1166,24 @@ const SECRET_PLACEHOLDER = 'redacted_secret_token';
 
 /** {@link redactText}, with a known `secret` masked in every form it can take: as given and JSON-serialised
  *  (once or twice), and each of those as redactText normalises it (an escape decoded, a terminal code dropped).
- *  The secret is replaced before redacting, so no pattern can mask part of it and leave the rest
- *  (`opaque-Bearer PREFIX&SUFFIX`), by a placeholder that keeps any credential it labels or marks masked, and
- *  its normalised forms again after, for an escaped echo that only normalisation reveals. The longest form goes
- *  first, so no shorter one leaves part of it. */
+ *  The secret's words are replaced before redacting, so no pattern can mask part of it and leave the rest
+ *  (`opaque-Bearer PREFIX&SUFFIX`), by a placeholder that keeps any credential it labels or marks masked; every
+ *  form is masked again after, for one only normalisation reveals or one with no words to replace. The longest
+ *  form goes first, so no shorter one leaves part of it. */
 export function redactTextAndSecret(text: string, secret: string): string {
     const forms = secretForms(secret);
-    const hide = (from: string, by: string) => forms.reduce((hidden, form) => hidden.split(form).join(by), from);
-    // A secret that is itself a credential marker (`Bearer`, `Basic`) makes what follows it a credential: its
-    // placeholder then ends in `=`, so what follows is masked as the placeholder's value.
-    const placeholder = endsAtCredential(secret) ? `${SECRET_PLACEHOLDER}=` : SECRET_PLACEHOLDER;
-    return hide(redactText(hide(text, placeholder)), '***').split(SECRET_PLACEHOLDER).join('***');
+    // Only the secret's word characters are replaced, so its punctuation still delimits what a pattern needs
+    // (a secret `:` leaves `https://alice:PRIVATE@host` a URL with a password). A secret that is itself a
+    // credential marker (`Bearer`, `Basic`) makes what follows it a credential: its placeholder then ends in
+    // `=`, so what follows is masked as the placeholder's value.
+    const marker = endsAtCredential(secret) ? '=' : '';
+    const placeheld = forms.reduce(
+        (hidden, form) => hidden.split(form).join(form.replace(WORD_RUN, SECRET_PLACEHOLDER) + marker), text);
+    const redacted = forms.reduce((hidden, form) => hidden.split(form).join('***'), redactText(placeheld));
+    return redacted.split(SECRET_PLACEHOLDER).join('***');
 }
+
+const WORD_RUN = /\w+/g;
 
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */
 function secretForms(secret: string): string[] {

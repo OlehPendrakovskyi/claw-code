@@ -452,6 +452,10 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: `${username}\u001b[0m`, url: rest })).toBe('https://*** (***)');
         // An ordinary URL label keeps its endpoint.
         expect(formatNamedEntry({ name: 'https://github.com', url: 'https://github.com/repo' })).toBe('https://github.com (https://github.com/repo)');
+        // A name ending in a host and port is no unfinished password unless an `@` follows in the endpoint.
+        expect(formatNamedEntry({ name: 'http://localhost:3000', url: 'http://localhost:3000/mcp' })).toBe('http://localhost:3000 (http://localhost:3000/mcp)');
+        expect(formatNamedEntry({ name: 'http://127.0.0.1:18789', url: 'ECONNREFUSED' })).toBe('http://127.0.0.1:18789 (ECONNREFUSED)');
+        expect(formatNamedEntry({ name: 'https://alice:123', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
         // A name that redaction only normalises (a terminal code, an escape) keeps its endpoint.
         expect(formatNamedEntry({ name: 'failed\u001b[0m', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');
         expect(formatNamedEntry({ name: 'fail\\u0065d', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');

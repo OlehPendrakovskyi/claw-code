@@ -297,6 +297,9 @@ describe('GatewayChatService', () => {
                 ['Bearer', 'authentication failed: Bearer PRIVATE_VALUE'],
                 ['Basic', 'authentication failed: Basic UFJJVkFURV9WQUxVRQ=='],
                 ['Bearer', `authentication failed: ${JSON.stringify({ header: 'Bearer PRIVATE_VALUE' })}`],
+                // A token of URL syntax must not take apart the URL whose password it would hide.
+                [':', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
+                ['//', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
             ];
             for (const [token, message] of cases) {
                 const h = harness({ token, throwOnOpen: new Error(message) });

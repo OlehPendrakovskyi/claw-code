@@ -1233,6 +1233,13 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('keeps a message ending in a host and port, and its details, when no userinfo follows', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'Connection failed to http://127.0.0.1:18789', data: { details: 'ECONNREFUSED' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('Connection failed to http://127.0.0.1:18789: ECONNREFUSED');
+        });
+
         it('masks a username-only URL credential split between message and details', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://ghp_PRIVATE_PREFIX', data: { details: 'PRIVATE_SUFFIX@github.com/repo' } } }));
