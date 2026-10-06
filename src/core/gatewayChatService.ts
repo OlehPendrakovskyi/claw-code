@@ -1172,8 +1172,13 @@ export class GatewayChatService {
   /** Strip URL userinfo, sensitive query params and the token from a
    *  transport error: `ws` echoes the full URL in messages like "Invalid URL". */
   private redactCredentials(message: string): string {
-    const redacted = redactText(message);
-    return this.token ? redacted.split(this.token).join('***') : redacted;
+    // The exact token goes before normalisation could change it (an escape decoded, a terminal code dropped),
+    // and again after, for an escaped echo that normalisation turns back into it.
+    return this.maskToken(redactText(this.maskToken(message)));
+  }
+
+  private maskToken(text: string): string {
+    return this.token ? text.split(this.token).join('***') : text;
   }
 
   /** A gateway message is shown to the user: strip credentials and cap its length. */

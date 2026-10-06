@@ -544,6 +544,17 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('keeps the host and port of a credential-free URL whose host holds a secret word', () => {
+        for (const url of ['https://keycloak.example:8443/mcp', 'https://token-service.example:443', 'wss://secret.example:9000?x=1']) {
+            expect(redactText(url)).toBe(url);
+            expect(redactText(`see ${url} ok`)).toBe(`see ${url} ok`);
+        }
+        expect(formatNamedEntry({ name: 'auth', url: 'https://keycloak.example:8443/mcp' })).toBe('auth (https://keycloak.example:8443/mcp)');
+        // A userinfo is still masked, and a digit password is no port.
+        expect(redactText('https://alice:pw@keycloak.example:8443/x')).toBe('https://***:***@keycloak.example:8443/x');
+        expect(redactPlainSecrets('//token:1234@host')).not.toContain('1234');
+    });
+
     it('masks a spaced secret after an `&` that opens no query to the end of its line', () => {
         expect(redactText('auth failed: options=x&password=PRIVATE_PREFIX PRIVATE_SUFFIX\nnext')).toBe('auth failed: options=x&password=***\nnext');
         expect(redactText('/home/user/options&password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json')).toBe('/home/user/options&password=***');

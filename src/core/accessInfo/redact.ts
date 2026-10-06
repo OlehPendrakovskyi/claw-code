@@ -276,6 +276,20 @@ function nameRunBefore(text: string, index: number): string {
     return text.slice(start, end);
 }
 
+/** A URL's host and port, right after `//` or after a userinfo's `@` (`https://keycloak.example:8443/mcp`),
+ *  which a key pattern would read as the pair `keycloak.example: 8443`. Only a run of digits that ends the
+ *  authority counts as a port, so a password (`//token:1234@host`) is no host. */
+const URL_HOST_PORT = /(?<=\/\/(?:[^\s/@]*@)?)[A-Za-z0-9_.-]+:\d+(?=[/?#\s"'`)\]}>,]|$)/y;
+
+/** Whether the key at `index` is a URL's host followed by its port ({@link URL_HOST_PORT}). */
+function isUrlHostPort(text: string, index: number): boolean {
+    if (text[index - 1] !== '/' && text[index - 1] !== '@') {
+        return false;
+    }
+    URL_HOST_PORT.lastIndex = index;
+    return URL_HOST_PORT.test(text);
+}
+
 /** Mask the value of every `key=value` / `key: value` pair whose key names a secret, as `key=***`. With
  *  `quotedOnly`, only quoted values are masked, and each stays quoted (`"token":"***"`), so a later full
  *  pass consumes just that quoted value rather than the text after it. An unquoted value may hold spaces
@@ -303,7 +317,7 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
             : [pair[1]];
         const header = name.some(key => CREDENTIAL_HEADER_KEY.test(key));
         const sensitive = header || name.some(key => SENSITIVE_KEY.test(key));
-        if (!sensitive || (quotedOnly && !quoted)) {
+        if (!sensitive || (quotedOnly && !quoted) || isUrlHostPort(text, pair.index)) {
             continue;
         }
         MASKED_VALUE.lastIndex = start;
