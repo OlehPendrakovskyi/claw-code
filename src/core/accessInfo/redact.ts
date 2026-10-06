@@ -1162,60 +1162,72 @@ function normalizeForRedaction(text: string): string {
     return normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
 }
 
-/** Stands in for a known secret while the text around it is redacted: name characters holding `token`, so a
- *  secret that is also a credential's label (`token=PRIVATE`) still labels that credential's value. */
-const SECRET_PLACEHOLDER = 'redacted_secret_token';
-
-/** {@link redactText}, with a known `secret` masked in every form it can take: as given and JSON-serialised
- *  (once or twice), and each of those as redactText normalises it (an escape decoded, a terminal code dropped).
- *  The secret's words are replaced before redacting, so no pattern can mask part of it and leave the rest
- *  (`opaque-Bearer PREFIX&SUFFIX`), by a placeholder that keeps any credential it labels or marks masked; every
- *  form is masked again after, for one only normalisation reveals or one with no words to replace. The longest
- *  form goes first, so no shorter one leaves part of it. */
+/** {@link redactText}, with a known `secret` masked in every form it can take. The text is redacted as it is,
+ *  so every credential label, marker and URL delimiter works as usual, a secret that is one included
+ *  (`token=PRIVATE` with secret `token`, a secret `:` in `https://alice:PRIVATE@host`). Each form of the
+ *  secret is then masked in the output, and so is what a pattern left of one it masked only in part
+ *  (`opaque-Bearer PREFIX&SUFFIX`, where Bearer took `PREFIX`): the run of a form's characters on either side
+ *  of each mask ({@link maskSecretFragments}). */
 export function redactTextAndSecret(text: string, secret: string): string {
     const forms = secretForms(secret);
-    // Only the secret's word runs are replaced, so its punctuation still delimits what a pattern needs
-    // (a secret `:` leaves `https://alice:PRIVATE@host` a URL with a password). A secret that is itself a
-    // credential marker (`Bearer`, `Basic`) makes what follows it a credential: its placeholder then ends in
-    // `=`, so what follows is masked as the placeholder's value.
-    // Only an occurrence that stands alone is replaced: one inside a longer word (`ear` in `Bearer`) would take
-    // that word apart, and is masked after redaction instead.
-    const marker = endsAtCredential(secret) ? '=' : '';
-    const placeheld = forms.reduce(
-        (hidden, form) => replaceStandalone(hidden, form, form.replace(WORD_RUN, SECRET_PLACEHOLDER) + marker), text);
-    const redacted = forms.reduce((hidden, form) => hidden.split(form).join('***'), redactText(placeheld));
-    return redacted.split(SECRET_PLACEHOLDER).join('***');
+    return maskSecretFragments(forms.reduce((out, form) => out.split(form).join('***'), redactText(text)), forms);
 }
 
-/** A secret's character other than whitespace, control characters and ASCII punctuation (`_` aside): a letter
- *  or digit of any script, so no part of a non-ASCII secret is left out of the placeholder. */
-const WORD_CHAR = String.raw`[^\s\u0000-\u001f\u007f-\u009f!-/:-@[-^${'`'}{-~]`;
-const WORD_RUN = new RegExp(`${WORD_CHAR}+`, 'g');
-const IS_WORD_CHAR = new RegExp(`^${WORD_CHAR}$`);
-
-/** `text` with every occurrence of `form` that has no word character right before or after it replaced. */
-function replaceStandalone(text: string, form: string, replacement: string): string {
-    let out = '';
-    let copied = 0;
-    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
-        const end = at + form.length;
-        if (at < copied || IS_WORD_CHAR.test(text[at - 1] ?? '') || IS_WORD_CHAR.test(text[end] ?? '')) {
-            continue;
-        }
-        out += text.slice(copied, at) + replacement;
-        copied = end;
-    }
-    return out + text.slice(copied);
-}
-
-/** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */
+/** The forms {@link redactTextAndSecret} masks, non-empty and longest first: as given, JSON-serialised once or
+ *  twice, percent-encoded as a URL serialises it, and each of those as redactText normalises it (an escape
+ *  decoded, a terminal code dropped). */
 function secretForms(secret: string): string[] {
     const serialised = JSON.stringify(secret).slice(1, -1);
     const serialisedTwice = JSON.stringify(serialised).slice(1, -1);
-    const raw = [secret, serialised, serialisedTwice];
+    const raw = [secret, serialised, serialisedTwice, ...percentEncoded(secret)];
     return [...new Set([...raw, ...raw.map(normalizeForRedaction)])]
         .filter(form => form !== '')
         .sort((a, b) => b.length - a.length);
+}
+
+/** `secret` percent-encoded as a URL path or a query value would hold it; none for one that cannot be. */
+function percentEncoded(secret: string): string[] {
+    try {
+        return [encodeURI(secret), encodeURIComponent(secret)];
+    } catch {
+        return [];
+    }
+}
+
+/** The shortest leftover of a secret {@link maskSecretFragments} masks: one character tells nothing, and a
+ *  delimiter beside an unrelated mask (`token=***`) stays. */
+const MIN_SECRET_FRAGMENT = 2;
+
+/** `text` with each `***` widened over the run beside it, on either side, that is part of one of `forms`: what a
+ *  pattern left of a secret it masked only in part. Each run is the longest that is still part of a form, found
+ *  by halving, since every shorter end of such a run is part of the form too. */
+function maskSecretFragments(text: string, forms: string[]): string {
+    const longest = forms[0]?.length ?? 0;
+    const isFragment = (candidate: string) => forms.some(form => form.includes(candidate));
+    const longestRun = (lengthLimit: number, slice: (length: number) => string): number => {
+        let low = 0;
+        let high = Math.min(lengthLimit, longest);
+        while (low < high) {
+            const mid = Math.ceil((low + high) / 2);
+            if (isFragment(slice(mid))) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return low >= MIN_SECRET_FRAGMENT ? low : 0;
+    };
+    let out = '';
+    let copied = 0;
+    for (let at = text.indexOf('***', copied); at !== -1; at = text.indexOf('***', copied)) {
+        const left = longestRun(at - copied, length => text.slice(at - length, at));
+        const after = at + 3;
+        const right = longestRun(text.length - after, length => text.slice(after, after + length));
+        const kept = text.slice(copied, at - left);
+        out += kept === '' && out.endsWith('***') ? '' : `${kept}***`;
+        copied = after + right;
+    }
+    return out + text.slice(copied);
 }
 
 /** A sensitive query value {@link redactUrl} masked: a whole `***` value, which the URL span ends or `&` or `#`

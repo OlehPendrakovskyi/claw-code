@@ -301,6 +301,16 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps a token that touches another word out of errors, raw or serialised', async () => {
+            const token = 'opaque-\u001b[0mBearer PREFIX&PRIVATE_SUFFIX';
+            const echoes = [`prefix_${token}`, `${token}_suffix`, `prefix_${token}_suffix`, JSON.stringify(`prefix_${token}_suffix`)];
+            for (const echo of echoes) {
+                const h = harness({ token, throwOnOpen: new Error(`failure ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_SUFFIX|PREFIX|opaque/);
+            }
+        });
+
         it('masks another credential whose label or marker is the token', async () => {
             const cases: [string, string][] = [
                 ['token', 'authentication failed: token=PRIVATE_VALUE'],
