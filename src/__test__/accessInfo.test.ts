@@ -572,6 +572,13 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('masks a credential whose name repeated serialised control escapes split, keeping Windows paths', () => {
+        for (const name of ['to\b\bken', 't\bo\bken', 't\no\tken', 'pa\fss\rword']) {
+            expect(redactText(JSON.stringify({ error: `${name}=PRIVATE_VALUE` }))).not.toContain('PRIVATE');
+        }
+        expect(redactText('{"p":"C:\\\\temp\\\\bin\\\\app.exe","ok":1}')).toBe('{"p":"C:\\\\temp\\\\bin\\\\app.exe","ok":1}');
+    });
+
     it('masks a known secret holding a URL whose host the URL parser lowercases (redactTextAndSecret)', () => {
         const secret = 'opaque_ftp://alice:pw@PRIVATE_HOST/path';
         expect(redactTextAndSecret(`failed: ${secret}`, secret)).toMatch(/^failed: \*\*\*[:*]*$/);

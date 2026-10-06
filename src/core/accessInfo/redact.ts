@@ -263,18 +263,33 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
     return text.length;
 }
 
-/** The run of name characters that ends just before the backslash run ending at `index` (`to` in `to\bken`). */
+/** The name characters that end just before the backslash run ending at `index` (`to` in `to\bken`), read
+ *  back across further serialised escapes of a control character, each escape dropped: a run opened by an
+ *  escape letter right after a backslash is that escape and more of the name (`to` in `t\bo\bken` and in
+ *  `to\b\bken`). The walk stops at anything else, so it covers each name once. */
 function nameRunBefore(text: string, index: number): string {
+    let name = '';
     let end = index;
-    while (end > 0 && text[end - 1] === '\\') {
-        end--;
+    for (;;) {
+        while (end > 0 && text[end - 1] === '\\') {
+            end--;
+        }
+        let start = end;
+        while (start > 0 && NAME_CHAR.test(text[start - 1])) {
+            start--;
+        }
+        const run = text.slice(start, end);
+        if (start === end || text[start - 1] !== '\\' || !SERIALISED_CONTROL_LETTER.test(run)) {
+            return run + name;
+        }
+        name = run.slice(1) + name;
+        end = start;
     }
-    let start = end;
-    while (start > 0 && /[A-Za-z0-9_.-]/.test(text[start - 1])) {
-        start--;
-    }
-    return text.slice(start, end);
 }
+
+const NAME_CHAR = /[A-Za-z0-9_.-]/;
+/** The letter of a JSON escape of a control character (`\b`, `\f`, `\n`, `\r`, `\t`) opening a run. */
+const SERIALISED_CONTROL_LETTER = /^[tnrbf]/;
 
 /** A URL's host and port, right after `//` or after a userinfo's `@` (`https://keycloak.example:8443/mcp`),
  *  which a key pattern would read as the pair `keycloak.example: 8443`. Only a run of digits that ends the
