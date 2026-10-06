@@ -1,7 +1,7 @@
 import { asString } from './util.js';
 import { joinBoundary, redactEndpointText, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
-import type { AccessInfo } from './types.js';
+import type { AccessInfo, RedactedLabel } from './types.js';
 
 /** Render a compact one-line access summary. */
 export function formatAccessSummaryShort(info: AccessInfo, configError?: string, cliError?: string) {
@@ -51,12 +51,13 @@ export function formatAccessSummaryMarkdown(
     }
 
     lines.push('## MCP servers');
-    // Labels can carry endpoints or secrets; every list that can is rendered through redactText.
-    lines.push(formatList(info.mcpServers.map(redactText), 'No MCP servers detected in config or CLI output.'));
+    // MCP server and tool labels were redacted part by part when they were built (RedactedLabel); every other
+    // list can carry endpoints or secrets and is rendered through redactText.
+    lines.push(formatList(info.mcpServers, 'No MCP servers detected in config or CLI output.'));
     lines.push('');
 
     lines.push('## Tools');
-    lines.push(formatList(info.tools.map(redactText), 'No tools detected in config.'));
+    lines.push(formatList(info.tools, 'No tools detected in config.'));
     lines.push('');
 
     lines.push('## Keys and credentials');
@@ -104,8 +105,16 @@ export function formatList(items: string[], emptyMessage: string) {
     return items.map((item) => `- ${item}`).join('\n');
 }
 
-/** Pick the first string value among common identity fields, honouring the fallback name. */
-export function formatNamedEntry(entry: unknown, fallbackName?: string) {
+/** Pick the first string value among common identity fields, honouring the fallback name, as a
+ *  {@link RedactedLabel}. */
+export function formatNamedEntry(entry: unknown, fallbackName?: string): RedactedLabel | undefined {
+    const label = namedEntryLabel(entry, fallbackName);
+    // The one place a RedactedLabel is made: namedEntryLabel redacts every part it returns.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion -- the brand's only constructor
+    return label === undefined ? undefined : (label as RedactedLabel);
+}
+
+function namedEntryLabel(entry: unknown, fallbackName?: string): string | undefined {
     // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
     // may be a whole endpoint: see redactEndpointText.
     // Names, ids and fallbacks (tool and MCP map keys) can be whole URLs too, so they are redacted as endpoints.

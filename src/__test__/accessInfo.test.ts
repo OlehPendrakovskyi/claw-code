@@ -23,7 +23,8 @@ import {
     scanAccessInfo,
     summarizeKeySources,
     uniqSorted,
-    type AccessInfo
+    type AccessInfo,
+    type RedactedLabel
 } from '../core/accessInfo';
 import { redactTextAndSecret } from '../core/accessInfo/redact';
 
@@ -33,6 +34,9 @@ const newSets = () => ({
     endpoints: new Set<string>(),
     notes: new Set<string>()
 });
+
+/** MCP server or tool labels, each built from its entry as extraction builds one. */
+const labels = (...entries: unknown[]): RedactedLabel[] => entries.flatMap(entry => formatNamedEntry(entry) ?? []);
 
 const infoWith = (overrides: Partial<AccessInfo>): AccessInfo => ({
     ...createEmptyAccessInfo(),
@@ -147,7 +151,7 @@ describe('extractMcpServers', () => {
 describe('extractTools', () => {
     it('collects tools from every known location', () => {
         const config = {
-            tools: ['read'],
+            tools: labels('read'),
             mcp: { tools: { grep: { url: 'https://grep' } } },
             capabilities: { tools: ['bash'] }
         };
@@ -225,7 +229,7 @@ describe('extractAccessInfoFromConfig', () => {
         const info = extractAccessInfoFromConfig(
             {
                 mcp: { servers: { gh: { url: 'https://api.github.com' } } },
-                tools: ['read', 'bash'],
+                tools: labels('read', 'bash'),
                 apiKey: { env: 'OPENAI_KEY' },
                 gateway: { url: 'https://gw.example' }
             },
@@ -275,16 +279,16 @@ describe('redactPlainSecrets', () => {
 describe('mergeAccessInfo', () => {
     it('unions every bucket', () => {
         const base = infoWith({
-            mcpServers: ['a'],
-            tools: ['t1'],
+            mcpServers: labels('a'),
+            tools: labels('t1'),
             keySources: ['Environment variable: A'],
             networkEndpoints: ['https://a'],
             localFiles: ['/a'],
             notes: ['n1']
         });
         const extra = infoWith({
-            mcpServers: ['b'],
-            tools: ['t2'],
+            mcpServers: labels('b'),
+            tools: labels('t2'),
             keySources: ['Key file: /b'],
             networkEndpoints: ['https://b'],
             localFiles: ['/b'],
@@ -300,8 +304,8 @@ describe('mergeAccessInfo', () => {
     });
 
     it('does not mutate its inputs', () => {
-        const base = infoWith({ tools: ['t1'] });
-        const extra = infoWith({ tools: ['t2'] });
+        const base = infoWith({ tools: labels('t1') });
+        const extra = infoWith({ tools: labels('t2') });
         mergeAccessInfo(base, extra);
         expect(base.tools).toEqual(['t1']);
         expect(extra.tools).toEqual(['t2']);
@@ -350,15 +354,15 @@ describe('formatList', () => {
 describe('formatAccessSummaryShort', () => {
     it('reports counts and key kinds', () => {
         const info = infoWith({
-            mcpServers: ['gh'],
-            tools: ['read', 'bash'],
+            mcpServers: labels('gh'),
+            tools: labels('read', 'bash'),
             keySources: ['Environment variable: OPENAI_KEY']
         });
         expect(formatAccessSummaryShort(info)).toBe('MCP: 1 | Tools: 2 | Keys: env');
     });
 
     it('reports errors alongside the counts', () => {
-        const info = infoWith({ tools: ['read'] });
+        const info = infoWith({ tools: labels('read') });
         expect(formatAccessSummaryShort(info, 'boom', 'cli failed')).toBe(
             'Tools: 1 | Config unavailable | CLI error'
         );
@@ -372,8 +376,8 @@ describe('formatAccessSummaryShort', () => {
 describe('formatAccessSummaryMarkdown', () => {
     it('renders every section', () => {
         const info = infoWith({
-            mcpServers: ['gh'],
-            tools: ['read'],
+            mcpServers: labels('gh'),
+            tools: labels('read'),
             keySources: ['Environment variable: OPENAI_KEY'],
             networkEndpoints: ['https://gw.example'],
             localFiles: ['/tmp/x'],
@@ -523,10 +527,31 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry(42, 'token=PRIVATE')).not.toContain('PRIVATE');
     });
 
+    it('keeps the endpoint beside a masked credential in MCP server and tool labels, from extraction to the report', () => {
+        const info = extractAccessInfoFromConfig(
+            {
+                mcpServers: [{ name: 'remote token="PRIVATE_VALUE"', url: 'https://api.example/mcp' }],
+                tools: { fetch: { name: "fetch password='PRIVATE_VALUE'", url: 'https://tools.example/fetch' } },
+            },
+            '/tmp/openclaw.json'
+        );
+        const markdown = formatAccessSummaryMarkdown(info);
+        expect(markdown).toContain('## MCP servers\n- remote token=*** (https://api.example/mcp)');
+        expect(markdown).toContain('## Tools\n- fetch password=*** (https://tools.example/fetch)');
+        expect(markdown).not.toContain('PRIVATE');
+    });
+
+    it('takes MCP server and tool labels only as formatNamedEntry built them', () => {
+        // @ts-expect-error raw text is not a RedactedLabel, so it cannot reach the report unredacted
+        const raw: AccessInfo['tools'] = ['fetch token=PRIVATE_VALUE'];
+        expect(raw).toHaveLength(1);
+        expect(labels('fetch token=PRIVATE_VALUE')).toEqual(['fetch token=***']);
+    });
+
     it('redacts malformed endpoints in MCP server and tool labels', () => {
         const info = infoWith({
-            mcpServers: [formatNamedEntry({ name: 'remote', url: 'https://alice:secret@[bad' }) ?? ''],
-            tools: ['fetch (https://bob:hunter2@[bad)'],
+            mcpServers: labels({ name: 'remote', url: 'https://alice:secret@[bad' }),
+            tools: labels('fetch (https://bob:hunter2@[bad)'),
         });
         const markdown = formatAccessSummaryMarkdown(info);
         expect(markdown).not.toMatch(/alice|secret|bob|hunter2/);
