@@ -882,6 +882,18 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            const details = '{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}';
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
         it('redacts a credential that a control byte separates from its label, on stderr and in details', () => {
             const first = start();
             first.child.stderr.emit('data', Buffer.from('token\u0000=PRIVATE_VALUE\nreal failure'));

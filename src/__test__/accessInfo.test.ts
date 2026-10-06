@@ -969,8 +969,19 @@ describe('redactText', () => {
         expect(redactText('{"to\\u006ben":"PRIVATE_VALUE","ok":1}')).toBe('{"token"=***,"ok":1}');
         expect(redactText(JSON.stringify({ detail: '{"to\\u006Ben":"PRIVATE_VALUE"}' }))).not.toContain('PRIVATE');
         expect(redactText('pass\\u0077ord=PRIVATE_VALUE')).toBe('password=***');
-        // A quote or backslash escape is no name character and stays escaped.
-        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\u0022q\\u0022","b":"\\u005c"}');
+        // A backslash escape stays as it is; a quote escape becomes a backslash-escaped quote.
+        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\"q\\"","b":"\\u005c"}');
+    });
+
+    it('masks a credential quoted with Unicode-escaped quotes, at any depth', () => {
+        const json = '{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022","ok":1}';
+        expect(redactText(json)).toBe('{"reason":"\\"token\\"=***","ok":1}');
+        expect(redactText(JSON.stringify({ detail: json }))).not.toContain('PRIVATE');
+        expect(redactText('\\u0022password\\u0022: \\u0022PRIVATE_PREFIX PRIVATE_SUFFIX\\u0022 tail')).toBe('\\"password\\"=*** tail');
+        expect(redactText("{\"r\":\"\\u0027token\\u0027: \\u0027PRIVATE_VALUE\\u0027\"}")).not.toContain('PRIVATE');
+        expect(redactText('{"r":"token: \\u0060PRIVATE_PREFIX PRIVATE_SUFFIX\\u0060"}')).toBe('{"r":"token=***"}');
+        // An escape after an even backslash run spells a quote one layer deeper, which stays escaped there.
+        expect(JSON.parse(redactText(JSON.stringify({ a: '{"b":"\\u0022q\\u0022"}' })))).toEqual({ a: '{"b":"\\"q\\""}' });
     });
 
     it('masks a spaced password with a slash after a prefix that parses as a port', () => {
@@ -1065,8 +1076,8 @@ describe('redactText', () => {
         const json = '{"error":"https://alice:PRIVATE_VALUE\\u0040host.example/x"}';
         expect(redactText(json)).toBe('{"error":"https://***:***@host.example/x"}');
         expect(redactText(JSON.stringify({ reason: json }))).toBe('{"reason":"{\\"error\\":\\"https://***:***@host.example/x\\"}"}');
-        // Quote and backslash escapes are left as they are.
-        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\u0022q\\u0022","b":"\\u005c"}');
+        // A backslash escape is left as it is; a quote escape stays an escaped quote.
+        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\"q\\"","b":"\\u005c"}');
     });
 
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {

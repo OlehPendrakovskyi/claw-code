@@ -82,22 +82,35 @@ const MASKS = /\u0000/g;
 
 /** A JSON `\\u00XX` escape of a printable ASCII character, at any depth (with its whole backslash run). */
 const PRINTABLE_ESCAPE = /(?<!\\)\\+u00([2-7][0-9a-f])/gi;
-/** Printable characters left escaped: quotes and the backslash, which delimit strings and escapes. */
-const STRUCTURAL_CODES = new Set([0x22, 0x27, 0x5c, 0x60]);
+/** Quotes, which delimit strings: an escape of one becomes a backslash-escaped quote at the same depth. */
+const QUOTE_CODES = new Set([0x22, 0x27, 0x60]);
+const BACKSLASH_CODE = 0x5c;
 
 /** A JSON-escaped `/`, with its whole backslash run. */
 const SLASH_ESCAPE = /(?<!\\)\\+\//g;
 
 /** Text with the JSON escapes of printable characters decoded, at any depth (`"to\\u006ben"` is `"token"`,
  *  `alice:pw\\u0040host` is `alice:pw@host`, `\\/\\/host` is `//host`), so a key, a URL or its delimiters spelled
- *  with them are still recognised. Quotes and the backslash stay escaped, so no string's structure changes. */
+ *  with them are still recognised. A backslash stays escaped and a quote becomes a backslash-escaped one
+ *  ({@link quoteEscapeRun}), so a key quoted with `\\u0022` is found and no string's structure changes. */
 function decodeNameEscapes(text: string): string {
     return text.replace(PRINTABLE_ESCAPE, (escape, code: string) => {
         const value = parseInt(code, 16);
-        return value === 0x7f || STRUCTURAL_CODES.has(value) ? escape : String.fromCharCode(value);
+        if (value === 0x7f || value === BACKSLASH_CODE) {
+            return escape;
+        }
+        const char = String.fromCharCode(value);
+        return QUOTE_CODES.has(value) ? '\\'.repeat(quoteEscapeRun(escape.indexOf('u'))) + char : char;
     })
         // JSON may escape `/` (`\/\/alice:pw@host\/x`), at any depth; only the backslashes before a `/` go.
         .replace(SLASH_ESCAPE, '/');
+}
+
+/** How many backslashes escape a quote that a `\\u00XX` escape after `run` backslashes spells: as many when
+ *  `run` is odd (`\\u0022` is `\\"`, `\\\\\\u0022` is `\\\\\\"`), and when even one layer of escaping
+ *  maps `run` to `run / 2`, so `\\\\u0022` is `\\\\\\"`. */
+function quoteEscapeRun(run: number): number {
+    return run % 2 === 1 ? run : 2 * quoteEscapeRun(run / 2) + 1;
 }
 
 /** Text with every {@link MASK} shown as `***`. */
