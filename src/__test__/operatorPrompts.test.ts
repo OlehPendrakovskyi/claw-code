@@ -32,7 +32,9 @@ describe('OperatorPromptBoard', () => {
         vi.setSystemTime(NOW);
     });
 
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => {
+        vi.useRealTimers();
+    });
 
     describe('add and settle', () => {
         it('announces a prompt once and settles it once', () => {

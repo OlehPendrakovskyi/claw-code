@@ -1,12 +1,12 @@
 import type { MockInstance } from 'vitest';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type * as FspType from 'fs/promises';
 import { stagedPromptImage } from '../chat/promptImages';
 import { conversationHistory, readAttachments, AttachmentLimits } from '../webview/viewMessaging';
 import * as lsofFdPath from '../webview/lsofFdPath';
+import { makeTempDir } from './helpers/tempDir';
 
 /** The payload readAttachments reserves beside an empty base prompt. */
 const FRAMING_RESERVE_BYTES = 1024 * 1024;
@@ -109,7 +109,7 @@ describe('viewMessaging', () => {
                 return;
             }
             // Canonical, so the macOS /var symlink does not reject the FIFO before the open does.
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fifo-')));
+            dir = makeTempDir('openclaw-fifo-');
             fifoPath = path.join(dir, 'pipe');
             execFileSync('mkfifo', [fifoPath]);
         });
@@ -137,7 +137,7 @@ describe('viewMessaging', () => {
         const posixOnly = process.platform === 'win32' ? it.skip : it;
 
         posixOnly('gives text attachments the same size cap on both transports', async () => {
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-text-'));
+            const dir = makeTempDir('openclaw-text-');
             try {
                 const big = path.join(fs.realpathSync(dir), 'big.txt');
                 fs.writeFileSync(big, 'a'.repeat(200 * 1024));
@@ -151,7 +151,7 @@ describe('viewMessaging', () => {
         });
 
         posixOnly('does not charge the aggregate budget when the final realpath validation fails', async () => {
-            const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-swap-')));
+            const dir = makeTempDir('openclaw-swap-');
             try {
                 const realFile = path.join(dir, 'real.txt');
                 fs.writeFileSync(realFile, 'hello');
@@ -227,7 +227,7 @@ describe('viewMessaging', () => {
             }
             // Attachments carry canonical paths, so the fixture dir is canonicalized
             // (macOS tmpdir is itself a symlink).
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-fd-')));
+            dir = makeTempDir('openclaw-fd-');
             file = path.join(dir, 'note.txt');
             fs.writeFileSync(file, 'fd-anchored content');
             image = path.join(dir, 'pic.png');
@@ -393,7 +393,7 @@ describe('viewMessaging', () => {
         };
 
         beforeEach(() => {
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-limits-')));
+            dir = makeTempDir('openclaw-limits-');
         });
 
         afterEach(() => {
@@ -531,7 +531,7 @@ describe('viewMessaging', () => {
             readAttachments([{ name: path.basename(file), path: file, type }], { imageMode });
 
         beforeEach(() => {
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-verify-')));
+            dir = makeTempDir('openclaw-verify-');
         });
 
         afterEach(() => {
@@ -621,7 +621,7 @@ describe('viewMessaging', () => {
         };
 
         beforeEach(() => {
-            dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-img-')));
+            dir = makeTempDir('openclaw-img-');
         });
 
         afterEach(() => {

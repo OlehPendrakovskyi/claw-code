@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import type * as ProjectConfigModule from '../chat/acpxProjectConfig';
+import { makeTempDir } from './helpers/tempDir';
 
 let showWarningMock = vi.mocked(vscode.window.showWarningMessage);
 let showTextDocumentMock = vi.fn();
@@ -31,7 +31,7 @@ describe('acpxProjectConfig', () => {
     let config: typeof ProjectConfigModule;
 
     beforeEach(async () => {
-        workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-acpxrc-'));
+        workspace = makeTempDir('openclaw-acpxrc-');
         configPath = path.join(workspace, '.acpxrc.json');
         config = await freshModule();
     });
@@ -110,7 +110,7 @@ describe('acpxProjectConfig', () => {
             fs.writeFileSync(configPath, '{}');
             showWarningMock.mockResolvedValue('Allow and Run' as never);
             await config.requestProjectConfigApproval(unapproved());
-            const other = fs.mkdtempSync(path.join(os.tmpdir(), 'openclaw-acpxrc-other-'));
+            const other = makeTempDir('openclaw-acpxrc-other-');
             try {
                 fs.writeFileSync(path.join(other, '.acpxrc.json'), '{}');
                 expect(config.checkProjectConfig(other).status).toBe('unapproved');

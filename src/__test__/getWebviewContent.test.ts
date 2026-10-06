@@ -75,6 +75,8 @@ describe('getWebviewContent', () => {
         it('embeds a script that parses', () => {
             const script = renderHTML().match(/<script nonce="[^"]*">([\s\S]*)<\/script>/)?.[1];
             expect(script).toContain(CONTENT_JS);
+            // Compiling the injected script without running it is how this test checks that it parses.
+            // oxlint-disable-next-line typescript/no-implied-eval
             expect(() => new Function(script ?? '')).not.toThrow();
         });
 

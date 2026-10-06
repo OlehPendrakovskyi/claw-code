@@ -61,8 +61,12 @@ describe('TruncatedRowCompleter', () => {
         });
 
         describe('a read slower than the render can wait', () => {
-            beforeEach(() => vi.useFakeTimers());
-            afterEach(() => vi.useRealTimers());
+            beforeEach(() => {
+                vi.useFakeTimers();
+            });
+            afterEach(() => {
+                vi.useRealTimers();
+            });
 
             function deferredReader() {
                 const pending: Array<{ entryId: string; resolve: (row: TranscriptMessage | null) => void }> = [];

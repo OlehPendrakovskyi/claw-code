@@ -17,6 +17,7 @@ import {
     STDOUT_LINE_MAX_CHARS,
 } from '../chat/ChatService';
 import { usePlatform } from './helpers/platform';
+import { outputChannelNamed } from './helpers/outputChannels';
 
 // The factory must cover the whole export surface of the mocked module, not only
 // the members this test calls: `satisfies` keeps that check honest at compile time
@@ -34,6 +35,7 @@ vi.mock('child_process', () => ({
 } satisfies typeof import('child_process')));
 
 const spawnMock = vi.mocked(spawn);
+const agentLog = outputChannelNamed('OpenClaw Agent');
 const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
 type FakeChild = ChildProcess & { stdin: Writable; stdout: EventEmitter; stderr: EventEmitter; stdinBytes: Buffer[] };
@@ -376,6 +378,36 @@ describe('ChatService.sendMessage', () => {
             expect(onRunComplete).toHaveBeenCalledTimes(1);
         });
 
+        it('redacts credentials from the stderr tail it logs', () => {
+            const info = vi.mocked(agentLog.info);
+            info.mockClear();
+            const { child } = start();
+            child.stderr.emit('data', Buffer.from('request failed: OPENAI_API_KEY=sk-live-123'));
+            child.emit('close', 1, null);
+            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('acpx stderr: request failed: OPENAI_API_KEY=***');
+            expect(logged).not.toContain('sk-live-123');
+        });
+
+        it('redacts URL credentials from the stderr it logs and reports', () => {
+            const info = vi.mocked(agentLog.info);
+            info.mockClear();
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('clone failed: https://alice:secret@git.example/repo.git'));
+            child.emit('close', 1, null);
+            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
+            expect(logged).toContain('acpx stderr: clone failed: https://***:***@git.example/repo.git');
+            expect(logged).not.toContain('secret');
+            expect(events[0]).toEqual({ type: 'error', message: 'clone failed: https://***:***@git.example/repo.git' });
+        });
+
+        it('redacts credentials from the stderr it reports as the run error', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('auth failed: token=abc123'));
+            child.emit('close', 1, null);
+            expect(events[0]).toEqual({ type: 'error', message: 'auth failed: token=***' });
+        });
+
         it('keeps only the tail of a flood of stderr', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('a'.repeat(STDERR_TAIL_MAX_CHARS * 2)));
@@ -691,6 +723,12 @@ describe('ChatService.sendMessage', () => {
             child.stderr.emit('data', Buffer.from('from stderr'));
             child.emit('close', 1, null);
             expect(events[0]).toEqual({ type: 'error', message: 'from stderr' });
+            // A message of nothing but terminal codes, which redaction empties, is no message either.
+            const blank = start();
+            blank.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { code: -32603, message: '\u001b[0m' } }));
+            blank.child.stderr.emit('data', Buffer.from('from stderr'));
+            blank.child.emit('close', 1, null);
+            expect(blank.events[0]).toEqual({ type: 'error', message: 'from stderr' });
         });
 
         it('reports the prompt turn\'s own error over later ones on a failing exit', () => {
@@ -813,8 +851,530 @@ describe('ChatService.sendMessage', () => {
             child.emit('close', 1, null);
             const message = (events[0] as { message: string }).message;
             expect(message.startsWith('Internal error: quota exceeded xxx')).toBe(true);
-            expect([...message].some(ch => ch.charCodeAt(0) < 0x20)).toBe(false);
+            expect(Array.from(message).some(ch => ch.charCodeAt(0) < 0x20)).toBe(false);
             expect(message.length).toBeLessThan(1100);
+        });
+
+        it('redacts the whole detail before bounding it, so a credential whose @ falls past the limit is masked', () => {
+            const { child, events } = start();
+            const details = `https://alice:PRIVATE_PASSWORD${'p'.repeat(2000)}@host.example/x`;
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_PASSWORD');
+        });
+
+        it('redacts a credential quoted inside structured details', () => {
+            const { child, events } = start();
+            const details = { reason: 'password="PRIVATE_PREFIX PRIVATE_SUFFIX"' };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a quoted Bearer credential inside structured details', () => {
+            const { child, events } = start();
+            const details = { reason: 'sent Bearer "PRIVATE_PREFIX PRIVATE_SUFFIX"', ok: 1 };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).toContain('"ok": 1');
+        });
+
+        it('redacts a credential quoted inside JSON on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token="PRIVATE_PREFIX PRIVATE_SUFFIX"' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a spaced password after `&` and a credential name split by nested control sequences, on stderr', () => {
+            const inputs = [
+                'auth failed: options=x&password=PRIVATE_PREFIX PRIVATE_SUFFIX',
+                'to\u001b[\u001b[0m0mken=PRIVATE_VALUE',
+                JSON.stringify({ error: 'to\u001b[\u001b[0m0mken=PRIVATE_VALUE' }),
+            ];
+            for (const stderr of inputs) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`${stderr}\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
+        it('redacts a quoted URL query value split by a line break, closed or not, on stderr and in details', () => {
+            for (const text of ['&', '#'].map(delimiter => `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`)
+                .concat('fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX')) {
+                const first = start();
+                first.child.stderr.emit('data', Buffer.from(`${text}\n`));
+                first.child.emit('close', 1, null);
+                expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+                const second = start();
+                second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: text } } }));
+                second.child.emit('close', 1, null);
+                expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
+        it('redacts a username-only URL credential split by a tab or line break, on stderr and in details', () => {
+            for (const sep of ['\t', '\n', '\r\n']) {
+                const text = `clone failed: https://ghp_PRIVATE${sep}SUFFIX@github.com/repo`;
+                const first = start();
+                first.child.stderr.emit('data', Buffer.from(`${text}\n`));
+                first.child.emit('close', 1, null);
+                expect((first.events[0] as { message: string }).message).not.toMatch(/PRIVATE|SUFFIX/);
+                const second = start();
+                second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: text } } }));
+                second.child.emit('close', 1, null);
+                expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|SUFFIX/);
+            }
+        });
+
+        it('redacts a URL whose scheme a serialised line break splits, on JSON stderr and in structured details', () => {
+            const reason = 'ht\ntps:alice:PRIVATE_VALUE@host.example/x';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ reason })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a malformed URL password holding a `/` and a line break, on raw multiline stderr', () => {
+            for (const eol of ['\n', '\r\n']) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`clone failed: https://alice:PRIVATE_PREFIX/part${eol}PRIVATE_SUFFIX@host.example/repo\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
+        it('redacts a credential name split by a serialised sequence with an escaped bracket, on stderr and in details', () => {
+            const text = 'to\\u001b\\u005b0mken=PRIVATE_VALUE';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${text}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: text } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential whose name repeated serialised backspaces split, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'to\b\bken=PRIVATE_VALUE' })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = JSON.stringify({ error: 't\bo\bken=PRIVATE_VALUE' });
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            const details = '{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}';
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a credential that a control byte separates from its label, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('token\u0000=PRIVATE_VALUE\nreal failure'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: 'token\u0000=PRIVATE_VALUE' } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a single-quoted credential with an escaped quote in structured details', () => {
+            const { child, events } = start();
+            const details = { reason: "password='prefix\\'PRIVATE_SUFFIX'", ok: 1 };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential that a colour code separates from its label in nested JSON on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a serialised composite credential in structured details', () => {
+            const { child, events } = start();
+            const details = { reason: "tokens=['prefix\\' ]PRIVATE_SUFFIX']", ok: 1 };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential that serialised whitespace or a C1 code separates from its label', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token\t=PRIVATE_VALUE' })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            const details = { reason: 'token\t=PRIVATE_VALUE', code: 'token\u009b0m=PRIVATE_VALUE' };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a credential whose key follows serialised whitespace, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE' })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            const second = start();
+            const details = { reason: 'failure\nOPENAI_API_KEY=PRIVATE_VALUE', ok: 1 };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a credential under a Windows path on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('failed reading C:\\secrets\\OPENAI_API_KEY=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a quoted query value after serialised whitespace on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'https://[bad/x?to%6ben=\t"PRIVATE_PREFIX PRIVATE_SUFFIX"' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts backtick Bearer and quoted Basic credentials on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('sent Bearer `PRIVATE_VALUE`\nsent Basic "dXNlcjpwYXNz"\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toMatch(/PRIVATE|dXNlcjpwYXNz/);
+            const second = start();
+            const details = { reason: 'sent Bearer `PRIVATE_VALUE`', auth: 'Basic "dXNlcjpwYXNz"' };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|dXNlcjpwYXNz/);
+        });
+
+        it('redacts URL userinfo that a line break splits after a numeric prefix on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https://alice:123\r\nPRIVATE_SUFFIX@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_SUFFIX');
+        });
+
+        it('redacts an unpadded Basic credential and line-split URL userinfo on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('sent Basic ejpzcmtkcw\nfetch https://ali\nce:PRIVATE@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toMatch(/PRIVATE|ejpzcmtkcw/);
+        });
+
+        it('redacts a query credential split by a line break, and one behind a serialised C1 OSC, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https://host.example/?token=PREFIX\nPRIVATE_SUFFIX\ntoken\\u009d0;t\\u009c=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts line-split query credentials in details before flattening them', () => {
+            for (const sep of ['\t', '\n', '\r\n']) {
+                const { child, events } = start();
+                const details = `fetch https://host.example/?token=PREFIX${sep}PRIVATE_SUFFIX failed`;
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                child.emit('close', 1, null);
+                const message = (events[0] as { message: string }).message;
+                expect(message).not.toContain('PRIVATE');
+                expect(message).toContain('failed');
+            }
+        });
+
+        it('redacts a query value whose name a line break splits, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https://host.example/?to\nken=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a query name split by a line break in structured details and JSON stderr', () => {
+            const details = { reason: 'https://host.example/?to\nken=PRIVATE_VALUE', ok: 1 };
+            const first = start();
+            first.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stderr.emit('data', Buffer.from(`${JSON.stringify(details)}\n`));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a line-split network-path userinfo and a short Basic pair on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch //ali\nce:PRIVATE@host.example/x failed\nsent Basic OmE\n'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).not.toContain('OmE');
+        });
+
+        it('redacts a special-scheme URL split by line breaks on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch https:\nalice:PRIVATE@host.example/x\nfetch https:/alice:PRIVATE\r\nSUFFIX@host.example/x\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toMatch(/PRIVATE|SUFFIX/);
+        });
+
+        it('redacts an escaped JSON key and a spaced password after a numeric prefix on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('{"to\\u006ben":"PRIVATE_VALUE"}\nfetch https://alice:123 PRIVATE_SUFFIX/part@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential behind a JSON backspace escape and a spaced network-path password on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token\b=PRIVATE_VALUE' })}\nfetch //alice:123 PRIVATE_SUFFIX/part@host.example/x\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts consecutive network-path references and a composite query value on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('see //public:8080 then fetch //alice:pass PRIVATE_SUFFIX/x@host.example/repo\nGET https://host.example/?tokens=[ "PRIVATE_A", "PRIVATE_B" ] failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential split between the error message and its details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'Invalid token', data: { details: 'PRIVATE_VALUE' } } }));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).toMatch(/^Invalid token/);
+        });
+
+        it('redacts Unicode-escaped breaks, escaped-slash tokens and spaced query values in JSON stderr and details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('{"e":"token\\u0009=PRIVATE_A","r":"sent Bearer prefix\\/PRIVATE_B","u":"https://host.example/?token=X PRIVATE_C"}\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = { url: 'https://host.example/?token=X PRIVATE_D', auth: 'Basic dXNlcjo/Pz8=' };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|Pz8/);
+        });
+
+        it('masks details that complete a Bearer or Basic label in the error message', () => {
+            for (const [label, value] of [['Bearer', 'PRIVATE_VALUE'], ['Basic', 'dXNlcjpwYXNz']]) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: label, data: { details: value } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe(`${label}: ***`);
+            }
+        });
+
+        it('redacts a quoted URL query value split by a line break, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX" failed\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = 'fetch "https://host.example/?token=PREFIX\r\nPRIVATE_SUFFIX" failed';
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a special-scheme URL whose scheme a line break splits, on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('fetch ht\ntps:alice:PRIVATE_VALUE@host.example/x failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a quoted Bearer token spanning stderr lines', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('sent Bearer "PRIVATE_PREFIX\nPRIVATE_SUFFIX"\nreal failure\n'));
+            child.emit('close', 1, null);
+            const message = (events[0] as { message: string }).message;
+            expect(message).not.toContain('PRIVATE');
+            expect(message).toContain('real failure');
+        });
+
+        it('redacts a network-path userinfo with JSON-escaped slashes, on stderr and in details', () => {
+            const json = '{"error":"fetch \\/\\/alice:PRIVATE_VALUE@host.example\\/x failed"}';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${json}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: json } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('masks a URL userinfo split between the error message and its details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://alice:PRIVATE_PREFIX/', data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('https://***: ***');
+        });
+
+        it('masks a URL userinfo split between message and details after an earlier credential or without `//`', () => {
+            for (const message of ['auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/', 'auth token=OLD_SECRET\nhttps://alice:PRIVATE_PREFIX/', 'token=OLD_SECRET\nhttps:alice:PRIVATE_PREFIX/', 'https:alice:PRIVATE_PREFIX/']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+                child.emit('close', 1, null);
+                const shown = (events[0] as { message: string }).message;
+                expect(shown).not.toMatch(/PRIVATE|OLD_SECRET/);
+                expect(shown).toMatch(/: \*\*\*$/);
+            }
+        });
+
+        it('keeps the details of a message that redaction only normalises', () => {
+            for (const message of ['failed\u001b[0m', 'fail\\u0065d']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'quota exceeded' } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe('failed: quota exceeded');
+            }
+        });
+
+        it('keeps a message ending in a host and port, and its details, when no userinfo follows', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'Connection failed to http://127.0.0.1:18789', data: { details: 'ECONNREFUSED' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('Connection failed to http://127.0.0.1:18789: ECONNREFUSED');
+        });
+
+        it('keeps independent details after a message holding a complete credential', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'Request rejected (token="PRIVATE")', data: { details: 'quota exceeded' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('Request rejected (token=***): quota exceeded');
+        });
+
+        it('masks a username-only URL credential split between message and details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://ghp_PRIVATE_PREFIX', data: { details: 'PRIVATE_SUFFIX@github.com/repo' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('https://***: ***');
+        });
+
+        it('masks a URL userinfo split between message and details by a trailing line break', () => {
+            for (const eol of ['\t', '\n', '\r\n']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: `https://alice:PRIVATE_PREFIX${eol}`, data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
+        it('redacts a credential behind a DCS control string on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('to\u001bPq\u001b\\ken=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential whose name a charset escape sequence splits on stderr, raw and serialised', () => {
+            for (const line of ['to\u001b(Bken=PRIVATE_VALUE', JSON.stringify({ error: 'to\u001b(Bken=PRIVATE_VALUE' })]) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`${line}\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
+        it('redacts a credential whose name a serialised backspace splits, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'to\bken=PRIVATE_VALUE' })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = { reason: JSON.stringify({ error: 'to\bken=PRIVATE_VALUE' }) };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a URL whose @ is a Unicode escape, on stderr and in nested details', () => {
+            const json = '{"error":"https://alice:PRIVATE_VALUE\\u0040host.example/x"}';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${json}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: json } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential in nested serialised details', () => {
+            const { child, events } = start();
+            const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a credential that a serialised colour code separates from its label on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' })}\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts a credential that any CSI form separates from its label in the details', () => {
+            for (const code of ['\u001b[?25h', '\u001b[38:2:1:2:3m']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: `token${code}=PRIVATE_VALUE` } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+            }
+        });
+
+        it('redacts an array credential in pretty-printed structured details and in stderr', () => {
+            const details = { tokens: ['PRIVATE_A', 'PRIVATE_B'], credentials: { value: 'PRIVATE_C' } };
+            const first = start();
+            first.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stderr.emit('data', Buffer.from(`${JSON.stringify(details, null, 2)}\nreal failure`));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('strips terminal codes from structured details before serialising them', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason: 'token\u001b[0m=PRIVATE_VALUE' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+        });
+
+        it('redacts the error message itself', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'auth failed: token=abc123' } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('auth failed: token=***');
         });
 
         it('stringifies structured details', () => {

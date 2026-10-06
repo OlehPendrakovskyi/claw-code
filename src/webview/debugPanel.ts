@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import { getNonce } from './content';
+import { asNonEmptyString, asRecord } from '../core/typeGuards';
 
 const log = vscode.window.createOutputChannel('OpenClaw Debug', { log: true });
+
+/** The message types the debug panel's own script posts (see its `postMessage` calls below). */
+const DEBUG_PANEL_MESSAGE_TYPES: ReadonlySet<string> = new Set(['send', 'requestState', 'requestRecommendations']);
 
 export function openDebugChatPanel(extensionUri: vscode.Uri): vscode.WebviewPanel {
     const panel = vscode.window.createWebviewPanel(
@@ -207,7 +211,10 @@ button:hover { opacity: 0.9; }
 </html>`;
 
     panel.webview.onDidReceiveMessage(msg => {
-        log.info(`[DebugPanel] message from webview: ${JSON.stringify(msg)}`);
+        // Only the message type, and only one this panel sends: a `send` message carries the full prompt
+        // text, and any other value is untrusted webview data that must not reach the log either.
+        const type = asNonEmptyString(asRecord(msg)?.type);
+        log.info(`[DebugPanel] message from webview: type=${type !== null && DEBUG_PANEL_MESSAGE_TYPES.has(type) ? type : 'unknown'}`);
     });
 
     log.info('Debug chat panel opened');

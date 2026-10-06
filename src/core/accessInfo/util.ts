@@ -69,6 +69,6 @@ export function createEmptyAccessInfo(): AccessInfo {
 }
 
 /** De-duplicate strings, drop blank entries and return the result sorted. */
-export function uniqSorted(items: string[]): string[] {
+export function uniqSorted<T extends string>(items: T[]): T[] {
     return sortBy(uniq(items.filter((item) => item && item.trim().length > 0)));
 }

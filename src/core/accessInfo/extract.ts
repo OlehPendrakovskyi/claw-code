@@ -1,5 +1,5 @@
 import { compact, get, map } from 'lodash-es';
-import { redactEndpoint } from './redact.js';
+import { redactEndpointText, redactText } from './redact.js';
 import { formatNamedEntry } from './format.js';
 import {
     createEmptyAccessInfo,
@@ -12,17 +12,17 @@ import {
     extractEnvVarName,
     uniqSorted
 } from './util.js';
-import type { AccessInfo } from './types.js';
+import type { AccessInfo, RedactedLabel } from './types.js';
 
 /** Add a label per entry to `results`, skipping entries without a formattable label. */
-function addEntryLabels(results: Set<string>, entries: unknown[]) {
+function addEntryLabels(results: Set<RedactedLabel>, entries: unknown[]) {
     for (const label of compact(map(entries, (entry) => formatNamedEntry(entry)))) {
         results.add(label);
     }
 }
 
 /** Add a `name (endpoint)` label per named record entry to `results`. */
-function addRecordLabels(results: Set<string>, entries: Record<string, unknown>) {
+function addRecordLabels(results: Set<RedactedLabel>, entries: Record<string, unknown>) {
     for (const [name, entry] of Object.entries(entries)) {
         const label = formatNamedEntry(entry, name);
         if (label) {
@@ -64,8 +64,10 @@ export function extractAccessInfoFromCli(output?: string): AccessInfo {
     if (!output) {
         return info;
     }
-    const urls = output.match(/https?:\/\/\S+/g) ?? [];
-    info.networkEndpoints = uniqSorted(map(urls, redactEndpoint));
+    // The whole output is redacted before URLs are cut out of it: a cut ends at whitespace, so a userinfo that
+    // a tab or line break splits (`https://alice:PREFIX\nSUFFIX@host`) would otherwise lose its `@`.
+    const urls = redactText(output).match(/https?:\/\/\S+/g) ?? [];
+    info.networkEndpoints = uniqSorted(map(urls, redactEndpointText));
     return info;
 }
 
@@ -82,8 +84,8 @@ export function mergeAccessInfo(base: AccessInfo, extra: AccessInfo): AccessInfo
 }
 
 /** Collect MCP server labels from the common config layouts (`mcp`, `mcp.servers`, `mcpServers`). */
-export function extractMcpServers(config: Record<string, unknown>): string[] {
-    const results = new Set<string>();
+export function extractMcpServers(config: Record<string, unknown>): RedactedLabel[] {
+    const results = new Set<RedactedLabel>();
     const mcp = get(config, 'mcp');
     if (Array.isArray(mcp)) {
         addEntryLabels(results, mcp);
@@ -104,8 +106,8 @@ export function extractMcpServers(config: Record<string, unknown>): string[] {
 }
 
 /** Collect tool labels from `tools`, `mcp.tools` and `capabilities.tools` config sections. */
-export function extractTools(config: Record<string, unknown>): string[] {
-    const results = new Set<string>();
+export function extractTools(config: Record<string, unknown>): RedactedLabel[] {
+    const results = new Set<RedactedLabel>();
     const sources = [get(config, 'tools')];
     if (isRecord(config.mcp)) {
         sources.push(get(config.mcp, 'tools'));
@@ -163,7 +165,7 @@ export function scanAccessInfo(
     }
     if (typeof value === 'string') {
         if (isUrl(value)) {
-            endpoints.add(redactEndpoint(value));
+            endpoints.add(redactEndpointText(value));
         } else if (looksLikePath(value)) {
             localFiles.add(value);
         }

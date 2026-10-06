@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { getHardeningMode } from '../core/configIO';
 import { getDashboardUrl } from '../vscode/config';
 import { loadToolsForOverview, type ToolEntry } from '../core/tools';
-import { redactEndpoint, type AccessSummary } from '../core/accessInfo';
+import { redactEndpointText, type AccessSummary } from '../core/accessInfo';
 
 class OverviewItem extends vscode.TreeItem {
     readonly children?: OverviewItem[];
@@ -148,7 +148,7 @@ export class OverviewTreeProvider implements vscode.TreeDataProvider<OverviewIte
                     }
                 }),
                 new OverviewItem('Open dashboard', {
-                    description: redactEndpoint(getDashboardUrl()),
+                    description: redactEndpointText(getDashboardUrl()),
                     icon: new vscode.ThemeIcon('globe'),
                     command: {
                         command: 'openclaw.hardening.openDashboard',

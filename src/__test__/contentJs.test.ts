@@ -161,6 +161,8 @@ function loadToolStatus(): {
     getToolStatusSymbol(status: string): string;
     getToolStatusClass(status: string): string;
 } {
+    // The webview script is shipped as source text; evaluating it is the point of this helper.
+    // oxlint-disable-next-line typescript/no-implied-eval
     return new Function(
         `${TOOL_STATUS_JS}; return { getToolGroupStatus, shouldOpenToolGroup, getToolStatusSymbol, getToolStatusClass };`
     )();

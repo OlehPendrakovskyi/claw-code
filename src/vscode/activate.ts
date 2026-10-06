@@ -8,7 +8,7 @@ import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
 import { migrateLegacyGatewayToken, promptForGatewayToken, resetDeviceIdentity } from '../core/gatewayConfig';
 import { errorMessage } from '../core/errors';
-import { redactEndpoint, redactPlainSecrets } from '../core/accessInfo/redact';
+import { redactText } from '../core/accessInfo/redact';
 import {
     log,
     connect,
@@ -118,7 +118,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 })
                 .catch((err: unknown) => {
                     const message = errorMessage(err);
-                    log.error(`connectGateway failed: ${redactPlainSecrets(message.replace(/\S+:\/\/\S+/g, (url) => redactEndpoint(url)))}`);
+                    log.error(`connectGateway failed: ${redactText(message)}`);
                     void vscode.window.showErrorMessage(
                         'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
                     );

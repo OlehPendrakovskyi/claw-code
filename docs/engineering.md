@@ -54,7 +54,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 - Errors carry stable codes (a `LogEvent` enum) and a context bag of safe fields only (sessionKey, iteration, event type); stack traces never reach the UI.
 - **Debug isolation**: develop against a separate dev gateway so agents' working memory is not polluted by debug traffic.
 
-**Current state (audit 2026-10-03):** none of the target exists yet. There is no shared logger class, no file sink and no debug gate; four output channels are created independently (`chat/ChatService.ts`, `vscode/commands/shared.ts`, `webview/debugPanel.ts`, `webview/viewMessaging.ts`), all at info level. Two red-line violations exist (re-checked 2026-10-04): `ChatViewProvider.ts:1032` logs the first 80 characters of every prompt, and `webview/debugPanel.ts:210` logs every message from the debug webview as JSON — including `send` messages, which carry the **complete** prompt text (`debugPanel.ts:178`). A third line needs review: `chat/ChatService.ts:412` logs the tail of acpx's stderr, whose content the CLI controls and may include prompt or file text. Tracked as **SEC-2** (the violations and the stderr review) and **ENG-1** (the logger).
+**Current state (audit 2026-10-03):** none of the target exists yet. There is no shared logger class, no file sink and no debug gate; four output channels are created independently (`chat/ChatService.ts`, `vscode/commands/shared.ts`, `webview/debugPanel.ts`, `webview/viewMessaging.ts`), all at info level. The two prompt-logging violations found in the audit are fixed: `handleSend` logs the prompt's length, not its text, and the debug panel logs only a message's type. The acpx stderr tail is now redacted for credentials (R35) in the log and in the error shown in the chat; acpx 0.19.4, as the extension invokes it (no `--verbose`), does not forward the agent's stderr or write prompt text to stderr by design ([#36](https://github.com/OlehPendrakovskyi/claw-code/issues/36)). `pnpm run check:rules` keeps log calls from interpolating prompt or payload text. Remaining: **SEC-2** stays Partial until an option in [#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42) is chosen or the risk is accepted, because an agent error can still quote the prompt into the logged stderr tail; and **ENG-1** (the logger).
 
 ## 4. Code quality
 
@@ -64,7 +64,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 - Reusable utilities (diff, auto-context, backoff) live in `core/`.
 - Readability: domain modules with explicit names, the webview split into views, long functions broken up, types next to their use.
 - No `console.log`: use the injected logger (§3).
-- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent (not written yet: **ENG-10**). Tests exercise interleavings, not just the happy path ([development-rules.md](development-rules.md), rule 7).
+- **Tests**: unit tests for the reducer, protocol adapters (mock WS) and deduplication; an integration smoke test against a local dev gateway with a fake token and no real agent (not written yet: **ENG-10**). How tests are written is governed by the testing rules in [development-rules.md](development-rules.md#testing) (R7, R34, R49).
 
 ### Refactoring backlog
 
@@ -81,14 +81,14 @@ A standalone project with one repository and one PR flow. Upstream (openknots/op
 - Branch prefixes: `feat/`, `fix/`, `chore/`, `refactor/`, `docs/`.
 - **Conventional Commits**; semver is derived from them.
 - **Commit signing**: mandatory for the owner (GPG, GitHub "Verified" on `main` commits and release tags — decision 2026-09-24); recommended but not required for contributors.
-- Required checks, in the order `ci.yml` runs them: typecheck → oxlint → build → vitest → license-check.
+- Required checks, in the order `ci.yml` runs them: typecheck → oxlint (type-aware) → rule checks (`scripts/check-rules.mjs`) → build → vitest (with coverage on Linux) → license-check.
 - CHANGELOG: release-please or manual by category, Keep a Changelog format.
 
 ## 6. CI/CD
 
 ### Workflow 1 — CI (exists: `.github/workflows/ci.yml`)
 
-Triggers: `pull_request`, `push` to `main`, `workflow_dispatch`. `pnpm install --frozen-lockfile`, then build + vitest on ubuntu / windows / macos, and typecheck + oxlint + license-check on Linux only (their result does not vary by OS). The aggregate `ci` job fails unless every matrix leg passed, and it is the check the ruleset requires.
+Triggers: `pull_request`, `push` to `main`, `workflow_dispatch`. `pnpm install --frozen-lockfile`, then build + vitest on ubuntu / windows / macos, and typecheck, type-aware oxlint (`.oxlintrc.json`; `unbound-method` ignores static methods in source and is off in tests, where `vi.mocked(obj.method)` is the norm), the rule checks (`scripts/check-rules.mjs`) and license-check on Linux only (their result does not vary by OS). The Linux leg also runs Vitest with coverage, against the thresholds in `vitest.config.ts`. The aggregate `ci` job fails unless every matrix leg passed, and it is the check the ruleset requires.
 
 Outstanding: the failure-log upload or tee step of §3 (**ENG-1**); extend typecheck/lint to other OSes only if a platform-specific failure appears.
 

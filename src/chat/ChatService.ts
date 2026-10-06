@@ -9,6 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
+import { joinBoundary, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -27,6 +28,11 @@ export const STDOUT_LINE_MAX_CHARS = 16 * 1024 * 1024;
 
 /** Stderr only surfaces as a failure message, so only its tail is kept. */
 export const STDERR_TAIL_MAX_CHARS = 16 * 1024;
+/** Raw stderr kept for redaction. It is redacted whole, so every credential's label is still beside its value
+ *  however the output was chunked. Past this, collection stops and the tail is withheld rather than shown cut. */
+export const STDERR_RAW_MAX_CHARS = 1024 * 1024;
+/** Reported in place of the stderr tail once stderr outgrew STDERR_RAW_MAX_CHARS. */
+export const STDERR_WITHHELD = 'acpx wrote more than 1 MiB to stderr; it is not shown, so no credential in it is cut from its label';
 
 /** How long an aborted acpx gets after SIGTERM before it is SIGKILLed. */
 export const ABORT_KILL_GRACE_MS = 3000;
@@ -167,8 +173,8 @@ class AcpxEventParser {
     /** Whether acpx refused a prompt block (an image) the agent cannot take. */
     rejectedPromptContent = false;
 
-    /** Why the run failed by the JSON-RPC traffic, for a non-zero exit to report:
-     *  the prompt turn's error, else acpx's own (null id), else the last one. */
+    /** Why the run failed by the JSON-RPC traffic, for a non-zero exit to report: the prompt turn's error,
+     *  else acpx's own (null id), else the last one. Already redacted (see withErrorDetails). */
     get failureMessage(): string | undefined {
         return this.promptError ?? this.acpxError ?? this.lastError;
     }
@@ -320,7 +326,8 @@ class AcpxRun {
     private readonly pendingLine: string[] = [];
     private pendingLineLength = 0;
     private droppingOversizedLine = false;
-    private stderrTail = '';
+    private stderrRaw = '';
+    private stderrOverflowed = false;
     private killTimer: NodeJS.Timeout | undefined;
 
     constructor(
@@ -395,8 +402,25 @@ class AcpxRun {
         return line;
     }
 
+    /** Collects stderr up to STDERR_RAW_MAX_CHARS; beyond that, nothing more is kept (see STDERR_WITHHELD). */
     private onStderr(text: string): void {
-        this.stderrTail = (this.stderrTail + text).slice(-STDERR_TAIL_MAX_CHARS);
+        if (this.stderrOverflowed) {
+            return;
+        }
+        if (this.stderrRaw.length + text.length > STDERR_RAW_MAX_CHARS) {
+            this.stderrOverflowed = true;
+            this.stderrRaw = '';
+            return;
+        }
+        this.stderrRaw += text;
+    }
+
+    /** The end of stderr, redacted whole first, then cut to STDERR_TAIL_MAX_CHARS; withheld after an overflow. */
+    private redactedStderrTail(): string {
+        if (this.stderrOverflowed) {
+            return STDERR_WITHHELD;
+        }
+        return redactText(this.stderrRaw.trim()).slice(-STDERR_TAIL_MAX_CHARS);
     }
 
     private emitLine(line: string): void {
@@ -408,8 +432,9 @@ class AcpxRun {
         clearTimeout(this.killTimer);
         this.onStdout(this.stdoutDecoder.end());
         this.onStderr(this.stderrDecoder.end());
-        if (this.stderrTail.trim()) {
-            log.info(`acpx stderr: ${this.stderrTail.trim()}`);
+        const stderrTail = this.redactedStderrTail();
+        if (stderrTail) {
+            log.info(`acpx stderr: ${stderrTail}`);
         }
         if (!this.finished && !this.droppingOversizedLine) {
             this.emitLine(this.takePendingLine());
@@ -442,7 +467,8 @@ class AcpxRun {
         if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
-        const message = this.parser.failureMessage ?? (this.stderrTail.trim() || exitReason(code, signal));
+        // Shown in the chat and the log; the agent's message and the stderr tail are both redacted already.
+        const message = this.parser.failureMessage ?? (this.redactedStderrTail() || exitReason(code, signal));
         log.error(`acpx error: ${message}`);
         return { type: 'error', message };
     }
@@ -571,16 +597,52 @@ function encodePrompt(blocks: PromptBlock[]): Buffer {
 }
 
 /** An ACP error message with its `data.details`, flattened to one bounded line. */
-function withErrorDetails(message: string | undefined, details: unknown): string | undefined {
-    const raw = typeof details === 'string' ? details : details === undefined || details === null ? '' : stringifyToolEvent(details);
-    // Terminal colour codes first, then every other control run becomes one space.
-    // eslint-disable-next-line no-control-regex
-    const flat = raw.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+function withErrorDetails(rawMessage: string | undefined, details: unknown): string | undefined {
+    // A message that redaction empties (nothing but terminal codes) counts as missing, so a fallback applies.
+    const message = rawMessage !== undefined && redactText(rawMessage).trim() !== '' ? rawMessage : undefined;
+    // Terminal codes come out of string values before serialising, which would turn ESC into a literal `\u001b`.
+    const plainDetails = withoutTerminalCodes(details);
+    const raw = typeof plainDetails === 'string' ? plainDetails : plainDetails === undefined || plainDetails === null ? '' : stringifyToolEvent(plainDetails);
+    const safeMessage = message === undefined ? undefined : redactText(message);
+    const flat = flattenDetails(raw);
     if (flat === '' || flat === message) {
-        return message;
+        return safeMessage;
     }
-    const bounded = flat.length > ERROR_DETAILS_MAX_CHARS ? `${flat.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : flat;
-    return message === undefined ? bounded : `${message}: ${bounded}`;
+    // A credential can span the message and the details (message `Bearer`, or `https://alice:PREFIX/` with
+    // details `SUFFIX@host`), and the inserted `: ` would keep the matchers from seeing it whole: the details
+    // are then masked whole, and the message cut where the credential starts.
+    const boundary = message === undefined ? undefined : joinBoundary(message, raw);
+    if (boundary?.maskRight) {
+        return `${redactText(boundary.left)}: ***`;
+    }
+    // Redact the message and the whole detail together, as they will be shown, before flattening and cutting
+    // them. A credential can be split across the two (message `Invalid token`, details `PRIVATE`); a line break
+    // that a URL parser drops, turned into a space, would split one (`?token=PREFIX\nSUFFIX`); and a cut could
+    // separate one from what marks it as one. The cut keeps the message and at most ERROR_DETAILS_MAX_CHARS more.
+    const safe = flattenDetails(redactText(message === undefined ? raw : `${message}: ${raw}`));
+    const limit = ERROR_DETAILS_MAX_CHARS + (safeMessage === undefined ? 0 : safeMessage.length + 2);
+    return safe.length > limit ? `${safe.slice(0, limit)}…` : safe;
+}
+
+/** Details on one line: terminal codes first, every CSI form (a code turned into a space would split a label
+ *  from its value), then every other control run becomes one space. */
+function flattenDetails(text: string): string {
+    // eslint-disable-next-line no-control-regex
+    return stripTerminalCodes(text).replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+}
+
+/** A copy of a JSON value with terminal codes stripped from every string in it, keys included. */
+function withoutTerminalCodes(value: unknown, depth = 0): unknown {
+    if (typeof value === 'string') {
+        return stripTerminalCodes(value);
+    }
+    if (depth > 32 || value === null || typeof value !== 'object') {
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map(item => withoutTerminalCodes(item, depth + 1));
+    }
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [stripTerminalCodes(key), withoutTerminalCodes(item, depth + 1)]));
 }
 
 /** Completes a send aborted before it had a process. */

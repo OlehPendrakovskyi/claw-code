@@ -6,8 +6,8 @@ import {
     formatAccessSummaryShort,
     isRecord,
     mergeAccessInfo,
-    redactEndpoint,
-    redactPlainSecrets,
+    redactEndpointText,
+    redactText,
     uniqSorted,
     type AccessSummary
 } from '../../core/accessInfo';
@@ -98,8 +98,8 @@ async function buildHardeningAccessSummary(prefix: string): Promise<AccessSummar
 
     const combined = mergeAccessInfo(configInfo, cliInfo);
     combined.networkEndpoints = uniqSorted([
-        ...combined.networkEndpoints.map((e) => redactEndpoint(e)),
-        redactEndpoint(getDashboardUrl())
+        ...combined.networkEndpoints.map((e) => redactEndpointText(e)),
+        redactEndpointText(getDashboardUrl())
     ]);
 
     const short = formatAccessSummaryShort(combined, configResult.error, cliResult.error);
@@ -138,7 +138,7 @@ async function runStatusAll(prefix: string): Promise<{ output?: string; error?: 
         return { output: output.length > 0 ? output : undefined };
     } catch (error) {
         const message = errorMessage(error);
-        return { error: redactPlainSecrets(message.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))) };
+        return { error: redactText(message) };
     }
 }
 
@@ -221,7 +221,7 @@ async function withToolEntry(
     }
 
     await writeOpenClawConfigRecord(configPath, config);
-    getOverviewProvider()?.refreshTools();
+    await getOverviewProvider()?.refreshTools();
     vscode.window.showInformationMessage(result.message);
 }
 

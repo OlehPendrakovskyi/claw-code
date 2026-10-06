@@ -259,6 +259,110 @@ describe('GatewayChatService', () => {
             expect([...h.logs, ...live.logs].join('\n')).not.toContain(TOKEN);
         });
 
+        it('keeps a token that normalisation would change out of errors, and an escaped echo of an ordinary one', async () => {
+            for (const token of ['opaque-\\u0041PRIVATE_SUFFIX', 'opaque-\u001b[0mPRIVATE_SUFFIX']) {
+                const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${token}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toContain('PRIVATE_SUFFIX');
+            }
+            const escapedEcho = TOKEN.replace('t', '\\u0074');
+            const h = harness({ throwOnOpen: new Error(`Invalid URL: ws://host/ ${escapedEcho}`) });
+            const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+            expect(error.message).not.toContain(TOKEN);
+            expect(error.message).not.toContain(escapedEcho);
+        });
+
+        it('keeps a serialised echo of a token that normalisation would change out of errors', async () => {
+            for (const token of ['opaque-\\u0041PRIVATE_SUFFIX', 'opaque-\u001b[0mPRIVATE_SUFFIX']) {
+                for (const echo of [JSON.stringify(token), JSON.stringify({ reason: `failed ${token}` }), token]) {
+                    const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+                    const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                    expect(error.message).not.toContain('PRIVATE_SUFFIX');
+                }
+            }
+        });
+
+        it('keeps a token that a credential pattern would partly mask out of errors, raw or serialised', async () => {
+            const token = 'opaque-\u001b[0mBearer PREFIX&PRIVATE_SUFFIX';
+            for (const echo of [token, JSON.stringify(token), JSON.stringify({ reason: JSON.stringify(token) })]) {
+                const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_SUFFIX|PREFIX/);
+            }
+        });
+
+        it('keeps every part of a non-ASCII token out of errors, raw or serialised', async () => {
+            for (const token of ['opaque-秘密_PRIVATE_VALUE', 'opaque-ключ-PRIVATE_VALUE', 'opaque-🔑PRIVATE_VALUE']) {
+                for (const echo of [token, JSON.stringify(token), JSON.stringify({ reason: JSON.stringify(token) })]) {
+                    const h = harness({ token, throwOnOpen: new Error(`boom ${echo}`) });
+                    const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                    expect(error.message).not.toMatch(/秘密|ключ|🔑|\\u|PRIVATE_VALUE|opaque/);
+                }
+            }
+        });
+
+        it('keeps a token holding a backslash out of errors serialised three times', async () => {
+            const token = 'opaque-\\PRIVATE_SUFFIX';
+            const echo = JSON.stringify(JSON.stringify(JSON.stringify(token)));
+            const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+            const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+            expect(error.message).not.toMatch(/PRIVATE_SUFFIX|opaque/);
+        });
+
+        it('keeps a token that touches another word out of errors, raw or serialised', async () => {
+            const token = 'opaque-\u001b[0mBearer PREFIX&PRIVATE_SUFFIX';
+            const echoes = [`prefix_${token}`, `${token}_suffix`, `prefix_${token}_suffix`, JSON.stringify(`prefix_${token}_suffix`)];
+            for (const echo of echoes) {
+                const h = harness({ token, throwOnOpen: new Error(`failure ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_SUFFIX|PREFIX|opaque/);
+            }
+        });
+
+        it('keeps a token holding a URL out of errors after the URL parser lowercases its host', async () => {
+            const token = 'opaque_ftp://alice:pw@PRIVATE_HOST/path';
+            for (const echo of [token, `prefix_${token}`, JSON.stringify({ reason: token })]) {
+                const h = harness({ token, throwOnOpen: new Error(`failed: ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/private_host|PRIVATE_HOST|\/path|opaque|alice/i);
+            }
+        });
+
+        it('keeps an escaped non-ASCII token and one holding an internationalised URL out of errors', async () => {
+            const cases: [string, string][] = [
+                ['opaque-秘密_PRIVATE_VALUE', 'boom opaque-\\u79d8\\u5bc6_PRIVATE_VALUE'],
+                ['opaque-秘密_PRIVATE_VALUE', 'authentication failed: opaque-\\u79d8密_PRIVATE_VALUE'],
+                ['opaque_ftp://alice:pw@例え.example/PRIVATE_PATH', 'failed opaque_ftp://alice:pw@例え.example/PRIVATE_PATH'],
+            ];
+            for (const [token, message] of cases) {
+                const h = harness({ token, throwOnOpen: new Error(message) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_VALUE|PRIVATE_PATH|u79d8|xn--/);
+            }
+        });
+
+        it('masks another credential whose label or marker is the token', async () => {
+            const cases: [string, string][] = [
+                ['token', 'authentication failed: token=PRIVATE_VALUE'],
+                ['Bearer', 'authentication failed: Bearer PRIVATE_VALUE'],
+                ['Basic', 'authentication failed: Basic UFJJVkFURV9WQUxVRQ=='],
+                ['Bearer', `authentication failed: ${JSON.stringify({ header: 'Bearer PRIVATE_VALUE' })}`],
+                // A token of URL syntax must not take apart the URL whose password it would hide.
+                [':', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
+                ['//', 'fetch https://alice:PRIVATE_VALUE@host.example/x failed'],
+                // A token inside a marker must not take the marker apart.
+                ['ear', 'authentication failed: Bearer PRIVATE_VALUE'],
+                ['Bas', 'authentication failed: Basic UFJJVkFURV9WQUxVRQ=='],
+                ['ok', 'authentication failed: token=PRIVATE_VALUE'],
+                ['$&', 'authentication failed: $& Bearer PRIVATE_VALUE'],
+            ];
+            for (const [token, message] of cases) {
+                const h = harness({ token, throwOnOpen: new Error(message) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_VALUE|UFJJVkFURV9WQUxVRQ/);
+            }
+        });
+
         it('reconnects with a new hello when the protocol setting changes', async () => {
             vi.useFakeTimers();
             const h = await connected();

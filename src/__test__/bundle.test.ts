@@ -1,5 +1,5 @@
 
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -8,7 +8,8 @@ const OUT = path.join(ROOT, 'out', 'extension.js');
 
 describe('bundled output', () => {
     beforeAll(() => {
-        execSync('node esbuild.mjs --production', { cwd: ROOT, stdio: 'pipe' });
+        // Node by its absolute path and an argv vector: no shell (development rules R30, R36).
+        execFileSync(process.execPath, ['esbuild.mjs', '--production'], { cwd: ROOT, stdio: 'pipe' });
     });
 
     it('produces out/extension.js', () => {

@@ -1,0 +1,1075 @@
+#!/usr/bin/env node
+/**
+ * Mechanical checks for rules in docs/development-rules.md. Each check names
+ * the rule it enforces. Files are parsed by the TypeScript compiler, and module
+ * bindings are resolved through its symbol table (lexical scope, aliases,
+ * destructuring, every import form), so a call or import split across lines,
+ * or a local that shadows an import, is seen as the compiler sees it. What a
+ * check cannot know is a value's meaning, so R10 judges by name (`text`,
+ * `prompt`, …) and the review checklist still applies.
+ *
+ * Scope: these checks catch the ordinary ways a rule is broken — under any
+ * local name, import style, dot or literal-key access. They do not try to
+ * defeat deliberate obfuscation (a method name held in a variable, a value
+ * renamed before it is logged, code built at run time); that is review's job.
+ * A finding prints `file:line  [rule] message` and the script exits non-zero.
+ */
+import { readdirSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
+import ts from 'typescript';
+
+const ROOT = process.cwd();
+const SRC = join(ROOT, 'src');
+const TEST_DIR = join(SRC, '__test__') + sep;
+const TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
+
+/** Names whose value is prompt or payload text, and must not reach a log call. */
+const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', 'payload', 'chunk', 'frame']);
+/** Methods whose result is a boolean or a number, not text. Any other method called on a text value
+ *  (`slice`, `replace`, `split`, `padEnd`, …) is treated as still carrying text. */
+/** Property names that describe a value rather than hold it: `text.length`, `msg.body.type`. */
+const METADATA_NAMES = new Set(['length', 'size', 'type', 'kind', 'id', 'count']);
+const NON_TEXT_RESULT = new Set(['includes', 'startsWith', 'endsWith', 'indexOf', 'lastIndexOf', 'search', 'charCodeAt', 'codePointAt', 'localeCompare', 'test']);
+/** Methods that write their arguments to a log or output surface, on a receiver that is a logger (`log`,
+ *  `logger`, `this.logger`, `console`, …): the logger levels, VS Code's `OutputChannel` (`append`,
+ *  `appendLine`, `replace`) and the rest of `console`'s writers, labels included (`count`, `timeEnd`). */
+const LOG_METHODS = new Set([
+    'info', 'warn', 'error', 'debug', 'trace', 'log', 'append', 'appendLine', 'replace',
+    'dir', 'dirxml', 'table', 'assert', 'group', 'groupCollapsed', 'timeLog', 'timeEnd', 'count',
+]);
+const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)$/;
+/** Type names of loggers: VS Code's `OutputChannel` and `LogOutputChannel`, `Console`, any `…Logger`. */
+const LOGGER_TYPE = /^(?:Console|\w*Log|\w*Logger|\w*Channel)$/;
+const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+/** Operators whose result is one of their operands: `a ?? b`, `a || b`, `a && b`. */
+const LOGICAL_OPERATORS = new Set([ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.AmpersandAmpersandToken]);
+/** Operators whose result is a boolean whatever their operands: comparisons, `instanceof`, `in`. */
+const BOOLEAN_OPERATORS = new Set([
+    ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken,
+    ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.LessThanToken, ts.SyntaxKind.GreaterThanToken,
+    ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanEqualsToken, ts.SyntaxKind.InstanceOfKeyword, ts.SyntaxKind.InKeyword,
+]);
+const SHELL_EXECUTORS = new Set(['exec', 'execSync']);
+/** Function methods that invoke the function they are called on: `f.call(this, …)`, `f.apply(this, […])`. */
+const INVOKERS = new Set(['call', 'apply']);
+/** child_process functions that take an options object, where `shell` would apply. */
+const PROCESS_SPAWNERS = new Set(['spawn', 'spawnSync', 'execFile', 'execFileSync', 'fork', 'exec', 'execSync']);
+/** `shell` values that do not turn a shell on. */
+const SHELL_OFF = new Set([ts.SyntaxKind.FalseKeyword, ts.SyntaxKind.NullKeyword]);
+
+/** A module name without the `node:` prefix. */
+function moduleName(text) {
+    return text.replace(/^node:/, '');
+}
+
+/** What an expression denotes in module terms: `{ module }` for a module namespace, `{ module, member }`
+ *  for one of its exports, or undefined. An identifier is followed through its TypeScript symbol to its
+ *  declaration, so lexical scope decides: a parameter or local that shadows an import resolves to
+ *  itself, not to the import. Aliases (`const run = cp.exec`), bound copies (`cp.exec.bind(cp)`),
+ *  destructuring, `require`, `import()`, `import x = require()` and `fs.promises` resolve the same way. An
+ *  undeclared Vitest hook (`beforeEach`) is the Vitest global's export. */
+function resolveValue(node, checker, depth = 0, prefer) {
+    if (depth > 8) {
+        return undefined;
+    }
+    node = unwrap(node);
+    const loaded = loadedModule(node, checker);
+    if (loaded !== undefined) {
+        return { module: moduleName(loaded) };
+    }
+    // `promisify(execFile)` runs execFile: the wrapper is the function it wraps.
+    if (ts.isCallExpression(node) && node.arguments.length === 1) {
+        const callee = resolveValue(node.expression, checker, depth + 1, prefer);
+        if (callee?.module === 'util' && callee.member === 'promisify') {
+            const target = resolveValue(node.arguments[0], checker, depth + 1, prefer);
+            return target?.member !== undefined ? target : undefined;
+        }
+    }
+    const bound = boundFunction(node);
+    if (bound !== undefined) {
+        const target = resolveValue(bound, checker, depth + 1, prefer);
+        return target?.member !== undefined ? target : undefined;
+    }
+    if (ts.isIdentifier(node)) {
+        const declaration = checker.getSymbolAtLocation(node)?.declarations?.[0];
+        if (declaration === undefined) {
+            // A Vitest hook with nothing declaring it in scope is the Vitest global, so an alias of it
+            // (`const setup = beforeEach`) keeps its identity; a local of that name has a declaration.
+            return HOOKS.has(node.text) ? { module: 'vitest', member: node.text } : undefined;
+        }
+        return resolveDeclaration(declaration, checker, depth + 1, prefer);
+    }
+    const object = memberObject(node);
+    if (object !== undefined) {
+        const base = resolveValue(object, checker, depth + 1, prefer);
+        const name = lastName(node);
+        // `shared.execFileAsync` for `import * as shared from './shared'`: a member of a module in the program is
+        // followed to its exported declaration there.
+        if (base?.member === undefined && base?.module.startsWith('.')) {
+            const field = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+            const declaration = checker.getSymbolAtLocation(field)?.declarations?.[0];
+            if (declaration !== undefined) {
+                return resolveDeclaration(declaration, checker, depth + 1, prefer);
+            }
+        }
+        return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
+    }
+    return undefined;
+}
+
+/** The export `name` read from what `base` denotes; `fs.promises` is the `fs/promises` namespace. */
+function memberOf(base, name) {
+    if (base.member === undefined) {
+        return { module: base.module, member: name };
+    }
+    if (base.module === 'fs' && base.member === 'promises') {
+        return { module: 'fs/promises', member: name };
+    }
+    return undefined;
+}
+
+/** Whole-variable assignments in the program, by the assigned variable's symbol: `run = cp.exec` makes
+ *  `cp.exec` one of the values `run` can hold. Filled once, before the checks run. */
+const assignmentsBySymbol = new Map();
+
+function collectAssignments(source, checker) {
+    const visit = node => {
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left))) {
+            const symbol = checker.getSymbolAtLocation(unwrap(node.left));
+            if (symbol !== undefined) {
+                assignmentsBySymbol.set(symbol, [...(assignmentsBySymbol.get(symbol) ?? []), node.right]);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+}
+
+function resolveDeclaration(declaration, checker, depth, prefer) {
+    // `let run; run = cp.exec`: a variable also holds whatever is assigned to it later.
+    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        // Every value it can hold counts (`let launch = readFile; launch = spawn`): the one in the module the
+        // caller asks about wins, else the first.
+        const symbol = checker.getSymbolAtLocation(declaration.name);
+        const targets = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]
+            .map(value => value === undefined ? undefined : resolveValue(value, checker, depth, prefer))
+            .filter(target => target !== undefined);
+        return targets.find(target => target.module === prefer) ?? targets[0];
+    }
+    // An import from another file in the program is followed to that file's export: a re-export shim
+    // (`export { exec as run } from 'child_process'`), an exported alias, or `export default`.
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
+        const exported = exportedDeclaration(declaration, checker);
+        if (exported !== undefined) {
+            return resolveDeclaration(exported, checker, depth + 1, prefer);
+        }
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const from = declaration.parent.parent.moduleSpecifier;
+        if (from !== undefined && ts.isStringLiteral(from)) {
+            return { module: moduleName(from.text), member: lastName(declaration.propertyName ?? declaration.name) };
+        }
+        const local = checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local === undefined ? undefined : resolveDeclaration(local, checker, depth + 1, prefer);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return resolveValue(declaration.expression, checker, depth, prefer);
+    }
+    if (ts.isImportSpecifier(declaration)) {
+        return {
+            module: moduleName(declaration.parent.parent.parent.moduleSpecifier.text),
+            member: (declaration.propertyName ?? declaration.name).text,
+        };
+    }
+    if (ts.isNamespaceImport(declaration)) {
+        return { module: moduleName(declaration.parent.parent.moduleSpecifier.text) };
+    }
+    if (ts.isImportClause(declaration)) {
+        return { module: moduleName(declaration.parent.moduleSpecifier.text) };
+    }
+    if (ts.isImportEqualsDeclaration(declaration) && ts.isExternalModuleReference(declaration.moduleReference) &&
+        ts.isStringLiteral(declaration.moduleReference.expression)) {
+        return { module: moduleName(declaration.moduleReference.expression.text) };
+    }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer) {
+        const base = resolveValue(declaration.parent.parent.initializer, checker, depth, prefer);
+        const name = lastName(declaration.propertyName ?? declaration.name);
+        return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
+    }
+    return undefined;
+}
+
+/** The declaration an import binding names in another file of the program, or undefined when its module
+ *  is not part of the program (a package such as `child_process`). */
+function exportedDeclaration(binding, checker) {
+    const symbol = checker.getSymbolAtLocation(binding.name);
+    const target = symbol === undefined ? undefined : checker.getImmediateAliasedSymbol(symbol);
+    return target?.declarations?.[0];
+}
+
+/** The export of `module` a call reaches, under any binding: `run()` for `{ exec as run }`, `cp.exec()`. */
+function calledExport(node, module, checker) {
+    if (!ts.isCallExpression(node)) {
+        return undefined;
+    }
+    const target = resolveValue(invokedFunction(node.expression), checker, 0, module);
+    return target?.module === module ? target.member : undefined;
+}
+
+/** The function a callee runs: `cp.exec` for `cp.exec.call(…)` and `cp.exec.apply(…)`, else the callee. */
+function invokedFunction(callee) {
+    const value = unwrap(callee);
+    const object = memberObject(value);
+    return object !== undefined && INVOKERS.has(lastName(value) ?? '') ? object : callee;
+}
+
+/** The function `f` of a `f.bind(…)` call, or undefined. */
+function boundFunction(node) {
+    return ts.isCallExpression(node) && lastName(node.expression) === 'bind' ? memberObject(unwrap(node.expression)) : undefined;
+}
+
+/** A declaration that binds `exec`/`execSync` from child_process, called or not: a named import,
+ *  `const run = cp.exec`, `const { exec } = require(…)`. */
+function bindsShellExecutor(node, checker) {
+    const isShellExecutor = identifier => {
+        const target = resolveValue(identifier, checker, 0, 'child_process');
+        return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
+    };
+    if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
+        return node.importClause.namedBindings.elements.some(element => isShellExecutor(element.name));
+    }
+    // `export { exec } from 'child_process'` and `export * from 'child_process'` hand an executor on.
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && ts.isStringLiteral(node.moduleSpecifier) &&
+        moduleName(node.moduleSpecifier.text) === 'child_process') {
+        const exports = node.exportClause;
+        return exports === undefined ||
+            (ts.isNamedExports(exports) && exports.elements.some(element => SHELL_EXECUTORS.has(lastName(element.propertyName ?? element.name) ?? '')));
+    }
+    // `run = cp.exec`: an executor assigned after declaration.
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const target = resolveValue(node.right, checker, 0, 'child_process');
+        return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
+    }
+    if (ts.isVariableDeclaration(node)) {
+        if (ts.isIdentifier(node.name)) {
+            return isShellExecutor(node.name);
+        }
+        if (ts.isObjectBindingPattern(node.name)) {
+            return node.name.elements.some(element => ts.isIdentifier(element.name) && isShellExecutor(element.name));
+        }
+    }
+    return false;
+}
+
+/** The last name of `a`, `a.b`, `a?.b`, `a['b']` or a quoted property name; undefined for anything
+ *  else, such as a computed key held in a variable (out of scope: see the header). */
+function lastName(node) {
+    if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+        return node.text;
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        return node.name.text;
+    }
+    // `a['b']` and `{ ['b']: … }` name `b`; `a[key]` names whatever `key` holds, which is out of scope.
+    if (ts.isElementAccessExpression(node)) {
+        return literalText(node.argumentExpression);
+    }
+    if (ts.isComputedPropertyName(node)) {
+        return literalText(node.expression);
+    }
+    if (ts.isParenthesizedExpression(node)) {
+        return lastName(node.expression);
+    }
+    return undefined;
+}
+
+/** The text of a string or plain template literal, through unwrap()-able wrappers; undefined otherwise. */
+function literalText(node) {
+    const value = unwrap(node);
+    return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) ? value.text : undefined;
+}
+
+/** The expression under wrappers that do not change the value: parentheses, `await`, and
+ *  TypeScript's `as`, `satisfies`, `<T>` and `!`. */
+function unwrap(node) {
+    while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node) || ts.isAsExpression(node) ||
+        ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) {
+        node = node.expression;
+    }
+    return node;
+}
+
+/** The module a `require('m')` or `import('m')` expression loads, through any unwrap()-able wrapper.
+ *  `require` is the CommonJS loader only when nothing in scope declares it; a parameter or local of that
+ *  name is some other function. */
+function loadedModule(node, checker) {
+    node = unwrap(node);
+    if (!ts.isCallExpression(node) || node.arguments.length < 1) {
+        return undefined;
+    }
+    const isRequire = ts.isIdentifier(node.expression) && node.expression.text === 'require' &&
+        checker.getSymbolAtLocation(node.expression)?.declarations === undefined;
+    const isLoader = isRequire || node.expression.kind === ts.SyntaxKind.ImportKeyword;
+    const [specifier] = node.arguments;
+    return isLoader && (ts.isStringLiteral(specifier) || ts.isNoSubstitutionTemplateLiteral(specifier)) ? specifier.text : undefined;
+}
+
+/** The object a member is read from: `a` in `a.b` and `a['b']`. */
+function memberObject(node) {
+    return ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ? node.expression : undefined;
+}
+
+/** Whether an expression inside a log call's arguments carries prompt or payload text. */
+function carriesText(node, checker) {
+    if (ts.isElementAccessExpression(node)) {
+        // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
+        const key = unwrap(node.argumentExpression);
+        return ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)
+            ? memberCarriesText(node, key.text)
+            : carriesText(node.expression, checker);
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+        return memberCarriesText(node, node.name.text);
+    }
+    if (ts.isIdentifier(node)) {
+        return TEXT_NAMES.has(node.text);
+    }
+    if (ts.isCallExpression(node)) {
+        const method = lastName(node.expression);
+        const object = memberObject(node.expression);
+        // `text.includes(x)`, `/re/.test(text)`: the result is a boolean or number, whatever went in.
+        if (object !== undefined && NON_TEXT_RESULT.has(method ?? '')) {
+            return false;
+        }
+        if (object !== undefined) {
+            if (method === 'stringify' && lastName(object) === 'JSON') {
+                return true;
+            }
+            if (method !== undefined && !NON_TEXT_RESULT.has(method) && carriesText(object, checker)) {
+                return true;
+            }
+        }
+        if (isStringifyAlias(node.expression, checker)) {
+            return true;
+        }
+        return node.arguments.some(argument => carriesText(argument, checker));
+    }
+    // `text ? 'present' : 'empty'`: only a branch is logged, never the condition.
+    if (ts.isConditionalExpression(node)) {
+        return carriesText(node.whenTrue, checker) || carriesText(node.whenFalse, checker);
+    }
+    // `text === ''`, `text.length > 0`, `!text`, `typeof text`: a boolean or a type name, not the text.
+    if (ts.isBinaryExpression(node) && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
+        return false;
+    }
+    if ((ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) || ts.isTypeOfExpression(node)) {
+        return false;
+    }
+    if (ts.isPropertyAssignment(node)) {
+        // `{ text: text.length }`: a plain key is a label, not a value; a computed key is a value.
+        return carriesText(node.initializer, checker) || (ts.isComputedPropertyName(node.name) && carriesText(node.name.expression, checker));
+    }
+    if (ts.isShorthandPropertyAssignment(node)) {
+        return TEXT_NAMES.has(node.name.text);
+    }
+    let found = false;
+    ts.forEachChild(node, child => {
+        found ||= carriesText(child, checker);
+    });
+    return found;
+}
+
+/** Whether a member read carries text: its own name is a text name (`request.text`), or, unless it names
+ *  metadata (`text.length`, `msg.body.type`), a property it is read through is (`msg.body.data`,
+ *  `msg['body']['data']`). The root of the chain is judged by the last name alone, so `msg.type` and
+ *  `msg.threadId` are not text. */
+function memberCarriesText(node, name) {
+    if (TEXT_NAMES.has(name)) {
+        return true;
+    }
+    if (METADATA_NAMES.has(name)) {
+        return false;
+    }
+    for (let receiver = unwrap(node.expression); ; receiver = unwrap(receiver.expression)) {
+        if (ts.isPropertyAccessExpression(receiver)) {
+            if (TEXT_NAMES.has(receiver.name.text)) {
+                return true;
+            }
+        } else if (ts.isElementAccessExpression(receiver)) {
+            const key = unwrap(receiver.argumentExpression);
+            if ((ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) && TEXT_NAMES.has(key.text)) {
+                return true;
+            }
+        } else {
+            return false;
+        }
+    }
+}
+
+/** Whether a callee is `JSON.stringify` under another name: `const encode = JSON.stringify` or
+ *  `const { stringify: encode } = JSON`, with `JSON` the global one. The callee is followed through its
+ *  symbol, so a parameter or local that shadows the alias, or a local `JSON`, is not one. */
+function isStringifyAlias(callee, checker) {
+    if (!ts.isIdentifier(callee)) {
+        return false;
+    }
+    const isGlobalJson = node => ts.isIdentifier(node) && node.text === 'JSON' &&
+        (checker.getSymbolAtLocation(node)?.declarations ?? []).length === 0;
+    const declaration = checker.getSymbolAtLocation(callee)?.declarations?.[0];
+    if (declaration !== undefined && ts.isVariableDeclaration(declaration) && declaration.initializer !== undefined) {
+        const value = unwrap(declaration.initializer);
+        return ts.isPropertyAccessExpression(value) && value.name.text === 'stringify' && isGlobalJson(unwrap(value.expression));
+    }
+    if (declaration !== undefined && ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer !== undefined) {
+        return lastName(declaration.propertyName ?? declaration.name) === 'stringify' &&
+            isGlobalJson(unwrap(declaration.parent.parent.initializer));
+    }
+    return false;
+}
+
+/** Whether a `/tmp…` string literal appears anywhere in an expression: `'/tmp/x'`, `path.join('/tmp', …)`. */
+function containsTmpLiteral(node) {
+    if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && /^\/tmp(?:\/|$)/.test(node.text)) {
+        return true;
+    }
+    // A template such as /tmp/x-${id}: its literal prefix is the template's head.
+    if (ts.isTemplateExpression(node) && /^\/tmp(?:\/|$)/.test(node.head.text)) {
+        return true;
+    }
+    let found = false;
+    ts.forEachChild(node, child => {
+        found ||= containsTmpLiteral(child);
+    });
+    return found;
+}
+
+/** Names bound to `….createOutputChannel(…)` in a file, whatever they are called (`const out = …`). */
+function outputChannelBindings(source) {
+    const names = new Set();
+    const visit = node => {
+        if ((ts.isVariableDeclaration(node) || ts.isPropertyDeclaration(node)) && node.initializer &&
+            ts.isCallExpression(unwrap(node.initializer)) && lastName(unwrap(node.initializer).expression) === 'createOutputChannel') {
+            const name = lastName(node.name);
+            if (name !== undefined) {
+                names.add(name);
+            }
+        }
+        // `this.output = vscode.window.createOutputChannel('x')` (a constructor assigning a field), `out = …`.
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            ts.isCallExpression(unwrap(node.right)) && lastName(unwrap(node.right).expression) === 'createOutputChannel') {
+            const name = lastName(unwrap(node.left));
+            if (name !== undefined) {
+                names.add(name);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return names;
+}
+
+/** `options.shell = true` (or `options['shell'] = …`) on an object that reaches a spawn call. */
+function isShellAssignment(node, context) {
+    if (!ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+        return false;
+    }
+    const target = node.left;
+    const object = memberObject(target);
+    if (object === undefined || lastName(target) !== 'shell' || !isOptionsVariable(object, context)) {
+        return false;
+    }
+    return !isShellOffValue(node.right, context);
+}
+
+function isShellOption(node, context) {
+    // `{ shell }` takes the value of the variable `shell`: a constant `false`, `null` or `undefined` is no shell.
+    if (ts.isShorthandPropertyAssignment(node)) {
+        return node.name.text === 'shell' && !isConstantShellOff(context.checker.getShorthandAssignmentValueSymbol(node), context.checker);
+    }
+    if (!ts.isPropertyAssignment(node) || lastName(node.name) !== 'shell') {
+        return false;
+    }
+    return !isShellOffValue(node.initializer, context);
+}
+
+/** Whether a `shell` value turns no shell on: `false`, `null`, `undefined`, or a `const` holding one of them
+ *  (`const shellOff = false; … { shell: shellOff }`). */
+function isShellOffValue(expression, context) {
+    const value = unwrap(expression);
+    if (SHELL_OFF.has(value.kind) || isGlobalUndefined(value, context.checker)) {
+        return true;
+    }
+    return ts.isIdentifier(value) && isConstantShellOff(context.checker.getSymbolAtLocation(value), context.checker);
+}
+
+/** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`. */
+function isConstantShellOff(symbol, checker) {
+    const declaration = symbol?.declarations?.[0];
+    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
+        !(ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const)) {
+        return false;
+    }
+    const value = unwrap(declaration.initializer);
+    return SHELL_OFF.has(value.kind) || isGlobalUndefined(value, checker);
+}
+
+/** Whether an expression is the global `undefined`: the name, with nothing in scope declaring it. A parameter
+ *  or local named `undefined` (`function run(undefined: string)`) can hold anything. */
+function isGlobalUndefined(node, checker) {
+    return ts.isIdentifier(node) && node.text === 'undefined' && (checker.getSymbolAtLocation(node)?.declarations ?? []).length === 0;
+}
+
+/** Whether a call starts a process, or binds the arguments of one that will: a child_process spawner by
+ *  any binding, called or bound with `.bind`. */
+function isSpawnCall(node, context) {
+    if (!ts.isCallExpression(node)) {
+        return false;
+    }
+    // `cp.spawn.bind(cp, cmd, args, { shell: true })` binds the options a later call uses.
+    const target = boundFunction(node) !== undefined ? resolveValue(node, context.checker, 0, 'child_process') : undefined;
+    const spawner = target?.module === 'child_process' ? target.member : calledExport(node, 'child_process', context.checker);
+    return PROCESS_SPAWNERS.has(spawner ?? '');
+}
+
+/** The arguments a spawn call passes to the spawner: its own, or for `f.apply(this, [a, b, c])` the
+ *  elements of that array literal. A spread of an array literal, through parentheses or an assertion
+ *  (`spawn(...(['node', [], { shell: true }] as const))`), passes its elements. Empty for a call that does
+ *  not spawn. */
+function spawnArguments(call, context) {
+    if (!isSpawnCall(call, context)) {
+        return [];
+    }
+    const expand = list => list.flatMap(argument => {
+        const spread = ts.isSpreadElement(argument) ? unwrap(argument.expression) : undefined;
+        return spread !== undefined && ts.isArrayLiteralExpression(spread) ? expand([...spread.elements]) : [argument];
+    });
+    const callee = unwrap(call.expression);
+    if (lastName(callee) === 'apply' && memberObject(callee) !== undefined) {
+        const list = call.arguments[1] === undefined ? undefined : unwrap(call.arguments[1]);
+        return list !== undefined && ts.isArrayLiteralExpression(list) ? expand([...list.elements]) : [];
+    }
+    return expand([...call.arguments]);
+}
+
+/** Whether an object literal is the options of a spawn call: passed inline, held in a variable passed to
+ *  one (`const opts = { … }; spawn(cmd, args, opts)`), or default-exported to a file that passes it. */
+function isSpawnOptions(object, context) {
+    if (!ts.isObjectLiteralExpression(object)) {
+        return false;
+    }
+    let node = object;
+    // `windows ? { shell: true } : {}` and `opts ?? { shell: true }`: either operand can be the value.
+    for (let parent = node.parent; ; parent = node.parent) {
+        if (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) ||
+            (ts.isConditionalExpression(parent) && parent.condition !== node) ||
+            (ts.isBinaryExpression(parent) && LOGICAL_OPERATORS.has(parent.operatorToken.kind))) {
+            node = parent;
+        } else {
+            break;
+        }
+    }
+    // `{ ...{ shell: true } }`: an object spread into spawn options is spawn options, unless a later property
+    // of the enclosing object overrides its `shell`.
+    if (ts.isSpreadAssignment(node.parent) && ts.isObjectLiteralExpression(node.parent.parent)) {
+        const enclosing = node.parent.parent;
+        return !overridesShell(enclosing, enclosing.properties.indexOf(node.parent)) && isSpawnOptions(enclosing, context);
+    }
+    if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
+        return isSpawnCall(node.parent, context);
+    }
+    // `cp.spawn.apply(cp, [cmd, args, { shell: true }])` and `spawn(...(['node', [], { shell: true }] as const))`:
+    // the options sit in an argument array, which may be wrapped and spread into the call.
+    if (ts.isArrayLiteralExpression(node.parent)) {
+        let holder = node.parent.parent;
+        while (holder !== undefined && (ts.isArrayLiteralExpression(holder) || ts.isSpreadElement(holder) ||
+            ts.isParenthesizedExpression(holder) || ts.isAsExpression(holder) || ts.isSatisfiesExpression(holder) ||
+            ts.isTypeAssertionExpression(holder) || ts.isNonNullExpression(holder))) {
+            holder = holder.parent;
+        }
+        return holder !== undefined && ts.isCallExpression(holder) && spawnArguments(holder, context).includes(node);
+    }
+    if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
+        // `options = { … }` for a variable that reaches a spawn call.
+        return isOptionsVariable(node.parent.left, context);
+    }
+    if (ts.isExportAssignment(node.parent)) {
+        return [...context.spawnOptions].some(symbol => symbol.declarations?.includes(node.parent));
+    }
+    return ts.isVariableDeclaration(node.parent) && isOptionsVariable(node.parent.name, context);
+}
+
+/** The symbol of the variable an identifier denotes, followed through imports to the exporting file's
+ *  declaration (`import { options } from './spawnOptions'`, a renamed or `export default` binding), or of the
+ *  export a namespace import's member reads ({@link namespaceMemberSymbol}). */
+function valueSymbol(node, checker, depth = 0) {
+    const value = unwrap(node);
+    if (!ts.isIdentifier(value)) {
+        // `opts.options` or `opts['options']` for `import * as opts from './opts'`: the exported variable.
+        return namespaceMemberSymbol(value, checker);
+    }
+    let symbol = checker.getSymbolAtLocation(value);
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+        symbol = checker.getAliasedSymbol(symbol);
+    }
+    const declaration = symbol?.declarations?.[0];
+    // `export default options`: the default export is that variable.
+    if (declaration !== undefined && ts.isExportAssignment(declaration) && ts.isIdentifier(declaration.expression) && depth < 8) {
+        return valueSymbol(declaration.expression, checker, depth + 1) ?? symbol;
+    }
+    return symbol;
+}
+
+/** The symbol of the export a member read takes from a namespace import of another file in the program
+ *  (`opts.options`, `opts['options']` for `import * as opts from './opts'`), through re-exports; undefined
+ *  for any other member read. */
+function namespaceMemberSymbol(node, checker) {
+    const object = memberObject(node);
+    const base = object === undefined ? undefined : unwrap(object);
+    if (base === undefined || !ts.isIdentifier(base) ||
+        !ts.isNamespaceImport(checker.getSymbolAtLocation(base)?.declarations?.[0] ?? base)) {
+        return undefined;
+    }
+    const field = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+    let symbol = checker.getSymbolAtLocation(field);
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+        symbol = checker.getAliasedSymbol(symbol);
+    }
+    // The symbol the declaration's own name has, which every other path to that variable yields too.
+    const declaration = symbol?.declarations?.[0];
+    return declaration !== undefined && ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)
+        ? checker.getSymbolAtLocation(declaration.name) ?? symbol
+        : symbol;
+}
+
+/** The symbols of variables that hold spawn options, across the whole program and by TypeScript symbol
+ *  rather than name, so two scopes' `options` never collide and options imported from another file are
+ *  the exporting file's variable. Starts from identifiers passed to a spawn call (and spread into one's
+ *  options), then closes over composition: a plain alias (`const alias = options`) links both ways,
+ *  because either name can then mutate the same object; a spread (`{ ...base }`) links one way, from
+ *  the options to their source. */
+function spawnOptionSymbols(sources, context) {
+    const symbolOf = node => valueSymbol(node, context.checker);
+    const edges = new Map();
+    const link = (from, to) => {
+        if (from !== undefined && to !== undefined) {
+            edges.set(from, [...(edges.get(from) ?? []), to]);
+        }
+    };
+    const options = new Set();
+    const visit = node => {
+        // `const x = …` and a later `x = …` both say what x is built from.
+        const assigned = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
+        if ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) || assigned) {
+            const target = symbolOf(assigned ? node.left : node.name);
+            // `const opts = windows ? base : {}`: every value the initializer can produce is linked.
+            for (const value of valueLeaves(assigned ? node.right : node.initializer)) {
+                // An identifier, or an export read through a namespace import (`opts.options`).
+                if (symbolOf(value) !== undefined) {
+                    link(target, symbolOf(value));
+                    link(symbolOf(value), target);
+                } else if (ts.isObjectLiteralExpression(value)) {
+                    for (const source of spreadSources(value)) {
+                        link(target, symbolOf(source));
+                    }
+                }
+            }
+        }
+        if (isSpawnCall(node, context)) {
+            // `spawn(cmd, args, windows ? base : undefined)`: every value an argument can produce is followed.
+            for (const value of spawnArguments(node, context).flatMap(valueLeaves)) {
+                const symbol = symbolOf(value);
+                if (symbol !== undefined) {
+                    options.add(symbol);
+                } else if (ts.isObjectLiteralExpression(value)) {
+                    for (const source of spreadSources(value)) {
+                        const spread = symbolOf(source);
+                        if (spread !== undefined) {
+                            options.add(spread);
+                        }
+                    }
+                }
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    sources.forEach(visit);
+    const pending = [...options];
+    while (pending.length > 0) {
+        for (const next of edges.get(pending.pop()) ?? []) {
+            if (!options.has(next)) {
+                options.add(next);
+                pending.push(next);
+            }
+        }
+    }
+    return options;
+}
+
+/** The expressions an object literal spreads in whose `shell` can reach it: each spread operand, through
+ *  conditional and logical expressions (`...(windows ? base : {})`), except a spread that a later `shell`
+ *  property of the same literal overrides (`{ ...defaults, shell: false }`). */
+function spreadSources(literal) {
+    // `{ ...{ ...base } }`: a literal spread in is followed into, with its own overrides.
+    return literal.properties.flatMap((property, index) =>
+        ts.isSpreadAssignment(property) && !overridesShell(literal, index)
+            ? valueLeaves(property.expression).flatMap(leaf => ts.isObjectLiteralExpression(leaf) ? spreadSources(leaf) : [leaf])
+            : []);
+}
+
+/** The values an expression can produce, unwrapped: itself, or each branch of a conditional or operand of a
+ *  logical expression (`windows ? base : {}`, `opts ?? base`), recursively. */
+function valueLeaves(expression) {
+    const value = unwrap(expression);
+    if (ts.isConditionalExpression(value)) {
+        return [...valueLeaves(value.whenTrue), ...valueLeaves(value.whenFalse)];
+    }
+    if (ts.isBinaryExpression(value) && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
+        return [...valueLeaves(value.left), ...valueLeaves(value.right)];
+    }
+    return [value];
+}
+
+/** Whether a property after `index` in an object literal sets `shell`, so what comes before cannot reach. */
+function overridesShell(literal, index) {
+    return literal.properties.slice(index + 1).some(property =>
+        (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && lastName(property.name) === 'shell');
+}
+
+/** Whether an identifier is one of the program's spawn-options variables. */
+function isOptionsVariable(node, context) {
+    const symbol = valueSymbol(node, context.checker);
+    return symbol !== undefined && context.spawnOptions.has(symbol);
+}
+
+/** Whether a value is an output channel created here: `….createOutputChannel(…)`. */
+function isChannelCreation(node) {
+    const value = unwrap(node);
+    return ts.isCallExpression(value) && lastName(value.expression) === 'createOutputChannel';
+}
+
+/** Whether a receiver is a logger. An identifier is followed through its symbol, so lexical scope
+ *  decides: a local alias of a logger (`const out = log`), a variable holding an output channel, or an
+ *  imported logger under any name is one; a parameter or local that shadows one is judged by its own
+ *  declaration. Where nothing declares it (a global such as `console`), or it is a parameter or field
+ *  without a value to follow, the logger naming convention decides. */
+function isLoggerReceiver(node, context, depth = 0) {
+    const value = unwrap(node);
+    if (isChannelCreation(value)) {
+        return true;
+    }
+    if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+        // `this.output`, `this['logger']`: fields assigned a channel anywhere in the file, named as loggers,
+        // or declared with a logger type. A key held in a variable names nothing (see lastName).
+        const name = lastName(value);
+        const field = ts.isPropertyAccessExpression(value) ? value : value.argumentExpression;
+        const declaration = context.checker.getSymbolAtLocation(field)?.declarations?.[0];
+        if (name === undefined || depth > 8) {
+            return false;
+        }
+        if (LOGGER_NAME.test(name) || context.outputChannels.has(name) || hasLoggerType(declaration)) {
+            return true;
+        }
+        // `shared.sink` for `import * as shared from './shared'`: an export of another file, judged by its own
+        // declaration (`export const sink = vscode.window.createOutputChannel(…)`), as a named import is.
+        return declaration !== undefined && ts.isVariableDeclaration(declaration) &&
+            declaration.getSourceFile() !== value.getSourceFile() && isLoggerDeclaration(declaration, context, depth + 1);
+    }
+    if (!ts.isIdentifier(value) || depth > 8) {
+        return false;
+    }
+    const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
+    return declaration === undefined ? LOGGER_NAME.test(value.text) : isLoggerDeclaration(declaration, context, depth + 1);
+}
+
+/** Whether what a declaration binds is a logger: one declared with a logger type, a variable whose
+ *  values (initializer and later assignments) are loggers or output channels, an export of one, or an
+ *  import of one (see {@link isLoggerImport}). Anything else, such as a parameter with no type to read,
+ *  is judged by the logger naming convention. */
+function isLoggerDeclaration(declaration, context, depth) {
+    if (depth > 8) {
+        return false;
+    }
+    if (hasLoggerType(declaration)) {
+        return true;
+    }
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration) || ts.isNamespaceImport(declaration)) {
+        return isLoggerImport(declaration, context, depth);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return isLoggerReceiver(declaration.expression, context, depth + 1);
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const local = context.checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local !== undefined
+            ? isLoggerDeclaration(local, context, depth + 1)
+            : LOGGER_NAME.test(lastName(declaration.propertyName ?? declaration.name) ?? '');
+    }
+    if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        const symbol = context.checker.getSymbolAtLocation(declaration.name);
+        const values = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])].filter(v => v !== undefined);
+        if (values.some(v => isChannelCreation(v) || isLoggerReceiver(v, context, depth + 1))) {
+            return true;
+        }
+        // A value the check cannot follow, such as a factory call (`const log = makeLogger()`), leaves the
+        // decision to the naming convention below; a value it can follow, such as `const out = 1`, does not.
+        if (values.length > 0 && !values.some(v => isOpaqueValue(v))) {
+            return false;
+        }
+    }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent)) {
+        // `const { log: out } = shared`: the property it reads decides, as its source declares it. A source
+        // whose type does not name it leaves the decision to the names, the property's and the binding's own.
+        const source = destructuredDeclaration(declaration, context.checker);
+        if (source !== undefined) {
+            return isLoggerDeclaration(source, context, depth + 1);
+        }
+        return LOGGER_NAME.test(lastName(declaration.propertyName ?? declaration.name) ?? '') ||
+            LOGGER_NAME.test(lastName(declaration.name) ?? '');
+    }
+    if (ts.isPropertyAssignment(declaration) && !isOpaqueValue(declaration.initializer)) {
+        // `{ log: … }` in an object literal: its value decides, not its key.
+        return isLoggerReceiver(declaration.initializer, context, depth + 1);
+    }
+    const name = declaration.name !== undefined ? lastName(declaration.name) : undefined;
+    return LOGGER_NAME.test(name ?? '');
+}
+
+/** The declaration of the property a destructured binding reads (`log` in `const { log: out } = shared`),
+ *  found through the type of its source; undefined for a rest element, a computed key, or a source whose type
+ *  does not name it. An export read through a namespace import is followed to its declaration. */
+function destructuredDeclaration(binding, checker) {
+    const holder = binding.parent.parent;
+    const key = binding.dotDotDotToken === undefined ? lastName(binding.propertyName ?? binding.name) : undefined;
+    if (key === undefined || !ts.isVariableDeclaration(holder) || holder.initializer === undefined) {
+        return undefined;
+    }
+    let property = checker.getTypeAtLocation(holder.initializer).getProperty(key);
+    if (property !== undefined && property.flags & ts.SymbolFlags.Alias) {
+        property = checker.getAliasedSymbol(property);
+    }
+    return property?.declarations?.[0];
+}
+
+/** Whether a value comes out of a call or `new`, whose result the check cannot see. */
+function isOpaqueValue(node) {
+    const value = unwrap(node);
+    return ts.isCallExpression(value) || ts.isNewExpression(value);
+}
+
+/** Whether an import binds a logger, under any local name. An import from another file of the program is
+ *  judged by the declaration it names there. For a module outside the program, a named import is judged by
+ *  its exported name (`{ log as out }`), and a default or namespace import by the module's file name
+ *  (`import out from './logger'`, `import * as out from './log'`). */
+function isLoggerImport(binding, context, depth) {
+    const exported = ts.isNamespaceImport(binding) ? undefined : exportedDeclaration(binding, context.checker);
+    if (exported !== undefined) {
+        return isLoggerDeclaration(exported, context, depth + 1);
+    }
+    if (ts.isImportSpecifier(binding)) {
+        return LOGGER_NAME.test(lastName(binding.propertyName ?? binding.name) ?? '');
+    }
+    const importDeclaration = ts.isNamespaceImport(binding) ? binding.parent.parent : binding.parent;
+    const file = importDeclaration.moduleSpecifier.text.split('/').pop().replace(/\.[^.]*$/, '');
+    return LOGGER_NAME.test(file);
+}
+
+/** Whether a declaration is annotated with a logger type: `out: vscode.LogOutputChannel`, `log: Logger`. */
+function hasLoggerType(declaration) {
+    const type = declaration?.type;
+    if (type === undefined || !ts.isTypeReferenceNode(type)) {
+        return false;
+    }
+    const name = ts.isQualifiedName(type.typeName) ? type.typeName.right : type.typeName;
+    return LOGGER_TYPE.test(name.text);
+}
+
+/** The arguments a log call writes, or undefined when the call is not a log call: its own, after any
+ *  bound in advance (`console.info.bind(console, prompt)`). */
+function logCallArguments(node, context) {
+    if (!ts.isCallExpression(node)) {
+        return undefined;
+    }
+    const bound = loggerMethodBoundArguments(invokedFunction(node.expression), context);
+    return bound === undefined ? undefined : [...bound, ...node.arguments];
+}
+
+/** The arguments bound in advance to a logging method of a logger, or undefined when the expression is
+ *  not one. It may be the method itself (`log.info`), a bound copy (`console.info.bind(console, prefix)`,
+ *  whose arguments after `this` are written first), or a variable holding either (`const info =
+ *  console.info`, `const { info: write } = console`). A variable is followed through its symbol, so a
+ *  local that shadows such an alias is judged by its own value. */
+function loggerMethodBoundArguments(node, context, depth = 0) {
+    const value = unwrap(node);
+    if (depth > 8) {
+        return undefined;
+    }
+    const bound = boundFunction(value);
+    if (bound !== undefined) {
+        const inner = loggerMethodBoundArguments(bound, context, depth + 1);
+        return inner === undefined ? undefined : [...inner, ...value.arguments.slice(1)];
+    }
+    const receiver = memberObject(value);
+    if (receiver !== undefined) {
+        if (LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context)) {
+            return [];
+        }
+        // `sink.write` for `import * as sink from './logger'`: the export it reads is judged by its declaration
+        // there (`export const write = console.info.bind(console)`), as a named import is.
+        const exported = namespaceMemberSymbol(value, context.checker)?.declarations?.[0];
+        return exported === undefined ? undefined : declarationBoundArguments(exported, context, depth + 1);
+    }
+    if (!ts.isIdentifier(value)) {
+        return undefined;
+    }
+    const declaration = context.checker.getSymbolAtLocation(value)?.declarations?.[0];
+    return declaration === undefined ? undefined : declarationBoundArguments(declaration, context, depth + 1);
+}
+
+/** {@link loggerMethodBoundArguments} for what a declaration binds: a variable's values, a destructured
+ *  property (`const { info } = console`, `{ info: write }`), or an import, followed to the declaration it
+ *  names in another file of the program, through re-exports and `export default`. */
+function declarationBoundArguments(declaration, context, depth) {
+    if (depth > 8) {
+        return undefined;
+    }
+    if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
+        const exported = exportedDeclaration(declaration, context.checker);
+        return exported === undefined ? undefined : declarationBoundArguments(exported, context, depth + 1);
+    }
+    if (ts.isExportSpecifier(declaration)) {
+        const local = context.checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
+        return local === undefined ? undefined : declarationBoundArguments(local, context, depth + 1);
+    }
+    if (ts.isExportAssignment(declaration)) {
+        return loggerMethodBoundArguments(declaration.expression, context, depth + 1);
+    }
+    if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
+        ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer !== undefined) {
+        const method = lastName(declaration.propertyName ?? declaration.name);
+        return LOG_METHODS.has(method ?? '') && isLoggerReceiver(declaration.parent.parent.initializer, context) ? [] : undefined;
+    }
+    if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
+        return undefined;
+    }
+    // Every binding it can hold counts (`let write = console.info.bind(console); write = console.info.bind(console,
+    // prompt)`): their bound arguments are all collected.
+    const symbol = context.checker.getSymbolAtLocation(declaration.name);
+    let found;
+    for (const v of [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]) {
+        const args = v === undefined ? undefined : loggerMethodBoundArguments(v, context, depth + 1);
+        if (args !== undefined) {
+            found = [...(found ?? []), ...args];
+        }
+    }
+    return found;
+}
+
+const CHECKS = [
+    {
+        rule: 'R10',
+        scope: 'source',
+        message: 'log call writes prompt or payload text; log ids, counts or lengths instead',
+        test: (node, context) => logCallArguments(node, context)?.some(argument => carriesText(argument, context.checker)) ?? false,
+    },
+    {
+        rule: 'R36',
+        scope: 'all',
+        message: 'shell execution; use execFile/spawn with an argv vector and no shell',
+        test: (node, context) =>
+            // A `shell` option on an object given to a process spawner, set to anything but false, null or
+            // undefined: `true`, a shell path such as '/bin/bash', or a variable.
+            (isShellOption(node, context) && isSpawnOptions(node.parent, context)) ||
+            isShellAssignment(node, context) ||
+            SHELL_EXECUTORS.has(calledExport(node, 'child_process', context.checker) ?? '') ||
+            bindsShellExecutor(node, context.checker),
+    },
+    {
+        rule: 'R43',
+        scope: 'test',
+        message: 'temp directory outside the canonical helper; use makeTempDir / TEMP_ROOT from helpers/tempDir',
+        test: (node, context) => {
+            if (context.file === TEMP_HELPER || !ts.isCallExpression(node)) {
+                return false;
+            }
+            if (calledExport(node, 'os', context.checker) === 'tmpdir') {
+                return true;
+            }
+            const first = node.arguments[0];
+            const makesTemp = name => name === 'mkdtemp' || name === 'mkdtempSync';
+            return (makesTemp(calledExport(node, 'fs', context.checker)) || makesTemp(calledExport(node, 'fs/promises', context.checker))) &&
+                first !== undefined && containsTmpLiteral(first);
+        },
+    },
+    {
+        rule: 'R54',
+        scope: 'test',
+        message: 'expression-bodied test hook returns a value Vitest may run as teardown; use a block body',
+        test: (node, context) => {
+            if (!ts.isCallExpression(node)) {
+                return false;
+            }
+            // `setup(…)` for `{ beforeEach as setup }` and `vitest.beforeEach(…)` resolve to Vitest; a bare
+            // `beforeEach(…)` with no declaration in scope is the Vitest global. A local of that name is not.
+            const target = resolveValue(node.expression, context.checker, 0, 'vitest');
+            const isGlobal = ts.isIdentifier(node.expression) && context.checker.getSymbolAtLocation(node.expression)?.declarations === undefined;
+            const hook = target?.module === 'vitest' ? target.member : isGlobal ? node.expression.text : undefined;
+            if (!HOOKS.has(hook ?? '')) {
+                return false;
+            }
+            const callback = node.arguments[0] === undefined ? undefined : unwrap(node.arguments[0]);
+            return callback !== undefined && ts.isArrowFunction(callback) && !ts.isBlock(callback.body);
+        },
+    },
+];
+
+function* walk(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+            yield* walk(full);
+        } else if (entry.name.endsWith('.ts')) {
+            yield full;
+        }
+    }
+}
+
+const findings = [];
+// One program over all files, for symbol resolution only: no module resolution and no lib, so it needs
+// neither node_modules nor a tsconfig and works the same on a fixture tree.
+const files = [...walk(SRC)];
+const program = ts.createProgram(files, { noResolve: true, noLib: true, types: [], target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext });
+const checker = program.getTypeChecker();
+for (const file of files) {
+    collectAssignments(program.getSourceFile(file), checker);
+}
+const spawnOptions = spawnOptionSymbols(files.map(file => program.getSourceFile(file)), { checker });
+for (const file of files) {
+    const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
+    const checks = CHECKS.filter(check => check.scope === scope || check.scope === 'all');
+    const source = program.getSourceFile(file);
+    const context = {
+        file,
+        checker,
+        outputChannels: outputChannelBindings(source),
+        spawnOptions,
+    };
+    const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
+    const visit = node => {
+        for (const check of checks) {
+            if (check.test(node, context)) {
+                findings.push(`${where(node)}  [${check.rule}] ${check.message}`);
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+}
+
+if (findings.length > 0) {
+    console.error(findings.join('\n'));
+    console.error(`\n${findings.length} rule finding(s). See docs/development-rules.md.`);
+    process.exit(1);
+}
+console.log(`check-rules: ${CHECKS.map(check => check.rule).join(', ')} clean`);

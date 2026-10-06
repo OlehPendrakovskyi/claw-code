@@ -123,7 +123,9 @@ describe('ChatViewProvider prompts', () => {
         mockResolve.mockResolvedValue({ service: gateway, transport: 'gateway' });
     });
 
-    afterEach(() => vi.useRealTimers());
+    afterEach(() => {
+        vi.useRealTimers();
+    });
 
     async function boundTo(sessionKey: string): Promise<FakeWebview> {
         const sidebar = makeProvider();

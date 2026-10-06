@@ -202,10 +202,11 @@ export class FileSystemError extends Error {
         super(message);
         this.code = code;
     }
-    static FileNotFound(target?: unknown) {
-        return new FileSystemError(`File not found: ${String(target ?? '')}`, 'FileNotFound');
+    /** Like VS Code's, the target is a message or a Uri, rendered through its own toString(). */
+    static FileNotFound(target?: string | { toString(): string }) {
+        return new FileSystemError(`File not found: ${target?.toString() ?? ''}`, 'FileNotFound');
     }
-    static NoPermissions(target?: unknown) {
-        return new FileSystemError(`No permissions: ${String(target ?? '')}`, 'NoPermissions');
+    static NoPermissions(target?: string | { toString(): string }) {
+        return new FileSystemError(`No permissions: ${target?.toString() ?? ''}`, 'NoPermissions');
     }
 }

@@ -1,7 +1,7 @@
 import { asString } from './util.js';
-import { redactEndpoint, redactPlainSecrets } from './redact.js';
+import { joinBoundary, redactEndpointText, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
-import type { AccessInfo } from './types.js';
+import type { AccessInfo, RedactedLabel } from './types.js';
 
 /** Render a compact one-line access summary. */
 export function formatAccessSummaryShort(info: AccessInfo, configError?: string, cliError?: string) {
@@ -42,15 +42,17 @@ export function formatAccessSummaryMarkdown(
     lines.push('');
 
     if (configError) {
-        lines.push(`Config issue: ${redactPlainSecrets(configError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
+        lines.push(`Config issue: ${redactText(configError)}`);
         lines.push('');
     }
     if (cliError) {
-        lines.push(`CLI issue: ${redactPlainSecrets(cliError.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m)))}`);
+        lines.push(`CLI issue: ${redactText(cliError)}`);
         lines.push('');
     }
 
     lines.push('## MCP servers');
+    // MCP server and tool labels were redacted part by part when they were built (RedactedLabel); every other
+    // list can carry endpoints or secrets and is rendered through redactText.
     lines.push(formatList(info.mcpServers, 'No MCP servers detected in config or CLI output.'));
     lines.push('');
 
@@ -61,19 +63,20 @@ export function formatAccessSummaryMarkdown(
     lines.push('## Keys and credentials');
     lines.push(
         formatList(
-            info.keySources,
+            info.keySources.map(redactText),
             'No key sources detected. If you use environment variables, they may not appear in config.'
         )
     );
     lines.push('');
 
     lines.push('## Network endpoints');
-    lines.push(formatList(info.networkEndpoints, 'No network endpoints detected.'));
+    lines.push(formatList(info.networkEndpoints.map(redactText), 'No network endpoints detected.'));
     lines.push('');
 
     lines.push('## Local files');
+    // Key sources and paths come from config values (`{ env: 'X=…' }`, `{ file: '…/token=…' }`), so they are redacted too.
     const files = configPath ? uniqSorted([configPath, ...info.localFiles]) : info.localFiles;
-    lines.push(formatList(files, 'No local files detected.'));
+    lines.push(formatList(files.map(redactText), 'No local files detected.'));
     lines.push('');
 
     if (info.notes.length > 0) {
@@ -85,7 +88,7 @@ export function formatAccessSummaryMarkdown(
     lines.push('## CLI status --all output');
     if (cliOutput) {
         lines.push('```');
-        lines.push(redactPlainSecrets(cliOutput.replace(/https?:\/\/\S+/g, (m) => redactEndpoint(m))).trim());
+        lines.push(redactText(cliOutput).trim());
         lines.push('```');
     } else {
         lines.push('No CLI output captured.');
@@ -102,22 +105,48 @@ export function formatList(items: string[], emptyMessage: string) {
     return items.map((item) => `- ${item}`).join('\n');
 }
 
-/** Pick the first string value among common identity fields, honouring the fallback name. */
-export function formatNamedEntry(entry: unknown, fallbackName?: string) {
+/** Pick the first string value among common identity fields, honouring the fallback name, as a
+ *  {@link RedactedLabel}. */
+export function formatNamedEntry(entry: unknown, fallbackName?: string): RedactedLabel | undefined {
+    const label = namedEntryLabel(entry, fallbackName);
+    // The one place a RedactedLabel is made: namedEntryLabel redacts every part it returns.
+    // eslint-disable-next-line typescript/no-unsafe-type-assertion -- the brand's only constructor
+    return label === undefined ? undefined : (label as RedactedLabel);
+}
+
+function namedEntryLabel(entry: unknown, fallbackName?: string): string | undefined {
+    // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
+    // may be a whole endpoint: see redactEndpointText.
+    // Names, ids and fallbacks (tool and MCP map keys) can be whole URLs too, so they are redacted as endpoints.
+    // A fallback that redaction empties (a key of nothing but a terminal sequence) becomes `***`, so no caller
+    // falls back to its raw key.
+    const safeFallback = fallbackName === undefined ? undefined : redactEndpointText(fallbackName) || '***';
+    // A part that redaction empties (a label of nothing but terminal codes) counts as absent, so the redacted
+    // fallback, never a caller's raw key, takes its place.
     if (typeof entry === 'string') {
-        return redactEndpoint(entry);
+        return redactEndpointText(entry) || safeFallback;
     }
     if (!isRecord(entry)) {
-        return fallbackName;
+        return safeFallback;
     }
-    const name = asString(entry.name) ?? asString(entry.id) ?? fallbackName;
+    const rawName = asString(entry.name) ?? asString(entry.id);
+    const name = (rawName !== undefined ? redactEndpointText(rawName) : undefined) || safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    const endpoint = rawEndpoint !== undefined ? redactEndpoint(rawEndpoint) : undefined;
+    const endpoint = (rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined) || undefined;
     if (name && endpoint) {
-        return `${name} (${endpoint})`;
+        // Each part was redacted alone, but a credential can be split across them (name `token=` or `Bearer`
+        // and endpoint `PRIVATE`; name `https://alice:PREFIX/` and endpoint `SUFFIX@host`). joinBoundary says
+        // when: the endpoint is then masked whole, and the name cut where the credential starts. The assembled
+        // label is not redacted again: the parts' masks would be plain text to a second pass, which would cut a
+        // masked endpoint's closing parenthesis.
+        // The boundary is judged on the raw text the name came from: redaction may already have taken what marks
+        // the credential (`Bearer "PREFIX` loses its quote), and the part shown is redacted afterwards.
+        const rawLeft = rawName !== undefined && redactEndpointText(rawName) !== '' ? rawName : fallbackName;
+        const boundary = joinBoundary(rawLeft ?? name, rawEndpoint);
+        return boundary.maskRight ? `${redactEndpointText(boundary.left) || '***'} (***)` : `${name} (${endpoint})`;
     }
-    return name ?? endpoint ?? fallbackName ?? '';
+    return name ?? endpoint ?? safeFallback ?? '';
 }
 
 /** Categorize key sources into env / file / config buckets for compact display. */
