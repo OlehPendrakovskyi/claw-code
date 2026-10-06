@@ -1172,7 +1172,7 @@ const SECRET_PLACEHOLDER = 'redacted_secret_token';
  *  form goes first, so no shorter one leaves part of it. */
 export function redactTextAndSecret(text: string, secret: string): string {
     const forms = secretForms(secret);
-    // Only the secret's word characters are replaced, so its punctuation still delimits what a pattern needs
+    // Only the secret's word runs are replaced, so its punctuation still delimits what a pattern needs
     // (a secret `:` leaves `https://alice:PRIVATE@host` a URL with a password). A secret that is itself a
     // credential marker (`Bearer`, `Basic`) makes what follows it a credential: its placeholder then ends in
     // `=`, so what follows is masked as the placeholder's value.
@@ -1183,7 +1183,10 @@ export function redactTextAndSecret(text: string, secret: string): string {
     return redacted.split(SECRET_PLACEHOLDER).join('***');
 }
 
-const WORD_RUN = /\w+/g;
+/** A run of a secret's characters other than whitespace, control characters and ASCII punctuation (`_` aside):
+ *  letters and digits of any script, so no part of a non-ASCII secret is left out of the placeholder. */
+// eslint-disable-next-line no-control-regex
+const WORD_RUN = /[^\s\u0000-\u001f\u007f-\u009f!-/:-@[-^`{-~]+/g;
 
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */
 function secretForms(secret: string): string[] {

@@ -291,6 +291,16 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps every part of a non-ASCII token out of errors, raw or serialised', async () => {
+            for (const token of ['opaque-秘密_PRIVATE_VALUE', 'opaque-ключ-PRIVATE_VALUE', 'opaque-🔑PRIVATE_VALUE']) {
+                for (const echo of [token, JSON.stringify(token), JSON.stringify({ reason: JSON.stringify(token) })]) {
+                    const h = harness({ token, throwOnOpen: new Error(`boom ${echo}`) });
+                    const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                    expect(error.message).not.toMatch(/秘密|ключ|🔑|\\u|PRIVATE_VALUE|opaque/);
+                }
+            }
+        });
+
         it('masks another credential whose label or marker is the token', async () => {
             const cases: [string, string][] = [
                 ['token', 'authentication failed: token=PRIVATE_VALUE'],
