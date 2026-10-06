@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { redactEndpoint, redactText, stripTerminalCodes } from './redact.js';
+import { endsAtCredential, redactEndpoint, redactText, stripTerminalCodes } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -122,11 +122,9 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const endpoint = rawEndpoint !== undefined ? redactEndpointLabel(rawEndpoint) : undefined;
     if (name && endpoint) {
         // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
-        // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, which a probe value
-        // after it shows, the endpoint is that value and is masked whole.
-        // Probes are a plain value and a valid Basic credential, which a plain one would not pass for.
-        const exposed = [`${name} x`, `${name} dXNlcjpwYXNz`].some(probe => redactText(probe) !== probe);
-        return exposed ? `${name} (***)` : `${name} (${endpoint})`;
+        // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, the endpoint is
+        // that value and is masked whole.
+        return endsAtCredential(name) ? `${name} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

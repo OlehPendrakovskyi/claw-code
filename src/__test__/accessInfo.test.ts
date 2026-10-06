@@ -953,6 +953,11 @@ describe('redactText', () => {
         expect(redactText("{'u':'https://host.example/?token=PREFIX PRIVATE_SUFFIX'}")).not.toContain('PRIVATE');
         // In free text a space still ends the value.
         expect(redactText('see https://host.example/?token=abc and more')).toBe('see https://host.example/?token=*** and more');
+        // A line break inside the quoted URL does not end it, as a URL parser drops it; an unclosed quote does.
+        for (const eol of ['\n', '\r', '\r\n']) {
+            expect(redactText(`fetch "https://host.example/?token=PREFIX${eol}PRIVATE_SUFFIX" failed`)).not.toContain('PRIVATE');
+        }
+        expect(redactText('fetch "https://host.example/?token=abc\nnext line')).toBe('fetch "https://host.example/?token=***\nnext line');
     });
 
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
@@ -1121,6 +1126,7 @@ describe('redactText', () => {
             '"?token=a&token=b'.repeat(size / 17),
             'bearer ' + '\\'.repeat(size) + 'x',
             '\\u0009'.repeat(size / 6) + '=',
+            '"?token=a\n'.repeat(size / 10),
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

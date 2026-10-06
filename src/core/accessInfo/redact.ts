@@ -808,6 +808,7 @@ function maskQueryPairs(text: string): string {
     // back to whitespace or a quote. A scan stops where the previous one started: the same token, same answer.
     let floor = 0;
     let floorOpening: QuoteOpening | undefined;
+    const unclosedUrls = new Map<string, number>();
     const openingQuote = (index: number): QuoteOpening | undefined => {
         let opening = floorOpening;
         for (let i = index - 1; i >= floor; i--) {
@@ -845,7 +846,7 @@ function maskQueryPairs(text: string): string {
         // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in free text, a space ends it.
         const opening = quoted ? undefined : openingQuote(pair.index);
         const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed)
-            : opening !== undefined ? quotedUrlValueEnd(text, start, opening) : sensitiveQueryValueEnd(text, start);
+            : opening !== undefined ? quotedUrlValueEnd(text, start, opening, unclosedUrls) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
         QUERY_NAME.lastIndex = end;
@@ -859,11 +860,25 @@ interface QuoteOpening {
     run: number;
 }
 
-/** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, the end of its line, or the quote that
- *  closes the string, one escaped no deeper than the opening one, so an escaped interior quote is passed. */
-function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening): number {
+/** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, or the quote that closes the string,
+ *  one escaped no deeper than the opening one, so an escaped interior quote is passed. A URL parser drops line
+ *  breaks, so the value runs across them to that close (`"https://host/?token=PREFIX\nSUFFIX"`). With no close
+ *  ahead, it ends at its first line break. `unclosed` records, per quote and escape depth, a position after
+ *  which no close exists, so no stretch is searched twice. */
+function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, unclosed: Map<string, number>): number {
+    const key = `${opening.quote}${opening.run}`;
+    let firstBreak = -1;
     let i = start;
-    for (; i < text.length && text[i] !== '&' && text[i] !== '#' && text[i] !== '\n' && text[i] !== '\r'; i++) {
+    for (; i < text.length && text[i] !== '&' && text[i] !== '#'; i++) {
+        if (text[i] === '\n' || text[i] === '\r') {
+            if (firstBreak === -1) {
+                firstBreak = i;
+                if ((unclosed.get(key) ?? text.length) <= start) {
+                    return firstBreak;
+                }
+            }
+            continue;
+        }
         if (text[i] !== opening.quote) {
             continue;
         }
@@ -875,13 +890,24 @@ function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening): 
             return i - run;
         }
     }
-    return i;
+    if (firstBreak === -1) {
+        return i;
+    }
+    unclosed.set(key, start);
+    return firstBreak;
 }
 
 /** Mask sensitive query values in an unparsable URL. */
 function maskSensitiveQuery(url: string): string {
     return url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) =>
         isSensitiveQueryName(name) ? `${separator}${name}=***` : param);
+}
+
+/** Whether a value written right after `label` would be masked as a credential: the label ends where one
+ *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
+ *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
+export function endsAtCredential(label: string): boolean {
+    return [`${label} x`, `${label} dXNlcjpwYXNz`].some(probe => redactText(probe) !== probe);
 }
 
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first

@@ -1076,6 +1076,27 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|Pz8/);
         });
 
+        it('masks details that complete a Bearer or Basic label in the error message', () => {
+            for (const [label, value] of [['Bearer', 'PRIVATE_VALUE'], ['Basic', 'dXNlcjpwYXNz']]) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: label, data: { details: value } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe(`${label}: ***`);
+            }
+        });
+
+        it('redacts a quoted URL query value split by a line break, on stderr and in details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX" failed\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = 'fetch "https://host.example/?token=PREFIX\r\nPRIVATE_SUFFIX" failed';
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
