@@ -124,8 +124,9 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
         // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, which a probe value
         // after it shows, the endpoint is that value and is masked whole.
-        const probe = `${name} x`;
-        return redactText(probe) === probe ? `${name} (${endpoint})` : `${name} (***)`;
+        // Probes are a plain value and a valid Basic credential, which a plain one would not pass for.
+        const exposed = [`${name} x`, `${name} dXNlcjpwYXNz`].some(probe => redactText(probe) !== probe);
+        return exposed ? `${name} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

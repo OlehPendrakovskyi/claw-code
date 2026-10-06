@@ -40,11 +40,12 @@ export function redactEndpoint(endpoint: string): string {
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare
  *  `pass` must stand apart from other letters, so `bypass` and `passenger` are left alone. */
 const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|credential|access[_-]?key|signature/i;
-/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with a longer backslash run at any deeper level), and
+/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, or `\u0009`, `\u000a`, `\u000d`, with a longer backslash
+ *  run at any deeper level), and
  *  JSON's short escapes of backspace and form feed (`\b`, `\f`), control bytes that would otherwise split a
  *  label from its value. A serialised one is matched only from the start of its backslash run, so a long run is
  *  tried once. They are not stripped from the text: `\b` also starts Windows path segments (`C:\bin`). */
-const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnrbf])`;
+const SPACE = String.raw`(?:\s|(?<!\\)\\+(?:[tnrbf]|u000[9aAdD]))`;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
  *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
  *  long run is tried once rather than from each of its characters or backslashes. A key may also start at a
@@ -311,8 +312,9 @@ export function stripTerminalCodes(text: string): string {
 
 const BEARER = new RegExp(String.raw`\b(bearer)${SPACE}+`, 'gi');
 /** A Bearer token at a given position: quoted (to its closing quote or the end of its line) or bare. In a
- *  single-quoted one, any backslash run escapes the quote after it, as in {@link valueEnd}. */
-const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|`(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^`\\\r\n])*`?|[A-Za-z0-9._~+/-]+=*/y;
+ *  single-quoted one, any backslash run escapes the quote after it, as in {@link valueEnd}. A bare one may hold
+ *  a JSON-escaped `/` (`prefix\\/suffix`), at any depth. */
+const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^'\\\r\n])*'?|`(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^`\\\r\n])*`?|(?:[A-Za-z0-9._~+/-]|\\+\/)+=*/y;
 
 /** Mask every Bearer token, of any length (a short one is still a credential), as `Bearer ***`. A token
  *  opened by an escaped quote, as in serialized error details (`"sent Bearer \\"a b\\""`), runs to its matching
@@ -363,7 +365,9 @@ function maskPlainSecrets(text: string): string {
 /** Whether a value after `Basic` is a credential (see {@link BASE64_WHOLE}, {@link BASE64_ENCODED} and
  *  {@link decodesToPair}), so prose such as "basic usage" or "Basic Authentication" is left alone. */
 function isBasicCredential(value: string): boolean {
-    return BASE64_WHOLE.test(value) || BASE64_ENCODED.test(value) || decodesToPair(value);
+    // JSON may escape `/` (`dXNlcjo\\/Pz8=`): the decoded token is judged, and the caller masks the whole span.
+    const token = value.replace(/\\+\//g, '/');
+    return BASE64_WHOLE.test(token) || BASE64_ENCODED.test(token) || decodesToPair(token);
 }
 
 /** Whether base64, padded or not and of any length, decodes to text holding a `:`, as a `user:password` pair
@@ -382,9 +386,9 @@ function decodesToPair(value: string): boolean {
 }
 
 /** `Basic` and a quoted or escaped-quoted value: the word, then the value inside its quotes. */
-const QUOTED_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+(\\*)(["'${'`'}])([A-Za-z0-9+/]+=*)(?:\2\3)?(?![A-Za-z0-9+/=])`, 'gi');
+const QUOTED_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+(\\*)(["'${'`'}])((?:[A-Za-z0-9+/]|\\+\/)+=*)(?:\2\3)?(?![A-Za-z0-9+/=])`, 'gi');
 /** `Basic` and a bare value. */
-const BARE_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+([A-Za-z0-9+/]+=*)(?![A-Za-z0-9+/=])`, 'gi');
+const BARE_BASIC = new RegExp(String.raw`\b(basic)${SPACE}+((?:[A-Za-z0-9+/]|\\+\/)+=*)(?![A-Za-z0-9+/=])`, 'gi');
 /** A strict UTF-8 decoder: invalid bytes throw. */
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 /** A C0 or C1 control character, or DEL. */
@@ -600,8 +604,9 @@ function normalizeSpecialSchemes(text: string): string {
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
 const PARSER_IGNORED = /[\t\r\n]/g;
 const PARSER_IGNORED_CHAR = /[\t\r\n]/;
-/** A tab or line break serialised (`\\t`, `\\n`, `\\r`) at any depth, with its whole backslash run. */
-const SERIALISED_BREAK = /(?<!\\)\\+[tnr]/g;
+/** A tab or line break serialised (`\\t`, `\\n`, `\\r`, or `\\u0009`, `\\u000a`, `\\u000d`) at any depth, with its
+ *  whole backslash run. */
+const SERIALISED_BREAK = /(?<!\\)\\+(?:[tnr]|u000[9aAdD])/g;
 
 /** Mask a URL userinfo that tabs or line breaks split, as a URL parser reads it: it drops them anywhere in a
  *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password, and so does a
@@ -799,6 +804,30 @@ function maskQueryPairs(text: string): string {
     let out = '';
     let copied = 0;
     const unclosed = new Map<string, number>();
+    // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), found by scanning
+    // back to whitespace or a quote. A scan stops where the previous one started: the same token, same answer.
+    let floor = 0;
+    let floorOpening: QuoteOpening | undefined;
+    const openingQuote = (index: number): QuoteOpening | undefined => {
+        let opening = floorOpening;
+        for (let i = index - 1; i >= floor; i--) {
+            if (WHITESPACE.test(text[i])) {
+                opening = undefined;
+                break;
+            }
+            if (VALUE_QUOTE.test(text[i])) {
+                let run = 0;
+                while (text[i - 1 - run] === '\\') {
+                    run++;
+                }
+                opening = { quote: text[i], run };
+                break;
+            }
+        }
+        floor = index;
+        floorOpening = opening;
+        return opening;
+    };
     QUERY_NAME.lastIndex = 0;
     for (let pair = QUERY_NAME.exec(text); pair !== null; pair = QUERY_NAME.exec(text)) {
         // An ordinary pair keeps its value, and scanning goes on inside it (`?q='public&token=x'`).
@@ -812,12 +841,41 @@ function maskQueryPairs(text: string): string {
         const start = LEADING_SPACE.lastIndex;
         // A quoted value, or an array or object (`?tokens=[ "a", "b" ]`), is measured whole by valueEnd.
         const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '') || text[start] === '[' || text[start] === '{';
-        const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
+        // An unquoted value in a URL that a quote opens runs to that quote's close, a space included
+        // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in free text, a space ends it.
+        const opening = quoted ? undefined : openingQuote(pair.index);
+        const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed)
+            : opening !== undefined ? quotedUrlValueEnd(text, start, opening) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
         QUERY_NAME.lastIndex = end;
     }
     return out + text.slice(copied);
+}
+
+/** The quote that opens a quoted string, and the backslash run that escapes it (0 in plain JSON). */
+interface QuoteOpening {
+    quote: string;
+    run: number;
+}
+
+/** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, the end of its line, or the quote that
+ *  closes the string, one escaped no deeper than the opening one, so an escaped interior quote is passed. */
+function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening): number {
+    let i = start;
+    for (; i < text.length && text[i] !== '&' && text[i] !== '#' && text[i] !== '\n' && text[i] !== '\r'; i++) {
+        if (text[i] !== opening.quote) {
+            continue;
+        }
+        let run = 0;
+        while (text[i - 1 - run] === '\\') {
+            run++;
+        }
+        if (run <= opening.run) {
+            return i - run;
+        }
+    }
+    return i;
 }
 
 /** Mask sensitive query values in an unparsable URL. */

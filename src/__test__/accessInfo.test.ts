@@ -417,6 +417,7 @@ describe('formatAccessSummaryMarkdown', () => {
     it('redacts a named-entry label as assembled, a credential split across name and endpoint included', () => {
         expect(formatNamedEntry({ name: 'token=', url: 'PRIVATE_VALUE' })).toBe('token= (***)');
         expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_VALUE' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ name: 'Basic', url: 'dXNlcjpwYXNz' })).toBe('Basic (***)');
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
     });
 
@@ -931,6 +932,29 @@ describe('redactText', () => {
         expect(redactText('GET https://host.example/?q=[1, 2] ok')).toBe('GET https://host.example/?q=[1, 2] ok');
     });
 
+    it('masks credentials around whitespace serialised as a Unicode escape', () => {
+        for (const escape of ['\\u0009', '\\u000a', '\\u000D']) {
+            expect(redactText(`{"e":"token${escape}=PRIVATE_VALUE"}`)).not.toContain('PRIVATE');
+            expect(redactText(`{"u":"https://host.example/?to${escape}ken=PRIVATE_VALUE"}`)).not.toContain('PRIVATE');
+            expect(redactText(`{"u":"https://host.example/?to\\${escape}ken=PRIVATE_VALUE"}`)).not.toContain('PRIVATE');
+        }
+    });
+
+    it('masks a Bearer or Basic token holding a JSON-escaped slash whole', () => {
+        expect(redactText('{"reason":"sent Bearer prefix\\/PRIVATE_SUFFIX","ok":1}')).toBe('{"reason":"sent Bearer ***","ok":1}');
+        expect(redactText('sent Basic dXNlcjo\\/Pz8= ok')).toBe('sent Basic *** ok');
+        expect(redactText('sent Basic "dXNlcjo\\/Pz8=" ok')).toBe('sent Basic *** ok');
+        expect(redactText(JSON.stringify({ reason: 'sent Basic dXNlcjo\\/Pz8=', ok: 1 }))).not.toContain('Pz8');
+    });
+
+    it('masks a query value holding a space inside a quoted URL, to the string end', () => {
+        expect(redactText('{"url":"https://host.example/?token=PREFIX PRIVATE_SUFFIX"}')).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ d: JSON.stringify({ url: 'https://host.example/?token=PREFIX PRIVATE_SUFFIX' }) }))).not.toContain('PRIVATE');
+        expect(redactText("{'u':'https://host.example/?token=PREFIX PRIVATE_SUFFIX'}")).not.toContain('PRIVATE');
+        // In free text a space still ends the value.
+        expect(redactText('see https://host.example/?token=abc and more')).toBe('see https://host.example/?token=*** and more');
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -1094,6 +1118,9 @@ describe('redactText', () => {
             '\\b'.repeat(size / 2) + '=',
             ' //a:1 /'.repeat(size / 8) + '@',
             '?token=['.repeat(size / 8),
+            '"?token=a&token=b'.repeat(size / 17),
+            'bearer ' + '\\'.repeat(size) + 'x',
+            '\\u0009'.repeat(size / 6) + '=',
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

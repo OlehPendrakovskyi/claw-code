@@ -1064,6 +1064,18 @@ describe('ChatService.sendMessage', () => {
             expect(message).toMatch(/^Invalid token/);
         });
 
+        it('redacts Unicode-escaped breaks, escaped-slash tokens and spaced query values in JSON stderr and details', () => {
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from('{"e":"token\\u0009=PRIVATE_A","r":"sent Bearer prefix\\/PRIVATE_B","u":"https://host.example/?token=X PRIVATE_C"}\n'));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            const details = { url: 'https://host.example/?token=X PRIVATE_D', auth: 'Basic dXNlcjo/Pz8=' };
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toMatch(/PRIVATE|Pz8/);
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
