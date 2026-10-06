@@ -1170,7 +1170,25 @@ function normalizeForRedaction(text: string): string {
  *  of each mask ({@link maskSecretFragments}). */
 export function redactTextAndSecret(text: string, secret: string): string {
     const forms = secretForms(secret);
-    return maskSecretFragments(forms.reduce((out, form) => out.split(form).join('***'), redactText(text)), forms);
+    return maskSecretFragments(forms.reduce(maskIgnoringCase, redactText(text)), forms);
+}
+
+/** `text` with every occurrence of `form` masked, in any letter case: a URL parser lowercases a host
+ *  (`PRIVATE_HOST` becomes `private_host`). Case is ignored only where lowercasing keeps every length, so
+ *  positions still line up. */
+function maskIgnoringCase(text: string, form: string): string {
+    const lowerText = text.toLowerCase();
+    const lowerForm = form.toLowerCase();
+    if (lowerText.length !== text.length || lowerForm.length !== form.length) {
+        return text.split(form).join('***');
+    }
+    let out = '';
+    let copied = 0;
+    for (let at = lowerText.indexOf(lowerForm); at !== -1; at = lowerText.indexOf(lowerForm, copied)) {
+        out += `${text.slice(copied, at)}***`;
+        copied = at + form.length;
+    }
+    return out + text.slice(copied);
 }
 
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first: as given, JSON-serialised once or
@@ -1203,7 +1221,9 @@ const MIN_SECRET_FRAGMENT = 2;
  *  by halving, since every shorter end of such a run is part of the form too. */
 function maskSecretFragments(text: string, forms: string[]): string {
     const longest = forms[0]?.length ?? 0;
-    const isFragment = (candidate: string) => forms.some(form => form.includes(candidate));
+    // In any letter case, as maskIgnoringCase.
+    const lowerForms = forms.map(form => form.toLowerCase());
+    const isFragment = (candidate: string) => lowerForms.some(form => form.includes(candidate.toLowerCase()));
     const longestRun = (lengthLimit: number, slice: (length: number) => string): number => {
         let low = 0;
         let high = Math.min(lengthLimit, longest);

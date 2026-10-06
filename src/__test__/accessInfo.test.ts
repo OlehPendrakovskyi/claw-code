@@ -25,6 +25,7 @@ import {
     uniqSorted,
     type AccessInfo
 } from '../core/accessInfo';
+import { redactTextAndSecret } from '../core/accessInfo/redact';
 
 const newSets = () => ({
     keySources: new Set<string>(),
@@ -571,6 +572,14 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('masks a known secret holding a URL whose host the URL parser lowercases (redactTextAndSecret)', () => {
+        const secret = 'opaque_ftp://alice:pw@PRIVATE_HOST/path';
+        expect(redactTextAndSecret(`failed: ${secret}`, secret)).toMatch(/^failed: \*\*\*[:*]*$/);
+        expect(redactTextAndSecret(`failed: prefix_${secret}`, secret)).not.toMatch(/private_host|path|opaque/i);
+        // Unrelated text keeps its case and its delimiters beside a mask.
+        expect(redactTextAndSecret('token="PRIVATE" Host ok', secret)).toBe('token=*** Host ok');
+    });
+
     it('masks a malformed URL password holding both a `/` and a tab or line break', () => {
         for (const eol of ['\t', '\n', '\r\n']) {
             expect(redactText(`clone https://alice:PRIVATE_PREFIX/part${eol}PRIVATE_SUFFIX@host.example/repo failed`)).toBe('clone https://***@host.example/repo failed');

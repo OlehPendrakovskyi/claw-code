@@ -311,6 +311,15 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps a token holding a URL out of errors after the URL parser lowercases its host', async () => {
+            const token = 'opaque_ftp://alice:pw@PRIVATE_HOST/path';
+            for (const echo of [token, `prefix_${token}`, JSON.stringify({ reason: token })]) {
+                const h = harness({ token, throwOnOpen: new Error(`failed: ${echo}`) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/private_host|PRIVATE_HOST|\/path|opaque|alice/i);
+            }
+        });
+
         it('masks another credential whose label or marker is the token', async () => {
             const cases: [string, string][] = [
                 ['token', 'authentication failed: token=PRIVATE_VALUE'],
