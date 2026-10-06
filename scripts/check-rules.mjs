@@ -68,7 +68,7 @@ function moduleName(text) {
  *  itself, not to the import. Aliases (`const run = cp.exec`), bound copies (`cp.exec.bind(cp)`),
  *  destructuring, `require`, `import()`, `import x = require()` and `fs.promises` resolve the same way. An
  *  undeclared Vitest hook (`beforeEach`) is the Vitest global's export. */
-function resolveValue(node, checker, depth = 0) {
+function resolveValue(node, checker, depth = 0, prefer) {
     if (depth > 8) {
         return undefined;
     }
@@ -79,15 +79,15 @@ function resolveValue(node, checker, depth = 0) {
     }
     // `promisify(execFile)` runs execFile: the wrapper is the function it wraps.
     if (ts.isCallExpression(node) && node.arguments.length === 1) {
-        const callee = resolveValue(node.expression, checker, depth + 1);
+        const callee = resolveValue(node.expression, checker, depth + 1, prefer);
         if (callee?.module === 'util' && callee.member === 'promisify') {
-            const target = resolveValue(node.arguments[0], checker, depth + 1);
+            const target = resolveValue(node.arguments[0], checker, depth + 1, prefer);
             return target?.member !== undefined ? target : undefined;
         }
     }
     const bound = boundFunction(node);
     if (bound !== undefined) {
-        const target = resolveValue(bound, checker, depth + 1);
+        const target = resolveValue(bound, checker, depth + 1, prefer);
         return target?.member !== undefined ? target : undefined;
     }
     if (ts.isIdentifier(node)) {
@@ -97,11 +97,11 @@ function resolveValue(node, checker, depth = 0) {
             // (`const setup = beforeEach`) keeps its identity; a local of that name has a declaration.
             return HOOKS.has(node.text) ? { module: 'vitest', member: node.text } : undefined;
         }
-        return resolveDeclaration(declaration, checker, depth + 1);
+        return resolveDeclaration(declaration, checker, depth + 1, prefer);
     }
     const object = memberObject(node);
     if (object !== undefined) {
-        const base = resolveValue(object, checker, depth + 1);
+        const base = resolveValue(object, checker, depth + 1, prefer);
         const name = lastName(node);
         // `shared.execFileAsync` for `import * as shared from './shared'`: a member of a module in the program is
         // followed to its exported declaration there.
@@ -109,7 +109,7 @@ function resolveValue(node, checker, depth = 0) {
             const field = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
             const declaration = checker.getSymbolAtLocation(field)?.declarations?.[0];
             if (declaration !== undefined) {
-                return resolveDeclaration(declaration, checker, depth + 1);
+                return resolveDeclaration(declaration, checker, depth + 1, prefer);
             }
         }
         return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
@@ -145,24 +145,23 @@ function collectAssignments(source, checker) {
     visit(source);
 }
 
-function resolveDeclaration(declaration, checker, depth) {
+function resolveDeclaration(declaration, checker, depth, prefer) {
     // `let run; run = cp.exec`: a variable also holds whatever is assigned to it later.
     if (ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) {
+        // Every value it can hold counts (`let launch = readFile; launch = spawn`): the one in the module the
+        // caller asks about wins, else the first.
         const symbol = checker.getSymbolAtLocation(declaration.name);
-        for (const value of [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]) {
-            const target = value === undefined ? undefined : resolveValue(value, checker, depth);
-            if (target !== undefined) {
-                return target;
-            }
-        }
-        return undefined;
+        const targets = [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]
+            .map(value => value === undefined ? undefined : resolveValue(value, checker, depth, prefer))
+            .filter(target => target !== undefined);
+        return targets.find(target => target.module === prefer) ?? targets[0];
     }
     // An import from another file in the program is followed to that file's export: a re-export shim
     // (`export { exec as run } from 'child_process'`), an exported alias, or `export default`.
     if (ts.isImportSpecifier(declaration) || ts.isImportClause(declaration)) {
         const exported = exportedDeclaration(declaration, checker);
         if (exported !== undefined) {
-            return resolveDeclaration(exported, checker, depth + 1);
+            return resolveDeclaration(exported, checker, depth + 1, prefer);
         }
     }
     if (ts.isExportSpecifier(declaration)) {
@@ -171,10 +170,10 @@ function resolveDeclaration(declaration, checker, depth) {
             return { module: moduleName(from.text), member: lastName(declaration.propertyName ?? declaration.name) };
         }
         const local = checker.getExportSpecifierLocalTargetSymbol(declaration)?.declarations?.[0];
-        return local === undefined ? undefined : resolveDeclaration(local, checker, depth + 1);
+        return local === undefined ? undefined : resolveDeclaration(local, checker, depth + 1, prefer);
     }
     if (ts.isExportAssignment(declaration)) {
-        return resolveValue(declaration.expression, checker, depth);
+        return resolveValue(declaration.expression, checker, depth, prefer);
     }
     if (ts.isImportSpecifier(declaration)) {
         return {
@@ -194,7 +193,7 @@ function resolveDeclaration(declaration, checker, depth) {
     }
     if (ts.isBindingElement(declaration) && ts.isObjectBindingPattern(declaration.parent) &&
         ts.isVariableDeclaration(declaration.parent.parent) && declaration.parent.parent.initializer) {
-        const base = resolveValue(declaration.parent.parent.initializer, checker, depth);
+        const base = resolveValue(declaration.parent.parent.initializer, checker, depth, prefer);
         const name = lastName(declaration.propertyName ?? declaration.name);
         return base !== undefined && name !== undefined ? memberOf(base, name) : undefined;
     }
@@ -214,7 +213,7 @@ function calledExport(node, module, checker) {
     if (!ts.isCallExpression(node)) {
         return undefined;
     }
-    const target = resolveValue(invokedFunction(node.expression), checker);
+    const target = resolveValue(invokedFunction(node.expression), checker, 0, module);
     return target?.module === module ? target.member : undefined;
 }
 
@@ -234,7 +233,7 @@ function boundFunction(node) {
  *  `const run = cp.exec`, `const { exec } = require(…)`. */
 function bindsShellExecutor(node, checker) {
     const isShellExecutor = identifier => {
-        const target = resolveValue(identifier, checker);
+        const target = resolveValue(identifier, checker, 0, 'child_process');
         return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
     };
     if (ts.isImportDeclaration(node) && node.importClause?.namedBindings && ts.isNamedImports(node.importClause.namedBindings)) {
@@ -249,7 +248,7 @@ function bindsShellExecutor(node, checker) {
     }
     // `run = cp.exec`: an executor assigned after declaration.
     if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-        const target = resolveValue(node.right, checker);
+        const target = resolveValue(node.right, checker, 0, 'child_process');
         return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
     }
     if (ts.isVariableDeclaration(node)) {
@@ -529,7 +528,7 @@ function isSpawnCall(node, context) {
         return false;
     }
     // `cp.spawn.bind(cp, cmd, args, { shell: true })` binds the options a later call uses.
-    const target = boundFunction(node) !== undefined ? resolveValue(node, context.checker) : undefined;
+    const target = boundFunction(node) !== undefined ? resolveValue(node, context.checker, 0, 'child_process') : undefined;
     const spawner = target?.module === 'child_process' ? target.member : calledExport(node, 'child_process', context.checker);
     return PROCESS_SPAWNERS.has(spawner ?? '');
 }
@@ -687,8 +686,11 @@ function spawnOptionSymbols(sources, context) {
  *  conditional and logical expressions (`...(windows ? base : {})`), except a spread that a later `shell`
  *  property of the same literal overrides (`{ ...defaults, shell: false }`). */
 function spreadSources(literal) {
+    // `{ ...{ ...base } }`: a literal spread in is followed into, with its own overrides.
     return literal.properties.flatMap((property, index) =>
-        ts.isSpreadAssignment(property) && !overridesShell(literal, index) ? valueLeaves(property.expression) : []);
+        ts.isSpreadAssignment(property) && !overridesShell(literal, index)
+            ? valueLeaves(property.expression).flatMap(leaf => ts.isObjectLiteralExpression(leaf) ? spreadSources(leaf) : [leaf])
+            : []);
 }
 
 /** The values an expression can produce, unwrapped: itself, or each branch of a conditional or operand of a
@@ -920,14 +922,17 @@ function declarationBoundArguments(declaration, context, depth) {
     if (!ts.isVariableDeclaration(declaration) || !ts.isIdentifier(declaration.name)) {
         return undefined;
     }
+    // Every binding it can hold counts (`let write = console.info.bind(console); write = console.info.bind(console,
+    // prompt)`): their bound arguments are all collected.
     const symbol = context.checker.getSymbolAtLocation(declaration.name);
+    let found;
     for (const v of [declaration.initializer, ...(assignmentsBySymbol.get(symbol) ?? [])]) {
         const args = v === undefined ? undefined : loggerMethodBoundArguments(v, context, depth + 1);
         if (args !== undefined) {
-            return args;
+            found = [...(found ?? []), ...args];
         }
     }
-    return undefined;
+    return found;
 }
 
 const CHECKS = [
@@ -976,7 +981,7 @@ const CHECKS = [
             }
             // `setup(…)` for `{ beforeEach as setup }` and `vitest.beforeEach(…)` resolve to Vitest; a bare
             // `beforeEach(…)` with no declaration in scope is the Vitest global. A local of that name is not.
-            const target = resolveValue(node.expression, context.checker);
+            const target = resolveValue(node.expression, context.checker, 0, 'vitest');
             const isGlobal = ts.isIdentifier(node.expression) && context.checker.getSymbolAtLocation(node.expression)?.declarations === undefined;
             const hook = target?.module === 'vitest' ? target.member : isGlobal ? node.expression.text : undefined;
             if (!HOOKS.has(hook ?? '')) {

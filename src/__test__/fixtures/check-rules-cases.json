@@ -1265,6 +1265,18 @@
             "expect": "R10"
         },
         {
+            "name": "R10: prompt text bound by a later reassignment of a logger binding",
+            "file": "src/a.ts",
+            "line": "let write = console.info.bind(console); write = console.info.bind(console, prompt); write();",
+            "expect": "R10"
+        },
+        {
+            "name": "R10 clean: logger bindings that never bind prompt text",
+            "file": "src/a.ts",
+            "line": "let write = console.info.bind(console); write = console.info.bind(console, 'ready'); write();",
+            "expect": null
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",
@@ -1467,6 +1479,24 @@
             "name": "R36 clean: a spread argument tuple without a shell",
             "file": "src/a.ts",
             "line": "import { spawn } from 'node:child_process'; spawn(...(['node', [], { shell: false }] as const));",
+            "expect": null
+        },
+        {
+            "name": "R36: an alias initialised to another function and reassigned to spawn",
+            "file": "src/a.ts",
+            "line": "import { readFile } from 'fs'; import { spawn } from 'child_process'; let launch: typeof readFile | typeof spawn = readFile; launch = spawn; launch('node', [], { shell: true });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a shell option reaching spawn through nested spreads",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; const opts = { ...{ ...base } }; spawn('node', [], opts);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a nested spread overridden later",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; const opts = { ...{ ...base, shell: false } }; spawn('node', [], opts);",
             "expect": null
         },
         {
