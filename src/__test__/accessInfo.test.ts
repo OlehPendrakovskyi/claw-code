@@ -525,6 +525,16 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toContain('PRIVATE');
     });
 
+    it('masks a spaced password after `&` in a local file path whole', () => {
+        const info = extractAccessInfoFromConfig(
+            { credentials: { file: '/home/user/options&password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json' } },
+            '/tmp/openclaw.json'
+        );
+        const markdown = formatAccessSummaryMarkdown(info);
+        expect(markdown).toContain('- /home/user/options&password=***');
+        expect(markdown).not.toContain('PRIVATE');
+    });
+
     it('surfaces config and CLI issues', () => {
         const markdown = formatAccessSummaryMarkdown(createEmptyAccessInfo(), 'no config', 'cli exploded');
         expect(markdown).toContain('Config issue: no config');
@@ -534,6 +544,22 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('masks a spaced secret after an `&` that opens no query to the end of its line', () => {
+        expect(redactText('auth failed: options=x&password=PRIVATE_PREFIX PRIVATE_SUFFIX\nnext')).toBe('auth failed: options=x&password=***\nnext');
+        expect(redactText('/home/user/options&password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json')).toBe('/home/user/options&password=***');
+        // In a query a space still ends the value, so the prose after the URL survives.
+        expect(redactText('see https://h.example/?a=1&token=PRIVATE then prose')).toBe('see https://h.example/?a=1&token=*** then prose');
+        expect(redactText('c?x=1&token=PRIVATE ok')).toBe('c?x=1&token=*** ok');
+    });
+
+    it('strips a control sequence nested in another, raw or serialised', () => {
+        expect(redactText('to\u001b[\u001b[0m0mken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('to\u001b[1\u001b[\u001b[0m;2m3mken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ e: 'to\u001b[\u001b[0m0mken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        // A sequence broken by a byte that fits none stays text, its ESC dropped.
+        expect(redactText('a\u001b[\nb')).toBe('a[\nb');
+    });
+
     it('redacts URL userinfo inside free-form text', () => {
         expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
             'failed: https://***:***@host.example/repo.git (exit 1)'
@@ -1236,6 +1262,10 @@ describe('redactText', () => {
             'token' + '\\\\'.repeat(size / 2) + '=',
             'bearer' + '\\\\'.repeat(size / 2) + 'x',
             '\u009d'.repeat(size / 2),
+            '\u001b['.repeat(size / 2),
+            '\u001b[1'.repeat(size / 6) + 'm'.repeat(size / 6),
+            '\\u001b['.repeat(size / 7) + '0m',
+            'a&password='.repeat(size / 11),
             '\\\\n'.repeat(size / 3) + 'token',
             'a\\\\n'.repeat(size / 4) + '=',
             '\\a'.repeat(size / 2) + '=',

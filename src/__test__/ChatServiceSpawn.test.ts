@@ -723,6 +723,12 @@ describe('ChatService.sendMessage', () => {
             child.stderr.emit('data', Buffer.from('from stderr'));
             child.emit('close', 1, null);
             expect(events[0]).toEqual({ type: 'error', message: 'from stderr' });
+            // A message of nothing but terminal codes, which redaction empties, is no message either.
+            const blank = start();
+            blank.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { code: -32603, message: '\u001b[0m' } }));
+            blank.child.stderr.emit('data', Buffer.from('from stderr'));
+            blank.child.emit('close', 1, null);
+            expect(blank.events[0]).toEqual({ type: 'error', message: 'from stderr' });
         });
 
         it('reports the prompt turn\'s own error over later ones on a failing exit', () => {
@@ -880,6 +886,20 @@ describe('ChatService.sendMessage', () => {
             child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token="PRIVATE_PREFIX PRIVATE_SUFFIX"' })}\n`));
             child.emit('close', 1, null);
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('redacts a spaced password after `&` and a credential name split by nested control sequences, on stderr', () => {
+            const inputs = [
+                'auth failed: options=x&password=PRIVATE_PREFIX PRIVATE_SUFFIX',
+                'to\u001b[\u001b[0m0mken=PRIVATE_VALUE',
+                JSON.stringify({ error: 'to\u001b[\u001b[0m0mken=PRIVATE_VALUE' }),
+            ];
+            for (const stderr of inputs) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`${stderr}\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
         });
 
         it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {

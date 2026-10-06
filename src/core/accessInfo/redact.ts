@@ -347,7 +347,57 @@ const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!
 /** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
  *  which could sit between a label and its value (`token\u0000=…`). */
 export function stripTerminalCodes(text: string): string {
-    return text.replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
+    return stripCsiSequences(text).replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
+}
+
+/** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
+const CSI_OPENER_SOURCE = String.raw`\u001b\[|\u009b|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)`;
+const NEXT_CSI_OPENER = new RegExp(CSI_OPENER_SOURCE, 'gi');
+const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
+
+/** Text without its complete CSI sequences, innermost first: an opener inside an unfinished sequence starts a
+ *  nested one, and once that one ends the outer one goes on, so `to\e[\e[0m0mken` is `token` rather than
+ *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which stays as text.
+ *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
+ *  sequence's bytes are dropped once. */
+function stripCsiSequences(text: string): string {
+    const out: string[] = [];
+    const open: { at: number; intermediate: boolean }[] = [];
+    let i = 0;
+    while (i < text.length) {
+        if (open.length === 0) {
+            NEXT_CSI_OPENER.lastIndex = i;
+            const next = NEXT_CSI_OPENER.exec(text);
+            if (next === null) {
+                break;
+            }
+            out.push(text.slice(i, next.index));
+            i = next.index;
+        }
+        CSI_OPENER_HERE.lastIndex = i;
+        const opener = CSI_OPENER_HERE.exec(text);
+        if (opener !== null) {
+            open.push({ at: out.length, intermediate: false });
+            out.push(opener[0]);
+            i = CSI_OPENER_HERE.lastIndex;
+            continue;
+        }
+        const char = text[i++];
+        out.push(char);
+        const sequence = open[open.length - 1];
+        if (!sequence.intermediate && char >= '0' && char <= '?') {
+            continue;
+        }
+        if (char >= ' ' && char <= '/') {
+            sequence.intermediate = true;
+        } else if (char >= '@' && char <= '~') {
+            out.length = sequence.at;
+            open.pop();
+        } else {
+            open.length = 0;
+        }
+    }
+    return out.join('') + text.slice(i);
 }
 
 const BEARER = new RegExp(String.raw`\b(bearer)${SPACE}+`, 'gi');
@@ -854,30 +904,31 @@ function maskQueryPairs(text: string): string {
     let out = '';
     let copied = 0;
     const unclosed = new Map<string, number>();
-    // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), found by scanning
-    // back to whitespace or a quote. A scan stops where the previous one started: the same token, same answer.
+    // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), and whether a `?`
+    // comes before the name in that token, found by scanning back to whitespace or a quote. A scan stops where
+    // the previous one started: the same token, same answer.
     let floor = 0;
-    let floorOpening: QuoteOpening | undefined;
+    let floorToken: QueryToken = { opening: undefined, inQuery: false };
     const unclosedUrls = new Map<string, number>();
-    const openingQuote = (index: number): QuoteOpening | undefined => {
-        let opening = floorOpening;
-        for (let i = index - 1; i >= floor; i--) {
+    const tokenBefore = (index: number): QueryToken => {
+        let inQuery = false;
+        let token: QueryToken | undefined;
+        for (let i = index - 1; i >= floor && token === undefined; i--) {
             if (WHITESPACE.test(text[i])) {
-                opening = undefined;
-                break;
-            }
-            if (VALUE_QUOTE.test(text[i])) {
+                token = { opening: undefined, inQuery };
+            } else if (VALUE_QUOTE.test(text[i])) {
                 let run = 0;
                 while (text[i - 1 - run] === '\\') {
                     run++;
                 }
-                opening = { quote: text[i], run };
-                break;
+                token = { opening: { quote: text[i], run }, inQuery };
             }
+            inQuery ||= text[i] === '?';
         }
+        token ??= { opening: floorToken.opening, inQuery: inQuery || floorToken.inQuery };
         floor = index;
-        floorOpening = opening;
-        return opening;
+        floorToken = token;
+        return token;
     };
     QUERY_NAME.lastIndex = 0;
     for (let pair = QUERY_NAME.exec(text); pair !== null; pair = QUERY_NAME.exec(text)) {
@@ -893,10 +944,13 @@ function maskQueryPairs(text: string): string {
         // A quoted value, or an array or object (`?tokens=[ "a", "b" ]`), is measured whole by valueEnd.
         const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '') || text[start] === '[' || text[start] === '{';
         // An unquoted value in a URL that a quote opens runs to that quote's close, a space included
-        // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in free text, a space ends it.
-        const opening = quoted ? undefined : openingQuote(pair.index);
-        const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed)
-            : opening !== undefined ? quotedUrlValueEnd(text, start, opening, unclosedUrls) : sensitiveQueryValueEnd(text, start);
+        // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in a free-text query, a space ends it. An `&` pair
+        // with no `?` before it in its token is no query (`/home/options&password=PREFIX SUFFIX/x`): its value
+        // runs to the end of the line, as a plain-text secret's does.
+        const token = quoted ? undefined : tokenBefore(pair.index);
+        const end = token === undefined ? valueEnd(text, start, NON_SPACE, unclosed)
+            : token.opening !== undefined ? quotedUrlValueEnd(text, start, token.opening, unclosedUrls)
+                : pair[1] === '?' || token.inQuery ? sensitiveQueryValueEnd(text, start) : unquotedSecretEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
         QUERY_NAME.lastIndex = end;
@@ -908,6 +962,13 @@ function maskQueryPairs(text: string): string {
 interface QuoteOpening {
     quote: string;
     run: number;
+}
+
+/** What {@link maskQueryPairs} reads of the token a query name sits in: the quote that opens it, if any, and
+ *  whether a `?` comes before the name in it. */
+interface QueryToken {
+    opening: QuoteOpening | undefined;
+    inQuery: boolean;
 }
 
 /** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, or the quote that closes the string,

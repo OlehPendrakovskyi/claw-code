@@ -597,7 +597,9 @@ function encodePrompt(blocks: PromptBlock[]): Buffer {
 }
 
 /** An ACP error message with its `data.details`, flattened to one bounded line. */
-function withErrorDetails(message: string | undefined, details: unknown): string | undefined {
+function withErrorDetails(rawMessage: string | undefined, details: unknown): string | undefined {
+    // A message that redaction empties (nothing but terminal codes) counts as missing, so a fallback applies.
+    const message = rawMessage !== undefined && redactText(rawMessage).trim() !== '' ? rawMessage : undefined;
     // Terminal codes come out of string values before serialising, which would turn ESC into a literal `\u001b`.
     const plainDetails = withoutTerminalCodes(details);
     const raw = typeof plainDetails === 'string' ? plainDetails : plainDetails === undefined || plainDetails === null ? '' : stringifyToolEvent(plainDetails);
