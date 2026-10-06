@@ -1144,10 +1144,9 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('https://***: ***');
         });
 
-        it('masks a URL userinfo split between message and details after an earlier credential in the message', () => {
-            for (const gap of [' ', '\n']) {
+        it('masks a URL userinfo split between message and details after an earlier credential or without `//`', () => {
+            for (const message of ['auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/', 'auth token=OLD_SECRET\nhttps://alice:PRIVATE_PREFIX/', 'token=OLD_SECRET\nhttps:alice:PRIVATE_PREFIX/', 'https:alice:PRIVATE_PREFIX/']) {
                 const { child, events } = start();
-                const message = `auth token=OLD_SECRET${gap}https://alice:PRIVATE_PREFIX/`;
                 child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
                 child.emit('close', 1, null);
                 const shown = (events[0] as { message: string }).message;

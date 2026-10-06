@@ -973,6 +973,8 @@ export function endsAtCredential(label: string): boolean {
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
  *  password may go on in whatever is joined after it. */
 const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
+/** What {@link joinBoundary} appends to close an open userinfo. */
+const USERINFO_TAIL = 'x@h';
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
@@ -981,11 +983,12 @@ const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
  *  first mask its probe shows (`https://***`). */
 export function joinBoundary(left: string): { left: string; maskRight: boolean } {
     // An open userinfo is checked first: an earlier credential (`token=OLD https://alice:PREFIX/`) would end
-    // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A URL parser drops tabs
-    // and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`), so this probe reads the left part without them.
-    const joined = left.replace(PARSER_IGNORED, '');
-    const userinfoProbe = `${joined}x@h`;
-    const userinfoRedacted = OPEN_USERINFO.test(joined) ? redactText(userinfoProbe) : userinfoProbe;
+    // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A special scheme spelled
+    // without `//` (`https:alice:PREFIX/`) gets it from the `@` the probe adds, before a URL parser's dropped
+    // tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`) come out and could join it to a word.
+    const userinfoProbe = normalizeSpecialSchemes(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
+    const opensUserinfo = OPEN_USERINFO.test(userinfoProbe.slice(0, -USERINFO_TAIL.length));
+    const userinfoRedacted = opensUserinfo ? redactText(userinfoProbe) : userinfoProbe;
     if (userinfoRedacted !== userinfoProbe) {
         return { left: upToFirstMask(userinfoRedacted), maskRight: true };
     }

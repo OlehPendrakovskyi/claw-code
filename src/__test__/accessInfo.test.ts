@@ -430,12 +430,16 @@ describe('formatAccessSummaryMarkdown', () => {
         for (const eol of ['\t', '\n', '\r\n']) {
             expect(formatNamedEntry({ name: `https://alice:PRIVATE_PREFIX${eol}`, url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
         }
-        // A credential earlier in the name does not hide the open userinfo after it.
+        // A credential earlier in the name does not hide the open userinfo after it, a special scheme without
+        // `//` included.
         for (const gap of [' ', '\n']) {
-            const label = formatNamedEntry({ name: `auth token=OLD_SECRET${gap}https://alice:PRIVATE_PREFIX/`, url: 'PRIVATE_SUFFIX@host.example/x' });
-            expect(label).not.toMatch(/PRIVATE|OLD_SECRET/);
-            expect(label).toMatch(/\(\*\*\*\)$/);
+            for (const scheme of ['https://', 'https:']) {
+                const label = formatNamedEntry({ name: `auth token=OLD_SECRET${gap}${scheme}alice:PRIVATE_PREFIX/`, url: 'PRIVATE_SUFFIX@host.example/x' });
+                expect(label).not.toMatch(/PRIVATE|OLD_SECRET/);
+                expect(label).toMatch(/\(\*\*\*\)$/);
+            }
         }
+        expect(formatNamedEntry({ name: 'https:alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
         // A plain URL name keeps its text.
         expect(formatNamedEntry({ name: 'https://gh.example', url: 'https://gh.example/mcp' })).toBe('https://gh.example (https://gh.example/mcp)');
         expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');
