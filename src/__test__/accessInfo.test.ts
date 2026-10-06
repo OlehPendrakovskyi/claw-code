@@ -599,6 +599,9 @@ describe('redactText', () => {
         expect(redactTextAndSecret('boom opaque-\\u79d8\\u5bc6_PRIVATE_VALUE', secret)).toBe('boom ***');
         expect(redactTextAndSecret('boom opaque-\\u79D8\\u5BC6_PRIVATE_VALUE', secret)).toBe('boom ***');
         expect(redactTextAndSecret('boom opaque-\\ud83d\\udd11x', 'opaque-🔑x')).toBe('boom ***');
+        // Raw and escaped units mixed, and an escape serialised again.
+        expect(redactTextAndSecret('authentication failed: opaque-\\u79d8密_PRIVATE_VALUE', secret)).toBe('authentication failed: ***');
+        expect(redactTextAndSecret('authentication failed: opaque-秘\\\\u5BC6_PRIVATE_VALUE', secret)).toBe('authentication failed: ***');
     });
 
     it('masks a known secret holding a URL whose internationalised host the URL parser punycodes (redactTextAndSecret)', () => {

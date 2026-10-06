@@ -1188,33 +1188,46 @@ export function redactTextAndSecret(text: string, secret: string): string {
     return maskSecretFragments(forms.reduce(maskIgnoringCase, redactText(text)), forms);
 }
 
-/** `text` with every occurrence of `form` masked, in any letter case: a URL parser lowercases a host
- *  (`PRIVATE_HOST` becomes `private_host`), and a `\\u` escape may use either hex case. Each UTF-16 unit is
- *  compared folded on its own, on the original text, so a character that lowercasing lengthens (`İ`) shifts
- *  nothing. */
+/** `text` with every occurrence of `form` masked, in any letter case and any mix of spellings: a URL parser
+ *  lowercases a host (`PRIVATE_HOST` becomes `private_host`), and a serialiser may write any unit as a `\\u`
+ *  escape, in either hex case and at any depth (`opaque-\\u79d8密`). Each UTF-16 unit is compared on its own,
+ *  on the original text, so a character that lowercasing lengthens (`İ`) shifts nothing. */
 function maskIgnoringCase(text: string, form: string): string {
     const foldedForm = Array.from({ length: form.length }, (_, k) => foldUnit(form[k]));
     let out = '';
     let copied = 0;
-    for (let at = 0; at + form.length <= text.length; at++) {
-        if (at < copied || !matchesFolded(text, at, form, foldedForm)) {
+    for (let at = 0; at < text.length; at++) {
+        const end = at < copied ? -1 : matchEnd(text, at, form, foldedForm);
+        if (end === -1) {
             continue;
         }
         out += `${text.slice(copied, at)}***`;
-        copied = at + form.length;
+        copied = end;
     }
     return out + text.slice(copied);
 }
 
-/** Whether `form` occurs in `text` at `at`, unit by unit, ignoring case. */
-function matchesFolded(text: string, at: number, form: string, foldedForm: string[]): boolean {
+/** Where an occurrence of `form` that starts at `at` ends, each unit as itself in any case or as a `\\u`
+ *  escape of it; -1 when none starts there. */
+function matchEnd(text: string, at: number, form: string, foldedForm: string[]): number {
+    let i = at;
     for (let k = 0; k < form.length; k++) {
-        if (text[at + k] !== form[k] && foldUnit(text[at + k]) !== foldedForm[k]) {
-            return false;
+        if (text[i] === form[k] || (i < text.length && foldUnit(text[i]) === foldedForm[k])) {
+            i++;
+            continue;
         }
+        UNIT_ESCAPE.lastIndex = i;
+        const escape = UNIT_ESCAPE.exec(text);
+        if (escape === null || parseInt(escape[1], 16) !== form.charCodeAt(k)) {
+            return -1;
+        }
+        i = UNIT_ESCAPE.lastIndex;
     }
-    return true;
+    return i;
 }
+
+/** A JSON `\\u` escape of one UTF-16 unit, with its whole backslash run. */
+const UNIT_ESCAPE = /\\+u([0-9a-f]{4})/iy;
 
 function foldUnit(unit: string): string {
     return unit.toLowerCase();

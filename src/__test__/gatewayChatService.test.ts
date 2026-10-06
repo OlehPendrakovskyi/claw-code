@@ -323,6 +323,7 @@ describe('GatewayChatService', () => {
         it('keeps an escaped non-ASCII token and one holding an internationalised URL out of errors', async () => {
             const cases: [string, string][] = [
                 ['opaque-秘密_PRIVATE_VALUE', 'boom opaque-\\u79d8\\u5bc6_PRIVATE_VALUE'],
+                ['opaque-秘密_PRIVATE_VALUE', 'authentication failed: opaque-\\u79d8密_PRIVATE_VALUE'],
                 ['opaque_ftp://alice:pw@例え.example/PRIVATE_PATH', 'failed opaque_ftp://alice:pw@例え.example/PRIVATE_PATH'],
             ];
             for (const [token, message] of cases) {
