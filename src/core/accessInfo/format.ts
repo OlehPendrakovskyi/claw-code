@@ -123,9 +123,13 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     const endpoint = rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined;
     if (name && endpoint) {
         // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
-        // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, the endpoint is
-        // that value and is masked whole.
-        return endsAtCredential(name) ? `${name} (***)` : `${name} (${endpoint})`;
+        // `PRIVATE`, name `Bearer`, or name `https://alice:` and endpoint `PRIVATE@host`). When the name ends
+        // where a credential's value or a URL's userinfo starts, the endpoint is that value and is masked whole.
+        // The assembled label is not redacted again: the parts' masks would be plain text to a second pass,
+        // which would cut a masked endpoint's closing parenthesis.
+        const userinfoProbe = `${name} (x@h)`;
+        const exposed = endsAtCredential(name) || redactText(userinfoProbe) !== userinfoProbe;
+        return exposed ? `${name} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

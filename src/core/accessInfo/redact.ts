@@ -83,11 +83,16 @@ const MASKS = /\u0000/g;
 /** A JSON `\\u00XX` escape, at any depth (with its whole backslash run), of a character a key name can hold. */
 const NAME_ESCAPE = /(?<!\\)\\+u00(2[de]|3\d|[46][1-9a-f]|[57][0-9a]|5f)/gi;
 
-/** Text with the JSON escapes of name characters decoded (`"to\\u006ben"` is `"token"`), at any depth, so a
- *  key spelled with them is still recognised. Only letters, digits, `_`, `.` and `-` are decoded; a quote or
+/** A JSON-escaped `/`, with its whole backslash run. */
+const SLASH_ESCAPE = /(?<!\\)\\+\//g;
+
+/** Text with the JSON escapes of name characters and `/` decoded (`"to\\u006ben"` is `"token"`), at any depth,
+ *  so a key or a URL spelled with them is still recognised. Only letters, digits, `_`, `.` and `-` are decoded; a quote or
  *  backslash escape is left as it is, so no string's structure changes. */
 function decodeNameEscapes(text: string): string {
-    return text.replace(NAME_ESCAPE, (_escape, code: string) => String.fromCharCode(parseInt(code, 16)));
+    return text.replace(NAME_ESCAPE, (_escape, code: string) => String.fromCharCode(parseInt(code, 16)))
+        // JSON may escape `/` (`\/\/alice:pw@host\/x`), at any depth; only the backslashes before a `/` go.
+        .replace(SLASH_ESCAPE, '/');
 }
 
 /** Text with every {@link MASK} shown as `***`. */

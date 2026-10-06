@@ -418,6 +418,8 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: 'token=', url: 'PRIVATE_VALUE' })).toBe('token= (***)');
         expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_VALUE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ name: 'Basic', url: 'dXNlcjpwYXNz' })).toBe('Basic (***)');
+        expect(formatNamedEntry({ name: 'https://alice:', url: 'PRIVATE_PASSWORD@host.example/x' })).toBe('https://alice: (***)');
+        expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
     });
 
@@ -1007,6 +1009,14 @@ describe('redactText', () => {
         expect(redactText('the ht\ntp: thing, mail bob@example.org')).toBe('the ht\ntp: thing, mail bob@example.org');
     });
 
+    it('masks a network-path userinfo spelled with JSON-escaped slashes, at any depth', () => {
+        const json = '{"error":"fetch \\/\\/alice:PRIVATE_VALUE@host.example\\/x failed"}';
+        expect(redactText(json)).toBe('{"error":"fetch //***@host.example/x failed"}');
+        expect(redactText(JSON.stringify({ reason: json }))).not.toContain('PRIVATE');
+        // A Windows path keeps its backslashes.
+        expect(redactText('{"p":"C:\\\\Users\\\\x"}')).toBe('{"p":"C:\\\\Users\\\\x"}');
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -1175,6 +1185,7 @@ describe('redactText', () => {
             '\\u0009'.repeat(size / 6) + '=',
             '"?token=a\n'.repeat(size / 10),
             'bearer "a\n'.repeat(size / 10),
+            '\\'.repeat(size) + '/',
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',
