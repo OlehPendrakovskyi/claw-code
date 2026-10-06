@@ -9,7 +9,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { endsAtCredential, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
+import { joinBoundary, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -606,10 +606,12 @@ function withErrorDetails(message: string | undefined, details: unknown): string
     if (flat === '' || flat === message) {
         return safeMessage;
     }
-    // A message that ends where a credential starts (`Bearer`, `Basic`) makes the details its value: the
-    // inserted `: ` would keep the matchers from seeing the pair, so the details are masked whole.
-    if (message !== undefined && endsAtCredential(message)) {
-        return `${safeMessage}: ***`;
+    // A credential can span the message and the details (message `Bearer`, or `https://alice:PREFIX/` with
+    // details `SUFFIX@host`), and the inserted `: ` would keep the matchers from seeing it whole: the details
+    // are then masked whole, and the message cut where the credential starts.
+    const boundary = message === undefined ? undefined : joinBoundary(message);
+    if (boundary?.maskRight) {
+        return `${redactText(boundary.left)}: ***`;
     }
     // Redact the message and the whole detail together, as they will be shown, before flattening and cutting
     // them. A credential can be split across the two (message `Invalid token`, details `PRIVATE`); a line break

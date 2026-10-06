@@ -424,6 +424,10 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: prefix, url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
         expect(formatNamedEntry({ id: prefix, url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
         expect(formatNamedEntry({ url: 'PRIVATE_SUFFIX@host.example/x' }, prefix)).toBe('https://*** (***)');
+        // A prefix holding `/`, which the display delimiter would separate from the `@`.
+        expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        // A plain URL name keeps its text.
+        expect(formatNamedEntry({ name: 'https://gh.example', url: 'https://gh.example/mcp' })).toBe('https://gh.example (https://gh.example/mcp)');
         expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
     });
@@ -837,6 +841,14 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ error: 'token\\u009d0;title\\u009c=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
     });
 
+    it('strips DCS, SOS, PM and APC control strings whole, raw, C1 and serialised', () => {
+        expect(redactText('to\u001bPq\u001b\\ken=PRIVATE')).toBe('token=***');
+        expect(redactText('to\u001b_app\u0007ken=PRIVATE')).toBe('token=***');
+        expect(redactText('to\u0090q\u009cken=PRIVATE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ e: 'to\u001bPq\u001b\\ken=PRIVATE' }))).not.toContain('PRIVATE');
+        expect(redactText('{"e":"to\\u0090q\\u009cken=PRIVATE"}')).not.toContain('PRIVATE');
+    });
+
     it('strips terminal codes serialised more than once before matching credentials', () => {
         expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
         expect(redactText(JSON.stringify({ a: JSON.stringify({ b: JSON.stringify({ error: 'token\u001b[31m=PRIVATE_VALUE' }) }) }))).not.toContain('PRIVATE');
@@ -1191,6 +1203,8 @@ describe('redactText', () => {
             '"?token=a\n'.repeat(size / 10),
             'bearer "a\n'.repeat(size / 10),
             '\\'.repeat(size) + '/',
+            'https://a:' + '/'.repeat(size),
+            '\u001bP'.repeat(size / 2),
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

@@ -292,17 +292,18 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
 
 /** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
  *  intermediate bytes ` -/` and a final byte `@-~`, as in `ESC[31m`, `ESC[?25h` or `ESC[38:2:1:2:3m`, or opened
- *  by the single C1 byte CSI (U+009B); or an OSC sequence (`ESC]0;title`, or C1 OSC, U+009D) ended by BEL or ST
- *  (`ESC\\` or U+009C). A truncated OSC runs to the next ESC, BEL, ST or line
+ *  by the single C1 byte CSI (U+009B); or a control string, OSC (`ESC]0;title`), DCS (`ESC P`), SOS (`ESC X`), PM
+ *  (`ESC ^`) or APC (`ESC _`), or their C1 bytes (U+009D, U+0090, U+0098, U+009E, U+009F), whole up to BEL or ST
+ *  (`ESC\\` or U+009C), so its text does not stay between a label and its value. A truncated one runs to the next
+ *  ESC, BEL, ST or line
  *  break, so no sequence scans past another and stripping stays linear. The same sequences serialised, with
- *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), and C1 CSI, OSC and ST as
- *  `\\u009b`, `\\u009d` and `\\u009c` (or `\\x9b`, `\\x9d`, `\\x9c`), are stripped too; a serialised
- *  OSC stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
+ *  ESC written as `\\u001b` or `\\x1b` (JSON on stderr: `"token\\u001b[0m=…"`), and the C1 bytes as `\\u00XX` or
+ *  `\\xXX`, are stripped too; a serialised control string stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
  *  again (`\\\\u001b` in nested JSON) is matched with its whole backslash run, which goes with it, so no
  *  backslash is left escaping the next character, a closing quote included. A match starts only where a
  *  run does, which keeps a long run linear. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b\]|\u009d)[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)\]|u009d|x9d)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -926,6 +927,29 @@ export function redactEndpointText(value: string): string {
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
 export function endsAtCredential(label: string): boolean {
     return [`${label} x`, `${label} dXNlcjpwYXNz`].some(probe => redactText(probe) !== probe);
+}
+
+/** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
+ *  password may go on in whatever is joined after it. */
+const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
+
+/** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
+ *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
+ *  userinfo (`https://alice:` or `https://alice:PREFIX/`, with `right` holding the rest up to `@`); probes with
+ *  and without a display delimiter show which. Then `right` is to be masked whole, and `left` is cut at the
+ *  first mask its probe shows (`https://***`). */
+export function joinBoundary(left: string): { left: string; maskRight: boolean } {
+    if (endsAtCredential(left)) {
+        return { left, maskRight: true };
+    }
+    const probes = [`${left} (x@h)`, ...(OPEN_USERINFO.test(left) ? [`${left}x@h`] : [])];
+    for (const probe of probes) {
+        const redacted = redactText(probe);
+        if (redacted !== probe) {
+            return { left: redacted.startsWith(`${left} `) ? left : redacted.slice(0, redacted.indexOf('***') + 3), maskRight: true };
+        }
+    }
+    return { left, maskRight: false };
 }
 
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first

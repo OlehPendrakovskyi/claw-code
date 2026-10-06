@@ -1,5 +1,5 @@
 import { asString } from './util.js';
-import { endsAtCredential, redactEndpointText, redactText } from './redact.js';
+import { joinBoundary, redactEndpointText, redactText } from './redact.js';
 import { isRecord, uniqSorted } from './util.js';
 import type { AccessInfo } from './types.js';
 
@@ -122,23 +122,13 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
     const endpoint = rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined;
     if (name && endpoint) {
-        // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
-        // `PRIVATE`, name `Bearer`, or name `https://alice:` and endpoint `PRIVATE@host`). When the name ends
-        // where a credential's value or a URL's userinfo starts, the endpoint is that value and is masked whole.
-        // The assembled label is not redacted again: the parts' masks would be plain text to a second pass,
-        // which would cut a masked endpoint's closing parenthesis.
-        // When the userinfo starts inside the name (`https://alice:PRIVATE_PREFIX`), the name is cut at its first
-        // mask too, as the probe's redaction shows: `https://*** (***)`.
-        if (endsAtCredential(name)) {
-            return `${name} (***)`;
-        }
-        const userinfoProbe = `${name} (x@h)`;
-        const redactedProbe = redactText(userinfoProbe);
-        if (redactedProbe !== userinfoProbe) {
-            const safeName = redactedProbe.startsWith(`${name} `) ? name : redactedProbe.slice(0, redactedProbe.indexOf('***') + 3);
-            return `${safeName} (***)`;
-        }
-        return `${name} (${endpoint})`;
+        // Each part was redacted alone, but a credential can be split across them (name `token=` or `Bearer`
+        // and endpoint `PRIVATE`; name `https://alice:PREFIX/` and endpoint `SUFFIX@host`). joinBoundary says
+        // when: the endpoint is then masked whole, and the name cut where the credential starts. The assembled
+        // label is not redacted again: the parts' masks would be plain text to a second pass, which would cut a
+        // masked endpoint's closing parenthesis.
+        const boundary = joinBoundary(name);
+        return boundary.maskRight ? `${boundary.left} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

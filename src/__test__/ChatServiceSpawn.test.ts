@@ -1125,6 +1125,20 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('masks a URL userinfo split between the error message and its details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://alice:PRIVATE_PREFIX/', data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('https://***: ***');
+        });
+
+        it('redacts a credential behind a DCS control string on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('to\u001bPq\u001b\\ken=PRIVATE_VALUE\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
