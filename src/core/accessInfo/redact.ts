@@ -980,20 +980,29 @@ const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
  *  and without a display delimiter show which. Then `right` is to be masked whole, and `left` is cut at the
  *  first mask its probe shows (`https://***`). */
 export function joinBoundary(left: string): { left: string; maskRight: boolean } {
+    // An open userinfo is checked first: an earlier credential (`token=OLD https://alice:PREFIX/`) would end
+    // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A URL parser drops tabs
+    // and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`), so this probe reads the left part without them.
+    const joined = left.replace(PARSER_IGNORED, '');
+    const userinfoProbe = `${joined}x@h`;
+    const userinfoRedacted = OPEN_USERINFO.test(joined) ? redactText(userinfoProbe) : userinfoProbe;
+    if (userinfoRedacted !== userinfoProbe) {
+        return { left: upToFirstMask(userinfoRedacted), maskRight: true };
+    }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
-    // A URL parser drops tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`), so the no-delimiter
-    // probe reads the left part without them.
-    const joined = left.replace(PARSER_IGNORED, '');
-    const probes = [`${left} (x@h)`, ...(OPEN_USERINFO.test(joined) ? [`${joined}x@h`] : [])];
-    for (const probe of probes) {
-        const redacted = redactText(probe);
-        if (redacted !== probe) {
-            return { left: redacted.startsWith(`${left} `) ? left : redacted.slice(0, redacted.indexOf('***') + 3), maskRight: true };
-        }
+    const probe = `${left} (x@h)`;
+    const redacted = redactText(probe);
+    if (redacted === probe) {
+        return { left, maskRight: false };
     }
-    return { left, maskRight: false };
+    return { left: redacted.startsWith(`${left} `) ? left : upToFirstMask(redacted), maskRight: true };
+}
+
+/** Redacted text cut after its first `***`. */
+function upToFirstMask(redacted: string): string {
+    return redacted.slice(0, redacted.indexOf('***') + 3);
 }
 
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first

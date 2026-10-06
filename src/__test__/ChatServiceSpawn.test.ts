@@ -1144,6 +1144,18 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('https://***: ***');
         });
 
+        it('masks a URL userinfo split between message and details after an earlier credential in the message', () => {
+            for (const gap of [' ', '\n']) {
+                const { child, events } = start();
+                const message = `auth token=OLD_SECRET${gap}https://alice:PRIVATE_PREFIX/`;
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'PRIVATE_SUFFIX@host.example/x' } } }));
+                child.emit('close', 1, null);
+                const shown = (events[0] as { message: string }).message;
+                expect(shown).not.toMatch(/PRIVATE|OLD_SECRET/);
+                expect(shown).toMatch(/: \*\*\*$/);
+            }
+        });
+
         it('masks a URL userinfo split between message and details by a trailing line break', () => {
             for (const eol of ['\t', '\n', '\r\n']) {
                 const { child, events } = start();
