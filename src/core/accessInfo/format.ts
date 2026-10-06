@@ -134,7 +134,7 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         // The boundary is judged on the raw text the name came from: redaction may already have taken what marks
         // the credential (`Bearer "PREFIX` loses its quote), and the part shown is redacted afterwards.
         const rawLeft = rawName !== undefined && redactEndpointText(rawName) !== '' ? rawName : fallbackName;
-        const boundary = joinBoundary(rawLeft ?? name);
+        const boundary = joinBoundary(rawLeft ?? name, rawEndpoint);
         return boundary.maskRight ? `${redactEndpointText(boundary.left) || '***'} (***)` : `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';

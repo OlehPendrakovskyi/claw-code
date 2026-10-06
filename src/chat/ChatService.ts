@@ -611,7 +611,7 @@ function withErrorDetails(rawMessage: string | undefined, details: unknown): str
     // A credential can span the message and the details (message `Bearer`, or `https://alice:PREFIX/` with
     // details `SUFFIX@host`), and the inserted `: ` would keep the matchers from seeing it whole: the details
     // are then masked whole, and the message cut where the credential starts.
-    const boundary = message === undefined ? undefined : joinBoundary(message);
+    const boundary = message === undefined ? undefined : joinBoundary(message, raw);
     if (boundary?.maskRight) {
         return `${redactText(boundary.left)}: ***`;
     }

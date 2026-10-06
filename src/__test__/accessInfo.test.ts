@@ -440,6 +440,15 @@ describe('formatAccessSummaryMarkdown', () => {
             }
         }
         expect(formatNamedEntry({ name: 'https:alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        // A username alone split across the parts, which a token may be, whether the name is a name, an id or the fallback.
+        const username = 'https://ghp_PRIVATE_PREFIX';
+        const rest = 'PRIVATE_SUFFIX@github.com/repo';
+        expect(formatNamedEntry({ name: username, url: rest })).toBe('https://*** (***)');
+        expect(formatNamedEntry({ id: username, url: rest })).toBe('https://*** (***)');
+        expect(formatNamedEntry({ url: rest }, username)).toBe('https://*** (***)');
+        expect(formatNamedEntry({ name: 'https:ghp_PRIVATE_PREFIX\n', url: rest })).not.toContain('PRIVATE');
+        // An ordinary URL label keeps its endpoint.
+        expect(formatNamedEntry({ name: 'https://github.com', url: 'https://github.com/repo' })).toBe('https://github.com (https://github.com/repo)');
         // A name that redaction only normalises (a terminal code, an escape) keeps its endpoint.
         expect(formatNamedEntry({ name: 'failed\u001b[0m', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');
         expect(formatNamedEntry({ name: 'fail\\u0065d', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');

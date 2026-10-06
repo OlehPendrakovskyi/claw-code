@@ -1077,21 +1077,29 @@ function masksCredential(text: string): boolean {
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
  *  password may go on in whatever is joined after it. */
 const OPEN_USERINFO = /\/\/[^\s@/]*:[^\s@]*$/;
+/** A URL authority that ends the text with no `@`, `:` or path yet (`https://ghp_PRIVATE`): a username alone,
+ *  which a token may be, when what is joined after it opens with the rest of a userinfo ({@link USERINFO_HEAD}). */
+const OPEN_AUTHORITY = /\/\/[^\s@/?#\\]*$/;
+/** Text that opens with the rest of a userinfo: anything up to an `@`, before any `/`, `?`, `#` or whitespace. */
+const USERINFO_HEAD = /^[^\s/?#\\]*@/;
 /** What {@link joinBoundary} appends to close an open userinfo. */
 const USERINFO_TAIL = 'x@h';
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
- *  userinfo (`https://alice:` or `https://alice:PREFIX/`, with `right` holding the rest up to `@`); probes with
- *  and without a display delimiter show which. Then `right` is to be masked whole, and `left` is cut at the
- *  first mask its probe shows (`https://***`). */
-export function joinBoundary(left: string): { left: string; maskRight: boolean } {
+ *  userinfo (`https://alice:` or `https://alice:PREFIX/`, with `right` holding the rest up to `@`, or a username
+ *  alone, `https://ghp_PREFIX`, when the raw `right` opens with `SUFFIX@`); probes with and without a display
+ *  delimiter show which. Then `right` is to be masked whole, and `left` is cut at the first mask its probe
+ *  shows (`https://***`). */
+export function joinBoundary(left: string, right = ''): { left: string; maskRight: boolean } {
     // An open userinfo is checked first: an earlier credential (`token=OLD https://alice:PREFIX/`) would end
     // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A special scheme spelled
     // without `//` (`https:alice:PREFIX/`) gets it from the `@` the probe adds, before a URL parser's dropped
     // tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`) come out and could join it to a word.
     const userinfoProbe = normalizeSpecialSchemes(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
-    const opensUserinfo = OPEN_USERINFO.test(userinfoProbe.slice(0, -USERINFO_TAIL.length));
+    const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
+    const opensUserinfo = OPEN_USERINFO.test(authority)
+        || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(right.replace(PARSER_IGNORED, '')));
     if (opensUserinfo && masksCredential(userinfoProbe)) {
         return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }

@@ -1212,6 +1212,13 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('masks a username-only URL credential split between message and details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://ghp_PRIVATE_PREFIX', data: { details: 'PRIVATE_SUFFIX@github.com/repo' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('https://***: ***');
+        });
+
         it('masks a URL userinfo split between message and details by a trailing line break', () => {
             for (const eol of ['\t', '\n', '\r\n']) {
                 const { child, events } = start();
