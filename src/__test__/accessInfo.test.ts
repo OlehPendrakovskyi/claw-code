@@ -604,6 +604,16 @@ describe('redactText', () => {
         expect(redactTextAndSecret('authentication failed: opaque-秘\\\\u5BC6_PRIVATE_VALUE', secret)).toBe('authentication failed: ***');
     });
 
+    it('masks a known secret holding a backslash, a quote or a line break at any serialisation depth (redactTextAndSecret)', () => {
+        for (const secret of ['opaque-\\PRIVATE_SUFFIX', 'opaque-"PRIVATE_SUFFIX', 'opaque-\nPRIVATE_SUFFIX']) {
+            let echo = secret;
+            for (let depth = 1; depth <= 4; depth++) {
+                echo = JSON.stringify(echo);
+                expect(redactTextAndSecret(`boom ${echo}`, secret)).not.toMatch(/PRIVATE_SUFFIX|opaque/);
+            }
+        }
+    });
+
     it('masks a known secret holding a URL whose internationalised host the URL parser punycodes (redactTextAndSecret)', () => {
         const secret = 'opaque_ftp://alice:pw@例え.example/PRIVATE_PATH';
         expect(redactTextAndSecret(`failed ${secret}`, secret)).toBe('failed ***');

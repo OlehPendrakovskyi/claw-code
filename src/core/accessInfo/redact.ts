@@ -1208,10 +1208,16 @@ function maskIgnoringCase(text: string, form: string): string {
 }
 
 /** Where an occurrence of `form` that starts at `at` ends, each unit as itself in any case or as a `\\u`
- *  escape of it; -1 when none starts there. */
+ *  escape of it, and each backslash run as a run of any length, since each JSON serialisation doubles one;
+ *  -1 when none starts there. */
 function matchEnd(text: string, at: number, form: string, foldedForm: string[]): number {
     let i = at;
     for (let k = 0; k < form.length; k++) {
+        if (form[k] === '\\' && text[i] === '\\') {
+            k = runEnd(form, k) - 1;
+            i = runEnd(text, i);
+            continue;
+        }
         if (text[i] === form[k] || (i < text.length && foldUnit(text[i]) === foldedForm[k])) {
             i++;
             continue;
@@ -1228,6 +1234,15 @@ function matchEnd(text: string, at: number, form: string, foldedForm: string[]):
 
 /** A JSON `\\u` escape of one UTF-16 unit, with its whole backslash run. */
 const UNIT_ESCAPE = /\\+u([0-9a-f]{4})/iy;
+
+/** Where the run of backslashes that starts at `at` ends. */
+function runEnd(text: string, at: number): number {
+    let end = at;
+    while (text[end] === '\\') {
+        end++;
+    }
+    return end;
+}
 
 function foldUnit(unit: string): string {
     return unit.toLowerCase();

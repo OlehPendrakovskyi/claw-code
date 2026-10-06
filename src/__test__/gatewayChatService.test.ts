@@ -301,6 +301,14 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps a token holding a backslash out of errors serialised three times', async () => {
+            const token = 'opaque-\\PRIVATE_SUFFIX';
+            const echo = JSON.stringify(JSON.stringify(JSON.stringify(token)));
+            const h = harness({ token, throwOnOpen: new Error(`Invalid URL: ws://host/ ${echo}`) });
+            const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+            expect(error.message).not.toMatch(/PRIVATE_SUFFIX|opaque/);
+        });
+
         it('keeps a token that touches another word out of errors, raw or serialised', async () => {
             const token = 'opaque-\u001b[0mBearer PREFIX&PRIVATE_SUFFIX';
             const echoes = [`prefix_${token}`, `${token}_suffix`, `prefix_${token}_suffix`, JSON.stringify(`prefix_${token}_suffix`)];
