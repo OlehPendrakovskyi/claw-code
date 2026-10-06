@@ -1048,6 +1048,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts consecutive network-path references and a composite query value on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from('see //public:8080 then fetch //alice:pass PRIVATE_SUFFIX/x@host.example/repo\nGET https://host.example/?tokens=[ "PRIVATE_A", "PRIVATE_B" ] failed\n'));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

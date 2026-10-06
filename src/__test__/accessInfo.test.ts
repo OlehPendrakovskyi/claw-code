@@ -909,6 +909,20 @@ describe('redactText', () => {
         expect(redactText('fetch //alice:123 PRIVATE_SUFFIX/part@host.example/x failed')).toBe('fetch //***@host.example/x failed');
         // Prose with a real host and port keeps its text.
         expect(redactText('see //host:8080 then /docs and bob@example.org')).toBe('see //host:8080 then /docs and bob@example.org');
+        // A port-like reference does not swallow the next reference, after a space or after `/docs,`.
+        expect(redactText('see //public:8080 then fetch //alice:pass PRIVATE_SUFFIX/x@host.example/repo')).toBe(
+            'see //public:8080 then fetch //***@host.example/repo'
+        );
+        expect(redactText('see //public:8080 /docs,//alice:pass PRIVATE_SUFFIX/x@host.example/repo')).toBe(
+            'see //public:8080 /docs,//***@host.example/repo'
+        );
+    });
+
+    it('masks an array or object query value whole', () => {
+        expect(redactText('GET https://host.example/?tokens=[ "PRIVATE_A", "PRIVATE_B" ] failed')).toBe('GET https://host.example/?tokens=*** failed');
+        expect(redactText('GET https://host.example/?token={ "v": "PRIVATE_A", "w": 1 } failed')).toBe('GET https://host.example/?token=*** failed');
+        // An ordinary one keeps its value.
+        expect(redactText('GET https://host.example/?q=[1, 2] ok')).toBe('GET https://host.example/?q=[1, 2] ok');
     });
 
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
@@ -1072,6 +1086,8 @@ describe('redactText', () => {
             'https://a:1 /'.repeat(size / 13) + '@',
             ' //a:1 '.repeat(size / 7) + '/@',
             '\\b'.repeat(size / 2) + '=',
+            ' //a:1 /'.repeat(size / 8) + '@',
+            '?token=['.repeat(size / 8),
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

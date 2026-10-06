@@ -440,13 +440,20 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
             if (!PORT_THEN_SPACE.test(text)) {
                 continue;
             }
+            // Neither scan crosses another reference's `//` (`//public:8080 then //alice:…`, `/docs,//alice:…`):
+            // the outer loop takes that one up from there.
+            const startsReference = (j: number) => text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]);
             let slash = PORT_THEN_SPACE.lastIndex;
             while (slash < text.length && text[slash] !== '/' && text[slash] !== '\n' && text[slash] !== '\r') {
                 slash++;
             }
+            if (startsReference(slash)) {
+                from = slash;
+                continue;
+            }
             let runAt = -1;
             let k = slash;
-            for (; text[slash] === '/' && k < text.length && !WHITESPACE.test(text[k]); k++) {
+            for (; text[slash] === '/' && k < text.length && !WHITESPACE.test(text[k]) && !(k > slash && startsReference(k)); k++) {
                 runAt = text[k] === '@' ? k : runAt;
             }
             if (runAt !== -1) {
@@ -803,7 +810,8 @@ function maskQueryPairs(text: string): string {
         LEADING_SPACE.lastIndex = QUERY_NAME.lastIndex;
         LEADING_SPACE.test(text);
         const start = LEADING_SPACE.lastIndex;
-        const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '');
+        // A quoted value, or an array or object (`?tokens=[ "a", "b" ]`), is measured whole by valueEnd.
+        const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '') || text[start] === '[' || text[start] === '{';
         const end = quoted ? valueEnd(text, start, NON_SPACE, unclosed) : sensitiveQueryValueEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
