@@ -129,12 +129,14 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     return name ?? endpoint ?? safeFallback ?? '';
 }
 
-/** Redact a value that may be one whole endpoint. Terminal codes go first: the URL parser would percent-encode
+/** Redact a value that may be one whole endpoint, before and after the URL parser serialises it. Terminal codes go first: the URL parser would percent-encode
  *  one that splits a query name (`to\u001b[0mken` becomes `to%1B[0mken`), and redactText could no longer read
  *  the name. redactEndpoint then masks the URL as a parser reads it (line breaks dropped, a query value holding
  *  a space masked whole), and redactText covers what does not parse, which redactEndpoint leaves unchanged. */
 function redactEndpointLabel(value: string): string {
-    return redactText(redactEndpoint(stripTerminalCodes(value)));
+    // redactText runs on the raw text first too: the parser percent-encodes what marks a credential (the quotes
+    // of `?config={"token":"PRIVATE"}` become `%22`), so its output alone would hide the credential from it.
+    return redactText(redactEndpoint(redactText(stripTerminalCodes(value))));
 }
 
 /** Categorize key sources into env / file / config buckets for compact display. */

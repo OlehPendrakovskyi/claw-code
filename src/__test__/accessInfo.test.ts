@@ -421,6 +421,12 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
     });
 
+    it('redacts a credential the URL parser would percent-encode out of reach, in endpoint labels', () => {
+        const url = 'https://user:pw@host.example/?config={"token":"PRIVATE"}';
+        expect(formatNamedEntry({ name: 'gh', url })).not.toMatch(/PRIVATE|user:pw/);
+        expect(formatNamedEntry(url)).not.toMatch(/PRIVATE|user:pw/);
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -978,7 +984,7 @@ describe('redactText', () => {
             expect(redactText(`https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
             // A numeric prefix parses as a port, yet the whole is one password.
             expect(redactText(`https://alice:123${eol}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
-            expect(formatNamedEntry({ name: 'gh', url: `https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x` })).toBe('gh (https://***:***@host.example/x)');
+            expect(formatNamedEntry({ name: 'gh', url: `https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x` })).toBe('gh (https://***@host.example/x)');
         }
         // Anywhere else a line break still ends the URL.
         expect(redactText('see https://example.com\nbob@example.org')).toBe('see https://example.com\nbob@example.org');

@@ -601,11 +601,13 @@ function isSpawnOptions(object, context) {
 }
 
 /** The symbol of the variable an identifier denotes, followed through imports to the exporting file's
- *  declaration (`import { options } from './spawnOptions'`, a renamed or `export default` binding). */
+ *  declaration (`import { options } from './spawnOptions'`, a renamed or `export default` binding), or of the
+ *  export a namespace import's member reads ({@link namespaceMemberSymbol}). */
 function valueSymbol(node, checker, depth = 0) {
     const value = unwrap(node);
     if (!ts.isIdentifier(value)) {
-        return undefined;
+        // `opts.options` or `opts['options']` for `import * as opts from './opts'`: the exported variable.
+        return namespaceMemberSymbol(value, checker);
     }
     let symbol = checker.getSymbolAtLocation(value);
     if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
@@ -617,6 +619,28 @@ function valueSymbol(node, checker, depth = 0) {
         return valueSymbol(declaration.expression, checker, depth + 1) ?? symbol;
     }
     return symbol;
+}
+
+/** The symbol of the export a member read takes from a namespace import of another file in the program
+ *  (`opts.options`, `opts['options']` for `import * as opts from './opts'`), through re-exports; undefined
+ *  for any other member read. */
+function namespaceMemberSymbol(node, checker) {
+    const object = memberObject(node);
+    const base = object === undefined ? undefined : unwrap(object);
+    if (base === undefined || !ts.isIdentifier(base) ||
+        !ts.isNamespaceImport(checker.getSymbolAtLocation(base)?.declarations?.[0] ?? base)) {
+        return undefined;
+    }
+    const field = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+    let symbol = checker.getSymbolAtLocation(field);
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias) {
+        symbol = checker.getAliasedSymbol(symbol);
+    }
+    // The symbol the declaration's own name has, which every other path to that variable yields too.
+    const declaration = symbol?.declarations?.[0];
+    return declaration !== undefined && ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)
+        ? checker.getSymbolAtLocation(declaration.name) ?? symbol
+        : symbol;
 }
 
 /** The symbols of variables that hold spawn options, across the whole program and by TypeScript symbol
@@ -641,7 +665,8 @@ function spawnOptionSymbols(sources, context) {
             const target = symbolOf(assigned ? node.left : node.name);
             // `const opts = windows ? base : {}`: every value the initializer can produce is linked.
             for (const value of valueLeaves(assigned ? node.right : node.initializer)) {
-                if (ts.isIdentifier(value)) {
+                // An identifier, or an export read through a namespace import (`opts.options`).
+                if (symbolOf(value) !== undefined) {
                     link(target, symbolOf(value));
                     link(symbolOf(value), target);
                 } else if (ts.isObjectLiteralExpression(value)) {
@@ -887,7 +912,13 @@ function loggerMethodBoundArguments(node, context, depth = 0) {
     }
     const receiver = memberObject(value);
     if (receiver !== undefined) {
-        return LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context) ? [] : undefined;
+        if (LOG_METHODS.has(lastName(value) ?? '') && isLoggerReceiver(receiver, context)) {
+            return [];
+        }
+        // `sink.write` for `import * as sink from './logger'`: the export it reads is judged by its declaration
+        // there (`export const write = console.info.bind(console)`), as a named import is.
+        const exported = namespaceMemberSymbol(value, context.checker)?.declarations?.[0];
+        return exported === undefined ? undefined : declarationBoundArguments(exported, context, depth + 1);
     }
     if (!ts.isIdentifier(value)) {
         return undefined;

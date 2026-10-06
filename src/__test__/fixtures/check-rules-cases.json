@@ -1277,6 +1277,33 @@
             "expect": null
         },
         {
+            "name": "R10: a logging alias called through a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as sink from './logger'; sink.write(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10: a logging alias called through a namespace import by a literal key",
+            "file": "src/run.ts",
+            "line": "import * as sink from './logger'; sink['write'](prompt);",
+            "expect": "R10",
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10 clean: a non-logger export called through a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as sink from './logger'; sink.label.concat(prompt);",
+            "expect": null,
+            "others": {
+                "src/logger.ts": "export const write = console.info.bind(console);\nexport const label = 'x';\n"
+            }
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",
@@ -1498,6 +1525,51 @@
             "file": "src/a.ts",
             "line": "import { spawn } from 'child_process'; const base = { shell: true }; const opts = { ...{ ...base, shell: false } }; spawn('node', [], opts);",
             "expect": null
+        },
+        {
+            "name": "R36: spawn options read through a namespace import",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import * as opts from './opts'; spawn(cmd, args, opts.options);\n"
+            }
+        },
+        {
+            "name": "R36: spawn options read through a namespace import by a literal key",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import * as opts from './opts'; spawn(cmd, args, opts['options']);\n"
+            }
+        },
+        {
+            "name": "R36: an alias of spawn options read through a namespace import",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import * as opts from './opts'; const chosen = opts.options; spawn(cmd, args, chosen);\n"
+            }
+        },
+        {
+            "name": "R36: spawn options spread from a namespace import",
+            "file": "src/opts.ts",
+            "line": "export const options = { shell: true };",
+            "expect": "R36",
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import * as opts from './opts'; spawn(cmd, args, { ...opts.options });\n"
+            }
+        },
+        {
+            "name": "R36 clean: shell-free spawn options read through a namespace import",
+            "file": "src/opts.ts",
+            "line": "export const safe = { shell: false };",
+            "expect": null,
+            "others": {
+                "src/run.ts": "import { spawn } from 'child_process'; import * as opts from './opts'; spawn(cmd, args, opts.safe);\n"
+            }
         },
         {
             "name": "R36 clean: a shorthand shell bound to a constant false",
