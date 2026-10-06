@@ -1422,6 +1422,36 @@
             "expect": "R36"
         },
         {
+            "name": "R36: options chosen by a conditional argument",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; spawn(cmd, args, windows ? base : undefined);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options chosen by a nullish-coalescing argument",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; spawn(cmd, args, custom ?? base);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: an alias of options chosen by a conditional",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; const opts = windows ? base : {}; spawn(cmd, args, opts);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: an alias assigned options chosen by a logical expression",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; let opts; opts = custom || base; spawn(cmd, args, opts);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a conditional choosing options without a shell",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { cwd: '/' }; const profile = { shell: 'zsh' }; spawn(cmd, args, windows ? base : undefined);",
+            "expect": null
+        },
+        {
             "name": "R36 clean: a shorthand shell bound to a constant false",
             "file": "src/a.ts",
             "line": "import { spawn } from 'child_process'; const shell = false; spawn(cmd, args, { shell });",

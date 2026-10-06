@@ -627,19 +627,21 @@ function spawnOptionSymbols(sources, context) {
         const assigned = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
         if ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) || assigned) {
             const target = symbolOf(assigned ? node.left : node.name);
-            const value = unwrap(assigned ? node.right : node.initializer);
-            if (ts.isIdentifier(value)) {
-                link(target, symbolOf(value));
-                link(symbolOf(value), target);
-            } else if (ts.isObjectLiteralExpression(value)) {
-                for (const source of spreadSources(value)) {
-                    link(target, symbolOf(source));
+            // `const opts = windows ? base : {}`: every value the initializer can produce is linked.
+            for (const value of valueLeaves(assigned ? node.right : node.initializer)) {
+                if (ts.isIdentifier(value)) {
+                    link(target, symbolOf(value));
+                    link(symbolOf(value), target);
+                } else if (ts.isObjectLiteralExpression(value)) {
+                    for (const source of spreadSources(value)) {
+                        link(target, symbolOf(source));
+                    }
                 }
             }
         }
         if (isSpawnCall(node, context)) {
-            for (const argument of spawnArguments(node, context)) {
-                const value = unwrap(argument);
+            // `spawn(cmd, args, windows ? base : undefined)`: every value an argument can produce is followed.
+            for (const value of spawnArguments(node, context).flatMap(valueLeaves)) {
                 const symbol = symbolOf(value);
                 if (symbol !== undefined) {
                     options.add(symbol);
@@ -672,25 +674,21 @@ function spawnOptionSymbols(sources, context) {
  *  conditional and logical expressions (`...(windows ? base : {})`), except a spread that a later `shell`
  *  property of the same literal overrides (`{ ...defaults, shell: false }`). */
 function spreadSources(literal) {
-    const sources = [];
-    const add = expression => {
-        const value = unwrap(expression);
-        if (ts.isConditionalExpression(value)) {
-            add(value.whenTrue);
-            add(value.whenFalse);
-        } else if (ts.isBinaryExpression(value) && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
-            add(value.left);
-            add(value.right);
-        } else {
-            sources.push(value);
-        }
-    };
-    literal.properties.forEach((property, index) => {
-        if (ts.isSpreadAssignment(property) && !overridesShell(literal, index)) {
-            add(property.expression);
-        }
-    });
-    return sources;
+    return literal.properties.flatMap((property, index) =>
+        ts.isSpreadAssignment(property) && !overridesShell(literal, index) ? valueLeaves(property.expression) : []);
+}
+
+/** The values an expression can produce, unwrapped: itself, or each branch of a conditional or operand of a
+ *  logical expression (`windows ? base : {}`, `opts ?? base`), recursively. */
+function valueLeaves(expression) {
+    const value = unwrap(expression);
+    if (ts.isConditionalExpression(value)) {
+        return [...valueLeaves(value.whenTrue), ...valueLeaves(value.whenFalse)];
+    }
+    if (ts.isBinaryExpression(value) && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
+        return [...valueLeaves(value.left), ...valueLeaves(value.right)];
+    }
+    return [value];
 }
 
 /** Whether a property after `index` in an object literal sets `shell`, so what comes before cannot reach. */
