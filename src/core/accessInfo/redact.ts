@@ -967,7 +967,13 @@ export function redactEndpointText(value: string): string {
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
 export function endsAtCredential(label: string): boolean {
-    return [`${label} x`, `${label} dXNlcjpwYXNz`].some(probe => redactText(probe) !== probe);
+    return [`${label} x`, `${label} dXNlcjpwYXNz`].some(masksCredential);
+}
+
+/** Whether {@link redactText} masks something in `text`, rather than only normalising it (a terminal code
+ *  dropped, an escape decoded, a scheme spelled `://`). */
+function masksCredential(text: string): boolean {
+    return redactText(text) !== normalizeForRedaction(text);
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -988,19 +994,18 @@ export function joinBoundary(left: string): { left: string; maskRight: boolean }
     // tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`) come out and could join it to a word.
     const userinfoProbe = normalizeSpecialSchemes(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
     const opensUserinfo = OPEN_USERINFO.test(userinfoProbe.slice(0, -USERINFO_TAIL.length));
-    const userinfoRedacted = opensUserinfo ? redactText(userinfoProbe) : userinfoProbe;
-    if (userinfoRedacted !== userinfoProbe) {
-        return { left: upToFirstMask(userinfoRedacted), maskRight: true };
+    if (opensUserinfo && masksCredential(userinfoProbe)) {
+        return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
     const probe = `${left} (x@h)`;
-    const redacted = redactText(probe);
-    if (redacted === probe) {
+    if (!masksCredential(probe)) {
         return { left, maskRight: false };
     }
-    return { left: redacted.startsWith(`${left} `) ? left : upToFirstMask(redacted), maskRight: true };
+    const redacted = redactText(probe);
+    return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
 }
 
 /** Redacted text cut after its first `***`. */
@@ -1017,7 +1022,7 @@ export function redactText(text: string): string {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
-    const plain = normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
+    const plain = normalizeForRedaction(text);
     const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';
@@ -1027,6 +1032,11 @@ export function redactText(text: string): string {
         copied = end;
     }
     return unmask(maskPlainSecrets(out + prepared.slice(copied)));
+}
+
+/** Text as {@link redactText} reads it before masking anything. */
+function normalizeForRedaction(text: string): string {
+    return normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
 }
 
 /** A sensitive query value {@link redactUrl} masked: a whole `***` value, which the URL span ends or `&` or `#`

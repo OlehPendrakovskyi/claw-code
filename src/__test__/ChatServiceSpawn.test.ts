@@ -1155,6 +1155,15 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('keeps the details of a message that redaction only normalises', () => {
+            for (const message of ['failed\u001b[0m', 'fail\\u0065d']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'quota exceeded' } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe('failed: quota exceeded');
+            }
+        });
+
         it('masks a URL userinfo split between message and details by a trailing line break', () => {
             for (const eol of ['\t', '\n', '\r\n']) {
                 const { child, events } = start();

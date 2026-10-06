@@ -440,6 +440,10 @@ describe('formatAccessSummaryMarkdown', () => {
             }
         }
         expect(formatNamedEntry({ name: 'https:alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        // A name that redaction only normalises (a terminal code, an escape) keeps its endpoint.
+        expect(formatNamedEntry({ name: 'failed\u001b[0m', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');
+        expect(formatNamedEntry({ name: 'fail\\u0065d', url: 'https://api.github.com' })).toBe('failed (https://api.github.com)');
+        expect(formatNamedEntry({ name: 'Bearer\u001b[0m', url: 'PRIVATE_VALUE' })).toBe('Bearer (***)');
         // A plain URL name keeps its text.
         expect(formatNamedEntry({ name: 'https://gh.example', url: 'https://gh.example/mcp' })).toBe('https://gh.example (https://gh.example/mcp)');
         expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');
