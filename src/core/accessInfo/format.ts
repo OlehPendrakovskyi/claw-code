@@ -127,9 +127,18 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         // where a credential's value or a URL's userinfo starts, the endpoint is that value and is masked whole.
         // The assembled label is not redacted again: the parts' masks would be plain text to a second pass,
         // which would cut a masked endpoint's closing parenthesis.
+        // When the userinfo starts inside the name (`https://alice:PRIVATE_PREFIX`), the name is cut at its first
+        // mask too, as the probe's redaction shows: `https://*** (***)`.
+        if (endsAtCredential(name)) {
+            return `${name} (***)`;
+        }
         const userinfoProbe = `${name} (x@h)`;
-        const exposed = endsAtCredential(name) || redactText(userinfoProbe) !== userinfoProbe;
-        return exposed ? `${name} (***)` : `${name} (${endpoint})`;
+        const redactedProbe = redactText(userinfoProbe);
+        if (redactedProbe !== userinfoProbe) {
+            const safeName = redactedProbe.startsWith(`${name} `) ? name : redactedProbe.slice(0, redactedProbe.indexOf('***') + 3);
+            return `${safeName} (***)`;
+        }
+        return `${name} (${endpoint})`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

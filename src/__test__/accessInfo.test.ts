@@ -418,7 +418,12 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: 'token=', url: 'PRIVATE_VALUE' })).toBe('token= (***)');
         expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_VALUE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ name: 'Basic', url: 'dXNlcjpwYXNz' })).toBe('Basic (***)');
-        expect(formatNamedEntry({ name: 'https://alice:', url: 'PRIVATE_PASSWORD@host.example/x' })).toBe('https://alice: (***)');
+        expect(formatNamedEntry({ name: 'https://alice:', url: 'PRIVATE_PASSWORD@host.example/x' })).toBe('https://*** (***)');
+        // A password prefix in the name is masked with it, whether the name is a name, an id or the fallback.
+        const prefix = 'https://alice:PRIVATE_PREFIX';
+        expect(formatNamedEntry({ name: prefix, url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        expect(formatNamedEntry({ id: prefix, url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        expect(formatNamedEntry({ url: 'PRIVATE_SUFFIX@host.example/x' }, prefix)).toBe('https://*** (***)');
         expect(formatNamedEntry({ name: 'mail', url: 'bob@example.org' })).toBe('mail (bob@example.org)');
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
     });
