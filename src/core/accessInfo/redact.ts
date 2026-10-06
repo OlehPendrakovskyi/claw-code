@@ -1162,12 +1162,16 @@ const SECRET_PLACEHOLDER = 'redacted_secret_token';
 /** {@link redactText}, with a known `secret` masked in every form it can take: as given and JSON-serialised
  *  (once or twice), and each of those as redactText normalises it (an escape decoded, a terminal code dropped).
  *  The secret is replaced before redacting, so no pattern can mask part of it and leave the rest
- *  (`opaque-Bearer PREFIX&SUFFIX`), and its normalised forms again after, for an escaped echo that only
- *  normalisation reveals. The longest form goes first, so no shorter one leaves part of it. */
+ *  (`opaque-Bearer PREFIX&SUFFIX`), by a placeholder that keeps any credential it labels or marks masked, and
+ *  its normalised forms again after, for an escaped echo that only normalisation reveals. The longest form goes
+ *  first, so no shorter one leaves part of it. */
 export function redactTextAndSecret(text: string, secret: string): string {
     const forms = secretForms(secret);
     const hide = (from: string, by: string) => forms.reduce((hidden, form) => hidden.split(form).join(by), from);
-    return hide(redactText(hide(text, SECRET_PLACEHOLDER)), '***').split(SECRET_PLACEHOLDER).join('***');
+    // A secret that is itself a credential marker (`Bearer`, `Basic`) makes what follows it a credential: its
+    // placeholder then ends in `=`, so what follows is masked as the placeholder's value.
+    const placeholder = endsAtCredential(secret) ? `${SECRET_PLACEHOLDER}=` : SECRET_PLACEHOLDER;
+    return hide(redactText(hide(text, placeholder)), '***').split(SECRET_PLACEHOLDER).join('***');
 }
 
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first. */

@@ -291,10 +291,18 @@ describe('GatewayChatService', () => {
             }
         });
 
-        it('masks another credential whose label is the token', async () => {
-            const h = harness({ token: 'token', throwOnOpen: new Error('authentication failed: token=PRIVATE_VALUE') });
-            const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
-            expect(error.message).not.toContain('PRIVATE_VALUE');
+        it('masks another credential whose label or marker is the token', async () => {
+            const cases: [string, string][] = [
+                ['token', 'authentication failed: token=PRIVATE_VALUE'],
+                ['Bearer', 'authentication failed: Bearer PRIVATE_VALUE'],
+                ['Basic', 'authentication failed: Basic UFJJVkFURV9WQUxVRQ=='],
+                ['Bearer', `authentication failed: ${JSON.stringify({ header: 'Bearer PRIVATE_VALUE' })}`],
+            ];
+            for (const [token, message] of cases) {
+                const h = harness({ token, throwOnOpen: new Error(message) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_VALUE|UFJJVkFURV9WQUxVRQ/);
+            }
         });
 
         it('reconnects with a new hello when the protocol setting changes', async () => {
