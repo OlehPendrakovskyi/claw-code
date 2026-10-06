@@ -121,7 +121,11 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
     const endpoint = rawEndpoint !== undefined ? redactEndpointLabel(rawEndpoint) : undefined;
     if (name && endpoint) {
-        return `${name} (${endpoint})`;
+        // Each part was redacted alone, but a credential can be split across them (name `token=`, endpoint
+        // `PRIVATE`, or name `Bearer`). When the name ends where a credential's value starts, which a probe value
+        // after it shows, the endpoint is that value and is masked whole.
+        const probe = `${name} x`;
+        return redactText(probe) === probe ? `${name} (${endpoint})` : `${name} (***)`;
     }
     return name ?? endpoint ?? safeFallback ?? '';
 }

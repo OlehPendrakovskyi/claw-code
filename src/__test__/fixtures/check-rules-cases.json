@@ -1452,6 +1452,24 @@
             "expect": null
         },
         {
+            "name": "R36: inline options in a spread argument tuple",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'node:child_process'; spawn(...(['node', [], { shell: true }] as const));",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: options variable in a spread argument tuple",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'node:child_process'; const opts = { shell: true }; spawn(...['node', [], opts]);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a spread argument tuple without a shell",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'node:child_process'; spawn(...(['node', [], { shell: false }] as const));",
+            "expect": null
+        },
+        {
             "name": "R36 clean: a shorthand shell bound to a constant false",
             "file": "src/a.ts",
             "line": "import { spawn } from 'child_process'; const shell = false; spawn(cmd, args, { shell });",

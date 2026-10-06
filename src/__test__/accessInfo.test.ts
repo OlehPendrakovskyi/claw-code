@@ -414,6 +414,12 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/?token=prefix PRIVATE_SUFFIX' })).toBe('gh (https://host.example/?token=***)');
     });
 
+    it('redacts a named-entry label as assembled, a credential split across name and endpoint included', () => {
+        expect(formatNamedEntry({ name: 'token=', url: 'PRIVATE_VALUE' })).toBe('token= (***)');
+        expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_VALUE' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ name: 'gh', url: 'https://host.example/mcp' })).toBe('gh (https://host.example/mcp)');
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);

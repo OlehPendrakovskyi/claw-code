@@ -535,17 +535,23 @@ function isSpawnCall(node, context) {
 }
 
 /** The arguments a spawn call passes to the spawner: its own, or for `f.apply(this, [a, b, c])` the
- *  elements of that array literal. Empty for a call that does not spawn. */
+ *  elements of that array literal. A spread of an array literal, through parentheses or an assertion
+ *  (`spawn(...(['node', [], { shell: true }] as const))`), passes its elements. Empty for a call that does
+ *  not spawn. */
 function spawnArguments(call, context) {
     if (!isSpawnCall(call, context)) {
         return [];
     }
+    const expand = list => list.flatMap(argument => {
+        const spread = ts.isSpreadElement(argument) ? unwrap(argument.expression) : undefined;
+        return spread !== undefined && ts.isArrayLiteralExpression(spread) ? expand([...spread.elements]) : [argument];
+    });
     const callee = unwrap(call.expression);
     if (lastName(callee) === 'apply' && memberObject(callee) !== undefined) {
         const list = call.arguments[1] === undefined ? undefined : unwrap(call.arguments[1]);
-        return list !== undefined && ts.isArrayLiteralExpression(list) ? [...list.elements] : [];
+        return list !== undefined && ts.isArrayLiteralExpression(list) ? expand([...list.elements]) : [];
     }
-    return [...call.arguments];
+    return expand([...call.arguments]);
 }
 
 /** Whether an object literal is the options of a spawn call: passed inline, held in a variable passed to
@@ -574,9 +580,16 @@ function isSpawnOptions(object, context) {
     if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
         return isSpawnCall(node.parent, context);
     }
-    // `cp.spawn.apply(cp, [cmd, args, { shell: true }])`: the options sit in the argument array.
-    if (ts.isArrayLiteralExpression(node.parent) && ts.isCallExpression(node.parent.parent)) {
-        return spawnArguments(node.parent.parent, context).includes(node);
+    // `cp.spawn.apply(cp, [cmd, args, { shell: true }])` and `spawn(...(['node', [], { shell: true }] as const))`:
+    // the options sit in an argument array, which may be wrapped and spread into the call.
+    if (ts.isArrayLiteralExpression(node.parent)) {
+        let holder = node.parent.parent;
+        while (holder !== undefined && (ts.isArrayLiteralExpression(holder) || ts.isSpreadElement(holder) ||
+            ts.isParenthesizedExpression(holder) || ts.isAsExpression(holder) || ts.isSatisfiesExpression(holder) ||
+            ts.isTypeAssertionExpression(holder) || ts.isNonNullExpression(holder))) {
+            holder = holder.parent;
+        }
+        return holder !== undefined && ts.isCallExpression(holder) && spawnArguments(holder, context).includes(node);
     }
     if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
         // `options = { … }` for a variable that reaches a spawn call.
