@@ -930,6 +930,18 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('redacts a URL whose scheme a serialised line break splits, on JSON stderr and in structured details', () => {
+            const reason = 'ht\ntps:alice:PRIVATE_VALUE@host.example/x';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ reason })}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: { reason } } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {
             const first = start();
             first.child.stderr.emit('data', Buffer.from('{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}\n'));

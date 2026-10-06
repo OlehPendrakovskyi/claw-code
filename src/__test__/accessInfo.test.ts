@@ -447,6 +447,9 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ id: username, url: rest })).toBe('https://*** (***)');
         expect(formatNamedEntry({ url: rest }, username)).toBe('https://*** (***)');
         expect(formatNamedEntry({ name: 'https:ghp_PRIVATE_PREFIX\n', url: rest })).not.toContain('PRIVATE');
+        // An escaped `@` or a terminal code in either part, which redaction decodes or drops, still marks one.
+        expect(formatNamedEntry({ name: username, url: 'PRIVATE_SUFFIX\\u0040github.com/repo' })).toBe('https://*** (***)');
+        expect(formatNamedEntry({ name: `${username}\u001b[0m`, url: rest })).toBe('https://*** (***)');
         // An ordinary URL label keeps its endpoint.
         expect(formatNamedEntry({ name: 'https://github.com', url: 'https://github.com/repo' })).toBe('https://github.com (https://github.com/repo)');
         // A name that redaction only normalises (a terminal code, an escape) keeps its endpoint.
@@ -1140,6 +1143,13 @@ describe('redactText', () => {
         for (const sep of ['\t', '\n', '\r\n']) {
             expect(redactText(`ht${sep}tps:alice:PRIVATE_VALUE@host.example/x`)).toBe('https://***:***@host.example/x');
         }
+        // Serialised, at any depth, as in JSON stderr or structured details.
+        for (const sep of ['\t', '\n', '\r\n']) {
+            const raw = `ht${sep}tps:alice:PRIVATE_VALUE@host.example/x`;
+            expect(redactText(JSON.stringify({ reason: raw }))).toBe('{"reason":"https://***:***@host.example/x"}');
+            expect(redactText(JSON.stringify({ d: JSON.stringify({ reason: raw }) }))).not.toContain('PRIVATE');
+        }
+        expect(redactText(JSON.stringify({ reason: 'see the http\\nmanual' }))).toBe('{"reason":"see the http\\\\nmanual"}');
         // Prose keeps its text and its line boundary.
         expect(redactText('the ht\ntp: thing, mail bob@example.org')).toBe('the ht\ntp: thing, mail bob@example.org');
     });

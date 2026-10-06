@@ -636,8 +636,13 @@ function schemeStart(text: string, separator: number): number | undefined {
 /** A special scheme (`http`, `https`, `ws`, `wss`, `ftp`) and the slashes after it. A URL parser takes any run
  *  of `/` and `\` there, or none, as the start of the authority: `https:/alice:pw@host`, `https:\\alice:pw@host`
  *  and `https:alice:pw@host` all carry `alice:pw` as userinfo. It drops tabs and line breaks too, so they may
- *  sit in the run (`https:\nalice:pw@host`) and inside the scheme itself (`ht\ntps:alice:pw@host`). */
-const SPECIAL_SCHEME = /(?<![a-z0-9+.-])(?:h[\t\r\n]*t[\t\r\n]*t[\t\r\n]*p(?:[\t\r\n]*s)?|w[\t\r\n]*s(?:[\t\r\n]*s)?|f[\t\r\n]*t[\t\r\n]*p)[\t\r\n]*:[/\\\t\r\n]*/gi;
+ *  sit in the run (`https:\nalice:pw@host`) and inside the scheme itself (`ht\ntps:alice:pw@host`), where they
+ *  may also be serialised, with their whole backslash run (`ht\\ntps:` in JSON). */
+const SCHEME_BREAKS = String.raw`(?:[\t\r\n]|\\+(?:[tnr]|u000[9ad]))*`;
+const SPECIAL_SCHEME = new RegExp(
+    String.raw`(?<![a-z0-9+.-])(?:h${SCHEME_BREAKS}t${SCHEME_BREAKS}t${SCHEME_BREAKS}p(?:${SCHEME_BREAKS}s)?|w${SCHEME_BREAKS}s(?:${SCHEME_BREAKS}s)?|f${SCHEME_BREAKS}t${SCHEME_BREAKS}p)${SCHEME_BREAKS}:[/\\\t\r\n]*`,
+    'gi'
+);
 const LINE_BREAK = /[\r\n]/g;
 /** What ends an authority for a URL parser: `/`, `\`, `?`, `#`, or whitespace other than a tab or line break. */
 const AUTHORITY_STOP = /[/\\?#]|[^\S\t\r\n]/g;
@@ -700,7 +705,7 @@ function normalizeSpecialSchemes(text: string): string {
         if (nextAt >= nextLineBreak && !userinfoAcrossBreaks(end, colon)) {
             continue;
         }
-        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon).replace(PARSER_IGNORED, '')}://`;
+        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon).replace(PARSER_IGNORED, '').replace(SERIALISED_BREAK, '')}://`;
         copied = end;
     }
     return out + text.slice(copied);
@@ -1088,10 +1093,12 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A special scheme spelled
     // without `//` (`https:alice:PREFIX/`) gets it from the `@` the probe adds, before a URL parser's dropped
     // tabs and line breaks (`https://alice:PREFIX\n` + `SUFFIX@host`) come out and could join it to a word.
-    const userinfoProbe = normalizeSpecialSchemes(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
+    // Both parts are read as redactText reads them (escapes decoded, terminal codes dropped), so an escaped `@`
+    // (`SUFFIX\\u0040host`) still marks a userinfo.
+    const userinfoProbe = normalizeForRedaction(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
     const opensUserinfo = OPEN_USERINFO.test(authority)
-        || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(right.replace(PARSER_IGNORED, '')));
+        || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(normalizeForRedaction(right).replace(PARSER_IGNORED, '')));
     if (opensUserinfo && masksCredential(userinfoProbe)) {
         return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }
