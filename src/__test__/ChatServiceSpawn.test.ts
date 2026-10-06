@@ -902,9 +902,9 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
-        it('redacts a quoted URL query value split by a line break before `&` or `#`, on stderr and in details', () => {
-            for (const delimiter of ['&', '#']) {
-                const text = `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`;
+        it('redacts a quoted URL query value split by a line break, closed or not, on stderr and in details', () => {
+            for (const text of ['&', '#'].map(delimiter => `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`)
+                .concat('fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX')) {
                 const first = start();
                 first.child.stderr.emit('data', Buffer.from(`${text}\n`));
                 first.child.emit('close', 1, null);

@@ -560,8 +560,12 @@ describe('redactText', () => {
             expect(redactText(text)).not.toContain('PRIVATE');
             expect(redactText(JSON.stringify({ reason: text }))).not.toContain('PRIVATE');
         }
-        // An unclosed string still ends the value at its first line break.
-        expect(redactText('fetch "https://host.example/?token=PRIVATE\nnext line&x')).toBe('fetch "https://host.example/?token=***\nnext line&x');
+        // An unclosed string gives no end: the value runs, as an unquoted one, across breaks to a space.
+        for (const eol of ['\n', '\r\n', '\t']) {
+            expect(redactText(`fetch "https://host.example/?token=PREFIX${eol}PRIVATE_SUFFIX`)).not.toContain('PRIVATE');
+            expect(redactText(JSON.stringify({ reason: `fetch "https://host.example/?token=PREFIX${eol}PRIVATE_SUFFIX` }))).not.toContain('PRIVATE');
+        }
+        expect(redactText('fetch "https://host.example/?token=PRIVATE\nnext line&x')).not.toContain('PRIVATE');
     });
 
     it('keeps the host and port of a credential-free URL whose host holds a secret word', () => {
@@ -1124,11 +1128,12 @@ describe('redactText', () => {
         expect(redactText("{'u':'https://host.example/?token=PREFIX PRIVATE_SUFFIX'}")).not.toContain('PRIVATE');
         // In free text a space still ends the value.
         expect(redactText('see https://host.example/?token=abc and more')).toBe('see https://host.example/?token=*** and more');
-        // A line break inside the quoted URL does not end it, as a URL parser drops it; an unclosed quote does.
+        // A line break inside the quoted URL does not end it, as a URL parser drops it, closed or not; an unclosed
+        // one ends the value as in free text, at a space.
         for (const eol of ['\n', '\r', '\r\n']) {
             expect(redactText(`fetch "https://host.example/?token=PREFIX${eol}PRIVATE_SUFFIX" failed`)).not.toContain('PRIVATE');
         }
-        expect(redactText('fetch "https://host.example/?token=abc\nnext line')).toBe('fetch "https://host.example/?token=***\nnext line');
+        expect(redactText('fetch "https://host.example/?token=abc\nnext line')).toBe('fetch "https://host.example/?token=*** line');
     });
 
     it('masks a special-scheme URL whose scheme a tab or line break splits', () => {

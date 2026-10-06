@@ -987,23 +987,15 @@ interface QueryToken {
 /** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, or the quote that closes the string,
  *  one escaped no deeper than the opening one, so an escaped interior quote is passed. A URL parser drops line
  *  breaks, so in a closed string the value runs across them to that close, `&` or `#`
- *  (`"https://host/?token=PREFIX\nSUFFIX&ok=1"`). With no close ahead, it ends at its first line break.
- *  `closeRuns` says up front whether a close lies ahead, so a value without one is never searched past that
- *  break. */
+ *  (`"https://host/?token=PREFIX\nSUFFIX&ok=1"`). With no close ahead the string gives no end, so the value
+ *  ends as an unquoted one does ({@link sensitiveQueryValueEnd}), across breaks to `&`, `#` or a space.
+ *  `closeRuns` says up front whether a close lies ahead, so a value without one is never searched for it. */
 function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, closeRuns: CloseRuns): number {
-    const hasClose = closeRuns(opening.quote)[start] <= opening.run;
-    let firstBreak = -1;
+    if (closeRuns(opening.quote)[start] > opening.run) {
+        return sensitiveQueryValueEnd(text, start);
+    }
     let i = start;
     for (; i < text.length && text[i] !== '&' && text[i] !== '#'; i++) {
-        if (text[i] === '\n' || text[i] === '\r') {
-            if (firstBreak === -1) {
-                firstBreak = i;
-                if (!hasClose) {
-                    return firstBreak;
-                }
-            }
-            continue;
-        }
         if (text[i] !== opening.quote) {
             continue;
         }
@@ -1015,7 +1007,7 @@ function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, c
             return i - run;
         }
     }
-    return firstBreak === -1 || hasClose ? i : firstBreak;
+    return i;
 }
 
 /** For a quote character, per position, the shortest backslash run before that quote anywhere from there on
