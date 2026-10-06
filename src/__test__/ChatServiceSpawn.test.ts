@@ -1294,6 +1294,15 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential whose name a charset escape sequence splits on stderr, raw and serialised', () => {
+            for (const line of ['to\u001b(Bken=PRIVATE_VALUE', JSON.stringify({ error: 'to\u001b(Bken=PRIVATE_VALUE' })]) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`${line}\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
         it('redacts a credential whose name a serialised backspace splits, on stderr and in details', () => {
             const first = start();
             first.child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'to\bken=PRIVATE_VALUE' })}\n`));

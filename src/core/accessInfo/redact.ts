@@ -364,9 +364,14 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  `\\xXX`, are stripped too; a serialised control string stops at the next backslash or quote, so it never runs past the end of its string. ESC serialised
  *  again (`\\\\u001b` in nested JSON) is matched with its whole backslash run, which goes with it, so no
  *  backslash is left escaping the next character, a closing quote included. A match starts only where a
- *  run does, which keeps a long run linear. */
+ *  run does, which keeps a long run linear. An escape sequence with intermediate bytes (ECMA-35 `ESC I+ F`:
+ *  bytes ` -/`, then a final byte `0-~`, as in `ESC(B` or `ESC#8`) goes whole too, raw or serialised, and so
+ *  does `ESC` and a digit (`ESC7`, `ESC8`). A final byte `:`-`?` stays with the text as a delimiter
+ *  (`token ESC =value`), and so does a letter right after `ESC`, which may begin a label (`ESCtoken=value`);
+ *  only the `ESC` goes. Serialised, an intermediate `"` and a final `\\` are left alone, as each belongs to the
+ *  JSON around it. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?|\u001b(?:[ -/]+[0-9@-~]|[0-9])|(?<!\\)\\+(?:u001b|x1b)(?:[ !#-/]+[0-9@-[\]-~]|[0-9])/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */

@@ -1031,6 +1031,19 @@ describe('redactText', () => {
         expect(redactText('{"e":"to\\u0090q\\u009cken=PRIVATE"}')).not.toContain('PRIVATE');
     });
 
+    it('strips an escape sequence with intermediate bytes (ECMA-35 `ESC I+ F`) or a digit, raw and serialised', () => {
+        expect(redactText('to\u001b(Bken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('to\u001b#8ken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('to\u001b7ken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText(JSON.stringify({ e: 'to\u001b(Bken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ e: JSON.stringify({ e: 'to\u001b(Bken=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
+        // A delimiter or a letter after ESC stays, so the label still meets its value.
+        expect(redactText('\u001btoken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('token\u001b=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('token\u001b =PRIVATE_VALUE')).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ e: 'token\u001b=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+    });
+
     it('strips terminal codes serialised more than once before matching credentials', () => {
         expect(redactText(JSON.stringify({ detail: JSON.stringify({ error: 'token\u001b[0m=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
         expect(redactText(JSON.stringify({ a: JSON.stringify({ b: JSON.stringify({ error: 'token\u001b[31m=PRIVATE_VALUE' }) }) }))).not.toContain('PRIVATE');
