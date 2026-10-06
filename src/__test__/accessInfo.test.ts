@@ -1023,10 +1023,12 @@ describe('redactText', () => {
             expect(redactText(`https:${sep}alice:PRIVATE@host.example/x`)).toBe('https://***:***@host.example/x');
             expect(redactText(`https:/alice:PRIVATE${sep}SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
         }
-        // Prose keeps its spelling and its line boundary.
-        expect(redactText('the https: scheme\nmail bob@example.org, see http:/x\nbob@example.org')).toBe(
-            'the https: scheme\nmail bob@example.org, see http:/x\nbob@example.org'
-        );
+        // Prose keeps its spelling where no `@` follows the scheme within its authority.
+        expect(redactText('the https: scheme\nmail bob@example.org')).toBe('the https: scheme\nmail bob@example.org');
+        // A username alone split by a break is masked too: a token may sit there.
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`clone https:ghp_PRIVATE${sep}SUFFIX@github.com/repo`)).toBe('clone https://***@github.com/repo');
+        }
     });
 
     it('masks a credential whose JSON key is spelled with escapes', () => {
@@ -1148,13 +1150,16 @@ describe('redactText', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('see https://alice:P\r\nQ\rR@host.example/x ok')).toBe('see https://***@host.example/x ok');
-        // A username alone is no secret: the line boundary stays.
-        expect(redactText('https://example.com\nbob@example.org')).toBe('https://example.com\nbob@example.org');
+        // A username alone is masked too: a token may sit there, and a parser reads the break-split text as one URL.
+        for (const sep of ['\t', '\n', '\r\n']) {
+            expect(redactText(`clone failed: https://ghp_PRIVATE${sep}SUFFIX@github.com/repo`)).toBe('clone failed: https://***@github.com/repo');
+        }
+        expect(redactText('https://example.com\nbob@example.org')).toBe('https://***@example.org/');
         // A network-path reference too, and a `//` inside a word starts none.
         for (const sep of ['\t', '\n', '\r\n']) {
             expect(redactText(`fetch //ali${sep}ce:PRIVATE@host.example/x failed`)).toBe('fetch //***@host.example/x failed');
         }
-        expect(redactText('see //example.com\nbob@example.org and a//b\nc:d@e')).toBe('see //example.com\nbob@example.org and a//b\nc:d@e');
+        expect(redactText('see //example.com\nbob@example.org and a//b\nc:d@e')).toBe('see //***@example.org and a//b\nc:d@e');
     });
 
     it('masks URL userinfo split by a line break, as a URL parser reads it', () => {
@@ -1165,7 +1170,7 @@ describe('redactText', () => {
             expect(formatNamedEntry({ name: 'gh', url: `https://alice:PRIVATE_PREFIX${eol}PRIVATE_SUFFIX@host.example/x` })).toBe('gh (https://***@host.example/x)');
         }
         // Anywhere else a line break still ends the URL.
-        expect(redactText('see https://example.com\nbob@example.org')).toBe('see https://example.com\nbob@example.org');
+        expect(redactText('see https://example.com\nmail bob@example.org')).toBe('see https://example.com\nmail bob@example.org');
     });
 
     it('masks a whole array or object credential value, spaced and nested', () => {

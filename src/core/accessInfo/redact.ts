@@ -645,22 +645,21 @@ const BREAK = /[\t\r\n]/g;
 
 /** Rewrite the separator of a special-scheme URL spelled other than `://` (`https:/`, `https:\\`, `https:`,
  *  `https:///`, `https:\n`) as `://` when its userinfo passes should see it as a parser would: an `@` follows on
- *  its line, or the authority, read across tabs and line breaks, holds an `@` and a `:` before it
- *  (`https:/alice:pw\nSUFFIX@host`). A username alone across a break is no secret, so prose keeps its line
- *  boundary. The redacted text shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@`,
- *  `:`, break and authority end are each found once per stretch. */
+ *  its line, or the authority, read across tabs and line breaks, holds an `@` with a break before it
+ *  (`https:/alice:pw\nSUFFIX@host`, or a username alone: `https:ghp_PREFIX\nSUFFIX@host`). The redacted text
+ *  shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@`, break and authority end
+ *  are each found once per stretch. */
 function normalizeSpecialSchemes(text: string): string {
     let out = '';
     let copied = 0;
     let nextAt = -1;
     let nextLineBreak = -1;
     let nextBreak = -1;
-    let nextColon = -1;
     let stop = -1;
     let lastAt = -1;
 
-    /** Whether the authority from `end`, read across breaks, has an `@`, a break before it, and a `:` before
-     *  that `@`. Stop characters do not depend on where a scan starts, so a stretch is scanned once. */
+    /** Whether the authority from `end`, read across breaks, has an `@` with a break before it. Stop
+     *  characters do not depend on where a scan starts, so a stretch is scanned once. */
     const userinfoAcrossBreaks = (end: number, colon: number): boolean => {
         if (stop < end) {
             AUTHORITY_STOP.lastIndex = end;
@@ -680,11 +679,7 @@ function normalizeSpecialSchemes(text: string): string {
             BREAK.lastIndex = colon;
             nextBreak = BREAK.exec(text)?.index ?? text.length;
         }
-        if (nextColon < end) {
-            nextColon = text.indexOf(':', end);
-            nextColon = nextColon === -1 ? text.length : nextColon;
-        }
-        return nextBreak < lastAt && nextColon < lastAt;
+        return nextBreak < lastAt;
     };
 
     SPECIAL_SCHEME.lastIndex = 0;
@@ -722,9 +717,10 @@ const SERIALISED_BREAK = /(?<!\\)\\+(?:[tnr]|u000[9aAdD])/g;
  *  URL, so `https://ali\nce:pw@host` and `https://alice:123\nmore\npw@host` carry a password, and so does a
  *  network-path reference resolved against a base (`//ali\nce:pw@host`, a `//` at the start of the text or
  *  after {@link NETWORK_PATH_BOUNDARY}). The authority runs, across them, to the first `/`, `?`, `#` or other
- *  whitespace; its userinfo runs to the last `@` there and is masked as `***@` when, rejoined, it holds a `:`.
- *  A username alone is no secret, so `https://example.com\nbob@example.org` keeps its line boundary. Linear:
- *  a scan stops at the next `/`, and the search for the next `//` resumes there. */
+ *  whitespace; its userinfo runs to the last `@` there and is masked as `***@`, a username alone too: a token
+ *  may sit there (`https://ghp_PREFIX\nSUFFIX@github.com`), so `https://example.com\nbob@example.org`, which a
+ *  parser reads as one URL, is masked as one. Linear: a scan stops at the next `/`, and the search for the next
+ *  `//` resumes there. */
 function maskBrokenUserinfo(text: string): string {
     let out = '';
     let copied = 0;
@@ -747,7 +743,7 @@ function maskBrokenUserinfo(text: string): string {
                 lastAt = k;
             }
         }
-        if (broken && lastAt !== -1 && body >= copied && text.slice(body, lastAt).replace(PARSER_IGNORED, '').includes(':')) {
+        if (broken && lastAt !== -1 && body >= copied) {
             out += `${text.slice(copied, body)}***@`;
             copied = lastAt + 1;
         }
