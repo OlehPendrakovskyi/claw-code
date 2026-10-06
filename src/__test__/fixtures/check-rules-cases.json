@@ -1356,6 +1356,72 @@
             }
         },
         {
+            "name": "R36: a shell option set to a parameter named undefined",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; function run(undefined: string) { spawn(cmd, args, { shell: undefined }); }",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a constant aliasing a parameter named undefined",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; function run(undefined: string) { const shellOff = undefined; spawn(cmd, args, { shell: shellOff }); }",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a shorthand shell bound to a parameter named undefined",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; function run(undefined: string) { const shell = undefined; spawn(cmd, args, { shell }); }",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a constant holding the global undefined",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const shellOff = undefined; spawn(cmd, args, { shell: shellOff });",
+            "expect": null
+        },
+        {
+            "name": "R36: a shell option in an object spread inline",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { ...{ shell: true } });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a shell option in a conditional spread",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { ...(windows ? { shell: true } : {}) });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a shell option in a variable spread conditionally",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const base = { shell: true }; spawn(cmd, args, { ...(windows ? base : {}) });",
+            "expect": "R36"
+        },
+        {
+            "name": "R36: a conditional shell option passed directly",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, windows ? { shell: true } : undefined);",
+            "expect": "R36"
+        },
+        {
+            "name": "R36 clean: a spread shell option overridden later",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const defaults = { shell: true }; spawn(cmd, args, { ...defaults, shell: false });",
+            "expect": null
+        },
+        {
+            "name": "R36 clean: an inline spread shell option overridden later",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; spawn(cmd, args, { ...{ shell: true }, shell: false });",
+            "expect": null
+        },
+        {
+            "name": "R36: a later override that turns a shell on",
+            "file": "src/a.ts",
+            "line": "import { spawn } from 'child_process'; const defaults = { shell: false }; spawn(cmd, args, { ...defaults, shell: true });",
+            "expect": "R36"
+        },
+        {
             "name": "R36 clean: a shorthand shell bound to a constant false",
             "file": "src/a.ts",
             "line": "import { spawn } from 'child_process'; const shell = false; spawn(cmd, args, { shell });",

@@ -41,6 +41,8 @@ const LOGGER_NAME = /^(?:log|logger|console|channel|\w*Log|\w*Logger|\w*Channel)
 /** Type names of loggers: VS Code's `OutputChannel` and `LogOutputChannel`, `Console`, any `…Logger`. */
 const LOGGER_TYPE = /^(?:Console|\w*Log|\w*Logger|\w*Channel)$/;
 const HOOKS = new Set(['beforeEach', 'afterEach', 'beforeAll', 'afterAll']);
+/** Operators whose result is one of their operands: `a ?? b`, `a || b`, `a && b`. */
+const LOGICAL_OPERATORS = new Set([ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.BarBarToken, ts.SyntaxKind.AmpersandAmpersandToken]);
 /** Operators whose result is a boolean whatever their operands: comparisons, `instanceof`, `in`. */
 const BOOLEAN_OPERATORS = new Set([
     ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken, ts.SyntaxKind.EqualsEqualsToken,
@@ -485,7 +487,7 @@ function isShellAssignment(node, context) {
 function isShellOption(node, context) {
     // `{ shell }` takes the value of the variable `shell`: a constant `false`, `null` or `undefined` is no shell.
     if (ts.isShorthandPropertyAssignment(node)) {
-        return node.name.text === 'shell' && !isConstantShellOff(context.checker.getShorthandAssignmentValueSymbol(node));
+        return node.name.text === 'shell' && !isConstantShellOff(context.checker.getShorthandAssignmentValueSymbol(node), context.checker);
     }
     if (!ts.isPropertyAssignment(node) || lastName(node.name) !== 'shell') {
         return false;
@@ -497,21 +499,27 @@ function isShellOption(node, context) {
  *  (`const shellOff = false; … { shell: shellOff }`). */
 function isShellOffValue(expression, context) {
     const value = unwrap(expression);
-    if (SHELL_OFF.has(value.kind) || (ts.isIdentifier(value) && value.text === 'undefined')) {
+    if (SHELL_OFF.has(value.kind) || isGlobalUndefined(value, context.checker)) {
         return true;
     }
-    return ts.isIdentifier(value) && isConstantShellOff(context.checker.getSymbolAtLocation(value));
+    return ts.isIdentifier(value) && isConstantShellOff(context.checker.getSymbolAtLocation(value), context.checker);
 }
 
 /** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`. */
-function isConstantShellOff(symbol) {
+function isConstantShellOff(symbol, checker) {
     const declaration = symbol?.declarations?.[0];
     if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
         !(ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const)) {
         return false;
     }
     const value = unwrap(declaration.initializer);
-    return SHELL_OFF.has(value.kind) || (ts.isIdentifier(value) && value.text === 'undefined');
+    return SHELL_OFF.has(value.kind) || isGlobalUndefined(value, checker);
+}
+
+/** Whether an expression is the global `undefined`: the name, with nothing in scope declaring it. A parameter
+ *  or local named `undefined` (`function run(undefined: string)`) can hold anything. */
+function isGlobalUndefined(node, checker) {
+    return ts.isIdentifier(node) && node.text === 'undefined' && (checker.getSymbolAtLocation(node)?.declarations ?? []).length === 0;
 }
 
 /** Whether a call starts a process, or binds the arguments of one that will: a child_process spawner by
@@ -547,8 +555,21 @@ function isSpawnOptions(object, context) {
         return false;
     }
     let node = object;
-    while (ts.isParenthesizedExpression(node.parent) || ts.isAsExpression(node.parent) || ts.isSatisfiesExpression(node.parent)) {
-        node = node.parent;
+    // `windows ? { shell: true } : {}` and `opts ?? { shell: true }`: either operand can be the value.
+    for (let parent = node.parent; ; parent = node.parent) {
+        if (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) ||
+            (ts.isConditionalExpression(parent) && parent.condition !== node) ||
+            (ts.isBinaryExpression(parent) && LOGICAL_OPERATORS.has(parent.operatorToken.kind))) {
+            node = parent;
+        } else {
+            break;
+        }
+    }
+    // `{ ...{ shell: true } }`: an object spread into spawn options is spawn options, unless a later property
+    // of the enclosing object overrides its `shell`.
+    if (ts.isSpreadAssignment(node.parent) && ts.isObjectLiteralExpression(node.parent.parent)) {
+        const enclosing = node.parent.parent;
+        return !overridesShell(enclosing, enclosing.properties.indexOf(node.parent)) && isSpawnOptions(enclosing, context);
     }
     if (ts.isCallExpression(node.parent) && node.parent.arguments.includes(node)) {
         return isSpawnCall(node.parent, context);
@@ -611,10 +632,8 @@ function spawnOptionSymbols(sources, context) {
                 link(target, symbolOf(value));
                 link(symbolOf(value), target);
             } else if (ts.isObjectLiteralExpression(value)) {
-                for (const property of value.properties) {
-                    if (ts.isSpreadAssignment(property)) {
-                        link(target, symbolOf(property.expression));
-                    }
+                for (const source of spreadSources(value)) {
+                    link(target, symbolOf(source));
                 }
             }
         }
@@ -625,8 +644,8 @@ function spawnOptionSymbols(sources, context) {
                 if (symbol !== undefined) {
                     options.add(symbol);
                 } else if (ts.isObjectLiteralExpression(value)) {
-                    for (const property of value.properties) {
-                        const spread = ts.isSpreadAssignment(property) ? symbolOf(property.expression) : undefined;
+                    for (const source of spreadSources(value)) {
+                        const spread = symbolOf(source);
                         if (spread !== undefined) {
                             options.add(spread);
                         }
@@ -647,6 +666,37 @@ function spawnOptionSymbols(sources, context) {
         }
     }
     return options;
+}
+
+/** The expressions an object literal spreads in whose `shell` can reach it: each spread operand, through
+ *  conditional and logical expressions (`...(windows ? base : {})`), except a spread that a later `shell`
+ *  property of the same literal overrides (`{ ...defaults, shell: false }`). */
+function spreadSources(literal) {
+    const sources = [];
+    const add = expression => {
+        const value = unwrap(expression);
+        if (ts.isConditionalExpression(value)) {
+            add(value.whenTrue);
+            add(value.whenFalse);
+        } else if (ts.isBinaryExpression(value) && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
+            add(value.left);
+            add(value.right);
+        } else {
+            sources.push(value);
+        }
+    };
+    literal.properties.forEach((property, index) => {
+        if (ts.isSpreadAssignment(property) && !overridesShell(literal, index)) {
+            add(property.expression);
+        }
+    });
+    return sources;
+}
+
+/** Whether a property after `index` in an object literal sets `shell`, so what comes before cannot reach. */
+function overridesShell(literal, index) {
+    return literal.properties.slice(index + 1).some(property =>
+        (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) && lastName(property.name) === 'shell');
 }
 
 /** Whether an identifier is one of the program's spawn-options variables. */
