@@ -401,6 +401,11 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: 'gh', url: 'https:\\\\alice:secret@host.example/x' })).not.toMatch(/alice|secret/);
     });
 
+    it('redacts a string entry as a whole endpoint, a query value holding a space included', () => {
+        expect(formatNamedEntry('https://host.example/?token=prefix PRIVATE_SUFFIX')).toBe('https://host.example/?token=***');
+        expect(formatNamedEntry('plain-name')).toBe('plain-name');
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -883,6 +888,21 @@ describe('redactText', () => {
         expect(redactText('https://host:8080 see /docs and mail bob@example.org')).toBe('https://host:8080 see /docs and mail bob@example.org');
     });
 
+    it('masks a credential that a JSON backspace or form-feed escape separates from its label', () => {
+        expect(redactText(JSON.stringify({ error: 'token\b=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ error: 'token\f: PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify(JSON.stringify({ error: 'token\b=PRIVATE_VALUE' })))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ error: 'failed\bpassword=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        // A Windows path keeps its `\b` segments.
+        expect(redactText('C:\\bin\\tool.exe ok')).toBe('C:\\bin\\tool.exe ok');
+    });
+
+    it('masks a network-path password holding spaces and a slash after a port-like prefix', () => {
+        expect(redactText('fetch //alice:123 PRIVATE_SUFFIX/part@host.example/x failed')).toBe('fetch //***@host.example/x failed');
+        // Prose with a real host and port keeps its text.
+        expect(redactText('see //host:8080 then /docs and bob@example.org')).toBe('see //host:8080 then /docs and bob@example.org');
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');
@@ -1042,6 +1062,8 @@ describe('redactText', () => {
             'https:\n'.repeat(size / 7) + 'a',
             '\\u0061'.repeat(size / 6) + '=',
             'https://a:1 /'.repeat(size / 13) + '@',
+            ' //a:1 '.repeat(size / 7) + '/@',
+            '\\b'.repeat(size / 2) + '=',
             '?a' + '\\\\n'.repeat(size / 3) + '=',
             '\\u009d' + '\\'.repeat(size),
             'sent Bearer `' + '\\\\'.repeat(size / 2) + '\n',

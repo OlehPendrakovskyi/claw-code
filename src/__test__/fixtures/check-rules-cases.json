@@ -1220,6 +1220,33 @@
             "expect": null
         },
         {
+            "name": "R10: an output channel read from a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; shared.sink.appendLine(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "import * as vscode from 'vscode';\nexport const sink = vscode.window.createOutputChannel('x');\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10: an output channel read from a namespace import by a literal key",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; shared['sink'].appendLine(prompt);",
+            "expect": "R10",
+            "others": {
+                "src/shared.ts": "import * as vscode from 'vscode';\nexport const sink = vscode.window.createOutputChannel('x');\nexport const label = 'x';\n"
+            }
+        },
+        {
+            "name": "R10 clean: a non-channel read from a namespace import",
+            "file": "src/run.ts",
+            "line": "import * as shared from './shared'; shared.label.appendLine(prompt);",
+            "expect": null,
+            "others": {
+                "src/shared.ts": "import * as vscode from 'vscode';\nexport const sink = vscode.window.createOutputChannel('x');\nexport const label = 'x';\n"
+            }
+        },
+        {
             "name": "R10: prompt text bound in advance to a logger method",
             "file": "src/a.ts",
             "line": "const write = console.info.bind(console, prompt); write();",

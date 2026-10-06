@@ -672,8 +672,17 @@ function isLoggerReceiver(node, context, depth = 0) {
         // or declared with a logger type. A key held in a variable names nothing (see lastName).
         const name = lastName(value);
         const field = ts.isPropertyAccessExpression(value) ? value : value.argumentExpression;
-        return name !== undefined && (LOGGER_NAME.test(name) || context.outputChannels.has(name) ||
-            hasLoggerType(context.checker.getSymbolAtLocation(field)?.declarations?.[0]));
+        const declaration = context.checker.getSymbolAtLocation(field)?.declarations?.[0];
+        if (name === undefined || depth > 8) {
+            return false;
+        }
+        if (LOGGER_NAME.test(name) || context.outputChannels.has(name) || hasLoggerType(declaration)) {
+            return true;
+        }
+        // `shared.sink` for `import * as shared from './shared'`: an export of another file, judged by its own
+        // declaration (`export const sink = vscode.window.createOutputChannel(…)`), as a named import is.
+        return declaration !== undefined && ts.isVariableDeclaration(declaration) &&
+            declaration.getSourceFile() !== value.getSourceFile() && isLoggerDeclaration(declaration, context, depth + 1);
     }
     if (!ts.isIdentifier(value) || depth > 8) {
         return false;

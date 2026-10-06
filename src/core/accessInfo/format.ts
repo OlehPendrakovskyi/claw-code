@@ -106,10 +106,12 @@ export function formatList(items: string[], emptyMessage: string) {
 
 /** Pick the first string value among common identity fields, honouring the fallback name. */
 export function formatNamedEntry(entry: unknown, fallbackName?: string) {
-    // Every label this returns reaches the UI (Overview, reports), so each part is redacted.
+    // Every label this returns reaches the UI (Overview, reports), so each part is redacted. A string entry
+    // may be a whole endpoint: redactEndpoint masks it as a URL parser reads it (a query value holding a
+    // space included), then redactText covers what does not parse.
     const safeFallback = fallbackName === undefined ? undefined : redactText(fallbackName);
     if (typeof entry === 'string') {
-        return redactText(entry);
+        return redactText(redactEndpoint(entry));
     }
     if (!isRecord(entry)) {
         return safeFallback;

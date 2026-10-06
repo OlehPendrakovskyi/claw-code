@@ -1041,6 +1041,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a credential behind a JSON backspace escape and a spaced network-path password on stderr', () => {
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(`${JSON.stringify({ error: 'token\b=PRIVATE_VALUE' })}\nfetch //alice:123 PRIVATE_SUFFIX/part@host.example/x\n`));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };

@@ -40,9 +40,11 @@ export function redactEndpoint(endpoint: string): string {
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare
  *  `pass` must stand apart from other letters, so `bypass` and `passenger` are left alone. */
 const SENSITIVE_KEY = /token|api[_-]?key|apikey|key|secret|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|credential|access[_-]?key|signature/i;
-/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with a longer backslash run at any deeper level). A
- *  serialised one is matched only from the start of its backslash run, so a long run is tried once. */
-const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnr])`;
+/** Whitespace, raw or serialised (`\t`, `\n`, `\r` in JSON, with a longer backslash run at any deeper level), and
+ *  JSON's short escapes of backspace and form feed (`\b`, `\f`), control bytes that would otherwise split a
+ *  label from its value. A serialised one is matched only from the start of its backslash run, so a long run is
+ *  tried once. They are not stripped from the text: `\b` also starts Windows path segments (`C:\bin`). */
+const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnrbf])`;
 /** A key and its `:` or `=` separator. The key is a whole run of name characters, optionally quoted, with
  *  escaped quotes too (`\"token\"` inside a JSON string, `\\\"token\\\"` inside one serialised again), so a
  *  long run is tried once rather than from each of its characters or backslashes. A key may also start at a
@@ -51,7 +53,7 @@ const SPACE = String.raw`(?:\s|(?<!\\)\\+[tnr])`;
  *  backslash run, nor at an escape letter right before another backslash, so a run of escapes (`\n\n\n…`)
  *  does not start a match at each one. After a backslash, `\token` may be a path segment or a tab and `oken`,
  *  so {@link maskSensitivePairs} tests such a key both ways. */
-const KEY_SEPARATOR = new RegExp(String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\)(?=[A-Za-z0-9_.-])(?![tnr]\\)|(?<=\\[tnr])(?=\\*["']))(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
+const KEY_SEPARATOR = new RegExp(String.raw`(?:(?<![A-Za-z0-9_.\\-])|(?<=\\)(?=[A-Za-z0-9_.-])(?![tnrbf]\\)|(?<=\\[tnrbf])(?=\\*["']))(\\*["']?[A-Za-z0-9_.-]+\\*["']?)${SPACE}*[:=]${SPACE}*`, 'g');
 const VALUE_QUOTE = /["'`]/;
 /** Header names whose whole value is a credential: `Authorization`, `Cookie`, `Set-Cookie`. */
 const CREDENTIAL_HEADER_KEY = /authorization|cookie/i;
@@ -258,7 +260,7 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         // is left to CREDENTIAL_HEADER, which takes the rest of its line.
         // A key right after a backslash that starts with `t`, `n` or `r` may follow an escape (`\npass=…`): its
         // name is then the rest, so both readings are tested.
-        const name = text[pair.index - 1] === '\\' && /^[tnr]/.test(pair[1]) ? [pair[1], pair[1].slice(1)] : [pair[1]];
+        const name = text[pair.index - 1] === '\\' && /^[tnrbf]/.test(pair[1]) ? [pair[1], pair[1].slice(1)] : [pair[1]];
         const header = name.some(key => CREDENTIAL_HEADER_KEY.test(key));
         const sensitive = header || name.some(key => SENSITIVE_KEY.test(key));
         if (!sensitive || (quotedOnly && !quoted)) {
@@ -413,6 +415,8 @@ const WHITESPACE = /\s/;
 const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
 /** A `user:password-start` right after `//`, whose second part holds a non-digit, so it is no `host:port`. */
 const NON_PORT_USERINFO = /[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@]/y;
+/** A `user:digits` right after `//` that reads as a host and port, followed by a space or tab. */
+const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
 
 /** Mask a network-path userinfo whose password holds both spaces and `/`
  *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
@@ -424,8 +428,32 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
     let from = 0;
     for (let at = text.indexOf('//', from); at !== -1; at = text.indexOf('//', from)) {
         from = at + 2;
+        if ((at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) || at < copied) {
+            continue;
+        }
         NON_PORT_USERINFO.lastIndex = at + 2;
-        if ((at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) || at < copied || !NON_PORT_USERINFO.test(text)) {
+        if (!NON_PORT_USERINFO.test(text)) {
+            // `//alice:123 PRIVATE/part@host`: a prefix that reads as a host and port, then a space. The run
+            // from the first `/` after it to whitespace is still the password when it holds an `@`, as for
+            // `https://` (maskUserinfo); `//host:8080 see /docs` holds none and keeps its text.
+            PORT_THEN_SPACE.lastIndex = at + 2;
+            if (!PORT_THEN_SPACE.test(text)) {
+                continue;
+            }
+            let slash = PORT_THEN_SPACE.lastIndex;
+            while (slash < text.length && text[slash] !== '/' && text[slash] !== '\n' && text[slash] !== '\r') {
+                slash++;
+            }
+            let runAt = -1;
+            let k = slash;
+            for (; text[slash] === '/' && k < text.length && !WHITESPACE.test(text[k]); k++) {
+                runAt = text[k] === '@' ? k : runAt;
+            }
+            if (runAt !== -1) {
+                out += `${text.slice(copied, at + 2)}***@`;
+                copied = runAt + 1;
+            }
+            from = Math.max(from, runAt !== -1 ? runAt + 1 : k);
             continue;
         }
         let lastAt = -1;
