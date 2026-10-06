@@ -80,17 +80,22 @@ const MASK = '\u0000';
 // eslint-disable-next-line no-control-regex
 const MASKS = /\u0000/g;
 
-/** A JSON `\\u00XX` escape, at any depth (with its whole backslash run), of a character a key name can hold. */
-const NAME_ESCAPE = /(?<!\\)\\+u00(2[de]|3\d|[46][1-9a-f]|[57][0-9a]|5f)/gi;
+/** A JSON `\\u00XX` escape of a printable ASCII character, at any depth (with its whole backslash run). */
+const PRINTABLE_ESCAPE = /(?<!\\)\\+u00([2-7][0-9a-f])/gi;
+/** Printable characters left escaped: quotes and the backslash, which delimit strings and escapes. */
+const STRUCTURAL_CODES = new Set([0x22, 0x27, 0x5c, 0x60]);
 
 /** A JSON-escaped `/`, with its whole backslash run. */
 const SLASH_ESCAPE = /(?<!\\)\\+\//g;
 
-/** Text with the JSON escapes of name characters and `/` decoded (`"to\\u006ben"` is `"token"`), at any depth,
- *  so a key or a URL spelled with them is still recognised. Only letters, digits, `_`, `.` and `-` are decoded; a quote or
- *  backslash escape is left as it is, so no string's structure changes. */
+/** Text with the JSON escapes of printable characters decoded, at any depth (`"to\\u006ben"` is `"token"`,
+ *  `alice:pw\\u0040host` is `alice:pw@host`, `\\/\\/host` is `//host`), so a key, a URL or its delimiters spelled
+ *  with them are still recognised. Quotes and the backslash stay escaped, so no string's structure changes. */
 function decodeNameEscapes(text: string): string {
-    return text.replace(NAME_ESCAPE, (_escape, code: string) => String.fromCharCode(parseInt(code, 16)))
+    return text.replace(PRINTABLE_ESCAPE, (escape, code: string) => {
+        const value = parseInt(code, 16);
+        return value === 0x7f || STRUCTURAL_CODES.has(value) ? escape : String.fromCharCode(value);
+    })
         // JSON may escape `/` (`\/\/alice:pw@host\/x`), at any depth; only the backslashes before a `/` go.
         .replace(SLASH_ESCAPE, '/');
 }
@@ -794,6 +799,13 @@ function urlSpans(text: string): Array<[number, number]> {
         let end = body;
         while (end < limit && !URL_TERMINATOR.test(text[end])) {
             end++;
+        }
+        // A URL inside serialised JSON ends at an escaped quote (`…/x\"}`): its backslashes escape the quote and
+        // stay outside the URL, which a parser would otherwise turn into `/` and so unescape the quote.
+        if (end < limit && VALUE_QUOTE.test(text[end])) {
+            while (end > body && text[end - 1] === '\\') {
+                end--;
+            }
         }
         if (end > body) {
             spans.push([start, end]);

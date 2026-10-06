@@ -1048,6 +1048,14 @@ describe('redactText', () => {
         expect(redactText('{"p":"C:\\\\Users\\\\x"}')).toBe('{"p":"C:\\\\Users\\\\x"}');
     });
 
+    it('masks a URL whose delimiters are Unicode escapes, at any depth, keeping quotes escaped', () => {
+        const json = '{"error":"https://alice:PRIVATE_VALUE\\u0040host.example/x"}';
+        expect(redactText(json)).toBe('{"error":"https://***:***@host.example/x"}');
+        expect(redactText(JSON.stringify({ reason: json }))).toBe('{"reason":"{\\"error\\":\\"https://***:***@host.example/x\\"}"}');
+        // Quote and backslash escapes are left as they are.
+        expect(redactText('{"a":"\\u0022q\\u0022","b":"\\u005c"}')).toBe('{"a":"\\u0022q\\u0022","b":"\\u005c"}');
+    });
+
     it('masks URL userinfo that line breaks split anywhere in the authority', () => {
         expect(redactText('https://ali\nce:PRIVATE@host.example/x')).toBe('https://***@host.example/x');
         expect(redactText('https://alice:123\nmore\nPRIVATE@host.example/x')).toBe('https://***@host.example/x');

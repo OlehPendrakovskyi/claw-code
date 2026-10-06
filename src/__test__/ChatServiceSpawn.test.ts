@@ -1151,6 +1151,18 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a URL whose @ is a Unicode escape, on stderr and in nested details', () => {
+            const json = '{"error":"https://alice:PRIVATE_VALUE\\u0040host.example/x"}';
+            const first = start();
+            first.child.stderr.emit('data', Buffer.from(`${json}\n`));
+            first.child.emit('close', 1, null);
+            expect((first.events[0] as { message: string }).message).not.toContain('PRIVATE');
+            const second = start();
+            second.child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details: json } } }));
+            second.child.emit('close', 1, null);
+            expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('redacts a credential in nested serialised details', () => {
             const { child, events } = start();
             const details = { reason: JSON.stringify({ detail: JSON.stringify({ token: 'PRIVATE' }) }) };
