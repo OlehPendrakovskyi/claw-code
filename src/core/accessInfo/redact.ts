@@ -372,7 +372,8 @@ const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
 /** Text without its complete CSI sequences, innermost first: an opener inside an unfinished sequence starts a
  *  nested one, and once that one ends the outer one goes on, so `to\e[\e[0m0mken` is `token` rather than
  *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which is dropped with
- *  its parameters, so `to\e[0\0ken` is `token` too; the byte stays.
+ *  its parameters, so `to\e[0\0ken` is `token` too. The byte stays, unless it opens a run of tabs and line
+ *  breaks: that run goes too (`to\e[\r\nken` is `token`), as it would otherwise split the name.
  *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
  *  sequence's bytes are dropped once. */
 function stripCsiSequences(text: string): string {
@@ -410,8 +411,14 @@ function stripCsiSequences(text: string): string {
             open.pop();
         } else {
             out.length = open[0].at;
-            out.push(char);
             open.length = 0;
+            if (!PARSER_IGNORED_CHAR.test(char)) {
+                out.push(char);
+                continue;
+            }
+            while (PARSER_IGNORED_CHAR.test(text[i] ?? '')) {
+                i++;
+            }
         }
     }
     return out.join('') + text.slice(i);
@@ -782,7 +789,9 @@ function maskUserinfo(text: string): string {
         let malformedTail = false;
         const start = schemeStart(text, at);
         let i = body;
-        for (; i < text.length && !WHITESPACE.test(text[i]); i++) {
+        // A URL parser drops tabs and line breaks, so a `user:…` with no `@` yet runs on across them
+        // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break.
+        for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && colonBeforeSlash && lastAt === -1)); i++) {
             // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
             // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
             // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…` with no `@`
@@ -922,28 +931,29 @@ function maskQueryPairs(text: string): string {
     let out = '';
     let copied = 0;
     const unclosed = new Map<string, number>();
-    // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), and whether a `?`
-    // comes before the name in that token, found by scanning back to whitespace or a quote. A scan stops where
-    // the previous one started: the same token, same answer.
+    // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), and whether the
+    // name is in a URL query: a `://` comes before it in that token, or the token is a bare query (`?a=1&token=…`).
+    // Found by scanning back to whitespace or a quote; a scan stops where the previous one started: the same
+    // token, same answer.
     let floor = 0;
-    let floorToken: QueryToken = { opening: undefined, inQuery: false };
+    let floorToken: QueryToken = { opening: undefined, inQuery: text.startsWith('?') };
     const closeRuns = closeRunsOf(text);
     const tokenBefore = (index: number): QueryToken => {
-        let inQuery = false;
+        let inUrl = false;
         let token: QueryToken | undefined;
         for (let i = index - 1; i >= floor && token === undefined; i--) {
             if (WHITESPACE.test(text[i])) {
-                token = { opening: undefined, inQuery };
+                token = { opening: undefined, inQuery: inUrl || text[i + 1] === '?' };
             } else if (VALUE_QUOTE.test(text[i])) {
                 let run = 0;
                 while (text[i - 1 - run] === '\\') {
                     run++;
                 }
-                token = { opening: { quote: text[i], run }, inQuery };
+                token = { opening: { quote: text[i], run }, inQuery: inUrl };
             }
-            inQuery ||= text[i] === '?';
+            inUrl ||= text.startsWith('://', i);
         }
-        token ??= { opening: floorToken.opening, inQuery: inQuery || floorToken.inQuery };
+        token ??= { opening: floorToken.opening, inQuery: inUrl || floorToken.inQuery };
         floor = index;
         floorToken = token;
         return token;
@@ -962,13 +972,14 @@ function maskQueryPairs(text: string): string {
         // A quoted value, or an array or object (`?tokens=[ "a", "b" ]`), is measured whole by valueEnd.
         const quoted = isEscapedQuote(text, start) || VALUE_QUOTE.test(text[start] ?? '') || text[start] === '[' || text[start] === '{';
         // An unquoted value in a URL that a quote opens runs to that quote's close, a space included
-        // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in a free-text query, a space ends it. An `&` pair
-        // with no `?` before it in its token is no query (`/home/options&password=PREFIX SUFFIX/x`): its value
-        // runs to the end of the line, as a plain-text secret's does.
+        // (`{"url":"https://host/?token=PREFIX SUFFIX"}`); in a free-text URL query, a space ends it. A pair is
+        // in a URL query only when a `://` comes before it in its token, or the token is a bare query (`?token=…`):
+        // anywhere else, such as a path (`/run/credentials?password=PREFIX SUFFIX/x`, `/home/a&password=…`), its
+        // value runs to the end of the line, as a plain-text secret's does.
         const token = quoted ? undefined : tokenBefore(pair.index);
         const end = token === undefined ? valueEnd(text, start, NON_SPACE, unclosed)
             : token.opening !== undefined ? quotedUrlValueEnd(text, start, token.opening, closeRuns)
-                : pair[1] === '?' || token.inQuery ? sensitiveQueryValueEnd(text, start) : unquotedSecretEnd(text, start);
+                : token.inQuery ? sensitiveQueryValueEnd(text, start) : unquotedSecretEnd(text, start);
         out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
         copied = end;
         QUERY_NAME.lastIndex = end;
@@ -983,7 +994,7 @@ interface QuoteOpening {
 }
 
 /** What {@link maskQueryPairs} reads of the token a query name sits in: the quote that opens it, if any, and
- *  whether a `?` comes before the name in it. */
+ *  whether the name is in a URL query. */
 interface QueryToken {
     opening: QuoteOpening | undefined;
     inQuery: boolean;

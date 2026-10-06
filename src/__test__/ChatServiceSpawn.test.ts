@@ -942,6 +942,15 @@ describe('ChatService.sendMessage', () => {
             expect((second.events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('redacts a malformed URL password holding a `/` and a line break, on raw multiline stderr', () => {
+            for (const eol of ['\n', '\r\n']) {
+                const { child, events } = start();
+                child.stderr.emit('data', Buffer.from(`clone failed: https://alice:PRIVATE_PREFIX/part${eol}PRIVATE_SUFFIX@host.example/repo\n`));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+            }
+        });
+
         it('redacts a credential quoted with Unicode-escaped quotes, on stderr and in details', () => {
             const first = start();
             first.child.stderr.emit('data', Buffer.from('{"reason":"\\u0022token\\u0022:\\u0022PRIVATE_VALUE\\u0022"}\n'));

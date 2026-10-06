@@ -537,6 +537,17 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(markdown).not.toContain('PRIVATE');
     });
 
+    it('masks a spaced password after a `?` in a local file path whole, in both report sections', () => {
+        const info = extractAccessInfoFromConfig(
+            { credentials: { file: '/run/credentials?password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json' } },
+            '/tmp/openclaw.json'
+        );
+        const markdown = formatAccessSummaryMarkdown(info);
+        expect(markdown).toContain('## Local files\n- /run/credentials?password=***');
+        expect(markdown).toContain('Key file: /run/credentials?password=***');
+        expect(markdown).not.toContain('PRIVATE');
+    });
+
     it('masks a spaced password after `&` in a local file path whole', () => {
         const info = extractAccessInfoFromConfig(
             { credentials: { file: '/home/user/options&password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json' } },
@@ -556,6 +567,14 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('masks a malformed URL password holding both a `/` and a tab or line break', () => {
+        for (const eol of ['\t', '\n', '\r\n']) {
+            expect(redactText(`clone https://alice:PRIVATE_PREFIX/part${eol}PRIVATE_SUFFIX@host.example/repo failed`)).toBe('clone https://***@host.example/repo failed');
+        }
+        // A host and port with a path keeps the next line, an address on it included.
+        expect(redactText('see https://host:8080/path\nbob@example.org ok')).toBe('see https://host:8080/path\nbob@example.org ok');
+    });
+
     it('masks a quoted URL query value across a line break up to the next `&` or `#`', () => {
         for (const delimiter of ['&', '#']) {
             const text = `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`;
@@ -587,15 +606,23 @@ describe('redactText', () => {
         expect(redactText('/home/user/options&password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json')).toBe('/home/user/options&password=***');
         // In a query a space still ends the value, so the prose after the URL survives.
         expect(redactText('see https://h.example/?a=1&token=PRIVATE then prose')).toBe('see https://h.example/?a=1&token=*** then prose');
-        expect(redactText('c?x=1&token=PRIVATE ok')).toBe('c?x=1&token=*** ok');
+        expect(redactText('?x=1&token=PRIVATE ok')).toBe('?x=1&token=*** ok');
+        // A `?` with no `://` before it in its token is a path character, not a query: the value runs to the line end.
+        expect(redactText('c?x=1&token=PRIVATE ok')).toBe('c?x=1&token=***');
+        expect(redactText('/run/credentials?password=PRIVATE_PREFIX PRIVATE_SUFFIX/config.json')).toBe('/run/credentials?password=***');
     });
 
     it('strips a control sequence nested in another, raw or serialised', () => {
         expect(redactText('to\u001b[\u001b[0m0mken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText('to\u001b[1\u001b[\u001b[0m;2m3mken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText(JSON.stringify({ e: 'to\u001b[\u001b[0m0mken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
-        // A sequence broken by a byte that fits none is dropped, its parameters too; the byte stays.
-        expect(redactText('a\u001b[\nb')).toBe('a\nb');
+        // A sequence broken by a byte that fits none is dropped, its parameters too; the byte stays, unless it
+        // opens a run of tabs and line breaks, which goes with it so no name is split.
+        expect(redactText('a\u001b[\u0000b')).toBe('ab');
+        for (const eol of ['\t', '\n', '\r\n', '\n\n']) {
+            expect(redactText(`to\u001b[${eol}ken=PRIVATE_VALUE`)).toBe('token=***');
+            expect(redactText(`to\u001b[1${eol}ken=PRIVATE_VALUE`)).toBe('token=***');
+        }
         expect(redactText('to\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
         expect(redactText('to\u001b[\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
     });
