@@ -544,6 +544,17 @@ describe('formatAccessSummaryMarkdown', () => {
 });
 
 describe('redactText', () => {
+    it('masks a quoted URL query value across a line break up to the next `&` or `#`', () => {
+        for (const delimiter of ['&', '#']) {
+            const text = `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`;
+            expect(redactText(text)).toMatch(/^fetch "https:\/\/host\.example\/\?token=\*\*\*/);
+            expect(redactText(text)).not.toContain('PRIVATE');
+            expect(redactText(JSON.stringify({ reason: text }))).not.toContain('PRIVATE');
+        }
+        // An unclosed string still ends the value at its first line break.
+        expect(redactText('fetch "https://host.example/?token=PRIVATE\nnext line&x')).toBe('fetch "https://host.example/?token=***\nnext line&x');
+    });
+
     it('keeps the host and port of a credential-free URL whose host holds a secret word', () => {
         for (const url of ['https://keycloak.example:8443/mcp', 'https://token-service.example:443', 'wss://secret.example:9000?x=1']) {
             expect(redactText(url)).toBe(url);

@@ -990,9 +990,10 @@ interface QueryToken {
 
 /** Where an unquoted query value ends inside a quoted URL: at `&`, `#`, or the quote that closes the string,
  *  one escaped no deeper than the opening one, so an escaped interior quote is passed. A URL parser drops line
- *  breaks, so the value runs across them to that close (`"https://host/?token=PREFIX\nSUFFIX"`). With no close
- *  ahead, it ends at its first line break. `closeRuns` says up front whether a close lies ahead, so a value
- *  without one is never searched past that break. */
+ *  breaks, so in a closed string the value runs across them to that close, `&` or `#`
+ *  (`"https://host/?token=PREFIX\nSUFFIX&ok=1"`). With no close ahead, it ends at its first line break.
+ *  `closeRuns` says up front whether a close lies ahead, so a value without one is never searched past that
+ *  break. */
 function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, closeRuns: CloseRuns): number {
     const hasClose = closeRuns(opening.quote)[start] <= opening.run;
     let firstBreak = -1;
@@ -1018,12 +1019,11 @@ function quotedUrlValueEnd(text: string, start: number, opening: QuoteOpening, c
             return i - run;
         }
     }
-    return firstBreak === -1 ? i : firstBreak;
+    return firstBreak === -1 || hasClose ? i : firstBreak;
 }
 
-/** For a quote character, per position, the shortest backslash run before that quote anywhere from there up
- *  to the next `&` or `#` ({@link NO_CLOSE} with none): a value opened at depth k has a close ahead exactly
- *  when it is at most k. */
+/** For a quote character, per position, the shortest backslash run before that quote anywhere from there on
+ *  ({@link NO_CLOSE} with none): a value opened at depth k has a close ahead exactly when it is at most k. */
 type CloseRuns = (quote: string) => Uint32Array;
 const NO_CLOSE = 0xffffffff;
 
@@ -1042,9 +1042,7 @@ function closeRunsOf(text: string): CloseRuns {
         const table = new Uint32Array(text.length + 1);
         table[text.length] = NO_CLOSE;
         for (let i = text.length - 1; i >= 0; i--) {
-            const char = text[i];
-            table[i] = char === '&' || char === '#' ? NO_CLOSE
-                : char === quote ? Math.min(runBefore[i], table[i + 1]) : table[i + 1];
+            table[i] = text[i] === quote ? Math.min(runBefore[i], table[i + 1]) : table[i + 1];
         }
         tables.set(quote, table);
         return table;
