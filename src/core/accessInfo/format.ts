@@ -110,17 +110,19 @@ export function formatNamedEntry(entry: unknown, fallbackName?: string) {
     // may be a whole endpoint: see redactEndpointText.
     // Names, ids and fallbacks (tool and MCP map keys) can be whole URLs too, so they are redacted as endpoints.
     const safeFallback = fallbackName === undefined ? undefined : redactEndpointText(fallbackName);
+    // A part that redaction empties (a label of nothing but terminal codes) counts as absent, so the redacted
+    // fallback, never a caller's raw key, takes its place.
     if (typeof entry === 'string') {
-        return redactEndpointText(entry);
+        return redactEndpointText(entry) || safeFallback;
     }
     if (!isRecord(entry)) {
         return safeFallback;
     }
     const rawName = asString(entry.name) ?? asString(entry.id);
-    const name = rawName !== undefined ? redactEndpointText(rawName) : safeFallback;
+    const name = (rawName !== undefined ? redactEndpointText(rawName) : undefined) || safeFallback;
     const rawEndpoint =
         asString(entry.url) ?? asString(entry.endpoint) ?? asString(entry.host);
-    const endpoint = rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined;
+    const endpoint = (rawEndpoint !== undefined ? redactEndpointText(rawEndpoint) : undefined) || undefined;
     if (name && endpoint) {
         // Each part was redacted alone, but a credential can be split across them (name `token=` or `Bearer`
         // and endpoint `PRIVATE`; name `https://alice:PREFIX/` and endpoint `SUFFIX@host`). joinBoundary says

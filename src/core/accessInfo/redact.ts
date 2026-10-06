@@ -245,6 +245,19 @@ function valueEnd(text: string, start: number, unquoted: RegExp, unclosed: Map<s
     return text.length;
 }
 
+/** The run of name characters that ends just before the backslash run ending at `index` (`to` in `to\bken`). */
+function nameRunBefore(text: string, index: number): string {
+    let end = index;
+    while (end > 0 && text[end - 1] === '\\') {
+        end--;
+    }
+    let start = end;
+    while (start > 0 && /[A-Za-z0-9_.-]/.test(text[start - 1])) {
+        start--;
+    }
+    return text.slice(start, end);
+}
+
 /** Mask the value of every `key=value` / `key: value` pair whose key names a secret, as `key=***`. With
  *  `quotedOnly`, only quoted values are masked, and each stays quoted (`"token":"***"`), so a later full
  *  pass consumes just that quoted value rather than the text after it. An unquoted value may hold spaces
@@ -264,9 +277,12 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
         // An Authorization or Cookie value is a credential too, under any key naming one (`cookie_header`), masked
         // whole: a bare one to the end of its line, since a cookie list holds `name=value` pairs of its own.
         // is left to CREDENTIAL_HEADER, which takes the rest of its line.
-        // A key right after a backslash that starts with `t`, `n` or `r` may follow an escape (`\npass=…`): its
-        // name is then the rest, so both readings are tested.
-        const name = text[pair.index - 1] === '\\' && /^[tnrbf]/.test(pair[1]) ? [pair[1], pair[1].slice(1)] : [pair[1]];
+        // A key right after a backslash that starts with `t`, `n`, `r`, `b` or `f` may follow an escape
+        // (`\npass=…`): its name is then the rest, so both readings are tested. The escape may also sit inside
+        // the name (`to\bken=…`, JSON's backspace), so the name run before the escape is joined to the rest too.
+        const name = text[pair.index - 1] === '\\' && /^[tnrbf]/.test(pair[1])
+            ? [pair[1], pair[1].slice(1), `${nameRunBefore(text, pair.index)}${pair[1].slice(1)}`]
+            : [pair[1]];
         const header = name.some(key => CREDENTIAL_HEADER_KEY.test(key));
         const sensitive = header || name.some(key => SENSITIVE_KEY.test(key));
         if (!sensitive || (quotedOnly && !quoted)) {

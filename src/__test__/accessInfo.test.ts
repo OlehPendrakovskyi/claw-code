@@ -464,6 +464,12 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry(42, url)).not.toContain('PRIVATE');
     });
 
+    it('uses the redacted fallback when redaction empties an entry or its name', () => {
+        expect(formatNamedEntry('\u001b[0m', 'token=PRIVATE_VALUE')).toBe('token=***');
+        expect(formatNamedEntry({ name: '\u001b[0m' }, 'token=PRIVATE_VALUE')).toBe('token=***');
+        expect(formatNamedEntry({ name: '\u001b[0m', url: '\u001b[0m' }, 'token=PRIVATE_VALUE')).toBe('token=***');
+    });
+
     it('redacts names, ids and fallbacks in named entries', () => {
         expect(formatNamedEntry({ name: 'token=PRIVATE' })).not.toContain('PRIVATE');
         expect(formatNamedEntry({ id: 'https://alice:secret@[bad' })).not.toMatch(/alice|secret/);
@@ -959,6 +965,14 @@ describe('redactText', () => {
         expect(redactText(JSON.stringify({ error: 'fetch https://alice:123 PRIVATE_SUFFIX/part@host.example/x failed' }))).not.toContain('PRIVATE');
         // Prose with a real port, or a bare `:`, keeps its text.
         expect(redactText('https://host:8080 see /docs and mail bob@example.org')).toBe('https://host:8080 see /docs and mail bob@example.org');
+    });
+
+    it('masks a credential whose name a serialised short escape splits', () => {
+        expect(redactText(JSON.stringify({ error: 'to\bken=PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ error: 'pass\fword: PRIVATE_VALUE' }))).not.toContain('PRIVATE');
+        expect(redactText(JSON.stringify({ reason: JSON.stringify({ error: 'to\bken=PRIVATE_VALUE' }) }))).not.toContain('PRIVATE');
+        // A Windows path keeps its text.
+        expect(redactText('C:\\dir\\bin\\tool.exe ok')).toBe('C:\\dir\\bin\\tool.exe ok');
     });
 
     it('masks a credential that a JSON backspace or form-feed escape separates from its label', () => {
