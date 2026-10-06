@@ -1194,47 +1194,70 @@ export function redactTextAndSecret(text: string, secret: string): string {
 }
 
 /** `text` with every occurrence of `form` masked, in any letter case and any mix of spellings: a URL parser
- *  lowercases a host (`PRIVATE_HOST` becomes `private_host`), and a serialiser may write any unit as a `\\u`
- *  escape, in either hex case and at any depth (`opaque-\\u79d8密`). Each UTF-16 unit is compared on its own,
- *  on the original text, so a character that lowercasing lengthens (`İ`) shifts nothing. */
+ *  lowercases a host (`PRIVATE_HOST` becomes `private_host`), a serialiser may write any unit as a `\\u`
+ *  escape, in either hex case and at any depth (`opaque-\\u79d8密`), and each JSON serialisation doubles a
+ *  backslash run. Each UTF-16 unit is compared on its own, on the original text, so a character that
+ *  lowercasing lengthens (`İ`) shifts nothing. Both are read as {@link readUnits} does and searched unit by
+ *  unit (Knuth–Morris–Pratt), linear in the text and the form together, so a long near-match costs no more
+ *  than any other text. */
 function maskIgnoringCase(text: string, form: string): string {
-    const foldedForm = Array.from({ length: form.length }, (_, k) => foldUnit(form[k]));
+    const pattern = readUnits(form).map(unit => unit.folded);
+    // fallback[q]: the length of the longest proper prefix of pattern[0..q] that is also its suffix.
+    const fallback = new Array<number>(pattern.length).fill(0);
+    for (let q = 1, k = 0; q < pattern.length; q++) {
+        while (k > 0 && pattern[q] !== pattern[k]) {
+            k = fallback[k - 1];
+        }
+        if (pattern[q] === pattern[k]) {
+            k++;
+        }
+        fallback[q] = k;
+    }
+    const units = readUnits(text);
     let out = '';
     let copied = 0;
-    for (let at = 0; at < text.length; at++) {
-        const end = at < copied ? -1 : matchEnd(text, at, form, foldedForm);
-        if (end === -1) {
-            continue;
+    for (let j = 0, q = 0; j < units.length; j++) {
+        while (q > 0 && units[j].folded !== pattern[q]) {
+            q = fallback[q - 1];
         }
-        out += `${text.slice(copied, at)}***`;
-        copied = end;
+        if (units[j].folded === pattern[q]) {
+            q++;
+        }
+        if (q === pattern.length) {
+            out += `${text.slice(copied, units[j - q + 1].start)}***`;
+            copied = units[j].end;
+            q = 0;
+        }
     }
     return out + text.slice(copied);
 }
 
-/** Where an occurrence of `form` that starts at `at` ends, each unit as itself in any case or as a `\\u`
- *  escape of it, and each backslash run as a run of any length, since each JSON serialisation doubles one;
- *  -1 when none starts there. */
-function matchEnd(text: string, at: number, form: string, foldedForm: string[]): number {
-    let i = at;
-    for (let k = 0; k < form.length; k++) {
-        if (form[k] === '\\' && text[i] === '\\') {
-            k = runEnd(form, k) - 1;
-            i = runEnd(text, i);
-            continue;
-        }
-        if (text[i] === form[k] || (i < text.length && foldUnit(text[i]) === foldedForm[k])) {
+/** One unit of text as {@link maskIgnoringCase} compares it, case-folded, and the span of the text it reads. */
+interface ReadUnit {
+    folded: string;
+    start: number;
+    end: number;
+}
+
+/** `text` as units: a `\\u` escape with its whole backslash run as the unit it stands for, any other
+ *  backslash run as one backslash, and every other UTF-16 unit as itself. Linear: a backslash run is scanned
+ *  at most twice. */
+function readUnits(text: string): ReadUnit[] {
+    const units: ReadUnit[] = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] !== '\\') {
+            units.push({ folded: foldUnit(text[i]), start: i, end: i + 1 });
             i++;
             continue;
         }
         UNIT_ESCAPE.lastIndex = i;
         const escape = UNIT_ESCAPE.exec(text);
-        if (escape === null || parseInt(escape[1], 16) !== form.charCodeAt(k)) {
-            return -1;
-        }
-        i = UNIT_ESCAPE.lastIndex;
+        const end = escape === null ? runEnd(text, i) : UNIT_ESCAPE.lastIndex;
+        units.push({ folded: escape === null ? '\\' : foldUnit(String.fromCharCode(parseInt(escape[1], 16))), start: i, end });
+        i = end;
     }
-    return i;
+    return units;
 }
 
 /** A JSON `\\u` escape of one UTF-16 unit, with its whole backslash run. */

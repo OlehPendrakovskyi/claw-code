@@ -1488,6 +1488,15 @@ describe('redactText', () => {
         // The per-input bound is the check; the test as a whole may run long under coverage and parallel load.
     }, 60_000);
 
+    it('masks a known secret in time linear in the text and the secret, on a long near-match (redactTextAndSecret)', () => {
+        // A 64 KiB message and an 8 KiB token: a matcher that restarts at every unit takes seconds here.
+        const text = 'A'.repeat(64 * 1024);
+        const started = performance.now();
+        expect(redactTextAndSecret(text, 'A'.repeat(8 * 1024) + 'Z')).toBe(text);
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(redactTextAndSecret(`boom ${'A'.repeat(1024)}Z!`, 'A'.repeat(1024) + 'Z')).toBe('boom ***!');
+    });
+
     it('leaves a quoted URL without userinfo alone', () => {
         expect(redactText('<a href="https://host.example/x">docs</a>')).toBe('<a href="https://host.example/x">docs</a>');
     });
