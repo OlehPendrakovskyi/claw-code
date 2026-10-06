@@ -1089,14 +1089,14 @@ export function redactEndpointText(value: string): string {
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
-export function endsAtCredential(label: string): boolean {
-    return [`${label} x`, `${label} dXNlcjpwYXNz`].some(masksCredential);
+function endsAtCredential(label: string): boolean {
+    return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
 
-/** Whether {@link redactText} masks something in `text`, rather than only normalising it (a terminal code
- *  dropped, an escape decoded, a scheme spelled `://`). */
-function masksCredential(text: string): boolean {
-    return redactText(text) !== normalizeForRedaction(text);
+/** Whether redacting `text` followed by `tail` masks part of `tail`, or of `text` that `text` alone keeps: a
+ *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. */
+function consumesTail(text: string, tail: string): boolean {
+    return redactText(`${text}${tail}`) !== `${redactText(text)}${tail}`;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -1109,8 +1109,9 @@ const OPEN_AUTHORITY = /\/\/[^\s@/?#\\]*$/;
 const USERINFO_HEAD = /^[^\s/?#\\]*@/;
 /** Text that opens with the rest of a password: anything up to an `@` before whitespace, `/` included. */
 const PASSWORD_HEAD = /^[^\s@]*@/;
-/** What {@link joinBoundary} appends to close an open userinfo. */
+/** What {@link joinBoundary} appends to close an open userinfo, joined directly or after a display delimiter. */
 const USERINFO_TAIL = 'x@h';
+const DELIMITED_USERINFO_TAIL = ' (x@h)';
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
@@ -1131,18 +1132,17 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
     const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
         || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(continuation));
-    if (opensUserinfo && masksCredential(userinfoProbe)) {
+    if (opensUserinfo && consumesTail(authority, USERINFO_TAIL)) {
         return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
     // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
-    const probe = `${left} (x@h)`;
-    if (!PASSWORD_HEAD.test(continuation) || !masksCredential(probe)) {
+    if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
         return { left, maskRight: false };
     }
-    const redacted = redactText(probe);
+    const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
     return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
 }
 
@@ -1189,33 +1189,54 @@ export function redactTextAndSecret(text: string, secret: string): string {
 }
 
 /** `text` with every occurrence of `form` masked, in any letter case: a URL parser lowercases a host
- *  (`PRIVATE_HOST` becomes `private_host`). Case is ignored only where lowercasing keeps every length, so
- *  positions still line up. */
+ *  (`PRIVATE_HOST` becomes `private_host`), and a `\\u` escape may use either hex case. Each UTF-16 unit is
+ *  compared folded on its own, on the original text, so a character that lowercasing lengthens (`İ`) shifts
+ *  nothing. */
 function maskIgnoringCase(text: string, form: string): string {
-    const lowerText = text.toLowerCase();
-    const lowerForm = form.toLowerCase();
-    if (lowerText.length !== text.length || lowerForm.length !== form.length) {
-        return text.split(form).join('***');
-    }
+    const foldedForm = Array.from({ length: form.length }, (_, k) => foldUnit(form[k]));
     let out = '';
     let copied = 0;
-    for (let at = lowerText.indexOf(lowerForm); at !== -1; at = lowerText.indexOf(lowerForm, copied)) {
+    for (let at = 0; at + form.length <= text.length; at++) {
+        if (at < copied || !matchesFolded(text, at, form, foldedForm)) {
+            continue;
+        }
         out += `${text.slice(copied, at)}***`;
         copied = at + form.length;
     }
     return out + text.slice(copied);
 }
 
+/** Whether `form` occurs in `text` at `at`, unit by unit, ignoring case. */
+function matchesFolded(text: string, at: number, form: string, foldedForm: string[]): boolean {
+    for (let k = 0; k < form.length; k++) {
+        if (text[at + k] !== form[k] && foldUnit(text[at + k]) !== foldedForm[k]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function foldUnit(unit: string): string {
+    return unit.toLowerCase();
+}
+
 /** The forms {@link redactTextAndSecret} masks, non-empty and longest first: as given, JSON-serialised once or
- *  twice, percent-encoded as a URL serialises it, and each of those as redactText normalises it (an escape
- *  decoded, a terminal code dropped). */
+ *  twice, with every non-ASCII unit `\\u`-escaped (once or twice), percent-encoded as a URL serialises it, and
+ *  each of those as redactText normalises it (an escape decoded, a terminal code dropped) and as it redacts it
+ *  on its own (a URL inside serialised, its host lowercased or punycoded, its userinfo masked). */
 function secretForms(secret: string): string[] {
     const serialised = JSON.stringify(secret).slice(1, -1);
     const serialisedTwice = JSON.stringify(serialised).slice(1, -1);
-    const raw = [secret, serialised, serialisedTwice, ...percentEncoded(secret)];
-    return [...new Set([...raw, ...raw.map(normalizeForRedaction)])]
+    const unicodeEscaped = escapeNonAscii(serialised);
+    const raw = [secret, serialised, serialisedTwice, unicodeEscaped, JSON.stringify(unicodeEscaped).slice(1, -1), ...percentEncoded(secret)];
+    return [...new Set([...raw, ...raw.map(normalizeForRedaction), ...raw.map(redactText)])]
         .filter(form => form !== '')
         .sort((a, b) => b.length - a.length);
+}
+
+/** `text` with each non-ASCII UTF-16 unit written as a JSON `\\u` escape, as an ASCII-only serialiser does. */
+function escapeNonAscii(text: string): string {
+    return text.replace(/[\u0080-\uffff]/g, unit => `\\u${unit.charCodeAt(0).toString(16).padStart(4, '0')}`);
 }
 
 /** `secret` percent-encoded as a URL path or a query value would hold it; none for one that cannot be. */

@@ -1264,6 +1264,13 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('Connection failed to http://127.0.0.1:18789: ECONNREFUSED');
         });
 
+        it('keeps independent details after a message holding a complete credential', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'Request rejected (token="PRIVATE")', data: { details: 'quota exceeded' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('Request rejected (token=***): quota exceeded');
+        });
+
         it('masks a username-only URL credential split between message and details', () => {
             const { child, events } = start();
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://ghp_PRIVATE_PREFIX', data: { details: 'PRIVATE_SUFFIX@github.com/repo' } } }));

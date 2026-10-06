@@ -320,6 +320,18 @@ describe('GatewayChatService', () => {
             }
         });
 
+        it('keeps an escaped non-ASCII token and one holding an internationalised URL out of errors', async () => {
+            const cases: [string, string][] = [
+                ['opaque-秘密_PRIVATE_VALUE', 'boom opaque-\\u79d8\\u5bc6_PRIVATE_VALUE'],
+                ['opaque_ftp://alice:pw@例え.example/PRIVATE_PATH', 'failed opaque_ftp://alice:pw@例え.example/PRIVATE_PATH'],
+            ];
+            for (const [token, message] of cases) {
+                const h = harness({ token, throwOnOpen: new Error(message) });
+                const error = (await h.svc.connect().catch((err: unknown) => err)) as Error;
+                expect(error.message).not.toMatch(/PRIVATE_VALUE|PRIVATE_PATH|u79d8|xn--/);
+            }
+        });
+
         it('masks another credential whose label or marker is the token', async () => {
             const cases: [string, string][] = [
                 ['token', 'authentication failed: token=PRIVATE_VALUE'],

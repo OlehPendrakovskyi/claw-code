@@ -453,6 +453,8 @@ describe('formatAccessSummaryMarkdown', () => {
         expect(formatNamedEntry({ name: `${username}\u001b[0m`, url: rest })).toBe('https://*** (***)');
         // An ordinary URL label keeps its endpoint.
         expect(formatNamedEntry({ name: 'https://github.com', url: 'https://github.com/repo' })).toBe('https://github.com (https://github.com/repo)');
+        // A credential complete in the name does not cross into an independent endpoint.
+        expect(formatNamedEntry({ name: 'remote token="PRIVATE"', url: 'https://api.example/mcp' })).toBe('remote token=*** (https://api.example/mcp)');
         // A name ending in a host and port is no unfinished password unless an `@` follows in the endpoint.
         expect(formatNamedEntry({ name: 'http://localhost:3000', url: 'http://localhost:3000/mcp' })).toBe('http://localhost:3000 (http://localhost:3000/mcp)');
         expect(formatNamedEntry({ name: 'http://127.0.0.1:18789', url: 'ECONNREFUSED' })).toBe('http://127.0.0.1:18789 (ECONNREFUSED)');
@@ -585,6 +587,24 @@ describe('redactText', () => {
         expect(redactTextAndSecret(`failed: prefix_${secret}`, secret)).not.toMatch(/private_host|path|opaque/i);
         // Unrelated text keeps its case and its delimiters beside a mask.
         expect(redactTextAndSecret('token="PRIVATE" Host ok', secret)).toBe('token=*** Host ok');
+    });
+
+    it('masks a known secret in any case beside a character that lowercasing lengthens (redactTextAndSecret)', () => {
+        expect(redactTextAndSecret('İ abc', 'ABC')).toBe('İ ***');
+        expect(redactTextAndSecret('İ failed abc.example/x', 'ABC.example')).toBe('İ failed ***/x');
+    });
+
+    it('masks a non-ASCII secret echoed with \\u escapes, in either hex case (redactTextAndSecret)', () => {
+        const secret = 'opaque-秘密_PRIVATE_VALUE';
+        expect(redactTextAndSecret('boom opaque-\\u79d8\\u5bc6_PRIVATE_VALUE', secret)).toBe('boom ***');
+        expect(redactTextAndSecret('boom opaque-\\u79D8\\u5BC6_PRIVATE_VALUE', secret)).toBe('boom ***');
+        expect(redactTextAndSecret('boom opaque-\\ud83d\\udd11x', 'opaque-🔑x')).toBe('boom ***');
+    });
+
+    it('masks a known secret holding a URL whose internationalised host the URL parser punycodes (redactTextAndSecret)', () => {
+        const secret = 'opaque_ftp://alice:pw@例え.example/PRIVATE_PATH';
+        expect(redactTextAndSecret(`failed ${secret}`, secret)).toBe('failed ***');
+        expect(redactTextAndSecret(`failed prefix_${secret}`, secret)).not.toMatch(/PRIVATE_PATH|xn--|例え/);
     });
 
     it('masks a malformed URL password holding both a `/` and a tab or line break', () => {
