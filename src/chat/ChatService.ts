@@ -606,12 +606,13 @@ function withErrorDetails(message: string | undefined, details: unknown): string
     if (flat === '' || flat === message) {
         return safeMessage;
     }
-    // Redact the whole detail before flattening and cutting it. A line break that a URL parser drops, turned
-    // into a space, would split a credential (`?token=PREFIX\nSUFFIX`), and a cut could separate a credential
-    // from what marks it as one.
-    const safe = flattenDetails(redactText(raw));
-    const bounded = safe.length > ERROR_DETAILS_MAX_CHARS ? `${safe.slice(0, ERROR_DETAILS_MAX_CHARS)}…` : safe;
-    return safeMessage === undefined ? bounded : `${safeMessage}: ${bounded}`;
+    // Redact the message and the whole detail together, as they will be shown, before flattening and cutting
+    // them. A credential can be split across the two (message `Invalid token`, details `PRIVATE`); a line break
+    // that a URL parser drops, turned into a space, would split one (`?token=PREFIX\nSUFFIX`); and a cut could
+    // separate one from what marks it as one. The cut keeps the message and at most ERROR_DETAILS_MAX_CHARS more.
+    const safe = flattenDetails(redactText(message === undefined ? raw : `${message}: ${raw}`));
+    const limit = ERROR_DETAILS_MAX_CHARS + (safeMessage === undefined ? 0 : safeMessage.length + 2);
+    return safe.length > limit ? `${safe.slice(0, limit)}…` : safe;
 }
 
 /** Details on one line: terminal codes first, every CSI form (a code turned into a space would split a label
