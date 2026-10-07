@@ -20,7 +20,7 @@ import {
     payloads,
 } from './helpers/gatewayV4';
 
-const hello = { token: 'secret', minProtocol: 4, maxProtocol: 4, clientVersion: '0.2.1', platform: 'linux' };
+const hello = { token: 'secret', minProtocol: 4, maxProtocol: 4, clientVersion: '0.1.0', platform: 'linux' };
 
 function decodedEvent(frame: string): Extract<InboundFrame, { type: 'event' }>['event'] {
     const decoded = v4Adapter.decodeFrame(frame);
@@ -69,12 +69,12 @@ describe('gateway protocol v4', () => {
             expect(frame.params).toEqual({
                 minProtocol: 4,
                 maxProtocol: 4,
-                client: { id: 'gateway-client', displayName: 'Claw Code', version: '0.2.1', platform: 'linux', mode: 'backend' },
+                client: { id: 'gateway-client', displayName: 'Claw Code', version: '0.1.0', platform: 'linux', mode: 'backend' },
                 caps: ['tool-events', 'session-scoped-events', 'approvals'],
                 role: 'operator',
                 scopes: ['operator.read', 'operator.write', 'operator.approvals', 'operator.questions'],
                 auth: { token: 'secret' },
-                userAgent: 'claw-code/0.2.1',
+                userAgent: 'claw-code/0.1.0',
             });
         });
 
