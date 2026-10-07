@@ -48,11 +48,11 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 
 ### Security
 
-- The Gateway token is kept in VS Code's SecretStorage. A token in the old plaintext setting `openclaw.gateway.token` is moved there and deleted from `settings.json`. A token in workspace settings is never used.
+- The Gateway token is kept in VS Code's SecretStorage. A token in the old plaintext setting `openclaw.gateway.token` in user settings is moved there and deleted from `settings.json`, unless a different token is already saved, in which case it is only deleted. If SecretStorage or the deletion fails, the setting stays and a warning says so. A token in workspace settings is never used, and is deleted once the workspace is trusted.
 - A warning appears when the token would be sent unencrypted, over `ws://`, to a Gateway on another machine.
 - Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
-- Prompt text is no longer written to the logs. The debug panel logs only the type of each message.
-- Attached files are read only from inside the workspace, with checks against symlink escapes and with size limits. On Windows, one of these checks is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
+- The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. An agent error that quotes the prompt can still reach the log through the acpx stderr ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
+- `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, from the file checked when it was attached; on Windows, part of that check is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
 - A workspace's `.acpxrc.json` can redefine the agent command, so it is used only after you approve that exact file.
 - Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
 - Replies are inserted into the webview only as Markdown that the extension host has sanitised, with unsafe links removed again in the webview; other text is escaped. The webview's content security policy admits only scripts and styles that carry a cryptographic nonce.
