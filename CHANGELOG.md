@@ -55,7 +55,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - Attached files are read only from inside the workspace, with checks against symlink escapes and with size limits. On Windows, one of these checks is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
 - A workspace's `.acpxrc.json` can redefine the agent command, so it is used only after you approve that exact file.
 - Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
-- The webview builds its content without `innerHTML` and uses a cryptographic nonce in its content security policy.
+- Replies are inserted into the webview only as Markdown that the extension host has sanitised, with unsafe links removed again in the webview; other text is escaped. The webview's content security policy admits only scripts and styles that carry a cryptographic nonce.
 - The dashboard opens only `http://` and `https://` URLs.
 - `brace-expansion` is overridden to `^5.0.7` for [GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp).
 

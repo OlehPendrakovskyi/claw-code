@@ -1,6 +1,6 @@
 # Claw Code — roadmap
 
-> **Status on 2026-10-04.** Version 0.2.1. The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Feature status lives in one place: the table in §6.
+> **Status on 2026-10-04.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Feature status lives in one place: the table in §6.
 >
 > **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is not used as or in the product's name or branding, nor in identifiers (namespaces, commands, settings). Published material refers to it only where factually necessary — this note, or third-party file names such as `CLAUDE.md` that the rules ingester reads.
 
