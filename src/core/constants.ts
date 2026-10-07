@@ -7,8 +7,9 @@
 
 export const OPENCLAW_DASHBOARD_URL = 'http://127.0.0.1:18789/';
 
-/** Extension version reported in the gateway handshake; injected at build time from package.json via esbuild `define`. */
-export const CLIENT_VERSION: string = typeof __CLIENT_VERSION__ === 'string' ? __CLIENT_VERSION__ : '0.2.1';
+/** Extension version reported in the gateway handshake; injected at build time from package.json via esbuild `define`.
+ *  The literal is the fallback for unbundled runs (Vitest); `constants.test.ts` fails when it drifts from package.json. */
+export const CLIENT_VERSION: string = typeof __CLIENT_VERSION__ === 'string' ? __CLIENT_VERSION__ : '0.1.0';
 
 /** Command ids declared in package.json `contributes.commands`. */
 export const COMMANDS = {

@@ -1994,7 +1994,7 @@ describe('GatewayChatService', () => {
             const challenge = payloads.challenge();
             const device = h.socket().lastRequest('connect').params.device as Record<string, unknown>;
             expect(device).toMatchObject({ id: store.identity.deviceId, publicKey: store.identity.publicKey, nonce: challenge.nonce, signedAt: challenge.ts });
-            const hello = { token: TOKEN, minProtocol: 4, maxProtocol: 4, clientVersion: '0.2.1', platform: process.platform };
+            const hello = { token: TOKEN, minProtocol: 4, maxProtocol: 4, clientVersion: '0.1.0', platform: process.platform };
             const payload = v4Adapter.deviceAuthPayload(hello, { deviceId: store.identity.deviceId, nonce: String(challenge.nonce), signedAtMs: Number(challenge.ts) });
             const signature = Buffer.from(String(device.signature), 'base64url');
             expect(verify(null, Buffer.from(payload), createPublicKey(store.identity.privateKey), signature)).toBe(true);

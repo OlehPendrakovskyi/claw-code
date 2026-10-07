@@ -1,19 +1,17 @@
 {
   "name": "claw-code",
   "displayName": "Claw Code",
-  "description": "VS Code extension for OpenClaw — chat gateway client",
-  "version": "0.2.1",
+  "description": "Chat with the agents on your OpenClaw Gateway from VS Code, with your code as context, and set up and harden OpenClaw",
+  "version": "0.1.0",
   "publisher": "openknot",
   "author": {
-    "name": "OlehPendrakovskyi"
+    "name": "Oleh Pendrakovskyi"
   },
-  "contributors": [
-    {
-      "name": "OlehPendrakovskyi"
-    }
-  ],
   "license": "MIT",
   "homepage": "https://github.com/OlehPendrakovskyi/claw-code",
+  "bugs": {
+    "url": "https://github.com/OlehPendrakovskyi/claw-code/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/OlehPendrakovskyi/claw-code.git"
@@ -24,14 +22,16 @@
   },
   "categories": [
     "AI",
-    "Other"
+    "Chat"
   ],
   "keywords": [
-    "ai",
-    "cli",
     "openclaw",
     "claw-code",
-    "vscode"
+    "ai",
+    "agent",
+    "chat",
+    "gateway",
+    "acpx"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -323,10 +323,5 @@
     "@create-markdown/preview": "^2.0.3",
     "lodash-es": "^4.18.1",
     "ws": "^8.22.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ]
   }
 }

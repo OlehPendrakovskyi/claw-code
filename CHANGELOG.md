@@ -1,157 +1,100 @@
 # Changelog
 
-> Fork of openknots/openclaw-extension, continuing as Claw Code.
+All notable changes to Claw Code are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-All notable changes to this project are documented in this file.
-The format is based on Keep a Changelog, and this project adheres to
-Semantic Versioning.
+Claw Code is a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) at version 0.2.1. This changelog starts at that fork. Changes made before the fork are recorded in the upstream repository. Each entry below is described relative to upstream 0.2.1.
 
 ## Unreleased
 
-### Fixed
-
-- Stop logging prompt text: a sent prompt is logged by length only, and the debug panel logs only a message's type.
-- Redact credentials, including URL userinfo such as `https://user:pass@host`, from the acpx stderr tail, in the log and in the error shown in the chat. One helper (`redactText`) now does this for the acpx stderr and run error, the Connect failure, Gateway transport errors, the access summary report and the hardening status output.
-- Wait for the tools view to refresh before confirming a tool toggle or uninstall, and report a failed refresh instead of dropping it.
-- Show a readable, redacted error when Connect fails, instead of the raw error value.
-
-### Changed
-
-- CI enforces more of the development rules: type-aware linting across the codebase (`pnpm run lint`), syntax-aware rule checks (`pnpm run check:rules`, using the TypeScript parser), and test-coverage thresholds of at least 90% on the Linux leg (`pnpm run test:coverage`). New tests for the setup, hardening, Overview, terminal, status bar and recommendation code raise coverage from 88% to 95% of statements.
-- Add a pull-request checklist and `AGENTS.md` for contributors and coding agents.
-
-### Docs
-
-- Reorganise `docs/development-rules.md` by topic with stable rule IDs (R1–R55 keep their numbers; the former "claw-code specifics" become S1–S6), add strength, scope and a check to each rule, correct stale references, and add rules R56–R60 from the roadmap review.
-- Add a new README for Claw Code, replacing the upstream extension's README removed earlier.
-- Restructure the roadmap: one feature status table and milestones in `docs/roadmap.md` (including the R0 public-release milestone and the owner-controlled publisher requirement), design documents under `docs/design/`, the engineering foundation in `docs/engineering.md`, and the Sprint 1 audit under `docs/audits/`.
-
-## 0.2.1
+The version numbering starts again at 0.1.0, which will be the first Claw Code release. The 0.2.1 that local builds carried before was the upstream version.
 
 ### Added
 
-- Add `opencode` to the default model picker options.
-- Add keyboard-activatable file-path links across rendered assistant text, tool details, error messages, pending assistant output, and crash reports.
-- Add a collapsible suggestions toggle in the composer so recommendation chips can be expanded on demand.
+- Chat with the agents on an OpenClaw Gateway over WebSocket, using Gateway protocol v4. The connection reconnects with backoff, discovers what the Gateway supports, and fetches the messages missed after a reconnect or a window restart. Protocol versions are handled by separate adapters, so a new version can be added without touching the rest.
+- Settings `openclaw.gateway.url`, `openclaw.gateway.transport` (`gateway`, `acpx` or `auto`) and `openclaw.gateway.protocolVersion`. With `auto`, the local acpx CLI is used when the Gateway cannot be reached.
+- Commands **OpenClaw: Connect to Gateway**, **OpenClaw: Pick Agent Session** and **OpenClaw: Reset Gateway Device Identity**, and device pairing with the Gateway.
+- An agent session picker with an indicator for runs already active, and session history that can be reopened and resumed.
+- Stop a running reply on the Gateway.
+- Answer the Gateway's command approvals, plugin approvals and questions in the chat. A screen-reader live region announces them and status changes.
+- Answers to side questions (`/btw`) appear next to the run they belong to.
+- Slash commands `/plan` and `/compact`.
+- Line-range mentions such as `@src/app.ts#L5-10`, and **OpenClaw: Insert Selection Mention** (`Alt+K`, or `Cmd+Alt+K` on macOS).
+- Settings `openclaw.chat.attachOpenFile`, `openclaw.chat.hideToolActivity` and `openclaw.dashboardUrl`.
+- Image attachments on the acpx transport.
 
 ### Changed
 
-- Compact composer suggestions into a hidden-by-default list with a disclosure toggle.
-- Preserve a valid grid dimension selection and keep `1x1` available before the first webview state sync.
-- Hide the thread close action when only one thread is open.
-
-### Fixed
-
-- Fix file-path detection so more rendered path formats are linkified, not just paths inside inline code spans.
-- Fix keyboard navigation in slash-command and `@`-file dropdowns so the active item is kept in view after rerenders.
-- Fix webview crash output escaping so crash summaries and linked paths render safely.
+- The project is renamed to Claw Code, with its own README, repository and homepage. Commands and settings keep the `openclaw.*` IDs.
+- The acpx transport reads the structured output of acpx (`--format json`) and passes the prompt through standard input. Each run ends exactly once, even when the process is killed or fails to start.
+- Conversation history sent to acpx is capped, and starts from the latest `/compact` summary.
+- Some settings run commands, carry the token, choose the agent, or change what it may approve. These now apply only from user settings; a workspace cannot set them.
+- `openclaw.autoConnect` runs the connect command only from user settings.
+- The `package.json` metadata describes Claw Code. It adds an issues link, uses the categories `AI` and `Chat`, and drops the `pnpm` field, which pnpm no longer reads.
+- Gateway error messages explain what went wrong. Authentication and protocol errors stop the reconnect attempts. A pending pairing pauses them, and rate limits slow them down.
 
 ### Removed
 
-- Remove the always-visible recommendation chip row in favor of the collapsible suggestions list.
+- Settings `openclaw.chat.thinkingLevel`, `openclaw.chat.temperature` and `openclaw.chat.maxTokens`.
+- The upstream README, `ROADMAP.md`, `TESTING.md` and `SUMMARY.md`. A new README and the documents under `docs/` replace them.
+- The upstream banner and screenshots (`assets/images/readme.png`, `single-chat.png`, `slash-commands.png`, `multi-thread.png`), which showed the old extension.
 
-### Docs
+### Fixed
 
-- Replace README screenshot placeholders with real chat screenshots for single-chat, slash-command, and multi-thread workflows.
+- Attachments on macOS were always rejected and sent as `[Could not read file]`.
+- File search on Windows did not match queries that contain `/`.
+- When **OpenClaw: Connect** failed, it showed the raw error instead of a readable one with credentials removed.
+- A tool toggle or uninstall was confirmed before the Tools view had refreshed. A failed refresh is now reported.
+- Errors that are not JavaScript `Error` objects were shown as `[object Object]`.
 
-## 0.2.0
+### Security
 
-### Added
+- The Gateway token is kept in VS Code's SecretStorage. A token in the old plaintext setting `openclaw.gateway.token` in user settings is moved there and deleted from `settings.json`, unless a different token is already saved, in which case it is only deleted. If SecretStorage or the deletion fails, the setting stays and a warning says so. A token in workspace settings is never used, and is deleted once the workspace is trusted.
+- A warning appears when the token would be sent unencrypted, over `ws://`, to a Gateway on another machine.
+- Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
+- The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. An agent error that quotes the prompt can still reach the log through the acpx stderr ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
+- `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, from the file checked when it was attached; on Windows, part of that check is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
+- A workspace's `.acpxrc.json` can redefine the commands acpx runs for agents and MCP servers, so it is used only after you approve that exact file.
+- Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
+- Replies are inserted into the webview only as Markdown that the extension host has sanitised, with unsafe links removed again in the webview; other text is escaped. The webview's content security policy admits only scripts and styles that carry a cryptographic nonce.
+- The dashboard opens only `http://` and `https://` URLs.
+- `brace-expansion` is overridden to `^5.0.7` for [GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp).
 
-- Add threading support with per-thread composers, state tracking, and bento-grid layout (`1x1`, `2x1`, `2x2`, etc.) controlled by a configurable dimension setting.
-- Add token usage tracking with a context-window progress bar, model-aware context limits, and per-thread usage metadata.
-- Add model source detection (API, Local, Gateway) with a configurable `openclaw.chat.source` override and color-coded source pills in the pane header.
-- Add thread status indicators (idle, running, complete, error, cancelled) with distinct styling per state.
-- Add thread export to Markdown or JSON via the `exportThread` command.
-- Add dynamic thread subject renaming based on slash commands, attached files, and conversation content.
-- Add grouped tool-call messages that collapse consecutive tool events into a single expandable entry with JSON details.
-- Add per-pane composers with independent completion state and recommendation chips scoped to each thread.
-- Add unit tests for `ChatService.getPermissionsForChatType` and `getWebviewContent` using Vitest.
-- Add a project roadmap (`ROADMAP.md`) covering planned features: voice chat, enhanced planning, DnD threads, bento threads, subagent selection, ephemeral messages, persistent memory, inline editing, terminal integration, git workflows, and more.
-- Add slash commands (`/explain`, `/fix`, `/review`, `/test`, `/refactor`, `/doc`, `/commit`, `/harden`, `/search`) with autocomplete dropdown and keyboard navigation.
-- Add context-aware recommendation chips that replace the static onboarding card and update based on the active editor, selection, and diagnostics.
-- Add a multi-step onboarding carousel with three slides: "Chat with your codebase", "Security-first hardening", and key setup tips, with smooth transitions, dot indicators, and Back/Next navigation.
-- Add Cursor-style `@`-mention file attachment so typing `@` in the chat input searches and attaches workspace files, with autocomplete dropdown, keyboard navigation, and mouse support.
-- Add in-chat dropdown selectors for chat type (Chat, Code, Review, Plan) and model/agent, replacing settings-only configuration with direct UI controls in the composer.
-- Add the `openclaw.chat.models` setting to customize which models appear in the model picker.
+### Development
 
-### Changed
+- The 2,160-line `extension.ts` is split into the modules under `src/core/`, `src/vscode/`, `src/webview/` and `src/overview/`.
+- Tests run on Vitest, with coverage thresholds of 93–95%. Linting uses oxlint with type-aware rules, and `pnpm run check:rules` enforces the development rules.
+- CI runs on Linux, Windows and macOS. It also checks the licences of production dependencies, and Dependabot proposes dependency updates.
+- New project documents:
+  - [roadmap](docs/roadmap.md);
+  - [engineering foundation](docs/engineering.md);
+  - [development rules](docs/development-rules.md);
+  - designs for features not built yet, under [docs/design/](docs/design/);
+  - `AGENTS.md`;
+  - a pull-request template.
 
-- Refactor pane grid to use CSS custom properties (`--grid-cols`, `--grid-rows`) for the bento layout instead of `auto-fit`, enabling explicit dimension control.
-- Upgrade pane styling with pill-shaped metadata badges, improved spacing, and a dedicated context-bar progress indicator.
-- Refactor tool-call message model from single entries to grouped `entries` arrays, reducing message noise during multi-tool sequences.
-- Move composer and recommendation rendering into per-thread functions (`renderComposer`, `renderComposerRecommendations`) for the threading model.
-- Inject command-specific editor context automatically into prompts, including active selection, file content, diagnostics, git diff, and staged changes.
-- Build augmented prompts in the extension so `acpx` receives richer, instruction-wrapped requests without backend changes.
-- Prepend chat-type-specific system instructions for Code, Review, and Plan modes so `acpx` receives role-appropriate context.
-- Persist onboarding completion in `globalState` so the carousel only appears on first use.
-- Keep plain Chat mode read-only by forcing `approve-reads` permissions even when the global chat permission setting is more permissive.
+### Merged pull requests
 
-### Thanks
-
-- Thanks @BunsDev <3
-
-## 0.1.0
-
-- Add a Chat panel in the OpenClaw sidebar for ephemeral gateway subagent conversations.
-- Spawn `acpx exec` with NDJSON streaming to chat with any codebase in the current workspace.
-- Support pop-out from sidebar to a standalone editor panel with full conversation transfer.
-- Stream assistant responses incrementally with tool-call badges shown inline.
-- Add `openclaw.chat.agent` and `openclaw.chat.permissions` settings for agent and permission configuration.
-- Register `OpenClaw: Open Chat`, `OpenClaw: Pop Out Chat`, and `OpenClaw: New Chat Session` commands.
-- Add `.env.example` for `VSCE_PAT` and `OVSX_TOKEN` and update publish script to pass PAT explicitly.
-
-## 0.0.9
-
-- Patch release.
-
-## 0.0.8
-
-- Replace the Hardening activity view with a nested Overview view that groups onboarding, operations, hardening, tools, and help.
-- Add a Tools section that reads `~/.openclaw/openclaw.json` and lists tools from `tools`, `mcp.tools`, and `capabilities.tools`.
-- Support per-tool enable/disable by updating `enabled` in config entries.
-- Add uninstall for tools by removing their config entries with confirmation.
-- Surface tool descriptions and source location in the tree item tooltips.
-- Add quick access to docs, dashboard, config, and hardening actions within the Overview view.
-
-## 0.0.7
-
-- Add a single publish script that runs prepublish plus VS Code Marketplace and Open VSX publishes.
-- Consolidate publishing into one command for repeatable release flow.
-
-## 0.0.6
-
-- Add the Model Setup Wizard command to run onboarding, pick providers, and open config/auth profiles.
-- Introduce the Security Hardening command with audit, fix, deep, and access summary workflows.
-- Add the OpenClaw activity bar container and Hardening view entry.
-- Add hardening configuration settings for mode and command prefix.
-- Update the README with model setup, security hardening, and WSL hardening guidance.
-- Add an Open VSX publish script with .env token loading and prepublish build.
-
-## 0.0.5
-
-- Add status bar accessibility metadata for screen readers.
-- Reuse shared label formatting to keep status bar updates consistent.
-- Consolidate install and migration prompts into a "More options" quick pick.
-- Offer install, docs, or settings shortcuts from error prompts.
-
-## 0.0.4
-
-- Add the beginner-friendly setup command and guided install actions when the CLI is missing.
-- Improve missing-CLI error handling with direct install, copy, docs, and settings actions.
-- Add legacy CLI migration prompts for the OpenClaw rename.
-- Include Node.js detection with guidance for installs when required.
-- Refresh README with guided setup and troubleshooting steps.
-
-## 0.0.3
-
-Whoopsies, did not publish.
-
-## 0.0.2
-
-- Update the extension icon with a circular mask for the marketplace.
-- Align visual branding with the OpenClaw assets.
-
-## 0.0.1
-
-- Initial release with status bar connect workflow.
+- [#1](https://github.com/OlehPendrakovskyi/claw-code/pull/1) Sprint 0: rebrand to Claw Code, oxlint, a first Gateway transport, CI, and `extension.ts` split into modules.
+- [#2](https://github.com/OlehPendrakovskyi/claw-code/pull/2), [#3](https://github.com/OlehPendrakovskyi/claw-code/pull/3), [#4](https://github.com/OlehPendrakovskyi/claw-code/pull/4), [#5](https://github.com/OlehPendrakovskyi/claw-code/pull/5) Dependabot: bump `actions/checkout`, `actions/setup-node`, `pnpm/action-setup` and a group of minor and patch updates.
+- [#8](https://github.com/OlehPendrakovskyi/claw-code/pull/8) Sprint 1: split `accessInfo` into submodules and adopt `lodash-es`.
+- [#9](https://github.com/OlehPendrakovskyi/claw-code/pull/9) Dependabot: bump TypeScript from 6.0.2 to 6.0.3.
+- [#10](https://github.com/OlehPendrakovskyi/claw-code/pull/10) Sprint 2: split `commands.ts` and `ChatViewProvider.ts` without changing behaviour.
+- [#11](https://github.com/OlehPendrakovskyi/claw-code/pull/11) Gateway chat over OpenClaw protocol v4, the acpx fallback, and a hardened webview.
+- [#12](https://github.com/OlehPendrakovskyi/claw-code/pull/12) Development rules from the review of #11.
+- [#13](https://github.com/OlehPendrakovskyi/claw-code/pull/13) Development rules 35–39 from a review of earlier PRs.
+- [#14](https://github.com/OlehPendrakovskyi/claw-code/pull/14) Unit tests for the v4 readers, dashboard URL validation and `ChatService` bounds.
+- [#15](https://github.com/OlehPendrakovskyi/claw-code/pull/15) Override `brace-expansion` to `^5.0.7` for GHSA-3jxr-9vmj-r5cp.
+- [#16](https://github.com/OlehPendrakovskyi/claw-code/pull/16) CI on Ubuntu, Windows and macOS; fix macOS attachments and Windows file search.
+- [#17](https://github.com/OlehPendrakovskyi/claw-code/pull/17) Development rules for cross-platform CI and portability.
+- [#19](https://github.com/OlehPendrakovskyi/claw-code/pull/19) One module for type guards, with a readers facade.
+- [#20](https://github.com/OlehPendrakovskyi/claw-code/pull/20) Shared utilities and one registry of constants.
+- [#21](https://github.com/OlehPendrakovskyi/claw-code/pull/21) One set of protocol readers, and unified protocol types.
+- [#22](https://github.com/OlehPendrakovskyi/claw-code/pull/22) Remove duplicated command helpers.
+- [#23](https://github.com/OlehPendrakovskyi/claw-code/pull/23), [#24](https://github.com/OlehPendrakovskyi/claw-code/pull/24) Dependabot: bump `pnpm/action-setup` to 6.1.0 and a group of minor and patch updates.
+- [#26](https://github.com/OlehPendrakovskyi/claw-code/pull/26) Settle duplicated logic: token counts, approval decisions, a shared bounded read loop, truncation wording and the protocol-mismatch code.
+- [#27](https://github.com/OlehPendrakovskyi/claw-code/pull/27) Development rules for unverified claims, unchecked registries and untested behaviour.
+- [#28](https://github.com/OlehPendrakovskyi/claw-code/pull/28) Run the tests on Vitest instead of Jest, and add rules 50–55.
+- [#29](https://github.com/OlehPendrakovskyi/claw-code/pull/29) Use `lodash-es` natively and drop the CommonJS `lodash` dev dependency.
+- [#31](https://github.com/OlehPendrakovskyi/claw-code/pull/31) Type partial mock factories with `Partial<typeof import(...)>`.
+- [#32](https://github.com/OlehPendrakovskyi/claw-code/pull/32) The project roadmap, with Sprint 1 audited against the code.
+- [#33](https://github.com/OlehPendrakovskyi/claw-code/pull/33) Reorganise the development rules, enforce them in CI, and harden credential redaction. Includes [#34](https://github.com/OlehPendrakovskyi/claw-code/pull/34): type-aware linting, `check:rules`, coverage thresholds, and fixes for prompt text in logs (#35), unredacted acpx stderr (#36), the Tools view refresh (#37), the raw Connect error (#38) and a session-key type guard (#39).

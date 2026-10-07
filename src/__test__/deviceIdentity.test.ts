@@ -18,7 +18,7 @@ const KNOWN_PUBLIC_KEY = 'kNeQYMUWDXzuYR3hVvnYwIHRQqsxxefxmqEZEyZupB0';
 const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 const DEVICE_SIGNATURE_SKEW_MS = 120_000;
 
-const hello = { token: 'shared-token', minProtocol: 4, maxProtocol: 4, clientVersion: '0.2.1', platform: 'Linux ' };
+const hello = { token: 'shared-token', minProtocol: 4, maxProtocol: 4, clientVersion: '0.1.0', platform: 'Linux ' };
 const challenge = { nonce: '7f7c6b0e-0d8e-4f56-9d1a-2c1d0f1b9e21', issuedAtMs: 1790605209429 };
 
 type SentConnect = {
