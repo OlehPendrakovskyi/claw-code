@@ -114,7 +114,7 @@ code --install-extension claw-code.vsix --force   # or: cursor --install-extensi
 > **The extension ID will change before the first release.** Today's build installs as `openknot.claw-code`, a publisher name inherited from the upstream project. The public release will use a publisher that this project owns. VS Code treats the new ID as a different extension, which has two effects:
 >
 > - Uninstall the old build first: `code --uninstall-extension openknot.claw-code`.
-> - VS Code keeps stored secrets per extension ID. After the switch, you enter the Gateway token again and pair the device again.
+> - VS Code keeps stored secrets and extension state per extension ID. After the switch, you enter the Gateway token again, pair the device again, and approve each workspace's `.acpxrc.json` again.
 
 ## Connect to your Gateway
 
@@ -134,7 +134,7 @@ The first time you connect, the Gateway may ask you to approve this device. This
 - `acpx`: always the local CLI.
 - `auto` (the default): the Gateway when it can be reached, otherwise acpx.
 
-With acpx, `openclaw.chat.agent` chooses the agent and `openclaw.chat.permissions` decides what it may do. A workspace can redefine the agent command in an `.acpxrc.json` file. Claw Code uses that file only after you approve it, and asks again whenever the file changes.
+With acpx, `openclaw.chat.agent` chooses the agent and `openclaw.chat.permissions` decides what it may do. A workspace can redefine the commands acpx runs for agents and MCP servers in an `.acpxrc.json` file. Claw Code uses that file only after you approve it, and asks again whenever the file changes.
 
 ## Where your code lives
 
@@ -197,7 +197,7 @@ Some settings run commands, carry the token, or change what the agent may do. Yo
 - **No telemetry.** On the Gateway transport, the only connection is the WebSocket to your Gateway.
 - **The acpx transport is configured outside the extension.** Your prompts and the context you attach go to the agent and model provider that your local `acpx` uses.
 - **Secrets stay in SecretStorage.** This covers the Gateway token and the device identity. A token found in the old plaintext setting `openclaw.gateway.token` in your user settings is moved into SecretStorage and deleted from `settings.json`. If a token is already saved, a different one in the setting is deleted, not adopted. If SecretStorage cannot store the token, or the setting cannot be deleted, the token stays in `settings.json` and a warning tells you what to do. A token in workspace settings is never used; it is deleted once you trust the workspace.
-- **A workspace you open cannot redirect you.** Only your user settings can change where the token goes, which commands run, or what the agent may approve.
+- **A workspace you open cannot redirect you silently.** Only your user settings can change where the token goes, which commands Claw Code runs, or what the agent may approve. The one exception needs your approval: on the acpx transport, a workspace's `.acpxrc.json` can change the commands acpx runs for agents and MCP servers, and it is used only after you approve that exact file (see [Local CLI fallback](#local-cli-fallback)).
 - **Attachments come from your workspace or from your own choice.** An `@`-mention resolves only to a file inside the workspace, with symlink escapes rejected. A file from outside the workspace is attached only when you pick it yourself: in the `+` file dialog, as an open editor in the file search, or by dropping it, which asks for confirmation first. Every attachment is read up to a size limit, from the file checked when it was attached. On Windows, part of that check is missing for now ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
 - **Logs are cleaned of secrets.** Before a log line or an error message is written, credentials in it are removed. This covers URL user names and passwords, tokens in query strings, and `key=value` secrets. The extension does not log prompt text either. One gap remains: if an agent's error message quotes your prompt, that text can reach the log ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 

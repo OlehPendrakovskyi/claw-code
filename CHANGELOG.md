@@ -53,7 +53,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
 - The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. An agent error that quotes the prompt can still reach the log through the acpx stderr ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 - `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, from the file checked when it was attached; on Windows, part of that check is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
-- A workspace's `.acpxrc.json` can redefine the agent command, so it is used only after you approve that exact file.
+- A workspace's `.acpxrc.json` can redefine the commands acpx runs for agents and MCP servers, so it is used only after you approve that exact file.
 - Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
 - Replies are inserted into the webview only as Markdown that the extension host has sanitised, with unsafe links removed again in the webview; other text is escaped. The webview's content security policy admits only scripts and styles that carry a cryptographic nonce.
 - The dashboard opens only `http://` and `https://` URLs.
