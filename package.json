@@ -321,6 +321,7 @@
   "dependencies": {
     "@create-markdown/core": "^2.0.3",
     "@create-markdown/preview": "^2.0.3",
+    "koffi": "3.3.2",
     "lodash-es": "^4.18.1",
     "ws": "^8.22.0"
   }
