@@ -41,20 +41,15 @@ jobs:
       - name: Diagnose pnpm (temporary)
         if: runner.os == 'Windows'
         run: |
-          Get-Command pnpm -All | Format-List Name,CommandType,Source
-          Get-ChildItem $env:PNPM_HOME | Format-Table Name,Length
-          Write-Host '--- pnpm.ps1'; Get-Content (Join-Path $env:PNPM_HOME 'pnpm.ps1') -ErrorAction SilentlyContinue
-          Write-Host '--- pnpm.cmd'; Get-Content (Join-Path $env:PNPM_HOME 'pnpm.cmd') -ErrorAction SilentlyContinue
-          Write-Host '--- pwsh: pnpm --version'; pnpm --version; Write-Host "exit=$LASTEXITCODE"
-          Write-Host '--- pwsh: pnpm.cmd --version'; pnpm.cmd --version; Write-Host "exit=$LASTEXITCODE"
-          Write-Host '--- cmd: pnpm --version'; cmd /c "pnpm --version"; Write-Host "exit=$LASTEXITCODE"
-
-      - name: Diagnose pnpm under bash (temporary)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          type -a pnpm || true
-          pnpm --version; echo "exit=$?"
+          $dir = Join-Path $env:PNPM_HOME '..\pnpm'
+          Get-ChildItem $dir | Format-Table Name,Length,Mode
+          Write-Host '--- package.json'; Get-Content (Join-Path $dir 'package.json') | Select-Object -First 25
+          Write-Host '--- first bytes of pnpm'; [System.IO.File]::ReadAllBytes((Join-Path $dir 'pnpm'))[0..3] -join ','
+          Write-Host '--- captured: pnpm --version'; $out = pnpm --version 2>&1 | Out-String; Write-Host "out=[$out] exit=$LASTEXITCODE"
+          Write-Host '--- pnpm.cmd store path --silent'; pnpm.cmd store path --silent; Write-Host "exit=$LASTEXITCODE"
+          Write-Host '--- node bin'; Get-ChildItem (Join-Path $dir 'bin') -ErrorAction SilentlyContinue | Format-Table Name,Length
+          Get-ChildItem (Join-Path $dir 'bin') -Filter *.*js -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "node $($_.Name):"; node $_.FullName --version; Write-Host "exit=$LASTEXITCODE" }
+          Write-Host '--- npx pnpm@12'; npx --yes pnpm@12 --version; Write-Host "exit=$LASTEXITCODE"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
