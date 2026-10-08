@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { TextDecoder, TextEncoder } from 'util';
 import { isRecord } from './accessInfo/util';
+import { DEFAULT_HARDENING_COMMAND } from './constants';
 
 export type HardeningMode = 'full' | 'audit' | 'auditFix';
 
@@ -58,8 +59,7 @@ export async function loadOpenClawConfigRecord(): Promise<{
 
 export function getHardeningCommandPrefix() {
     const config = vscode.workspace.getConfiguration('openclaw');
-    const prefix = (config.get<string>('hardening.command') ?? 'openclaw').trim();
-    return prefix;
+    return (config.get<string>('hardening.command') ?? '').trim() || DEFAULT_HARDENING_COMMAND;
 }
 
 export function getHardeningMode(): HardeningMode {

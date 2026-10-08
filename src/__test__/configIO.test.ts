@@ -101,6 +101,13 @@ describe('getHardeningCommandPrefix', () => {
         expect(getHardeningCommandPrefix()).toBe('openclaw');
     });
 
+    it('falls back to openclaw when the setting is cleared or blank', () => {
+        mockConfigGet('');
+        expect(getHardeningCommandPrefix()).toBe('openclaw');
+        mockConfigGet('   ');
+        expect(getHardeningCommandPrefix()).toBe('openclaw');
+    });
+
     it('uses the configured prefix, trimmed', () => {
         mockConfigGet('  wsl openclaw  ');
         expect(getHardeningCommandPrefix()).toBe('wsl openclaw');

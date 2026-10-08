@@ -68,6 +68,12 @@ export const SETTINGS = {
   GATEWAY_PROTOCOL_VERSION: 'openclaw.gateway.protocolVersion',
 } as const;
 
+/** Default of `openclaw.command`, mirroring package.json; a blank setting falls back to it. */
+export const DEFAULT_CONNECT_COMMAND = 'openclaw status';
+
+/** Default of `openclaw.hardening.command`, mirroring package.json; a blank setting falls back to it. */
+export const DEFAULT_HARDENING_COMMAND = 'openclaw';
+
 /** Placeholder value reported when a gateway field is missing. */
 export const UNKNOWN = 'unknown';
 
