@@ -228,12 +228,6 @@ async function withToolEntry(
 /** Ensure the hardening command is usable, prompting for setup when missing. */
 export async function ensureHardeningCommandReady(): Promise<{ prefix: string; mode: HardeningMode } | null> {
     const prefix = getHardeningCommandPrefix();
-    if (!prefix) {
-        vscode.window.showErrorMessage('OpenClaw hardening command is empty. Update OpenClaw: Hardening Command.');
-        await openHardeningSettings();
-        return null;
-    }
-
     const parsed = splitHardeningCommand(prefix);
     if (!parsed) {
         vscode.window.showErrorMessage(

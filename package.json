@@ -135,7 +135,7 @@
           "type": "string",
           "default": "openclaw status",
           "scope": "application",
-          "description": "Command to run when connecting (e.g. 'openclaw status' or 'wsl openclaw status'). User settings only: it runs in a terminal, so a workspace cannot choose it."
+          "description": "Command to run when connecting (e.g. 'openclaw status' or 'wsl openclaw status'). Leave empty for the default. User settings only: it runs in a terminal, so a workspace cannot choose it."
         },
         "openclaw.hardening.mode": {
           "type": "string",
@@ -152,7 +152,7 @@
           "type": "string",
           "default": "openclaw",
           "scope": "application",
-          "description": "Command prefix to run OpenClaw hardening (e.g. 'openclaw' or 'wsl openclaw'). User settings only: it names the executable to run, so a workspace cannot choose it."
+          "description": "Command prefix to run OpenClaw hardening (e.g. 'openclaw' or 'wsl openclaw'). Leave empty for the default. User settings only: it names the executable to run, so a workspace cannot choose it."
         },
         "openclaw.chat.agent": {
           "type": "string",

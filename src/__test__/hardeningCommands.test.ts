@@ -123,16 +123,6 @@ describe('hardening commands', () => {
             resetHardeningMocks();
         });
 
-        it('rejects an empty command and opens the hardening settings', async () => {
-            vi.mocked(getHardeningCommandPrefix).mockReturnValue('');
-
-            await expect(ensureHardeningCommandReady()).resolves.toBeNull();
-
-            expect(vscode.window.showErrorMessage).toHaveBeenCalledWith('OpenClaw hardening command is empty. Update OpenClaw: Hardening Command.');
-            expect(openHardeningSettings).toHaveBeenCalledOnce();
-            expect(isCommandAvailable).not.toHaveBeenCalled();
-        });
-
         it('rejects a command with shell metacharacters and opens the hardening settings', async () => {
             vi.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw; rm -rf ~');
 
@@ -254,7 +244,7 @@ describe('hardening commands', () => {
         });
 
         it('sends nothing when the command is not ready', async () => {
-            vi.mocked(getHardeningCommandPrefix).mockReturnValue('');
+            vi.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw; rm');
 
             await runHardeningFlow();
 
@@ -419,7 +409,7 @@ describe('hardening commands', () => {
         });
 
         it('opens nothing when the command is not ready', async () => {
-            vi.mocked(getHardeningCommandPrefix).mockReturnValue('');
+            vi.mocked(getHardeningCommandPrefix).mockReturnValue('openclaw; rm');
 
             await showHardeningAccessSummary();
 

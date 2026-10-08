@@ -29,6 +29,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - Conversation history sent to acpx is capped, and starts from the latest `/compact` summary.
 - Some settings run commands, carry the token, choose the agent, or change what it may approve. These now apply only from user settings; a workspace cannot set them.
 - `openclaw.autoConnect` runs the connect command only from user settings.
+- A blank `openclaw.hardening.command` now falls back to `openclaw`, as a blank `openclaw.command` already falls back to `openclaw status`, instead of stopping with an error ([#41](https://github.com/OlehPendrakovskyi/claw-code/issues/41)).
 - The `package.json` metadata describes Claw Code. It adds an issues link, uses the categories `AI` and `Chat`, and drops the `pnpm` field, which pnpm no longer reads.
 - Gateway error messages explain what went wrong. Authentication and protocol errors stop the reconnect attempts. A pending pairing pauses them, and rate limits slow them down.
 

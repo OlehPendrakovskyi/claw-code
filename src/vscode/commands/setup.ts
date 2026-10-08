@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as os from 'os';
 import * as path from 'path';
 import {
     LEGACY_CLI_ALIASES,
@@ -17,6 +16,7 @@ import { log, execFileAsync, copyToClipboard, isOpenClawExecutable, type QuickPi
 import { getSetupTerminal, getOpenClawTerminal } from './terminals';
 import { copyInstallCommand, openDocs, openOnboardDocs, openDashboard, openUpdateDocs, openNodeDocs } from './docs';
 import { errorMessage } from '../../core/errors';
+import { DEFAULT_CONNECT_COMMAND } from '../../core/constants';
 import { redactText } from '../../core/accessInfo/redact';
 
 const OPENCLAW_PROVIDERS_DOCS_URL = 'https://docs.openclaw.ai/providers';
@@ -58,19 +58,8 @@ export async function connect() {
     try {
         setStatus('connecting');
 
-        const platform = os.platform();
-        const isWindows = platform === 'win32';
-
         const config = vscode.workspace.getConfiguration('openclaw');
-        const configuredCommand = (config.get<string>('command') ?? '').trim();
-        const defaultCommand = isWindows ? 'openclaw status' : 'openclaw status';
-        let command = configuredCommand.length > 0 ? configuredCommand : defaultCommand;
-
-        if (!command) {
-            setStatus('idle');
-            vscode.window.showErrorMessage('OpenClaw command is empty. Update OpenClaw: Command in settings.');
-            return;
-        }
+        let command = (config.get<string>('command') ?? '').trim() || DEFAULT_CONNECT_COMMAND;
 
         let executable = command.split(/\s+/)[0];
         const legacyExecutable = getLegacyExecutable(executable);

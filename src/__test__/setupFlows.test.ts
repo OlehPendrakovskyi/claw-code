@@ -206,6 +206,16 @@ describe('setup flows', () => {
             expect(terminals.openclaw.sendText).toHaveBeenCalledWith('openclaw status');
         });
 
+        it('falls back to the default command when the setting was cleared to an empty string', async () => {
+            useCommandSetting('');
+            setAvailable('node', 'openclaw');
+
+            await connect();
+
+            expect(terminals.openclaw.sendText).toHaveBeenCalledWith('openclaw status');
+            expect(errorMessage).not.toHaveBeenCalled();
+        });
+
         it('runs a custom executable without requiring node', async () => {
             useCommandSetting('  mytool --flag  ');
             setAvailable('mytool');
