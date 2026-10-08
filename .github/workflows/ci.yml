@@ -38,6 +38,24 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Diagnose pnpm (temporary)
+        if: runner.os == 'Windows'
+        run: |
+          Get-Command pnpm -All | Format-List Name,CommandType,Source
+          Get-ChildItem $env:PNPM_HOME | Format-Table Name,Length
+          Write-Host '--- pnpm.ps1'; Get-Content (Join-Path $env:PNPM_HOME 'pnpm.ps1') -ErrorAction SilentlyContinue
+          Write-Host '--- pnpm.cmd'; Get-Content (Join-Path $env:PNPM_HOME 'pnpm.cmd') -ErrorAction SilentlyContinue
+          Write-Host '--- pwsh: pnpm --version'; pnpm --version; Write-Host "exit=$LASTEXITCODE"
+          Write-Host '--- pwsh: pnpm.cmd --version'; pnpm.cmd --version; Write-Host "exit=$LASTEXITCODE"
+          Write-Host '--- cmd: pnpm --version'; cmd /c "pnpm --version"; Write-Host "exit=$LASTEXITCODE"
+
+      - name: Diagnose pnpm under bash (temporary)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          type -a pnpm || true
+          pnpm --version; echo "exit=$?"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
