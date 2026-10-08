@@ -32,11 +32,26 @@ jobs:
         with:
           version: 12
 
+      # pnpm 12's npm-generated Windows shims call the extensionless `pnpm` beside `pnpm.exe`, which does not run
+      # as pnpm (pnpm/pnpm#15688): every pnpm step then passed without doing anything. Its directory goes first on
+      # PATH, so `pnpm` is `pnpm.exe` itself.
+      - name: Put pnpm.exe on PATH
+        if: runner.os == 'Windows'
+        run: (Resolve-Path (Join-Path $env:PNPM_HOME '..\pnpm')).Path | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
+
+      # A pnpm that prints no version would let every later step pass without running.
+      - name: Check pnpm runs
+        shell: bash
+        run: |
+          version="$(pnpm --version)"
+          echo "pnpm $version"
+          test -n "$version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

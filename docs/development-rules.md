@@ -1,6 +1,6 @@
 # Development rules
 
-Living document, last updated 2026-10-07. It started as the claw-code retrospective of 2026-09-27 (PR #8/#10, Sprints 1–2; PR #11 MVP: 28 Copilot rounds, ~90 findings, ~25 fix commits, a day of fixes). Every later section was added from a real review cycle; the latest, R61–R68, come from PR #33 (with #34, merged into it: about 330 Copilot findings over some 165 reviewed commits) and PR #44.
+Living document, last updated 2026-10-08. It started as the claw-code retrospective of 2026-09-27 (PR #8/#10, Sprints 1–2; PR #11 MVP: 28 Copilot rounds, ~90 findings, ~25 fix commits, a day of fixes). Every later section was added from a real review cycle; the latest, R69, comes from PR #47, and R61–R68 before it from PR #33 (with #34, merged into it: about 330 Copilot findings over some 165 reviewed commits) and PR #44.
 
 ## How to read and cite this file
 
@@ -19,7 +19,7 @@ Living document, last updated 2026-10-07. It started as the claw-code retrospect
 | [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66 |
 | [Filesystem and paths](#filesystem-and-paths) | R6 (absorbs S5), R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54 |
-| [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45 |
+| [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
 | [Documentation, claims and registries](#documentation-claims-and-registries) | R47, R52, R48, R56, R57, R58, R59, R68 |
 | [Process and review](#process-and-review) | R8, R9, R19, R20, R21, R60, S6, R55, R67 |
 | [Review checklist](#review-checklist-recurring-bug-classes) | Recurring bug classes |
@@ -211,6 +211,9 @@ Basis: PR #16 turned a copied Windows job into a ubuntu/windows/macos matrix and
 
 **R45. Paths shown to a user are normalised to forward slashes on every OS.** *General, MUST.* A `relativePath` compared against a query typed as `src/app` must be `path.relative(...).split(path.sep).join('/')` — otherwise it matches on POSIX and fails on Windows, which is a product bug (file search), not just a test concern.
 *Check:* the `handleFileSearch` tests in `viewMessagingHandlers.test.ts`, on the Windows CI leg.
+
+**R69. A green CI leg proves only what it shows it ran.** *General, MUST.* A step that exits 0 with no output is not evidence that its tool ran. Before any step that depends on it, each leg checks that its toolchain runs: the tool prints its expected output (a non-empty version), or the step fails. When a leg is added or its toolchain setup changes, read one of its logs: the test count and the step durations must match the other legs. (PR #47: pnpm 12's npm-generated Windows shims made every pnpm command a silent no-op, so the Windows leg passed with install, build and tests each finishing in about a second. Found only when PR #46's Windows code needed real evidence.)
+*Check:* the `Check pnpm runs` step in `.github/workflows/ci.yml`; review compares the legs' durations when the workflow changes.
 
 ## Documentation, claims and registries
 
