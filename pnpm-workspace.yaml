@@ -2,5 +2,12 @@ allowBuilds:
   esbuild: true
   "@parcel/watcher": true
   unrs-resolver: true
+  # Its install script builds from source; the prebuilt @koromix/koffi-* binaries make that unnecessary.
+  koffi: false
 overrides:
   "minimatch@10>brace-expansion": ^5.0.7
+# The packaged extension carries koffi's native binaries for every OS that uses them
+# (src/core/handlePath.ts), so they are installed whatever OS builds it.
+supportedArchitectures:
+  os: [ current, win32, darwin ]
+  cpu: [ current, x64, arm64 ]

@@ -52,7 +52,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - A warning appears when the token would be sent unencrypted, over `ws://`, to a Gateway on another machine.
 - Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
 - The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. An agent error that quotes the prompt can still reach the log through the acpx stderr ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
-- `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, from the file checked when it was attached; on Windows, part of that check is still missing ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
+- `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, through a handle whose own path the operating system confirms is the file checked when it was attached: the fd link on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandleW` on Windows, where a final symlink or junction is not followed either. On any other system attachments are refused ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
 - A workspace's `.acpxrc.json` can redefine the commands acpx runs for agents and MCP servers, so it is used only after you approve that exact file.
 - Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
 - Replies are inserted into the webview only as Markdown that the extension host has sanitised, with unsafe links removed again in the webview; other text is escaped. The webview's content security policy admits only scripts and styles that carry a cryptographic nonce.
@@ -62,6 +62,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 ### Development
 
 - The 2,160-line `extension.ts` is split into the modules under `src/core/`, `src/vscode/`, `src/webview/` and `src/overview/`.
+- The runtime dependency [koffi](https://koffi.dev/) makes the macOS and Windows system calls of the attachment reader. Its native binaries for macOS and Windows, x64 and arm64, are copied into `out/native` at build time, since the package carries no `node_modules`.
 - Tests run on Vitest, with coverage thresholds of 93–95%. Linting uses oxlint with type-aware rules, and `pnpm run check:rules` enforces the development rules.
 - CI runs on Linux, Windows and macOS. It also checks the licences of production dependencies, and Dependabot proposes dependency updates.
 - New project documents:

@@ -2,13 +2,7 @@ import { escape as escapeHtml } from 'lodash-es';
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { promises as fsp, constants as fsConstants } from 'fs';
-import { decodeLsofName, lsofNameForFd, lsofShowsUnambiguously } from './lsofFdPath';
-
-/** O_NONBLOCK on POSIX, absent on Windows: a blocking O_RDONLY open on a
- *  FIFO (named pipe) parks the caller until a writer appears, so every
- *  attachment open combines it with O_NOFOLLOW and lets the regular-file
- *  checks below reject special files after a non-blocking open. */
-const openNonBlock = process.platform === 'win32' ? 0 : fsConstants.O_NONBLOCK;
+import { macHandlePath, openWindowsNoFollow } from '../core/handlePath';
 import { TextDecoder } from 'util';
 import { markdownToHTML } from '@create-markdown/preview';
 import { ChatService, PROMPT_MAX_BYTES } from '../chat/ChatService';
@@ -251,30 +245,16 @@ function lineRangeLabel(lineStart?: number, lineEnd?: number): string | undefine
     return end === lineStart ? String(lineStart) : `${lineStart}-${end}`;
 }
 
-const FD_DIR = '/dev/fd/';
-
-/** Whether an opened handle still refers to the file at canonical path
- *  `expected`, judged by the OS's handle view rather than live path state.
- *
- *  The fd link is anchored to the opened inode, so a parent directory
- *  swapped before open and restored afterwards still shows the swap, which
- *  the path-based checks around it cannot see.
- *  - Linux always provides /proc/self/fd, so a lookup that fails or points
- *    elsewhere (including a deleted file's " (deleted)" suffix) rejects.
- *  - macOS has no fd link that Node can read the full path from, so lsof
- *    reports it, and any path but `expected` rejects, as does no answer.
- *    Only when `expected` holds a caret or control character, which lsof
- *    prints ambiguously, does /dev/fd decide: it answers `/dev/fd/<name of
- *    the opened file>`, so a lookup that fails or names another file
- *    rejects, and only a same-named file in another directory gets past.
- *  - Other POSIX systems offer /dev/fd at best, and FreeBSD without
- *    `linrdlnk` echoes the fd path back, which carries no location. They
- *    rely on the identity checks, as Windows does.
- *  - Windows has no fd view. */
+/** Whether an opened POSIX handle still refers to the file at canonical path
+ *  `expected`, judged by the OS's view of the handle rather than live path
+ *  state. That view follows the opened file, so a parent directory swapped
+ *  before the open and restored afterwards still shows the swap, which the
+ *  path-based checks around it cannot see.
+ *  - Linux: the /proc/self/fd link; a lookup that fails or points elsewhere
+ *    (including a deleted file's " (deleted)" suffix) rejects.
+ *  - macOS: `F_GETPATH` ({@link macHandlePath}); no answer rejects.
+ *  - Any other system has no such view, so the file is refused (R6). */
 async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise<boolean> {
-    if (process.platform === 'win32') {
-        return true;
-    }
     if (process.platform === 'linux') {
         try {
             return (await fsp.realpath(`/proc/self/fd/${handle.fd}`)) === expected;
@@ -282,25 +262,10 @@ async function handleIsAtPath(handle: fsp.FileHandle, expected: string): Promise
             return false;
         }
     }
-    const fdPath = `${FD_DIR}${handle.fd}`;
     if (process.platform === 'darwin') {
-        if (lsofShowsUnambiguously(expected)) {
-            const lsofName = await lsofNameForFd(handle.fd);
-            return lsofName !== undefined && decodeLsofName(lsofName) === expected;
-        }
-        try {
-            const resolved = await fsp.realpath(fdPath);
-            return resolved === `${FD_DIR}${path.basename(expected)}` || resolved === expected;
-        } catch {
-            return false;
-        }
+        return (await macHandlePath(handle.fd)) === expected;
     }
-    try {
-        const resolved = await fsp.realpath(fdPath);
-        return resolved === fdPath || resolved === expected;
-    } catch {
-        return true;
-    }
+    return false;
 }
 
 /** Mime type for an image attachment path, by extension. */
@@ -369,22 +334,29 @@ const SECTION_SEPARATOR = '\n\n';
 
 class AttachmentTooLargeError extends Error {}
 
-/** Read an attachment through a verified handle (steps 1-5 of the hardening
- *  described on {@link readAttachments}), so the bytes returned are exactly
- *  those of the validated file. Throws on any failed check, and
- *  AttachmentTooLargeError when the file exceeds `maxBytes`. */
+/** Read an attachment through a verified handle (the hardening described on
+ *  {@link readAttachments}), so the bytes returned are exactly those of the
+ *  validated file. Throws on any failed check, and AttachmentTooLargeError
+ *  when the file exceeds `maxBytes`. */
 async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
     // Exact match: even a case-only difference can be another file on a case-sensitive volume.
     if ((await fsp.realpath(p)) !== p) {
         throw new Error('attachment path no longer canonical');
     }
-    const noFollow = process.platform === 'win32' ? 0 : fsConstants.O_NOFOLLOW;
-    const handle = await fsp.open(p, fsConstants.O_RDONLY | noFollow | openNonBlock);
+    const bytes = process.platform === 'win32' ? await readWindowsHandle(p, maxBytes) : await readPosixHandle(p, maxBytes);
+    if ((await fsp.realpath(p)) !== p) {
+        throw new Error('attachment path changed during read');
+    }
+    return bytes;
+}
+
+async function readPosixHandle(p: string, maxBytes: number): Promise<Buffer> {
+    // O_NONBLOCK: a blocking open of a FIFO would park the send until a writer
+    // appears; the regular-file check below rejects it instead.
+    const handle = await fsp.open(p, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
     try {
         const opened = await handle.stat();
         const current = await fsp.lstat(p);
-        // O_NONBLOCK lets a FIFO or other special file pass the open; reject
-        // it here, since reading a FIFO would block the send indefinitely.
         if (!opened.isFile() || !current.isFile()) {
             throw new Error('attachment path is not a regular file');
         }
@@ -394,20 +366,39 @@ async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
         if (!(await handleIsAtPath(handle, p))) {
             throw new Error('attachment opened outside its canonical path');
         }
-        if (opened.size > maxBytes) {
-            throw new AttachmentTooLargeError();
-        }
-        const bytes = await readBoundedAsync(handle, maxBytes, opened.size);
-        if (bytes.length > maxBytes) {
-            throw new AttachmentTooLargeError();
-        }
-        if ((await fsp.realpath(p)) !== p) {
-            throw new Error('attachment path changed during read');
-        }
-        return bytes;
+        return await readWithinLimit(handle, opened.size, maxBytes);
     } finally {
         await handle.close();
     }
+}
+
+async function readWindowsHandle(p: string, maxBytes: number): Promise<Buffer> {
+    const file = await openWindowsNoFollow(p);
+    if (!file) {
+        throw new Error('attachment could not be opened without following links');
+    }
+    try {
+        if (!file.isRegularFile) {
+            throw new Error('attachment path is not a regular file');
+        }
+        if (file.finalPath !== p) {
+            throw new Error('attachment opened outside its canonical path');
+        }
+        return await readWithinLimit(file, file.size, maxBytes);
+    } finally {
+        file.close();
+    }
+}
+
+async function readWithinLimit(handle: Parameters<typeof readBoundedAsync>[0], size: number, maxBytes: number): Promise<Buffer> {
+    if (size > maxBytes) {
+        throw new AttachmentTooLargeError();
+    }
+    const bytes = await readBoundedAsync(handle, maxBytes, size);
+    if (bytes.length > maxBytes) {
+        throw new AttachmentTooLargeError();
+    }
+    return bytes;
 }
 
 /** Read attachment files into prompt-ready text blocks, honoring optional 1-based line ranges.
@@ -417,25 +408,21 @@ async function readVerifiedBytes(p: string, maxBytes: number): Promise<Buffer> {
  *  through an opened handle instead of a re-opened path string:
  *  1. Re-verify realpath up front — a changed path means a symlink was
  *     swapped in since validation (reject).
- *  2. Open the final component with O_NOFOLLOW (POSIX) so a last-instant
- *     leaf swap cannot redirect the read outside the workspace. The open
- *     also carries O_NONBLOCK: a FIFO's blocking O_RDONLY open would park
- *     the send until a writer attaches, before the regular-file check can
- *     reject it.
- *  3. Compare the opened handle's identity (dev/ino) against a fresh lstat
- *     of the path. This covers Windows too, where O_NOFOLLOW is unavailable:
- *     a symlink/junction swapped in at the final component yields a mismatch
- *     instead of foreign content.
- *  4. Verify the opened handle's own location via the fd link
- *     ({@link handleIsAtPath}): it is anchored to the opened inode, so an
- *     intermediate-directory swap that happened before open is exposed even
- *     if the attacker reverts the directory before the later checks — the
- *     pre-open realpath and the identity comparison both read live path
- *     state.
+ *  2. Open the final component without following it, so a last-instant
+ *     leaf swap cannot redirect the read outside the workspace: O_NOFOLLOW
+ *     on POSIX (with O_NONBLOCK, so a FIFO is refused rather than waited
+ *     on), FILE_FLAG_OPEN_REPARSE_POINT on Windows, where a handle that is
+ *     itself a symlink or junction is refused.
+ *  3. On POSIX, compare the opened handle's identity (dev/ino) against a
+ *     fresh lstat of the path.
+ *  4. Verify the opened handle's own path through the OS: the fd link on
+ *     Linux, F_GETPATH on macOS, GetFinalPathNameByHandleW on Windows. It is
+ *     anchored to the opened file, so an intermediate-directory swap that
+ *     happened before the open is exposed even if the attacker reverts the
+ *     directory before the later checks — the pre-open realpath and the
+ *     identity comparison both read live path state. Any other platform, or
+ *     one where the native helper cannot load, refuses the file (R6).
  *  5. Re-canonicalize the path after the read and discard on any drift.
- *  Where the OS offers no resolvable fd link (Windows, macOS), the
- *  swap-revert window relies on the dev/ino comparison and the
- *  re-canonicalizations alone.
  */
 export async function readAttachments(
     attachments: Attachment[],
