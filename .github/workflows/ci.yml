@@ -32,24 +32,26 @@ jobs:
         with:
           version: 12
 
+      # pnpm 12's npm-generated Windows shims call the extensionless `pnpm` beside `pnpm.exe`, which does not run
+      # as pnpm (pnpm/pnpm#15688): every pnpm step then passed without doing anything. Its directory goes first on
+      # PATH, so `pnpm` is `pnpm.exe` itself.
+      - name: Put pnpm.exe on PATH
+        if: runner.os == 'Windows'
+        run: (Resolve-Path (Join-Path $env:PNPM_HOME '..\pnpm')).Path | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
           cache: pnpm
 
-      - name: Diagnose pnpm (temporary)
-        if: runner.os == 'Windows'
+      # A pnpm that prints no version would let every later step pass without running.
+      - name: Check pnpm runs
+        shell: bash
         run: |
-          $dir = Join-Path $env:PNPM_HOME '..\pnpm'
-          Get-ChildItem $dir | Format-Table Name,Length,Mode
-          Write-Host '--- package.json'; Get-Content (Join-Path $dir 'package.json') | Select-Object -First 25
-          Write-Host '--- first bytes of pnpm'; [System.IO.File]::ReadAllBytes((Join-Path $dir 'pnpm'))[0..3] -join ','
-          Write-Host '--- captured: pnpm --version'; $out = pnpm --version 2>&1 | Out-String; Write-Host "out=[$out] exit=$LASTEXITCODE"
-          Write-Host '--- pnpm.cmd store path --silent'; pnpm.cmd store path --silent; Write-Host "exit=$LASTEXITCODE"
-          Write-Host '--- node bin'; Get-ChildItem (Join-Path $dir 'bin') -ErrorAction SilentlyContinue | Format-Table Name,Length
-          Get-ChildItem (Join-Path $dir 'bin') -Filter *.*js -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "node $($_.Name):"; node $_.FullName --version; Write-Host "exit=$LASTEXITCODE" }
-          Write-Host '--- npx pnpm@12'; npx --yes pnpm@12 --version; Write-Host "exit=$LASTEXITCODE"
+          version="$(pnpm --version)"
+          echo "pnpm $version"
+          test -n "$version"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
