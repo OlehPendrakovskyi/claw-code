@@ -253,7 +253,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 **R9. Small focused PRs.** *General, SHOULD.* A large PR means long review and churn. Ship a concurrency core or other risky mechanism as its own PR with its own design.
 *Check:* review — a reviewer asks for a split when a PR mixes unrelated concerns.
 
-**R19. Every review finding is a bug class, not a line.** *General, MUST.* After a finding, grep the diff, then the codebase, for the same class, and fix the similar spots in the same commit. After the PR, run a codebase-wide pass in a follow-up PR.
+**R19. Every review finding is a bug class, not a line.** *General, MUST.* After a finding, grep the diff, then the codebase, for the same class, and fix the similar spots in the same commit. After the PR, run a codebase-wide pass for the class, in the PR that immediately follows.
 *Check:* the thread reply names the sibling spots checked or fixed (R60).
 
 **R20. Rules are a living document.** *General, MUST.* Every technical PR, after its review cycle, adds or amends a declarative rule here: "always do Y", not "we fixed X". It goes under the right topic with the next free ID.
