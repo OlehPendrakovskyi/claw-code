@@ -4,7 +4,7 @@ Binding rules for this repository, cited by ID.
 
 ## How to read and cite this file
 
-- **IDs are stable.** Rules are `R1`–`R70` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
+- **IDs are stable.** Rules are `R1`–`R71` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
 - **Grouped by topic.** Position carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project; their examples, paths and Check lines are this repository's and are adapted when a rule is copied elsewhere. *claw-code* rules apply to this repository only.
