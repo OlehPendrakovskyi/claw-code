@@ -246,7 +246,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 *Check:* review — the PR names the search it ran; `constants.test.ts` for the client version and the command setting defaults.
 
 **R71. A dependency that changes an environment prerequisite updates every stated prerequisite and exercises the new minimum.** *General, MUST.* An upgrade whose `engines` or minimum version differs from what is documented or tested — for example a Node.js requirement raised by a runtime dependency such as jsdom — must be paired with an update of every place that states the prerequisite (README, contributing guide, docs), not only `package.json`. CI must run the lowest version that satisfies the new requirement (the new minimum), not just the latest: testing only the latest version hides installation and test failures on versions between the old and new minimum. A mechanical check verifies that the documented prerequisite satisfies every `engines` requirement reachable in the dependency tree.
-*Check:* review — the PR names the search it ran across the repo for the old prerequisite; the CI matrix covers the minimum supported Node version; `pnpm run check:rules` for a version mismatch between README and `engines`.
+*Check:* review — the PR names the search it ran across the repo for the old prerequisite (README, contributing guide, docs) and confirms the CI matrix exercises the new minimum Node version; grep for `engines` vs. the documented prerequisite to confirm they are in sync.
 
 ## Process and review
 
