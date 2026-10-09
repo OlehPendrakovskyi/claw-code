@@ -101,7 +101,8 @@ describe('acpxVersion', () => {
             acpxAnswers('0.0.0-unknown\n');
             await checkAcpxVersionOnce(LAUNCH, log);
             expect(log.warn).toHaveBeenCalledWith('acpx --version printed no release (14 chars)');
-            expect(warningMock).toHaveBeenCalledWith(expect.stringContaining('An acpx of unknown version'));
+            expect(warningMock).toHaveBeenCalledWith(expect.stringContaining('The acpx version could not be read'));
+            expect(warningMock).not.toHaveBeenCalledWith(expect.stringContaining('is outside'));
         });
 
         it('warns when acpx fails or times out', async () => {

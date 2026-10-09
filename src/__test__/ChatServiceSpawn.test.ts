@@ -434,7 +434,7 @@ describe('ChatService.sendMessage', () => {
             child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: 0, error: { code: -32000, message: 'too long: PROMPT-SENTINEL' } }));
             child.emit('close', 1, null);
             const logged = agentLogText();
-            expect(logged).toMatch(/acpx error from the agent: \d+ chars/);
+            expect(logged).toMatch(/acpx error from JSON-RPC: \d+ chars/);
             expect(logged).not.toContain('PROMPT-SENTINEL');
             expect(events[0]).toMatchObject({ type: 'error', message: expect.stringContaining('PROMPT-SENTINEL') });
         });

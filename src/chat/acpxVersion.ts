@@ -84,8 +84,8 @@ function report(stdout: string | undefined, log: vscode.LogOutputChannel): void 
     } else {
         log.warn(stdout === undefined ? 'acpx --version failed or timed out' : `acpx --version printed no release (${stdout.length} chars)`);
     }
-    const found = release ? `acpx ${release.join('.')}` : 'An acpx of unknown version';
-    void vscode.window.showWarningMessage(
-        `${found} is outside the versions Claw Code was tested with (${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM}). Chat may not work as expected.`,
-    );
+    const tested = `${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM}`;
+    void vscode.window.showWarningMessage(release
+        ? `acpx ${release.join('.')} is outside the versions Claw Code was tested with (${tested}). Chat may not work as expected.`
+        : `The acpx version could not be read, so Claw Code cannot tell whether it was tested with it (${tested}). Chat may not work as expected.`);
 }

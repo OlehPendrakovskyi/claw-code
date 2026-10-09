@@ -477,12 +477,13 @@ class AcpxRun {
         if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
-        // Shown in the chat, redacted already. The agent's message and stderr can quote the prompt, so the log
-        // gets their source and size; only the exit reason, which the extension words, is logged as text.
-        const agentMessage = this.parser.failureMessage;
-        if (agentMessage !== undefined) {
-            log.error(`acpx error from the agent: ${agentMessage.length} chars`);
-            return { type: 'error', message: agentMessage };
+        // Shown in the chat, redacted already. A JSON-RPC error (the agent's or acpx's own, see failureMessage) and
+        // stderr can quote the prompt, so the log gets their source and size; only the exit reason, which the
+        // extension words, is logged as text.
+        const rpcMessage = this.parser.failureMessage;
+        if (rpcMessage !== undefined) {
+            log.error(`acpx error from JSON-RPC: ${rpcMessage.length} chars`);
+            return { type: 'error', message: rpcMessage };
         }
         const stderrTail = this.redactedStderrTail();
         if (stderrTail) {
