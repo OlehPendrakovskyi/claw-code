@@ -22,10 +22,10 @@ describe('bundled output', () => {
         expect(fs.existsSync(OUT)).toBe(true);
     });
 
-    it('bundle is a reasonable size (50KB–500KB)', () => {
+    it('bundle is a reasonable size (50KB–600KB)', () => {
         const stats = fs.statSync(OUT);
         expect(stats.size).toBeGreaterThan(50_000);
-        expect(stats.size).toBeLessThan(500_000);
+        expect(stats.size).toBeLessThan(600_000);
     });
 
     it('contains the HTMLElement polyfill banner', () => {

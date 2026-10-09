@@ -9,6 +9,15 @@ import { ChatService, ChatEvent, PROMPT_MAX_BYTES, STDERR_RAW_MAX_CHARS, STDERR_
 import { usePlatform } from './helpers/platform';
 
 vi.mock('child_process', () => ({ spawn: vi.fn() }));
+// The version check is the only reach for `execFile`, which the child_process mock above leaves out.
+vi.mock('../chat/acpxVersion', () => ({
+    ACPX_TESTED_FROM: '0.19.4',
+    ACPX_UNTESTED_FROM: '0.20.0',
+    parseAcpxVersion: vi.fn(),
+    isTestedAcpxVersion: vi.fn(),
+    checkAcpxVersionOnce: vi.fn(() => Promise.resolve()),
+    resetAcpxVersionChecks: vi.fn(),
+} satisfies typeof import('../chat/acpxVersion')));
 
 const spawnMock = vi.mocked(spawn);
 const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);

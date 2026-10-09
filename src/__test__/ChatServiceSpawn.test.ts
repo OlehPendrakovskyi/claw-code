@@ -6,6 +6,7 @@ import * as vscode from 'vscode';
 import { spawn, ChildProcess } from 'child_process';
 import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
+import { checkAcpxVersionOnce } from '../chat/acpxVersion';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 import type { ConversationTurn } from '../webview/slashCommands';
 import {
@@ -13,6 +14,7 @@ import {
     ChatService,
     ChatEvent,
     PROMPT_MAX_BYTES,
+    STDERR_RAW_MAX_CHARS,
     STDERR_TAIL_MAX_CHARS,
     STDOUT_LINE_MAX_CHARS,
 } from '../chat/ChatService';
@@ -34,7 +36,17 @@ vi.mock('child_process', () => ({
     spawnSync: vi.fn() as unknown as typeof import('child_process').spawnSync,
 } satisfies typeof import('child_process')));
 
+vi.mock('../chat/acpxVersion', () => ({
+    ACPX_TESTED_FROM: '0.19.4',
+    ACPX_UNTESTED_FROM: '0.20.0',
+    parseAcpxVersion: vi.fn(),
+    isTestedAcpxVersion: vi.fn(),
+    checkAcpxVersionOnce: vi.fn(() => Promise.resolve()),
+    resetAcpxVersionChecks: vi.fn(),
+} satisfies typeof import('../chat/acpxVersion')));
+
 const spawnMock = vi.mocked(spawn);
+const checkAcpxVersionMock = vi.mocked(checkAcpxVersionOnce);
 const agentLog = outputChannelNamed('OpenClaw Agent');
 const getConfigurationMock = vi.mocked(vscode.workspace.getConfiguration);
 
@@ -106,6 +118,19 @@ function withPlatform<T>(platform: NodeJS.Platform, run: () => T): T {
     }
 }
 
+function clearAgentLog(): void {
+    vi.mocked(agentLog.info).mockClear();
+    vi.mocked(agentLog.warn).mockClear();
+    vi.mocked(agentLog.error).mockClear();
+}
+
+/** Every message written to the agent channel since the last clear, at any level. */
+function agentLogText(): string {
+    return [agentLog.info, agentLog.warn, agentLog.error]
+        .flatMap(write => vi.mocked(write).mock.calls.map(call => call.map(String).join(' ')))
+        .join('\n');
+}
+
 const jsonLines = (...lines: object[]) => Buffer.from(lines.map(line => JSON.stringify(line)).join('\n') + '\n');
 const spawnedArgs = () => spawnMock.mock.calls[0][1] as string[];
 const types = (events: ChatEvent[]) => events.map(e => e.type);
@@ -153,6 +178,14 @@ describe('ChatService.sendMessage', () => {
         ])('keeps %s verbatim', (_label, prompt) => {
             const { child } = start(prompt);
             expect(stdinPrompt(child)).toBe(prompt);
+        });
+
+        it('checks the version of the acpx it launches, without waiting for the check', () => {
+            checkAcpxVersionMock.mockClear();
+            checkAcpxVersionMock.mockReturnValueOnce(new Promise(() => undefined));
+            start();
+            expect(checkAcpxVersionMock).toHaveBeenCalledWith({ command: 'acpx', args: [] }, agentLog);
+            expect(spawnMock).toHaveBeenCalledTimes(1);
         });
 
         it('always names the agent, so acpx never substitutes its own configured default', () => {
@@ -378,26 +411,53 @@ describe('ChatService.sendMessage', () => {
             expect(onRunComplete).toHaveBeenCalledTimes(1);
         });
 
-        it('redacts credentials from the stderr tail it logs', () => {
-            const info = vi.mocked(agentLog.info);
-            info.mockClear();
-            const { child } = start();
-            child.stderr.emit('data', Buffer.from('request failed: OPENAI_API_KEY=sk-live-123'));
+        it('logs only the size of stderr, which can quote the prompt, and shows it redacted in the chat', () => {
+            clearAgentLog();
+            const stderr = '[acpx] prompt failed (rejected: PROMPT-SENTINEL token=abc123)\nretrying';
+            const { child, events } = start();
+            child.stderr.emit('data', Buffer.from(stderr));
             child.emit('close', 1, null);
-            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
-            expect(logged).toContain('acpx stderr: request failed: OPENAI_API_KEY=***');
-            expect(logged).not.toContain('sk-live-123');
+            const shown = (events[0] as { message: string }).message;
+            expect(shown).toContain('PROMPT-SENTINEL');
+            expect(shown).not.toContain('abc123');
+            const logged = agentLogText();
+            expect(logged).toContain(`acpx stderr: ${stderr.length} chars, 2 lines`);
+            expect(logged).toContain(`acpx error from stderr: ${shown.length} chars`);
+            expect(logged).not.toContain('PROMPT-SENTINEL');
+            expect(logged).not.toContain('abc123');
         });
 
-        it('redacts URL credentials from the stderr it logs and reports', () => {
-            const info = vi.mocked(agentLog.info);
-            info.mockClear();
+        it('logs only the size of an agent error, which can quote the prompt, and shows it in the chat', () => {
+            clearAgentLog();
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: 0, method: 'session/prompt', params: {} }));
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: 0, error: { code: -32000, message: 'too long: PROMPT-SENTINEL' } }));
+            child.emit('close', 1, null);
+            const logged = agentLogText();
+            expect(logged).toMatch(/acpx error from the agent: \d+ chars/);
+            expect(logged).not.toContain('PROMPT-SENTINEL');
+            expect(events[0]).toMatchObject({ type: 'error', message: expect.stringContaining('PROMPT-SENTINEL') });
+        });
+
+        it('logs the exit reason itself when neither the agent nor stderr said why', () => {
+            clearAgentLog();
+            const { child } = start();
+            child.emit('close', 2, null);
+            expect(agentLogText()).toContain('acpx error: acpx exited with code 2');
+        });
+
+        it('logs that stderr was withheld once it overflowed', () => {
+            clearAgentLog();
+            const { child } = start();
+            child.stderr.emit('data', Buffer.from('x'.repeat(STDERR_RAW_MAX_CHARS + 1)));
+            child.emit('close', 1, null);
+            expect(agentLogText()).toContain(`acpx stderr withheld (over ${STDERR_RAW_MAX_CHARS} chars)`);
+        });
+
+        it('redacts URL credentials from the stderr it reports', () => {
             const { child, events } = start();
             child.stderr.emit('data', Buffer.from('clone failed: https://alice:secret@git.example/repo.git'));
             child.emit('close', 1, null);
-            const logged = info.mock.calls.map(call => String(call[0])).join('\n');
-            expect(logged).toContain('acpx stderr: clone failed: https://***:***@git.example/repo.git');
-            expect(logged).not.toContain('secret');
             expect(events[0]).toEqual({ type: 'error', message: 'clone failed: https://***:***@git.example/repo.git' });
         });
 

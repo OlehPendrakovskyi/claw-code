@@ -5,6 +5,7 @@ import { StringDecoder } from 'string_decoder';
 import { resolveCliLaunch, type CliLaunch } from '../core/cliLauncher';
 import { envWithAbsolutePath } from '../core/searchPath';
 import { checkProjectConfig, ProjectConfigCheck, requestProjectConfigApproval } from './acpxProjectConfig';
+import { checkAcpxVersionOnce } from './acpxVersion';
 import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptImages';
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
@@ -26,7 +27,7 @@ const DROPPED_LINE_PREFIX_CHARS = 256;
  *  instead of growing the buffer without bound. */
 export const STDOUT_LINE_MAX_CHARS = 16 * 1024 * 1024;
 
-/** Stderr only surfaces as a failure message, so only its tail is kept. */
+/** Stderr only surfaces as a failure message in the chat, so only its tail is kept; the log gets its size. */
 export const STDERR_TAIL_MAX_CHARS = 16 * 1024;
 /** Raw stderr kept for redaction. It is redacted whole, so every credential's label is still beside its value
  *  however the output was chunked. Past this, collection stops and the tail is withheld rather than shown cut. */
@@ -423,6 +424,18 @@ class AcpxRun {
         return redactText(this.stderrRaw.trim()).slice(-STDERR_TAIL_MAX_CHARS);
     }
 
+    /** Stderr can carry an agent's error, which can quote the prompt, so the log gets only its size. */
+    private logStderrSize(): void {
+        if (this.stderrOverflowed) {
+            log.info(`acpx stderr withheld (over ${STDERR_RAW_MAX_CHARS} chars)`);
+            return;
+        }
+        const stderr = this.stderrRaw.trim();
+        if (stderr) {
+            log.info(`acpx stderr: ${stderr.length} chars, ${stderr.split('\n').length} lines`);
+        }
+    }
+
     private emitLine(line: string): void {
         this.parser.parseLine(line.replace(/\r$/, '')).forEach(event => this.onEvent(event));
     }
@@ -432,10 +445,7 @@ class AcpxRun {
         clearTimeout(this.killTimer);
         this.onStdout(this.stdoutDecoder.end());
         this.onStderr(this.stderrDecoder.end());
-        const stderrTail = this.redactedStderrTail();
-        if (stderrTail) {
-            log.info(`acpx stderr: ${stderrTail}`);
-        }
+        this.logStderrSize();
         if (!this.finished && !this.droppingOversizedLine) {
             this.emitLine(this.takePendingLine());
         }
@@ -467,10 +477,21 @@ class AcpxRun {
         if (code === 0 || this.deniedAfterAnswer(code)) {
             return null;
         }
-        // Shown in the chat and the log; the agent's message and the stderr tail are both redacted already.
-        const message = this.parser.failureMessage ?? (this.redactedStderrTail() || exitReason(code, signal));
-        log.error(`acpx error: ${message}`);
-        return { type: 'error', message };
+        // Shown in the chat, redacted already. The agent's message and stderr can quote the prompt, so the log
+        // gets their source and size; only the exit reason, which the extension words, is logged as text.
+        const agentMessage = this.parser.failureMessage;
+        if (agentMessage !== undefined) {
+            log.error(`acpx error from the agent: ${agentMessage.length} chars`);
+            return { type: 'error', message: agentMessage };
+        }
+        const stderrTail = this.redactedStderrTail();
+        if (stderrTail) {
+            log.error(`acpx error from stderr: ${stderrTail.length} chars`);
+            return { type: 'error', message: stderrTail };
+        }
+        const reason = exitReason(code, signal);
+        log.error(`acpx error: ${reason}`);
+        return { type: 'error', message: reason };
     }
 
     private onError(err: NodeJS.ErrnoException): void {
@@ -732,6 +753,8 @@ export class ChatService {
             completeWithoutProcess(onEvent, onRunComplete, launch.missing === 'node' ? NODE_NOT_FOUND_MESSAGE : ACPX_NOT_FOUND_MESSAGE);
             return;
         }
+        // Alongside the run, never ahead of it: an untested acpx is warned about, not refused.
+        void checkAcpxVersionOnce(launch, log);
         const fallback = blocks.some(block => block.type === 'image') ? encodePrompt(promptBlocks(fullPrompt, imageNote)) : undefined;
         const run: RunRequest = { launch, args: [...launch.args, ...ChatService.buildArgs(agent, permissions)], cwd, onEvent, onRunComplete };
         const projectConfig = checkProjectConfig(cwd);
