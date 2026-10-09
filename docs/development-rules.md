@@ -20,7 +20,7 @@ Binding rules for this repository, cited by ID.
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
-| [Documentation, claims and registries](#documentation-claims-and-registries) | R47, R52, R48, R56, R57, R58, R59, R68 |
+| [Documentation, claims and registries](#documentation-claims-and-registries) | R47, R52, R48, R56, R57, R58, R59, R68, R71 |
 | [Process and review](#process-and-review) | R8, R9, R19, R20, R21, R60, S6, R55, R67 |
 | [Review checklist](#review-checklist-recurring-bug-classes) | Recurring bug classes |
 | [Known gaps](#known-gaps) | Where the code does not meet a rule yet |
@@ -244,6 +244,9 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 
 **R68. Changing a project-wide fact updates every place that states it.** *General, MUST.* When a version, name, identifier or default changes, search the whole repository for the old value and its derived spellings (`0.2.1` and `0.2.x`; a full id and its prefix), and decide each hit: update it, or keep it because it names the old value on purpose (a fork point, a migration note). A code fallback that duplicates a manifest value gets a test that fails when they drift.
 *Check:* review — the PR names the search it ran; `constants.test.ts` for the client version and the command setting defaults.
+
+**R71. A dependency that changes an environment prerequisite updates every stated prerequisite and exercises the new minimum.** *General, MUST.* An upgrade whose `engines` or minimum version differs from what is documented or tested — for example a Node.js requirement raised by a runtime dependency such as jsdom — must be paired with an update of every place that states the prerequisite (README, contributing guide, docs), not only `package.json`. CI must run the lowest version that satisfies the new requirement (the new minimum), not just the latest: testing only the latest version hides installation and test failures on versions between the old and new minimum. A mechanical check verifies that the documented prerequisite satisfies every `engines` requirement reachable in the dependency tree.
+*Check:* review — the PR names the search it ran across the repo for the old prerequisite; the CI matrix covers the minimum supported Node version; `pnpm run check:rules` for a version mismatch between README and `engines`.
 
 ## Process and review
 
