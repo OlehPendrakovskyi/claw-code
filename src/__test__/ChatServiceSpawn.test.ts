@@ -38,7 +38,7 @@ vi.mock('child_process', () => ({
 
 vi.mock('../chat/acpxVersion', () => ({
     ACPX_TESTED_FROM: '0.19.4',
-    ACPX_UNTESTED_FROM: '0.20.0',
+    ACPX_UNTESTED_FROM: '0.19.5',
     parseAcpxVersion: vi.fn(),
     isTestedAcpxVersion: vi.fn(),
     checkAcpxVersionOnce: vi.fn(() => Promise.resolve()),

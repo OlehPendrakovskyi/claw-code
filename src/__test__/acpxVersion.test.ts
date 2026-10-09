@@ -62,7 +62,7 @@ describe('acpxVersion', () => {
         it.each([
             ['0.19.3', false],
             [ACPX_TESTED_FROM, true],
-            ['0.19.99', true],
+            ['0.20.0', false],
             [ACPX_UNTESTED_FROM, false],
             ['1.0.0', false],
         ])('counts %s as tested: %s', (version, tested) => {
@@ -77,7 +77,7 @@ describe('acpxVersion', () => {
             expect(execFileMock).toHaveBeenCalledWith(
                 process.execPath,
                 ['/opt/acpx/dist/cli.js', '--version'],
-                expect.objectContaining({ shell: false, timeout: 5000 }),
+                expect.objectContaining({ shell: false, timeout: 5000, killSignal: 'SIGKILL' }),
                 expect.any(Function),
             );
         });
@@ -116,6 +116,20 @@ describe('acpxVersion', () => {
             acpxAnswers(`${ACPX_UNTESTED_FROM}\n`);
             await checkAcpxVersionOnce(LAUNCH, log);
             expect(warningMock).toHaveBeenCalledWith(expect.stringContaining(`(${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM})`));
+        });
+
+        it('gives up and warns when acpx never answers, even past the kill', async () => {
+            vi.useFakeTimers();
+            try {
+                execFileMock.mockImplementation(() => undefined);
+                const check = checkAcpxVersionOnce(LAUNCH, log);
+                await vi.advanceTimersByTimeAsync(6000);
+                await check;
+                expect(log.warn).toHaveBeenCalledWith('acpx --version failed or timed out');
+                expect(warningMock).toHaveBeenCalledTimes(1);
+            } finally {
+                vi.useRealTimers();
+            }
         });
 
         it('asks each acpx once per session', async () => {

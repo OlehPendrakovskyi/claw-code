@@ -12,7 +12,7 @@ vi.mock('child_process', () => ({ spawn: vi.fn() }));
 // The version check is the only reach for `execFile`, which the child_process mock above leaves out.
 vi.mock('../chat/acpxVersion', () => ({
     ACPX_TESTED_FROM: '0.19.4',
-    ACPX_UNTESTED_FROM: '0.20.0',
+    ACPX_UNTESTED_FROM: '0.19.5',
     parseAcpxVersion: vi.fn(),
     isTestedAcpxVersion: vi.fn(),
     checkAcpxVersionOnce: vi.fn(() => Promise.resolve()),

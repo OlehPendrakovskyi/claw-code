@@ -13,10 +13,12 @@ import { envWithAbsolutePath } from '../core/searchPath';
 
 /** The oldest acpx release the extension was tested with. */
 export const ACPX_TESTED_FROM = '0.19.4';
-/** The first acpx release it was not tested with; raising it means re-reading that release's source (R24). */
-export const ACPX_UNTESTED_FROM = '0.20.0';
+/** The first acpx release whose source was not read; raising it means reading each release it admits (R24). */
+export const ACPX_UNTESTED_FROM = '0.19.5';
 
 const VERSION_TIMEOUT_MS = 5000;
+/** How long after the timeout the check gives up on an acpx whose output never closes. */
+const VERSION_GIVE_UP_GRACE_MS = 1000;
 const VERSION_MAX_BUFFER_BYTES = 64 * 1024;
 const RELEASE_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
 
@@ -59,16 +61,24 @@ export function resetAcpxVersionChecks(): void {
     checked.clear();
 }
 
-/** acpx's `--version` output, or undefined when it failed or timed out. */
+/** acpx's `--version` output, or undefined when it failed or timed out. execFile calls back only once the
+ *  child's output closes, so the timeout kills with SIGKILL, which cannot be ignored, and a timer of its
+ *  own settles the check even if the output still never closes. */
 function readVersionOutput(launch: CliLaunch): Promise<string | undefined> {
     return new Promise((resolve) => {
+        const giveUp = setTimeout(() => resolve(undefined), VERSION_TIMEOUT_MS + VERSION_GIVE_UP_GRACE_MS);
+        giveUp.unref?.();
         execFile(launch.command, [...launch.args, '--version'], {
             env: envWithAbsolutePath(),
             shell: false,
             windowsHide: true,
             timeout: VERSION_TIMEOUT_MS,
+            killSignal: 'SIGKILL',
             maxBuffer: VERSION_MAX_BUFFER_BYTES,
-        }, (err, stdout) => resolve(err ? undefined : String(stdout)));
+        }, (err, stdout) => {
+            clearTimeout(giveUp);
+            resolve(err ? undefined : String(stdout));
+        });
     });
 }
 
