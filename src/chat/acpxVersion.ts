@@ -22,7 +22,8 @@ const RELEASE_PATTERN = /^(\d+)\.(\d+)\.(\d+)$/;
 
 type Release = [number, number, number];
 
-/** Results by launch command, so each acpx is asked once per session. */
+/** Results by the whole launch, so each acpx is asked once per session: on Windows the command is the
+ *  shared `node.exe`, and the acpx is the script in its arguments. */
 const checked = new Map<string, Promise<void>>();
 
 /** The release `acpx --version` printed on its first line; undefined for anything else, a prerelease or
@@ -44,10 +45,11 @@ export function isTestedAcpxVersion(release: Release): boolean {
 /** Asks `launch`'s acpx for its version once per session, and warns when it is untested or unknown.
  *  Settles when that one check has been reported; it never rejects. */
 export function checkAcpxVersionOnce(launch: CliLaunch, log: vscode.LogOutputChannel): Promise<void> {
-    let check = checked.get(launch.command);
+    const key = JSON.stringify([launch.command, ...launch.args]);
+    let check = checked.get(key);
     if (!check) {
         check = readVersionOutput(launch).then((stdout) => report(stdout, log), () => undefined);
-        checked.set(launch.command, check);
+        checked.set(key, check);
     }
     return check;
 }
@@ -84,6 +86,6 @@ function report(stdout: string | undefined, log: vscode.LogOutputChannel): void 
     }
     const found = release ? `acpx ${release.join('.')}` : 'An acpx of unknown version';
     void vscode.window.showWarningMessage(
-        `${found} is outside the versions Claw Code was tested with (${ACPX_TESTED_FROM} up to ${ACPX_UNTESTED_FROM}). Chat may not work as expected.`,
+        `${found} is outside the versions Claw Code was tested with (${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM}). Chat may not work as expected.`,
     );
 }

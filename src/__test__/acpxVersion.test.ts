@@ -111,12 +111,25 @@ describe('acpxVersion', () => {
             expect(warningMock).toHaveBeenCalledTimes(1);
         });
 
+        it('names the tested range with its excluded upper bound', async () => {
+            acpxAnswers(`${ACPX_UNTESTED_FROM}\n`);
+            await checkAcpxVersionOnce(LAUNCH, log);
+            expect(warningMock).toHaveBeenCalledWith(expect.stringContaining(`(${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM})`));
+        });
+
         it('asks each acpx once per session', async () => {
             acpxAnswers('0.21.0\n');
             await checkAcpxVersionOnce(LAUNCH, log);
             await checkAcpxVersionOnce(LAUNCH, log);
             expect(execFileMock).toHaveBeenCalledTimes(1);
             expect(warningMock).toHaveBeenCalledTimes(1);
+        });
+
+        it('asks again for another acpx script run by the same node, as on Windows', async () => {
+            acpxAnswers('0.21.0\n');
+            await checkAcpxVersionOnce({ command: 'C:\\node\\node.exe', args: ['C:\\one\\acpx\\dist\\cli.js'] }, log);
+            await checkAcpxVersionOnce({ command: 'C:\\node\\node.exe', args: ['C:\\two\\acpx\\dist\\cli.js'] }, log);
+            expect(execFileMock).toHaveBeenCalledTimes(2);
         });
     });
 });
