@@ -21,6 +21,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - Line-range mentions such as `@src/app.ts#L5-10`, and **OpenClaw: Insert Selection Mention** (`Alt+K`, or `Cmd+Alt+K` on macOS).
 - Settings `openclaw.chat.attachOpenFile`, `openclaw.chat.hideToolActivity` and `openclaw.dashboardUrl`.
 - Image attachments on the acpx transport.
+- A warning, once per session, when the acpx on PATH is a version Claw Code was not tested with, or its version cannot be read. The chat still runs ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 
 ### Changed
 
@@ -52,7 +53,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - The Gateway token is kept in VS Code's SecretStorage. A token in the old plaintext setting `openclaw.gateway.token` in user settings is moved there and deleted from `settings.json`, unless a different token is already saved, in which case it is only deleted. If SecretStorage or the deletion fails, the setting stays and a warning says so. A token in workspace settings is never used, and is deleted once the workspace is trusted.
 - A warning appears when the token would be sent unencrypted, over `ws://`, to a Gateway on another machine.
 - Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
-- The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. An agent error that quotes the prompt can still reach the log through the acpx stderr ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
+- The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. acpx's stderr and an agent's error message, either of which can quote the prompt, are logged only by their size; the chat still shows the error, with credentials removed ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 - `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, through a handle whose own path the operating system confirms is the file checked when it was attached: the fd link on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandleW` on Windows, where a final symlink or junction is not followed either. On any other system attachments are refused ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).
 - A workspace's `.acpxrc.json` can redefine the commands acpx runs for agents and MCP servers, so it is used only after you approve that exact file.
 - Child processes run only from absolute, validated paths, without a shell. The hardening command no longer passes its settings through a shell.
