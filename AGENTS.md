@@ -4,7 +4,7 @@ Claw Code is a VS Code extension for OpenClaw (TypeScript strict, esbuild, Vites
 
 Before changing code or docs, read:
 
-- [docs/development-rules.md](docs/development-rules.md) — binding rules, cited by ID (`R1`–`R70`, `S1`–`S6`). The highest-impact ones: never invent a protocol or API (R24); revalidate after every `await` (R2); never log secrets, prompts or file contents (R10); every fix ships a regression test that fails without it (R7, R49).
+- [docs/development-rules.md](docs/development-rules.md) — binding rules, cited by ID (`R1`–`R71`, `S1`–`S6`). The highest-impact ones: never invent a protocol or API (R24); revalidate after every `await` (R2); never log secrets, prompts or file contents (R10); every fix ships a regression test that fails without it (R7, R49).
 - [docs/engineering.md](docs/engineering.md) — stack, code structure, logging, PR policy and CI.
 - [docs/roadmap.md](docs/roadmap.md) — what is planned, by ID; [docs/design/](docs/design/) for the design of unbuilt features.
 

@@ -85,7 +85,7 @@ You also need a chat backend. You can use either one, or both:
 Until the first release on the Marketplace and Open VSX, build and install from source. You need:
 
 - **git**;
-- **Node.js 24**, the version CI builds with;
+- **Node.js 24 (24.15 or later)**, the version CI builds with;
 - **pnpm** (run `corepack enable` to get it);
 - the `code` or `cursor` command on your `PATH`.
 
@@ -240,7 +240,7 @@ The full plan, with the status of each feature, is in [docs/roadmap.md](docs/roa
 
 ## Contributing
 
-Prerequisites: git, Node.js 24 and pnpm, as for [Install](#install).
+Prerequisites: git, Node.js 24 (24.15 or later) and pnpm, as for [Install](#install).
 
 ```sh
 pnpm install
