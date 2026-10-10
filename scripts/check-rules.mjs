@@ -31,7 +31,6 @@ import path, { join, relative, sep } from 'node:path';
 import * as is from 'typescript/unstable/ast';
 import { API as TSAPI, ModuleKind, SymbolFlags } from 'typescript/unstable/sync';
 import { NodeFlags, ScriptTarget, SyntaxKind, ModifierFlags } from 'typescript/unstable/ast';
-import { readFileSync } from 'node:fs';
 
 // Shim: the familiar `ts` namespace over the TS 7.0 API.
 // The concrete is*-predicates (isBinaryExpression, …) and the enums come from unstable/ast
@@ -1154,11 +1153,10 @@ if (!existsSync(TS_CONFIG_PATH)) {
 }
 const files = [...walk(SRC)];
 const api = new TSAPI({ cwd: process.cwd() });
-api.ensureInitialized();
-const snapshot = api.updateSnapshot({
-  openProject: TS_CONFIG_PATH,
-  files: files.map((f) => ({ fileName: f, content: readFileSync(f, 'utf8'), version: '1' })),
-});
+// updateSnapshot initialises the client itself; opening the disk-backed config discovers the
+// scanned src files, so neither a private ensureInitialized() call nor an `openFiles` list is
+// needed. (UpdateSnapshotParams has no `files` field — unknown fields are silently dropped.)
+const snapshot = api.updateSnapshot({ openProject: TS_CONFIG_PATH });
 const project = snapshot.getProjects()[0];
 const program = project.program;
 const checker = wrapChecker(project.checker, project);
