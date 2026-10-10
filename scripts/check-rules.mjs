@@ -324,11 +324,12 @@ function literalText(node) {
     return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) ? value.text : undefined;
 }
 
-/** The expression under wrappers that do not change the value: parentheses, `await`, `as`, `satisfies`
- *  and `!`. (`<T>` type assertions were removed in TypeScript 7.0 — only `as T` remains.) */
+/** The expression under wrappers that do not change the value: parentheses, `await`, `as`, `satisfies`,
+ *  `!` and the legacy `<T>` type assertion. (TypeScript 7.0 parses `<T>x` as a TypeAssertionExpression
+ *  and exposes the `isTypeAssertion` predicate — the older `isTypeAssertionExpression` name is gone.) */
 function unwrap(node) {
     while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node) || ts.isAsExpression(node) ||
-        ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node)) {
+        ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node) || ts.isTypeAssertion(node)) {
         node = node.expression;
     }
     return node;
@@ -356,6 +357,7 @@ function memberObject(node) {
 
 /** Whether an expression inside a log call's arguments carries prompt or payload text. */
 function carriesText(node, checker) {
+    node = unwrap(node);
     if (ts.isElementAccessExpression(node)) {
         // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
         const key = unwrap(node.argumentExpression);
@@ -626,7 +628,7 @@ function isSpawnOptions(object, context) {
         let holder = node.parent.parent;
         while (holder !== undefined && (ts.isArrayLiteralExpression(holder) || ts.isSpreadElement(holder) ||
             ts.isParenthesizedExpression(holder) || ts.isAsExpression(holder) || ts.isSatisfiesExpression(holder) ||
-            ts.isNonNullExpression(holder))) {
+            ts.isTypeAssertion(holder) || ts.isNonNullExpression(holder))) {
             holder = holder.parent;
         }
         return holder !== undefined && ts.isCallExpression(holder) && spawnArguments(holder, context).includes(node);
