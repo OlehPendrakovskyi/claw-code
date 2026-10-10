@@ -14,9 +14,41 @@
  * renamed before it is logged, code built at run time); that is review's job.
  * A finding prints `file:line  [rule] message` and the script exits non-zero.
  */
-import { readdirSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import ts from 'typescript';
+import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import path, { join, relative, sep } from 'node:path';
+// TypeScript 7.0 is a Go rewrite and no longer exposes the classic synchronous API
+// through its entry point ('.' points at lib/version.cjs — metadata only). The mechanical
+// rule checker (R10, R36, …) therefore uses the experimental snapshot layer
+// `unstable/sync`, which also lets us drop the bundled TS 6.0.3 (~24M):
+//   - `unstable/ast`          — enums (SyntaxKind, NodeFlags, ScriptTarget,
+//                               SymbolFlags, ModuleKind) and the concrete is*-predicates
+//                               (isBinaryExpression, isCallExpression, …), which it re-exports;
+//   - `unstable/sync`         — the API (`API`, `ModuleKind`, `SymbolFlags`) and Checker.
+// The snapshot API's RemoteNode provides forEachChild, kind, flags, modifierFlags,
+// getSourceFile, getStart, parent and property getters (name, arguments, expression, …),
+// while the Checker provides getSymbolAtLocation / getTypeAtLocation / getAliasedSymbol /
+// getExportSpecifierLocalTargetSymbol / getShorthandAssignmentValueSymbol.
+import * as is from 'typescript/unstable/ast';
+import { API as TSAPI, ModuleKind, SymbolFlags } from 'typescript/unstable/sync';
+import { NodeFlags, ScriptTarget, SyntaxKind, ModifierFlags } from 'typescript/unstable/ast';
+
+// Shim: the familiar `ts` namespace over the TS 7.0 API.
+// The concrete is*-predicates (isBinaryExpression, …) and the enums come from unstable/ast
+// and unstable/sync; forEachChild is a polyfill over node.forEachChild;
+// getCombinedNodeFlags = flags | modifierFlags; includes/find are the native Array methods.
+const ts = {
+  SyntaxKind,
+  NodeFlags,
+  ScriptTarget,
+  SymbolFlags,
+  ModifierFlags,
+  ModuleKind,
+  ...is,
+  forEachChild: (node, cb) => node.forEachChild(cb),
+  getCombinedNodeFlags: (node) => node.flags | node.modifierFlags,
+  includes: (arr, val) => arr.includes(val),
+  find: (arr, pred) => arr.find(pred),
+};
 
 const ROOT = process.cwd();
 const SRC = join(ROOT, 'src');
@@ -134,13 +166,13 @@ const assignmentsBySymbol = new Map();
 
 function collectAssignments(source, checker) {
     const visit = node => {
-        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left))) {
+        if (ts.isBinaryExpression(node) && node.operatorToken && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left))) {
             const symbol = checker.getSymbolAtLocation(unwrap(node.left));
             if (symbol !== undefined) {
                 assignmentsBySymbol.set(symbol, [...(assignmentsBySymbol.get(symbol) ?? []), node.right]);
             }
         }
-        ts.forEachChild(node, visit);
+        node.forEachChild(visit);
     };
     visit(source);
 }
@@ -247,7 +279,7 @@ function bindsShellExecutor(node, checker) {
             (ts.isNamedExports(exports) && exports.elements.some(element => SHELL_EXECUTORS.has(lastName(element.propertyName ?? element.name) ?? '')));
     }
     // `run = cp.exec`: an executor assigned after declaration.
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    if (ts.isBinaryExpression(node) && node.operatorToken && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
         const target = resolveValue(node.right, checker, 0, 'child_process');
         return target?.module === 'child_process' && SHELL_EXECUTORS.has(target.member ?? '');
     }
@@ -290,11 +322,12 @@ function literalText(node) {
     return ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value) ? value.text : undefined;
 }
 
-/** The expression under wrappers that do not change the value: parentheses, `await`, and
- *  TypeScript's `as`, `satisfies`, `<T>` and `!`. */
+/** The expression under wrappers that do not change the value: parentheses, `await`, `as`, `satisfies`,
+ *  `!` and the legacy `<T>` type assertion. (TypeScript 7.0 parses `<T>x` as a TypeAssertionExpression
+ *  and exposes the `isTypeAssertion` predicate — the older `isTypeAssertionExpression` name is gone.) */
 function unwrap(node) {
     while (ts.isParenthesizedExpression(node) || ts.isAwaitExpression(node) || ts.isAsExpression(node) ||
-        ts.isSatisfiesExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node)) {
+        ts.isSatisfiesExpression(node) || ts.isNonNullExpression(node) || ts.isTypeAssertion(node)) {
         node = node.expression;
     }
     return node;
@@ -322,6 +355,7 @@ function memberObject(node) {
 
 /** Whether an expression inside a log call's arguments carries prompt or payload text. */
 function carriesText(node, checker) {
+    node = unwrap(node);
     if (ts.isElementAccessExpression(node)) {
         // `request['text']` names a field; `text[0]` or `text[i]` indexes into the text itself.
         const key = unwrap(node.argumentExpression);
@@ -360,7 +394,7 @@ function carriesText(node, checker) {
         return carriesText(node.whenTrue, checker) || carriesText(node.whenFalse, checker);
     }
     // `text === ''`, `text.length > 0`, `!text`, `typeof text`: a boolean or a type name, not the text.
-    if (ts.isBinaryExpression(node) && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
+    if (ts.isBinaryExpression(node) && node.operatorToken && BOOLEAN_OPERATORS.has(node.operatorToken.kind)) {
         return false;
     }
     if ((ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) || ts.isTypeOfExpression(node)) {
@@ -374,7 +408,7 @@ function carriesText(node, checker) {
         return TEXT_NAMES.has(node.name.text);
     }
     let found = false;
-    ts.forEachChild(node, child => {
+    node.forEachChild(child => {
         found ||= carriesText(child, checker);
     });
     return found;
@@ -439,7 +473,7 @@ function containsTmpLiteral(node) {
         return true;
     }
     let found = false;
-    ts.forEachChild(node, child => {
+    node.forEachChild(child => {
         found ||= containsTmpLiteral(child);
     });
     return found;
@@ -457,14 +491,14 @@ function outputChannelBindings(source) {
             }
         }
         // `this.output = vscode.window.createOutputChannel('x')` (a constructor assigning a field), `out = …`.
-        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        if (ts.isBinaryExpression(node) && node.operatorToken && node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
             ts.isCallExpression(unwrap(node.right)) && lastName(unwrap(node.right).expression) === 'createOutputChannel') {
             const name = lastName(unwrap(node.left));
             if (name !== undefined) {
                 names.add(name);
             }
         }
-        ts.forEachChild(node, visit);
+        node.forEachChild(visit);
     };
     visit(source);
     return names;
@@ -504,11 +538,18 @@ function isShellOffValue(expression, context) {
     return ts.isIdentifier(value) && isConstantShellOff(context.checker.getSymbolAtLocation(value), context.checker);
 }
 
-/** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`. */
+/** Whether a symbol is a `const` initialised to `false`, `null` or `undefined`.
+ *  In the TS 7 snapshot AST the const flag sits on the enclosing VariableDeclarationList,
+ *  so the parent's flags are combined with the declaration's own. */
 function isConstantShellOff(symbol, checker) {
     const declaration = symbol?.declarations?.[0];
-    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined ||
-        !(ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const)) {
+    if (declaration === undefined || !ts.isVariableDeclaration(declaration) || declaration.initializer === undefined) {
+        return false;
+    }
+    const own = declaration.flags | declaration.modifierFlags;
+    const parent = declaration.parent;
+    const parentFlags = parent === undefined ? 0 : parent.flags | parent.modifierFlags;
+    if (!((own | parentFlags) & NodeFlags.Const)) {
         return false;
     }
     const value = unwrap(declaration.initializer);
@@ -564,7 +605,7 @@ function isSpawnOptions(object, context) {
     for (let parent = node.parent; ; parent = node.parent) {
         if (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) ||
             (ts.isConditionalExpression(parent) && parent.condition !== node) ||
-            (ts.isBinaryExpression(parent) && LOGICAL_OPERATORS.has(parent.operatorToken.kind))) {
+            (ts.isBinaryExpression(parent) && parent.operatorToken && LOGICAL_OPERATORS.has(parent.operatorToken.kind))) {
             node = parent;
         } else {
             break;
@@ -585,12 +626,12 @@ function isSpawnOptions(object, context) {
         let holder = node.parent.parent;
         while (holder !== undefined && (ts.isArrayLiteralExpression(holder) || ts.isSpreadElement(holder) ||
             ts.isParenthesizedExpression(holder) || ts.isAsExpression(holder) || ts.isSatisfiesExpression(holder) ||
-            ts.isTypeAssertionExpression(holder) || ts.isNonNullExpression(holder))) {
+            ts.isTypeAssertion(holder) || ts.isNonNullExpression(holder))) {
             holder = holder.parent;
         }
         return holder !== undefined && ts.isCallExpression(holder) && spawnArguments(holder, context).includes(node);
     }
-    if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
+    if (ts.isBinaryExpression(node.parent) && node.parent.operatorToken && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.parent.right === node) {
         // `options = { … }` for a variable that reaches a spawn call.
         return isOptionsVariable(node.parent.left, context);
     }
@@ -660,7 +701,7 @@ function spawnOptionSymbols(sources, context) {
     const options = new Set();
     const visit = node => {
         // `const x = …` and a later `x = …` both say what x is built from.
-        const assigned = ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
+        const assigned = ts.isBinaryExpression(node) && node.operatorToken && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && ts.isIdentifier(unwrap(node.left));
         if ((ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) || assigned) {
             const target = symbolOf(assigned ? node.left : node.name);
             // `const opts = windows ? base : {}`: every value the initializer can produce is linked.
@@ -692,7 +733,7 @@ function spawnOptionSymbols(sources, context) {
                 }
             }
         }
-        ts.forEachChild(node, visit);
+        node.forEachChild(visit);
     };
     sources.forEach(visit);
     const pending = [...options];
@@ -725,7 +766,7 @@ function valueLeaves(expression) {
     if (ts.isConditionalExpression(value)) {
         return [...valueLeaves(value.whenTrue), ...valueLeaves(value.whenFalse)];
     }
-    if (ts.isBinaryExpression(value) && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
+    if (ts.isBinaryExpression(value) && value.operatorToken && LOGICAL_OPERATORS.has(value.operatorToken.kind)) {
         return [...valueLeaves(value.left), ...valueLeaves(value.right)];
     }
     return [value];
@@ -845,7 +886,10 @@ function destructuredDeclaration(binding, checker) {
     if (key === undefined || !ts.isVariableDeclaration(holder) || holder.initializer === undefined) {
         return undefined;
     }
-    let property = checker.getTypeAtLocation(holder.initializer).getProperty(key);
+    // TS 7: Type.getProperty is now checker.getPropertyOfType(type, name); the type itself may
+    // not materialise — then only the naming convention above resolves the destructuring.
+    const type = checker.getTypeAtLocation(holder.initializer);
+    let property = type === undefined ? undefined : checker.getPropertyOfType(type, key);
     if (property !== undefined && property.flags & ts.SymbolFlags.Alias) {
         property = checker.getAliasedSymbol(property);
     }
@@ -1035,12 +1079,87 @@ function* walk(dir) {
     }
 }
 
+/**
+ * TS-7 returns NodeHandles for symbol declarations instead of classic nodes.
+ * NodeHandle.resolve(project) fetches the node by index. Unwrap handles so the checker
+ * always sees classic nodes through declaration.name, .parent, .initializer, etc.
+ */
+function resolveNodeHandle(h, project) {
+  if (h === undefined || h === null) return undefined;
+  if (!h.resolve) return h;
+  return h.resolve(project);
+}
+
+/** Unwrap the declarations / valueDeclaration of a symbol so they are classic nodes.
+ *  The proxy is memoized per raw symbol: the checker keys Maps and Sets by symbol
+ *  (assignmentsBySymbol, spawnOptionSymbols edges/options), and the raw snapshot
+ *  checker already returns the same symbol object for the same query — so caching
+ *  keeps proxy identity stable, as symbol identity was in the classic TS 6 API. */
+const symbolProxies = new WeakMap();
+function unwrapSymbol(s, project) {
+  if (!s || !s.declarations) return s;
+  let proxy = symbolProxies.get(s);
+  if (proxy === undefined) {
+    proxy = new Proxy(s, {
+      get(t, prop) {
+        if (prop === 'declarations') {
+          return t.declarations.map((d) => resolveNodeHandle(d, project));
+        }
+        if (prop === 'valueDeclaration') {
+          return resolveNodeHandle(t.valueDeclaration, project);
+        }
+        return t[prop];
+      },
+      has(t, prop) {
+        return prop === 'declarations' || prop === 'valueDeclaration' || prop in t;
+      },
+    });
+    symbolProxies.set(s, proxy);
+  }
+  return proxy;
+}
+
+/** Wrap the checker so every symbol it returns comes back with classic nodes. */
+function wrapChecker(checker, project) {
+  return new Proxy(checker, {
+    get(t, prop) {
+      const fn = t[prop];
+      if (typeof fn !== 'function') return fn;
+      return function (...args) {
+        const result = fn.apply(this, args);
+        if (result && result.declarations) return unwrapSymbol(result, project);
+        if (Array.isArray(result)) {
+          return result.map((r) => (r && r.declarations ? unwrapSymbol(r, project) : r));
+        }
+        return result;
+      };
+    },
+  });
+}
+
 const findings = [];
-// One program over all files, for symbol resolution only: no module resolution and no lib, so it needs
-// neither node_modules nor a tsconfig and works the same on a fixture tree.
+// One snapshot-program over all files, for symbol resolution only: no module resolution and
+// no lib, so it needs neither node_modules nor a tsconfig and works the same on a fixture tree.
+// A minimal tsconfig is required next to the working directory: the snapshot layer resolves
+// file paths relative to the openProject directory. When the checker runs from a test fixture
+// directory that directory holds no tsconfig, so we create a minimal one on the fly (harmless —
+// each fixture directory is deleted after its test). In the repo root the existing tsconfig is
+// used instead.
+const TS_CONFIG_PATH = path.resolve(ROOT, 'tsconfig-check-rules.json');
+if (!existsSync(TS_CONFIG_PATH)) {
+    writeFileSync(TS_CONFIG_PATH, JSON.stringify({
+        compilerOptions: { noResolve: true, noLib: true, types: [] },
+    }));
+}
 const files = [...walk(SRC)];
-const program = ts.createProgram(files, { noResolve: true, noLib: true, types: [], target: ts.ScriptTarget.Latest, module: ts.ModuleKind.ESNext });
-const checker = program.getTypeChecker();
+const api = new TSAPI({ cwd: process.cwd() });
+// updateSnapshot initialises the client itself; opening the disk-backed config discovers the
+// scanned src files, so neither a private ensureInitialized() call nor an `openFiles` list is
+// needed. (UpdateSnapshotParams has no `files` field — unknown fields are silently dropped.)
+const snapshot = api.updateSnapshot({ openProject: TS_CONFIG_PATH });
+const project = snapshot.getProjects()[0];
+const program = project.program;
+const checker = wrapChecker(project.checker, project);
 for (const file of files) {
     collectAssignments(program.getSourceFile(file), checker);
 }
@@ -1062,7 +1181,7 @@ for (const file of files) {
                 findings.push(`${where(node)}  [${check.rule}] ${check.message}`);
             }
         }
-        ts.forEachChild(node, visit);
+        node.forEachChild(visit);
     };
     visit(source);
 }

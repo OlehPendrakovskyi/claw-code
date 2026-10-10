@@ -277,6 +277,9 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 **R67. A mechanical rule check enforces a closed, allowed form, and flags what it cannot resolve.** *General, MUST.* A checker that hunts forbidden spellings meets an open set of syntax (aliases, re-exports, `.bind`, spreads, literal keys). Define instead the one form a rule allows — for example, `child_process` imported only by a listed set of modules, `os.tmpdir()` only in the temp-dir helper — and report anything the checker cannot resolve to that form. Identity is resolved through the compiler's symbols, never by name, so shadowing and constants are judged correctly. The checker's header states exactly what it enforces (R47).
 *Check:* `checkRules.test.ts`; each allowed form gets a clean case and an unresolvable form a failing one.
 
+**R72. A checker rides a tool's public API, and a toolchain upgrade re-verifies every removed or renamed member it used.** *General, MUST.* A script that consumes a compiler or toolchain API — especially one declared unstable — imports only its documented entry points, never a physical path under `node_modules` and never private members: those are neither stable nor part of the contract. When the tool is upgraded, every API member the script touched is re-checked against the new version: a predicate, enum, method or option that was removed, renamed or made private is a breaking change the build must surface, not one to discover at runtime. The mechanical checker carries a fixture or test that fails when such a member is gone.
+*Check:* `check:rules` runs the checker on a fixture tree; the checker imports the toolchain through its package subpaths and names no private member.
+
 ## Review checklist: recurring bug classes
 
 - Stale continuation after `await`: a generation not captured or not checked — R2, R3
