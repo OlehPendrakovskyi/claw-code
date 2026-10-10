@@ -21,22 +21,21 @@ import path, { join, relative, sep } from 'node:path';
 // rule checker (R10, R36, …) therefore uses the experimental snapshot layer
 // `unstable/sync`, which also lets us drop the bundled TS 6.0.3 (~24M):
 //   - `unstable/ast`          — enums (SyntaxKind, NodeFlags, ScriptTarget,
-//                               SymbolFlags, ModuleKind) and the shared is*-predicates;
-//   - `unstable/ast/is.generated.js` — the concrete is*-predicates (isBinaryExpression,
-//                               isCallExpression, …); every predicate used here lives there;
+//                               SymbolFlags, ModuleKind) and the concrete is*-predicates
+//                               (isBinaryExpression, isCallExpression, …), which it re-exports;
 //   - `unstable/sync`         — the API (`API`, `ModuleKind`, `SymbolFlags`) and Checker.
 // The snapshot API's RemoteNode provides forEachChild, kind, flags, modifierFlags,
 // getSourceFile, getStart, parent and property getters (name, arguments, expression, …),
 // while the Checker provides getSymbolAtLocation / getTypeAtLocation / getAliasedSymbol /
 // getExportSpecifierLocalTargetSymbol / getShorthandAssignmentValueSymbol.
-import * as is from '../node_modules/typescript/dist/ast/is.generated.js';
+import * as is from 'typescript/unstable/ast';
 import { API as TSAPI, ModuleKind, SymbolFlags } from 'typescript/unstable/sync';
 import { NodeFlags, ScriptTarget, SyntaxKind, ModifierFlags } from 'typescript/unstable/ast';
 import { readFileSync } from 'node:fs';
 
 // Shim: the familiar `ts` namespace over the TS 7.0 API.
-// The concrete is*-predicates (isBinaryExpression, …) come from is.generated.js; enums come
-// from unstable/ast and unstable/sync; forEachChild is a polyfill over node.forEachChild;
+// The concrete is*-predicates (isBinaryExpression, …) and the enums come from unstable/ast
+// and unstable/sync; forEachChild is a polyfill over node.forEachChild;
 // getCombinedNodeFlags = flags | modifierFlags; includes/find are the native Array methods.
 const ts = {
   SyntaxKind,
