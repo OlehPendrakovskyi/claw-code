@@ -816,7 +816,7 @@ function maskUserinfo(text: string): string {
         // A URL parser drops tabs and line breaks, so a `user:…` with no `@` yet runs on across them
         // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break. So does one
         // whose `@` so far leaves the URL unparsable (`https://alice:P/RE@FIX/part\nSUFFIX@host`), where that
-        // `@` is part of the password too. Whether it parses is asked once per URL, at its first break (R64, R76).
+        // `@` is part of the password too. Whether it parses is asked once per URL, at its first break (R64, R77).
         let unparsableAtBreak: boolean | undefined;
         const crossesBreak = (k: number): boolean => colonBeforeSlash && (lastAt === -1
             || (unparsableAtBreak ??= start !== undefined && !URL.canParse(text.slice(start, k).replace(TRAILING_DELIMITERS, ''))));
@@ -1151,7 +1151,7 @@ export function redactEndpointText(value: string): string {
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value.
- *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R73b). */
+ *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R74). */
 function endsAtCredential(label: string): boolean {
     return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
@@ -1170,7 +1170,7 @@ function consumesTail(text: string, tail: string): boolean {
  *  spans the join. Each side is normalised on its own and the join is masked without normalising again, so
  *  neither a credential a side holds on its own nor an escape or terminal code split across the join
  *  (`fail\\u00` + `65d`, which only the join would decode to `failed`) is mistaken for one the join formed
- *  (R73b). */
+ *  (R74). */
 function joinFormedCredential(left: string, right: string): string | undefined {
     const plainLeft = normalizeForRedaction(left);
     const plainRight = normalizeForRedaction(right);
@@ -1216,7 +1216,7 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     }
     // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what
     // follows. The delimiter already puts whitespace in it, so the `@` may come after more whitespace or lines
-    // of pretty-printed details, an independent credential such as `"token": "OTHER"` included (R75). It is
+    // of pretty-printed details, an independent credential such as `"token": "OTHER"` included (R76). It is
     // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
     // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
     if (continuation.includes('@') && consumesTail(left, DELIMITED_USERINFO_TAIL)) {
