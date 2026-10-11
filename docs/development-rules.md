@@ -4,7 +4,7 @@ Binding rules for this repository, cited by ID.
 
 ## How to read and cite this file
 
-- **IDs are stable.** Rules are `R1`–`R71` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
+- **IDs are stable.** Rules are `R1`–`R75` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
 - **Grouped by topic.** Position carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project; their examples, paths and Check lines are this repository's and are adapted when a rule is copied elsewhere. *claw-code* rules apply to this repository only.
@@ -16,7 +16,7 @@ Binding rules for this repository, cited by ID.
 | [Streaming and event mapping](#streaming-and-event-mapping) | S2, R14, R23, R38 |
 | [Protocols and external contracts](#protocols-and-external-contracts) | R24, R33, R25, R26, R27, R15, R29, R32, R37, R39 |
 | [Untrusted input, secrets and the webview](#untrusted-input-secrets-and-the-webview) | R5, R13, R10, R35, R36, R30, R31, S3, S4 |
-| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73 |
+| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75 |
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
@@ -151,8 +151,14 @@ These rules apply R35 to how a sanitiser is built. A sanitiser that guesses boun
 **R66. Describing an unknown thrown value takes nothing from it.** *General, MUST.* A helper that turns a caught value into text returns an `Error`'s `message` or a thrown string, and for anything else only its type (`Non-Error value (object)`), with no field values, key names, `String()` or custom `toString`: all of them are untrusted, unbounded, and logged by callers the helper cannot see. Its result still goes through the sanitiser before any egress (R35). Making such a helper "more helpful" changes every caller at once, so the change is reviewed against all of them.
 *Check:* `errors.test.ts`.
 
-**R73. A redaction guard compares against the normalised form, never the raw text.** *General, MUST.* A guard that asks whether redaction changed a value — to decide that a side holds no credential of its own, or that a credential spans a join — compares `redactText(x)` with the normalised form `normalizeForRedaction(x)`, never with the raw `x`. Terminal codes and decoded escapes change the raw text without any credential, so a raw comparison reads a normalisation change as an existing mask (and skips a real credential across a join) or reads a mask that normalisation alone removes as a credential (and truncates benign text). The comparison is symmetric: do not require a side to be credential-free to justify deriving from it, or an earlier independent credential in that side silently defeats the guard.
-*Check:* the ANSI-coloured, earlier-credential and both-sides-credential cases in `accessInfo.test.ts` (`still joins a credential whose left side terminal codes leave unchanged`, `joins a userinfo continuation even when the left side already masks an earlier credential`, `does not mask a credential-free right side that only terminal codes change`); review.
+**R73. A redaction guard compares against the normalised form, never the raw text.** *General, MUST.* A guard that asks whether redaction changed a value — to decide that a side holds no credential of its own, or that a credential spans a join — compares `redactText(x)` with the normalised form `normalizeForRedaction(x)`, never with the raw `x`. Terminal codes and decoded escapes change the raw text without any credential, so a raw comparison reads a normalisation change as an existing mask (and skips a real credential across a join) or reads a mask that normalisation alone removes as a credential (and truncates benign text). The comparison is symmetric: a join forms a credential when the joined redaction differs from each side's own redaction put together (`redactText(left + right)` against `redactText(left) + redactText(right)`). Requiring either side to be credential-free lets an independent credential in that side silently defeat the guard.
+*Check:* in `accessInfo.test.ts`, `still joins a credential whose left side terminal codes leave unchanged (issue #43 case 2)`, `joins a userinfo continuation even when the left side already masks an earlier credential (issue #43 case 2)`, `joins a split credential when the right side also holds an independent credential (issue #43 case 2)`, `masks the value after a label that ends at a credential even when the label holds an earlier one` and `does not mask a credential-free right side that only terminal codes change (issue #43 case 2)`; review.
+
+**R74. Inside an ambiguous value, look-alike structure does not start a new match.** *General, MUST.* Once a scanner has read a run as an unterminated or malformed secret (a `user:password` whose password holds `/` or whitespace), a later marker inside that run — `://`, `@`, a label such as `token=` — belongs to the value up to the terminator R61 allows. Restarting the scan there reads the rest as a fresh match and leaves the prefix visible: `https://alice:PRIVATE/part with word://tail@host` must not keep `PRIVATE`. Extending such a run stays linear (R64): each line's end and markers are found once and reused, however many matches start on it.
+*Check:* in `accessInfo.test.ts`, ``masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line`` and the `https://a:b/ x://` input of `stays linear on large adversarial input`.
+
+**R75. A join probe allows for everything the caller puts between the parts.** *General, MUST.* A check that a credential spans two separately redacted parts accepts the continuation however the caller presents it: after the display delimiter (`: `), across the line breaks and indentation of pretty-printed details, and past unrelated fields, an independent credential included. A probe that wants the completing marker at the start of the right part (`^[^\s@]*@`) misses `{"token": "OTHER", "reason": "SUFFIX@host"}`.
+*Check:* `joins a split credential when the right side also holds an independent credential (issue #43 case 2)` in `accessInfo.test.ts`; `masks a URL userinfo split between message and details when the details also hold an independent token` in `ChatServiceSpawn.test.ts`.
 
 ## Filesystem and paths
 
@@ -300,6 +306,8 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 - Redaction after truncation or before a join; a raw fallback after empty sanitising — R63, R35
 - Super-linear scanning of untrusted text — R64
 - A redaction guard that compares raw text instead of the normalised form, or assumes a side is credential-free — R73
+- A scan that restarts on `://`, `@` or a label inside an ambiguous secret — R74
+- A join probe that wants the continuation at the start of the right part — R75
 - A sanitiser fix that over-redacts benign text — R65
 - A rule checker that misses a syntactic form or flags safe code — R67
 - A CI leg that passes without running its tools — R69

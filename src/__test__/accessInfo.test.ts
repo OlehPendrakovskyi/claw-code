@@ -705,6 +705,46 @@ describe('redactText', () => {
         expect(left).toBe('failed');
     });
 
+    it('joins a split credential when the right side also holds an independent credential (issue #43 case 2)', () => {
+        // Both sides carry a credential: `right` masks its own `token=OTHER`, so comparing it with its normalised
+        // form says nothing about the join. What the join forms is what the joined redaction masks beyond
+        // each side's own (`password` + `=PRIVATE`, `?tok` + `en=PRIVATE`).
+        for (const [left, right] of [['password', '=PRIVATE token=OTHER'], ['https://host.example/?tok', 'en=PRIVATE token=OTHER']]) {
+            const boundary = joinBoundary(left, right);
+            expect(boundary.maskRight).toBe(true);
+            expect(boundary.left).not.toContain('PRIVATE');
+        }
+        // A userinfo whose `@` comes in pretty-printed details after an independent token, on either side of it.
+        for (const details of [{ token: 'OTHER', reason: 'PRIVATE_SUFFIX@host.example/x' }, { reason: 'PRIVATE_SUFFIX@host.example/x', token: 'OTHER' }]) {
+            const boundary = joinBoundary('https://alice:PRIVATE_PREFIX/', JSON.stringify(details, null, 2));
+            expect(boundary.maskRight).toBe(true);
+            expect(boundary.left).not.toContain('PRIVATE_PREFIX');
+        }
+        // Look-alikes: a `host:port` before a detail with an `@`, and an independent detail credential, stay as they are.
+        expect(joinBoundary('see https://host.example:8080/', JSON.stringify({ reason: 'mail admin@example.com' }, null, 2))).toEqual({ left: 'see https://host.example:8080/', maskRight: false });
+        expect(joinBoundary('request failed', JSON.stringify({ token: 'OTHER' }))).toEqual({ left: 'request failed', maskRight: false });
+    });
+
+    it('masks the value after a label that ends at a credential even when the label holds an earlier one', () => {
+        // The label's own `token="OLD"` (or userinfo) masks on its own; it must not exempt the label from ending
+        // at `Bearer`, or the value joined after it is shown as it is (`token=*** Bearer (PRIVATE)`).
+        for (const name of ['token="OLD" Bearer', 'token=OLD\nBearer', 'https://alice:OLD@host.example/ Bearer']) {
+            const label = formatNamedEntry({ name, url: 'PRIVATE' });
+            expect(label).not.toContain('PRIVATE');
+            expect(label).not.toContain('OLD');
+        }
+    });
+
+    it('masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line', () => {
+        // `word://` after the space is part of the password, not a new URL: starting one there would leave the
+        // password's prefix visible (`https://alice:PRIVATE_PREFIX/part with word://***@host`).
+        expect(redactText('https://alice:PRIVATE_PREFIX/part with word://tail@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('clone https://alice:PRIVATE_PREFIX/part word://x://tail@host.example/x failed')).toBe('clone https://***@host.example/x failed');
+        // Look-alike: a `host:port` reference keeps the prose after it, and a later URL's own userinfo is masked
+        // on its own.
+        expect(redactText('see https://host.example:8080 docs and wss://other@host.example/x')).toBe('see https://host.example:8080 docs and wss://***@host.example/x');
+    });
+
     it('asserts what formatNamedEntry emits for a credential split across name and endpoint (issue #43 case 3)', () => {
         // Case 3 is a regression in a caller, not in joinBoundary: the label must not carry the credential.
         expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
@@ -1486,6 +1526,8 @@ describe('redactText', () => {
             '?a="'.repeat(size / 4),
             'a=b'.repeat(size / 3),
             'a://'.repeat(size / 4),
+            'https://a:b/ x'.repeat(size / 14),
+            'https://a:b/ x://'.repeat(size / 17),
             'https://h.example/?' + Array.from({ length: size / 16 }, (_, i) => `token${i}=x`).join('&'),
             "password='" + '\\\\'.repeat(size / 2),
             "bearer '" + '\\\\'.repeat(size / 2) + '\n',

@@ -793,12 +793,14 @@ function maskBrokenUserinfo(text: string): string {
  *  fragment is left alone. A URL that does not parse is malformed (`https://alice:p"ass@host/`,
  *  `https://alice:p://ss@host`), and its userinfo becomes `***@`, running to the last `@` before the first
  *  `/`. When a `:` comes before that `/`, the userinfo is a `user:password` whose password may hold `/`,
- *  so it runs to the last `@` before whitespace or a later `://`. A `://` before any `/` can only sit
- *  inside a malformed authority, so the scan goes on past it instead of starting a new URL. Over-matching
- *  hides more, never less. Linear: each character is visited once. */
+ *  so it runs to the last `@` before whitespace or a later `://`; once whitespace is in it too, to the last
+ *  `@` on the line, a later `://` included. A `://` before any `/` can only sit inside a malformed
+ *  authority, so the scan goes on past it instead of starting a new URL. Over-matching hides more, never
+ *  less. Linear: each character is visited once. */
 function maskUserinfo(text: string): string {
     let out = '';
     let copied = 0;
+    let line = { end: 0, lastAt: -1 };
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
         const body = at + 3;
         let slash = -1;
@@ -876,39 +878,37 @@ function maskUserinfo(text: string): string {
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
         // The scan stopped early, on whitespace (`:` appeared after `//` so this is a `user:password` form, not
-        // a `host:port` reference):
+        // a `host:port` reference): the password may hold `/`, whitespace and scheme-like text
+        // (`https://alice:PRIVATE/part with word://tail@host`), so it runs to the last `@` on the line, and a
+        // later `://` on that line is part of it rather than a new URL that would leave the prefix behind.
         if (i < text.length && lastAt === -1 && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])) {
-            const authorityStop = findAuthorityStop(text, i);
-            const run = text.slice(start, authorityStop);
-            if (!URL.canParse(run.replace(TRAILING_DELIMITERS, ''))) {
-                // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and
-                // its `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the
-                // authority that the parser would accept (up to the first whitespace) has no host — i.e. the text
-                // after `//` is a `user:password` run, not a host reference (`alice:123`, `alice:pw/path`).
-                const short = run.slice(0, run.indexOf(' '));
-                let hasHost = false;
-                try {
-                    const u = new URL(short);
-                    hasHost = Boolean(u.hostname) && !u.username;
-                } catch {
-                    hasHost = false;
-                }
-                if (hasHost) {
-                    continue;
-                }
-                // Run to the last `@` inside the run (if any): the password holds `/` and whitespace.
-                let lastInRun = -1;
-                for (let k = body; k < authorityStop; k++) {
-                    if (text[k] === '@') {
-                        lastInRun = k;
-                    }
-                }
-                if (lastInRun !== -1) {
-                    i = lastInRun;
-                    // A malformed authority's userinfo runs to that `@` as well; it was never captured
-                    // by the standard scan, so treat `lastInRun` as the userinfo end.
-                    atInAuthority = lastInRun;
-                }
+            // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and its
+            // `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the URL up to
+            // the whitespace has no host — i.e. the text after `//` is a `user:password` run, not a host
+            // reference (`alice:123`, `alice:pw/path`). An authority holds no whitespace, so the text after it
+            // cannot give a URL that parses a host.
+            let hasHost = false;
+            try {
+                const u = new URL(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
+                hasHost = Boolean(u.hostname) && !u.username;
+            } catch {
+                hasHost = false;
+            }
+            if (hasHost) {
+                continue;
+            }
+            // Each line is scanned for its end and last `@` once, however many URLs it holds (R64).
+            if (i >= line.end) {
+                line = scanLine(text, i);
+            }
+            if (line.lastAt >= body) {
+                i = line.lastAt;
+                // A malformed authority's userinfo runs to that `@` as well; it was never captured by the
+                // standard scan, so treat it as the userinfo end.
+                atInAuthority = line.lastAt;
+            } else {
+                // No `@` up to the end of the line: nothing on it can be a userinfo, so it is skipped whole.
+                i = line.end;
             }
         }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
@@ -930,17 +930,13 @@ function maskUserinfo(text: string): string {
     return out + text.slice(copied);
 }
 
-/** Position right after `i` where an authority ends: next `://`, end of line, or end of text. */
-function findAuthorityStop(text: string, i: number): number {
-    for (; i < text.length; i++) {
-        if (text.startsWith('://', i)) {
-            return i;
-        }
-        if (text[i] === '\n' || text[i] === '\r') {
-            return i;
-        }
+/** The end of the line holding `i` (a line break or the end of the text) and the last `@` from `i` to it. */
+function scanLine(text: string, i: number): { end: number; lastAt: number } {
+    let lastAt = -1;
+    for (; i < text.length && text[i] !== '\n' && text[i] !== '\r'; i++) {
+        lastAt = text[i] === '@' ? i : lastAt;
     }
-    return text.length;
+    return { end: i, lastAt };
 }
 
 /** The URLs of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) in free-form text, as
@@ -1146,11 +1142,9 @@ export function redactEndpointText(value: string): string {
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value.
- *  A label that already holds a credential of its own does not end at one (redaction leaves it changed), so it
- *  takes the join-forms-a-credential branch below instead of masking the whole of `right`. */
+ *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R73). */
 function endsAtCredential(label: string): boolean {
-    return redactText(label) === normalizeForRedaction(label)
-        && [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
+    return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
 
 /** Whether redacting `text` followed by `tail` masks part of `tail`, or of `text` that `text` alone keeps: a
@@ -1160,6 +1154,14 @@ function endsAtCredential(label: string): boolean {
 function consumesTail(text: string, tail: string): boolean {
     const normalised = normalizeForRedaction(tail);
     return redactText(`${text}${normalised}`) !== `${redactText(text)}${normalised}`;
+}
+
+/** Whether redacting `left` and `right` joined masks more than redacting each on its own: a credential spans
+ *  the join. Each side is compared as `redactText` emits it, so a credential either side holds on its own,
+ *  or a change only terminal codes or escapes make, is not mistaken for one the join formed (R73). */
+function joinFormsCredential(left: string, right: string): boolean {
+    const normalised = normalizeForRedaction(right);
+    return redactText(`${left}${normalised}`) !== `${redactText(left)}${redactText(normalised)}`;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -1198,27 +1200,29 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     if (opensUserinfo && consumesTail(authority, USERINFO_TAIL)) {
         return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
     }
+    // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what
+    // follows. The delimiter already puts whitespace in it, so the `@` may come after more whitespace or lines
+    // of pretty-printed details, an independent credential such as `"token": "OTHER"` included (R75). It is
+    // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
+    // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
+    if (continuation.includes('@') && consumesTail(left, DELIMITED_USERINFO_TAIL)) {
+        const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
+        return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
+    }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
-    // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
-    if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
-        // A credential a side alone does not hold can still be formed by the join itself (issue #43 case 2,
-        // where pretty-printed details put the completing `@` on a later line). This branch judges the whole
-        // sides, so unlike the userinfo branch above it cannot assume `left` is credential-free — the left may
-        // carry an earlier, independent credential, whose own mask must not hide a second credential the join
-        // forms. Only `right` must be clean, and read as `redactText` reads it: a `right` that terminal codes
-        // or escapes only touch, or that already holds a credential of its own, is not one this branch can
-        // attribute to the join. The first mask in the joined text is an earlier credential's whether it sits
-        // in a side or spans the join; cutting there with upToFirstMask keeps the label that carries it.
-        if (left !== '' && right !== '' && redactText(right) === normalizeForRedaction(right)
-            && consumesTail(left, normalizeForRedaction(right))) {
-            return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
-        }
-        return { left, maskRight: false };
+    // A credential a side alone does not hold can still be formed by the join itself (issue #43 case 2, where
+    // pretty-printed details put the completing `@` on a later line). This branch judges the whole sides, so
+    // unlike the userinfo branch above it cannot assume `left` is credential-free — the left may carry an
+    // earlier, independent credential, whose own mask must not hide a second credential the join forms. The
+    // same holds for `right`, which may carry a credential of its own next to the rest of the split one. The
+    // first mask in the joined text is an earlier credential's whether it sits in a side or spans the join;
+    // cutting there with upToFirstMask keeps the label that carries it.
+    if (left !== '' && right !== '' && joinFormsCredential(left, right)) {
+        return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
     }
-    const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
-    return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
+    return { left, maskRight: false };
 }
 
 /** Redacted text cut after its first `***`. */
