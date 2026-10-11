@@ -756,6 +756,22 @@ describe('redactText', () => {
         expect(redactText('https://host.example:8080/a@b see bob@example.org')).toBe('https://host.example:8080/a@b see bob@example.org');
     });
 
+    it('keeps a malformed URL password whole through an earlier `@` and a nested `://` while its URL does not parse', () => {
+        // The `@` after `part` does not end the password, and neither does the `://` after it: stopping at either
+        // would leave `PRIVATE_SUFFIX` visible.
+        expect(redactText('https://alice:PRIVATE/part@PRIVATE_SUFFIX/word://tail with x@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('https://alice:PRIVATE/part@PRIVATE_SUFFIX/word://tail@host.example/x')).toBe('https://***@host.example/x');
+        // Look-alike: a URL that parses with its `@` ends where it ends, and a nested URL in its query is its own.
+        expect(redactText('https://alice:pw@host.example/r?u=https://other.example/x see bob@example.org')).toBe('https://***:***@host.example/r?u=https://other.example/x see bob@example.org');
+    });
+
+    it('does not cut a label when joining it to the right side masks less than masking them apart', () => {
+        // `pass=PRIVATE` masks on its own, but `nearbypass` is no whole sensitive key: the join hides nothing more,
+        // so it forms no credential, and the label is not cut at a mask that is not there (`ne`).
+        expect(joinBoundary('nearby', 'pass=PRIVATE')).toEqual({ left: 'nearby', maskRight: false });
+        expect(formatNamedEntry({ name: 'nearby', url: 'pass=PRIVATE' })).toBe('nearby (pass=***)');
+    });
+
     it('masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line', () => {
         // `word://` after the space is part of the password, not a new URL: starting one there would leave the
         // password's prefix visible (`https://alice:PRIVATE_PREFIX/part with word://***@host`).

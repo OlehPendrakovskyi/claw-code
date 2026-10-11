@@ -823,12 +823,13 @@ function maskUserinfo(text: string): string {
         for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && crossesBreak(i))); i++) {
             // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
             // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
-            // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…` with no `@`
-            // yet (`alice:P/ss://tail@host`): then the whole run stays one malformed userinfo, so its prefix is
-            // not left behind.
+            // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…`
+            // (`alice:P/ss://tail@host`, or `alice:P/art@SUFFIX/word://tail@host`, whose earlier `@` is part of the
+            // password while the URL does not parse, R77): then the whole run stays one malformed userinfo, so its
+            // prefix is not left behind.
             if (text.startsWith('://', i)) {
                 if (authorityEnd !== -1 && !malformedTail) {
-                    const ambiguous = start !== undefined && colonBeforeSlash && lastAt === -1 && !URL.canParse(text.slice(start, i));
+                    const ambiguous = start !== undefined && colonBeforeSlash && !URL.canParse(text.slice(start, i));
                     if (!ambiguous) {
                         break;
                     }
@@ -1163,7 +1164,20 @@ function endsAtCredential(label: string): boolean {
 function consumesTail(text: string, tail: string): boolean {
     const plainText = normalizeForRedaction(text);
     const plainTail = normalizeForRedaction(tail);
-    return maskNormalized(`${plainText}${plainTail}`) !== `${maskNormalized(plainText)}${plainTail}`;
+    return hidesMore(maskNormalized(`${plainText}${plainTail}`), `${maskNormalized(plainText)}${plainTail}`);
+}
+
+/** Whether `joined` shows less of the text than `apart`: masking the parts together hides characters that
+ *  masking them apart shows. A join can also mask less (`nearby` + `pass=PRIVATE` makes `nearbypass`, no longer
+ *  a whole sensitive key), so a mere difference is no credential the join formed. */
+function hidesMore(joined: string, apart: string): boolean {
+    // Serialising a URL can shorten it without masking anything (a default `:443` dropped), so a mask must be there too.
+    return joined.includes('***') && visibleLength(joined) < visibleLength(apart);
+}
+
+/** Length of masked text without its masks. */
+function visibleLength(masked: string): number {
+    return masked.length - (masked.split('***').length - 1) * 3;
 }
 
 /** `left` and `right` joined and masked, when that masks more than masking each on its own: a credential
@@ -1175,7 +1189,7 @@ function joinFormedCredential(left: string, right: string): string | undefined {
     const plainLeft = normalizeForRedaction(left);
     const plainRight = normalizeForRedaction(right);
     const joined = maskNormalized(`${plainLeft}${plainRight}`);
-    return joined === `${maskNormalized(plainLeft)}${maskNormalized(plainRight)}` ? undefined : joined;
+    return hidesMore(joined, `${maskNormalized(plainLeft)}${maskNormalized(plainRight)}`) ? joined : undefined;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
