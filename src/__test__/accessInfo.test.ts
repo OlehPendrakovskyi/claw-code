@@ -743,6 +743,19 @@ describe('redactText', () => {
         }
     });
 
+    it('masks a malformed URL password holding an earlier `@` and a space up to the last `@` on the line', () => {
+        // The `@` before the space does not end the password while the URL up to the space does not parse
+        // (`alice:PRIVATE_PREFIX` is no host and port): stopping there would leave `middle with PRIVATE_SUFFIX` behind.
+        expect(redactText('https://alice:PRIVATE_PREFIX/part@middle with PRIVATE_SUFFIX@host.example/x')).toBe('https://***@host.example/x');
+        // A tab or line break, which a URL parser drops, does not end it either.
+        for (const brk of ['\t', '\n', '\r\n']) {
+            expect(redactText(`https://alice:PRIVATE_PREFIX/part@middle${brk}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+        }
+        // Look-alikes: a URL that parses with its `@` is complete, and an `@` in a parsable path is no userinfo.
+        expect(redactText('https://alice:pw@host.example/a see bob@example.org')).toBe('https://***:***@host.example/a see bob@example.org');
+        expect(redactText('https://host.example:8080/a@b see bob@example.org')).toBe('https://host.example:8080/a@b see bob@example.org');
+    });
+
     it('masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line', () => {
         // `word://` after the space is part of the password, not a new URL: starting one there would leave the
         // password's prefix visible (`https://alice:PRIVATE_PREFIX/part with word://***@host`).
@@ -1535,6 +1548,7 @@ describe('redactText', () => {
             'a=b'.repeat(size / 3),
             'a://'.repeat(size / 4),
             'https://a:b/ x'.repeat(size / 14),
+            'https://a:b/@\n'.repeat(size / 14),
             'https://a:b/ x://'.repeat(size / 17),
             'https://h.example/?' + Array.from({ length: size / 16 }, (_, i) => `token${i}=x`).join('&'),
             "password='" + '\\\\'.repeat(size / 2),

@@ -814,8 +814,13 @@ function maskUserinfo(text: string): string {
         const start = schemeStart(text, at);
         let i = body;
         // A URL parser drops tabs and line breaks, so a `user:…` with no `@` yet runs on across them
-        // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break.
-        for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && colonBeforeSlash && lastAt === -1)); i++) {
+        // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break. So does one
+        // whose `@` so far leaves the URL unparsable (`https://alice:P/RE@FIX/part\nSUFFIX@host`), where that
+        // `@` is part of the password too. Whether it parses is asked once per URL, at its first break (R64, R76).
+        let unparsableAtBreak: boolean | undefined;
+        const crossesBreak = (k: number): boolean => colonBeforeSlash && (lastAt === -1
+            || (unparsableAtBreak ??= start !== undefined && !URL.canParse(text.slice(start, k).replace(TRAILING_DELIMITERS, ''))));
+        for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && crossesBreak(i))); i++) {
             // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
             // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
             // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…` with no `@`
@@ -880,8 +885,12 @@ function maskUserinfo(text: string): string {
         // The scan stopped early, on whitespace (`:` appeared after `//` so this is a `user:password` form, not
         // a `host:port` reference): the password may hold `/`, whitespace and scheme-like text
         // (`https://alice:PRIVATE/part with word://tail@host`), so it runs to the last `@` on the line, and a
-        // later `://` on that line is part of it rather than a new URL that would leave the prefix behind.
-        if (i < text.length && lastAt === -1 && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])) {
+        // later `://` on that line is part of it rather than a new URL that would leave the prefix behind. An `@`
+        // already seen does not end it while the URL up to the whitespace still does not parse
+        // (`https://alice:PRIVATE/part@middle with SUFFIX@host`): that `@` is part of the password too. A URL that
+        // parses with its `@` (`https://alice:pw@host see bob@example.org`) is complete, and prose after it is left alone.
+        if (i < text.length && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])
+            && (lastAt === -1 || !URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, '')))) {
             // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and its
             // `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the URL up to
             // the whitespace has no host — i.e. the text after `//` is a `user:password` run, not a host
