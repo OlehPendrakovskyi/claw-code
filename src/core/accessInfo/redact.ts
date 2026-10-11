@@ -1167,17 +1167,13 @@ function consumesTail(text: string, tail: string): boolean {
     return hidesMore(maskNormalized(`${plainText}${plainTail}`), `${maskNormalized(plainText)}${plainTail}`);
 }
 
-/** Whether `joined` shows less of the text than `apart`: masking the parts together hides characters that
- *  masking them apart shows. A join can also mask less (`nearby` + `pass=PRIVATE` makes `nearbypass`, no longer
- *  a whole sensitive key), so a mere difference is no credential the join formed. */
+/** Whether masking the parts together hides something that masking them apart does not: the two differ and
+ *  the joined form holds a mask. A join can also mask less (`nearby` + `pass=PRIVATE` makes `nearbypass`, no
+ *  longer a whole sensitive key), which leaves no mask behind and forms no credential. Lengths are not compared:
+ *  re-serialising a URL can lengthen it (`é` becomes `%C3%A9`) by more than a mask saves, or shorten it (a
+ *  default `:443` dropped) without masking anything. Any other difference with a mask fails toward hiding. */
 function hidesMore(joined: string, apart: string): boolean {
-    // Serialising a URL can shorten it without masking anything (a default `:443` dropped), so a mask must be there too.
-    return joined.includes('***') && visibleLength(joined) < visibleLength(apart);
-}
-
-/** Length of masked text without its masks. */
-function visibleLength(masked: string): number {
-    return masked.length - (masked.split('***').length - 1) * 3;
+    return joined !== apart && joined.includes('***');
 }
 
 /** `left` and `right` joined and masked, when that masks more than masking each on its own: a credential

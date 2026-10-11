@@ -765,6 +765,15 @@ describe('redactText', () => {
         expect(redactText('https://alice:pw@host.example/r?u=https://other.example/x see bob@example.org')).toBe('https://***:***@host.example/r?u=https://other.example/x see bob@example.org');
     });
 
+    it('joins a split query credential even when re-serialising the URL lengthens the output', () => {
+        // `é` becomes `%C3%A9` when the joined URL is serialised, which outweighs the masked one-character value:
+        // a length comparison would miss the `?token=x` the join forms.
+        expect(joinBoundary('https://host/é?tok', 'en=x')).toEqual({ left: 'https://host/%C3%A9?token=***', maskRight: true });
+        expect(formatNamedEntry({ name: 'https://host/é?tok', url: 'en=x' })).not.toContain('(en=x)');
+        // Look-alike: serialising drops a default port without masking anything, which forms no credential.
+        expect(joinBoundary('https://host.example:443', 'x')).toEqual({ left: 'https://host.example:443', maskRight: false });
+    });
+
     it('does not cut a label when joining it to the right side masks less than masking them apart', () => {
         // `pass=PRIVATE` masks on its own, but `nearbypass` is no whole sensitive key: the join hides nothing more,
         // so it forms no credential, and the label is not cut at a mask that is not there (`ne`).
