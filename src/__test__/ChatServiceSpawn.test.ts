@@ -1325,6 +1325,13 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('masks a special-scheme userinfo without `//` split between message and structured details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https:alice:PRIVATE_PREFIX/', data: { details: { reason: 'PRIVATE_SUFFIX@host.example/x' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('masks a URL userinfo split between message and details when the details also hold an independent token', () => {
             // The `@` that completes the userinfo comes in the details after or before a `token` of their own,
             // which masks on its own; that mask must not hide the credential the join forms.

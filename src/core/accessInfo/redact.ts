@@ -1231,8 +1231,9 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // Only what actually follows completes a userinfo: a trailing `host:port` with no `@` after it is no password.
     // `left` is normalised on its own (R74), so an unterminated OSC or DCS cannot swallow the tail; only the
     // special-scheme spelling, which needs the `@` the tail adds, is normalised with it.
-    const plainLeft = normalizeForRedaction(left);
-    const userinfoProbe = normalizeSpecialSchemes(`${plainLeft}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
+    // `schemeLeft` is `left` with that spelling normalised and its line breaks kept; both userinfo probes use it.
+    const schemeLeft = normalizeSpecialSchemes(`${normalizeForRedaction(left)}${USERINFO_TAIL}`).slice(0, -USERINFO_TAIL.length);
+    const userinfoProbe = `${schemeLeft}${USERINFO_TAIL}`.replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
     const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
     const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
@@ -1245,9 +1246,10 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // of pretty-printed details, an independent credential such as `"token": "OTHER"` included (R76). It is
     // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
     // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
-    if (continuation.includes('@') && consumesTail(left, DELIMITED_USERINFO_TAIL)) {
-        const redacted = maskNormalized(`${plainLeft}${DELIMITED_USERINFO_TAIL}`);
-        return { left: redacted.startsWith(`${plainLeft} `) ? left : upToFirstMask(redacted), maskRight: true };
+    // The probe reads `schemeLeft`, so `https:alice:PREFIX/` is a userinfo here as it is in the direct probe.
+    const delimited = maskNormalized(`${schemeLeft}${DELIMITED_USERINFO_TAIL}`);
+    if (continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
+        return { left: delimited.startsWith(`${schemeLeft} `) ? left : upToFirstMask(delimited), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };

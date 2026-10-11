@@ -733,6 +733,17 @@ describe('redactText', () => {
         expect(formatNamedEntry({ name: 'fail\\u00', url: '65d.example' })).toBe('fail\\u00 (65d.example)');
     });
 
+    it('joins a special scheme spelled without `//` to a structured or spaced continuation', () => {
+        // `https:alice:PREFIX/` and `https:/alice:PREFIX/` are userinfo to a URL parser; the delimited probe reads
+        // the left with that spelling normalised, as the direct probe does, or the continuation would be shown.
+        for (const name of ['https:alice:PRIVATE_PREFIX/', 'https:/alice:PRIVATE_PREFIX/']) {
+            for (const right of [JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2), 'PRIVATE_SUFFIX with space@host.example/x']) {
+                expect(joinBoundary(name, right)).toEqual({ left: 'https://***', maskRight: true });
+                expect(formatNamedEntry({ name, url: right })).not.toContain('PRIVATE');
+            }
+        }
+    });
+
     it('keeps the label through its mask when an unterminated OSC or DCS ends the left side', () => {
         // Normalising the left with the probe's tail would let the open sequence swallow the tail: no mask would
         // remain and the label would be cut to `ht`. The left is normalised on its own.
