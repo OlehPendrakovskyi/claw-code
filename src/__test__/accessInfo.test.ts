@@ -802,27 +802,34 @@ describe('redactText', () => {
         }
     });
 
-    it('parses a malformed URL prefix once for the whitespace gate, the host check and the userinfo end', () => {
-        // R77: the costly property is asked once per match. Count how often the parser sees this one prefix.
-        const prefix = 'https://alice:PRIVATE_PREFIX/part@middle';
-        let seen = 0;
-        class CountingURL extends URL {
-            constructor(url: string | URL, base?: string | URL) {
-                seen += String(url) === prefix ? 1 : 0;
-                super(url, base);
+    it('parses each URL prefix once across the scan gates, the host check and the userinfo end', () => {
+        // R77: the costly property is asked once per match. Count how often the parser sees one prefix: a
+        // malformed one the whitespace gate, the host check and `parsable` all ask about, and a parsable one
+        // the nested-`://` gate and `parsable` both ask about.
+        const cases = [
+            { prefix: 'https://alice:PRIVATE_PREFIX/part@middle', text: 'https://alice:PRIVATE_PREFIX/part@middle with PRIVATE_SUFFIX@host.example/x', expected: 'https://***@host.example/x' },
+            { prefix: 'https://alice:pw@host.example/r?u=https', text: 'https://alice:pw@host.example/r?u=https://other.example/x', expected: 'https://***:***@host.example/r?u=https://other.example/x' },
+        ];
+        for (const { prefix, text, expected } of cases) {
+            let seen = 0;
+            class CountingURL extends URL {
+                constructor(url: string | URL, base?: string | URL) {
+                    seen += String(url) === prefix ? 1 : 0;
+                    super(url, base);
+                }
+                static override canParse(url: string | URL, base?: string | URL): boolean {
+                    seen += String(url) === prefix ? 1 : 0;
+                    return super.canParse(url, base);
+                }
             }
-            static override canParse(url: string | URL, base?: string | URL): boolean {
-                seen += String(url) === prefix ? 1 : 0;
-                return super.canParse(url, base);
+            vi.stubGlobal('URL', CountingURL);
+            try {
+                expect(redactText(text)).toBe(expected);
+            } finally {
+                vi.unstubAllGlobals();
             }
+            expect(seen).toBe(1);
         }
-        vi.stubGlobal('URL', CountingURL);
-        try {
-            expect(redactText(`${prefix} with PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
-        } finally {
-            vi.unstubAllGlobals();
-        }
-        expect(seen).toBe(1);
     });
 
     it('masks a malformed URL up to its last `@` when the same-line run does not apply', () => {

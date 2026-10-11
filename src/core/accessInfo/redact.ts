@@ -816,6 +816,23 @@ function maskUserinfo(text: string): string {
         let nested = -1;
         let malformedTail = false;
         const start = schemeStart(text, at);
+        // Every parse of this URL's text goes through one cache keyed by the exact input, so a gate, the host
+        // check and `parsable` never parse the same string twice (R77).
+        let parsed: { input: string; url: URL | undefined } | undefined;
+        const parse = (input: string): URL | undefined => {
+            if (parsed?.input !== input) {
+                let url: URL | undefined;
+                try {
+                    url = new URL(input);
+                } catch {
+                    url = undefined;
+                }
+                parsed = { input, url };
+            }
+            return parsed.url;
+        };
+        /** The URL up to `k`, trailing delimiters dropped, parsed. */
+        const parsePrefix = (k: number): URL | undefined => parse(text.slice(start, k).replace(TRAILING_DELIMITERS, ''));
         let i = body;
         // A URL parser drops tabs and line breaks, so a `user:…` with no `@` yet runs on across them
         // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break. So does one
@@ -823,7 +840,7 @@ function maskUserinfo(text: string): string {
         // `@` is part of the password too. Whether it parses is asked once per URL, at its first break (R64, R77).
         let unparsableAtBreak: boolean | undefined;
         const crossesBreak = (k: number): boolean => colonBeforeSlash && (lastAt === -1
-            || (unparsableAtBreak ??= start !== undefined && !URL.canParse(text.slice(start, k).replace(TRAILING_DELIMITERS, ''))));
+            || (unparsableAtBreak ??= start !== undefined && parsePrefix(k) === undefined));
         for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && crossesBreak(i))); i++) {
             // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
             // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
@@ -833,7 +850,7 @@ function maskUserinfo(text: string): string {
             // prefix is not left behind.
             if (text.startsWith('://', i)) {
                 if (authorityEnd !== -1 && !malformedTail) {
-                    const ambiguous = start !== undefined && colonBeforeSlash && !URL.canParse(text.slice(start, i));
+                    const ambiguous = start !== undefined && colonBeforeSlash && parse(text.slice(start, i)) === undefined;
                     if (!ambiguous) {
                         break;
                     }
@@ -867,7 +884,7 @@ function maskUserinfo(text: string): string {
         // after it on the same stretch makes what follows a `user:password`, and the same run applies.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && lastAt === -1) {
-            const ambiguous = colonBeforeSlash && start !== undefined && !URL.canParse(text.slice(start, i));
+            const ambiguous = colonBeforeSlash && start !== undefined && parse(text.slice(start, i)) === undefined;
             let colonSeen = colonBeforeSlash;
             let j = i;
             for (; j < text.length && !LINE_END.test(text[j]); j++) {
@@ -894,20 +911,6 @@ function maskUserinfo(text: string): string {
         // already seen does not end it while the URL up to the whitespace still does not parse
         // (`https://alice:PRIVATE/part@middle with SUFFIX@host`): that `@` is part of the password too. A URL that
         // parses with its `@` (`https://alice:pw@host see bob@example.org`) is complete, and prose after it is left alone.
-        // The URL up to a position is parsed once and reused by the gate, the host check and `parsable` (R77).
-        let parsed: { at: number; url: URL | undefined } | undefined;
-        const parsePrefix = (k: number): URL | undefined => {
-            if (parsed?.at !== k) {
-                let url: URL | undefined;
-                try {
-                    url = new URL(text.slice(start, k).replace(TRAILING_DELIMITERS, ''));
-                } catch {
-                    url = undefined;
-                }
-                parsed = { at: k, url };
-            }
-            return parsed.url;
-        };
         if (i < text.length && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])
             && (lastAt === -1 || parsePrefix(i) === undefined)) {
             // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and its
