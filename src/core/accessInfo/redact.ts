@@ -875,12 +875,51 @@ function maskUserinfo(text: string): string {
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
+        // The scan stopped early, on whitespace (`:` appeared after `//` so this is a `user:password` form, not
+        // a `host:port` reference):
+        if (i < text.length && lastAt === -1 && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])) {
+            const authorityStop = findAuthorityStop(text, i);
+            const run = text.slice(start, authorityStop);
+            if (!URL.canParse(run.replace(TRAILING_DELIMITERS, ''))) {
+                // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and
+                // its `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the
+                // authority that the parser would accept (up to the first whitespace) has no host — i.e. the text
+                // after `//` is a `user:password` run, not a host reference (`alice:123`, `alice:pw/path`).
+                const short = run.slice(0, run.indexOf(' '));
+                let hasHost = false;
+                try {
+                    const u = new URL(short);
+                    hasHost = Boolean(u.hostname) && !u.username;
+                } catch {
+                    hasHost = false;
+                }
+                if (hasHost) {
+                    continue;
+                }
+                // Run to the last `@` inside the run (if any): the password holds `/` and whitespace.
+                let lastInRun = -1;
+                for (let k = body; k < authorityStop; k++) {
+                    if (text[k] === '@') {
+                        lastInRun = k;
+                    }
+                }
+                if (lastInRun !== -1) {
+                    i = lastInRun;
+                    // A malformed authority's userinfo runs to that `@` as well; it was never captured
+                    // by the standard scan, so treat `lastInRun` as the userinfo end.
+                    atInAuthority = lastInRun;
+                }
+            }
+        }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
         // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.
         const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined &&
             URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
-        const end = spacedAt !== -1 ? spacedAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
+        // `end` = where the userinfo ends. For a parsable URL it is `atInAuthority` (an `@` found in the
+        // standard scan). For a malformed authority the `@` captured by the malformed-branch block above is
+        // in `atInAuthority`; otherwise fall back to the standard `lastAt` / `atBeforeSlash` positions.
+        const end = spacedAt !== -1 ? spacedAt : parsable ? atInAuthority : (atInAuthority !== -1 ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash);
         if (start !== undefined && end !== -1 && body >= copied) {
             const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
             out += text.slice(copied, body) + masked;
@@ -889,6 +928,19 @@ function maskUserinfo(text: string): string {
         at = i - 3;
     }
     return out + text.slice(copied);
+}
+
+/** Position right after `i` where an authority ends: next `://`, end of line, or end of text. */
+function findAuthorityStop(text: string, i: number): number {
+    for (; i < text.length; i++) {
+        if (text.startsWith('://', i)) {
+            return i;
+        }
+        if (text[i] === '\n' || text[i] === '\r') {
+            return i;
+        }
+    }
+    return text.length;
 }
 
 /** The URLs of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) in free-form text, as
@@ -1145,6 +1197,13 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     }
     // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
     if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
+        // A credential held by neither side alone can still be formed by the join itself (issue #43 case 2,
+        // where pretty-printed details put the completing `@` on a later line). Probe the joined text with the
+        // separator dropped: mask only when each side is clean on its own and the concatenation is not.
+        if (left !== '' && right !== '' && redactText(left) === left && redactText(right) === right
+            && consumesTail(left, right)) {
+            return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
+        }
         return { left, maskRight: false };
     }
     const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
