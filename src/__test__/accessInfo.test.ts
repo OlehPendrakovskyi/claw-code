@@ -802,6 +802,29 @@ describe('redactText', () => {
         }
     });
 
+    it('parses a malformed URL prefix once for the whitespace gate, the host check and the userinfo end', () => {
+        // R77: the costly property is asked once per match. Count how often the parser sees this one prefix.
+        const prefix = 'https://alice:PRIVATE_PREFIX/part@middle';
+        let seen = 0;
+        class CountingURL extends URL {
+            constructor(url: string | URL, base?: string | URL) {
+                seen += String(url) === prefix ? 1 : 0;
+                super(url, base);
+            }
+            static override canParse(url: string | URL, base?: string | URL): boolean {
+                seen += String(url) === prefix ? 1 : 0;
+                return super.canParse(url, base);
+            }
+        }
+        vi.stubGlobal('URL', CountingURL);
+        try {
+            expect(redactText(`${prefix} with PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+        } finally {
+            vi.unstubAllGlobals();
+        }
+        expect(seen).toBe(1);
+    });
+
     it('masks a malformed URL up to its last `@` when the same-line run does not apply', () => {
         // The invalid port makes the URL malformed, and its userinfo runs to its last `@`, not to the first
         // authority `@`; the quote keeps a later pass from finding that last `@`.

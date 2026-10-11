@@ -894,21 +894,29 @@ function maskUserinfo(text: string): string {
         // already seen does not end it while the URL up to the whitespace still does not parse
         // (`https://alice:PRIVATE/part@middle with SUFFIX@host`): that `@` is part of the password too. A URL that
         // parses with its `@` (`https://alice:pw@host see bob@example.org`) is complete, and prose after it is left alone.
+        // The URL up to a position is parsed once and reused by the gate, the host check and `parsable` (R77).
+        let parsed: { at: number; url: URL | undefined } | undefined;
+        const parsePrefix = (k: number): URL | undefined => {
+            if (parsed?.at !== k) {
+                let url: URL | undefined;
+                try {
+                    url = new URL(text.slice(start, k).replace(TRAILING_DELIMITERS, ''));
+                } catch {
+                    url = undefined;
+                }
+                parsed = { at: k, url };
+            }
+            return parsed.url;
+        };
         if (i < text.length && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])
-            && (lastAt === -1 || !URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, '')))) {
+            && (lastAt === -1 || parsePrefix(i) === undefined)) {
             // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and its
             // `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the URL up to
             // the whitespace has no host — i.e. the text after `//` is a `user:password` run, not a host
             // reference (`alice:123`, `alice:pw/path`). An authority holds no whitespace, so the text after it
             // cannot give a URL that parses a host.
-            let hasHost = false;
-            try {
-                const u = new URL(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
-                hasHost = Boolean(u.hostname) && !u.username;
-            } catch {
-                hasHost = false;
-            }
-            if (hasHost) {
+            const prefix = parsePrefix(i);
+            if (prefix !== undefined && prefix.hostname !== '' && prefix.username === '') {
                 continue;
             }
             // Each line is scanned for its end and last `@` once, however many URLs it holds (R64).
@@ -928,8 +936,7 @@ function maskUserinfo(text: string): string {
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
         // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.
-        const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined &&
-            URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
+        const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined && parsePrefix(i) !== undefined;
         // `end` = where the userinfo ends: the `@` a spaced or same-line run found, else the authority's `@` for
         // a URL that parses, else, for a malformed one, its last `@` (`user:password`) or the last before a `/`.
         const end = spacedAt !== -1 ? spacedAt : lineAt !== -1 ? lineAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
