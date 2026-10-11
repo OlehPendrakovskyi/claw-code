@@ -204,7 +204,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 **R40. A platform matrix is one job, not N copied jobs.** *General, MUST.* Run one `strategy.matrix` job over `[ubuntu-latest, windows-latest, macos-latest]` with `fail-fast: false`; copied per-OS jobs drift. OS-independent work (typecheck, lint, licence check) runs once on the cheap runner (`if: runner.os == 'Linux'`); only the OS-sensitive steps (build, test) run on every runner. `workflow_dispatch` lets a maintainer re-run without an empty push.
 *Check:* `.github/workflows/ci.yml`.
 
-**R41. A required check behind a matrix is an aggregate job.** *General, MUST.* A ruleset that requires a fixed check name (here `ci`) cannot be satisfied by matrix checks (`test (ubuntu-latest)` and so on). Add a small aggregate job named exactly `ci` with `needs: test` and `if: always()`, which fails unless every OS passed.
+**R41. A required check behind a matrix is an aggregate job.** *General, MUST.* A ruleset that requires a fixed check name (here `ci`) cannot be satisfied by matrix checks (`test (ubuntu-latest, node 24)` and so on). Add a small aggregate job named exactly `ci` with `needs: test` and `if: always()`, which fails unless every OS passed.
 *Check:* `.github/workflows/ci.yml`.
 
 **R42. Concurrency cancellation spares the default-branch run.** *General, MUST.* `cancel-in-progress: true` with a group keyed only on `github.ref` cancels a queued `main` run when a newer commit lands, so a main commit can land without a status. Key the group so a newer PR push supersedes the PR run while every other run gets a unique group: `group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}`.
