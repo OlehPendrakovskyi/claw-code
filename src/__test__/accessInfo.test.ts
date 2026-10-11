@@ -781,6 +781,16 @@ describe('redactText', () => {
         expect(formatNamedEntry({ name: 'nearby', url: 'pass=PRIVATE' })).toBe('nearby (pass=***)');
     });
 
+    it('ends a malformed URL password run at U+2028 and U+2029 as at a line break', () => {
+        // The run goes to the last `@` on its line; the line and paragraph separators end a line as LF does, so an
+        // email on the next line is no part of the password.
+        for (const brk of ['\u2028', '\u2029', '\n']) {
+            for (const text of [`https://alice:note/part ${brk}mail bob@example.org`, `https://alice:note ${brk}mail bob@example.org`]) {
+                expect(redactText(text)).toBe(text);
+            }
+        }
+    });
+
     it('masks a malformed URL up to its last `@` when the same-line run does not apply', () => {
         // The invalid port makes the URL malformed, and its userinfo runs to its last `@`, not to the first
         // authority `@`; the quote keeps a later pass from finding that last `@`.

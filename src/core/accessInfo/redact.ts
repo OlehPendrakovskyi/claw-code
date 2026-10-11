@@ -743,6 +743,9 @@ function normalizeSpecialSchemes(text: string): string {
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
 const PARSER_IGNORED = /[\t\r\n]/g;
 const PARSER_IGNORED_CHAR = /[\t\r\n]/;
+/** A character that ends a line: LF, CR and the line and paragraph separators U+2028 and U+2029, which end a
+ *  line as much as LF does (the outer scan stops at them as whitespace). */
+const LINE_END = /[\n\r\u2028\u2029]/;
 /** A tab or line break serialised (`\\t`, `\\n`, `\\r`, or `\\u0009`, `\\u000a`, `\\u000d`) at any depth, with its
  *  whole backslash run. */
 const SERIALISED_BREAK = /(?<!\\)\\+(?:[tnr]|u000[9aAdD])/g;
@@ -867,7 +870,7 @@ function maskUserinfo(text: string): string {
             const ambiguous = colonBeforeSlash && start !== undefined && !URL.canParse(text.slice(start, i));
             let colonSeen = colonBeforeSlash;
             let j = i;
-            for (; j < text.length && text[j] !== '\r' && text[j] !== '\n'; j++) {
+            for (; j < text.length && !LINE_END.test(text[j]); j++) {
                 if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
                     break;
                 }
@@ -940,10 +943,10 @@ function maskUserinfo(text: string): string {
     return out + text.slice(copied);
 }
 
-/** The end of the line holding `i` (a line break or the end of the text) and the last `@` from `i` to it. */
+/** The end of the line holding `i` (a {@link LINE_END} or the end of the text) and the last `@` from `i` to it. */
 function scanLine(text: string, i: number): { end: number; lastAt: number } {
     let lastAt = -1;
-    for (; i < text.length && text[i] !== '\n' && text[i] !== '\r'; i++) {
+    for (; i < text.length && !LINE_END.test(text[i]); i++) {
         lastAt = text[i] === '@' ? i : lastAt;
     }
     return { end: i, lastAt };
