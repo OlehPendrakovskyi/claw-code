@@ -1142,7 +1142,7 @@ export function redactEndpointText(value: string): string {
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
  *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value.
- *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R73). */
+ *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R73b). */
 function endsAtCredential(label: string): boolean {
     return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
@@ -1161,7 +1161,7 @@ function consumesTail(text: string, tail: string): boolean {
  *  spans the join. Each side is normalised on its own and the join is masked without normalising again, so
  *  neither a credential a side holds on its own nor an escape or terminal code split across the join
  *  (`fail\\u00` + `65d`, which only the join would decode to `failed`) is mistaken for one the join formed
- *  (R73). */
+ *  (R73b). */
 function joinFormedCredential(left: string, right: string): string | undefined {
     const plainLeft = normalizeForRedaction(left);
     const plainRight = normalizeForRedaction(right);
