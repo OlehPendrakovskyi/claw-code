@@ -1199,9 +1199,12 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
         // A credential held by neither side alone can still be formed by the join itself (issue #43 case 2,
         // where pretty-printed details put the completing `@` on a later line). Probe the joined text with the
-        // separator dropped: mask only when each side is clean on its own and the concatenation is not.
-        if (left !== '' && right !== '' && redactText(left) === left && redactText(right) === right
-            && consumesTail(left, right)) {
+        // separator dropped: mask only when neither side holds a credential of its own and the concatenation
+        // does. A side is clean when redaction leaves it as its normalised form: raw equality would treat a
+        // side changed only by normalisation (an ANSI-coloured message) as already holding a credential and
+        // skip the join check, even though the fragments still form one across it.
+        if (left !== '' && right !== '' && redactText(left) === normalizeForRedaction(left)
+            && redactText(right) === normalizeForRedaction(right) && consumesTail(left, right)) {
             return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
         }
         return { left, maskRight: false };

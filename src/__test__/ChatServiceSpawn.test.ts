@@ -1297,6 +1297,15 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('https://***: ***');
         });
 
+        it('masks a credential split across the message and details when the message only differs by terminal codes', () => {
+            // The message redaction leaves only terminal codes out, so the raw message is not what redaction
+            // emits; the details still hold the `@` that completes the userinfo across the inserted `: `.
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: '\u001b[31mhttps://alice:PRIVATE_PREFIX/\u001b[0m', data: { details: { reason: 'PRIVATE_SUFFIX@host.example/x' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
         it('masks a URL userinfo split between message and details after an earlier credential or without `//`', () => {
             for (const message of ['auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/', 'auth token=OLD_SECRET\nhttps://alice:PRIVATE_PREFIX/', 'token=OLD_SECRET\nhttps:alice:PRIVATE_PREFIX/', 'https:alice:PRIVATE_PREFIX/']) {
                 const { child, events } = start();

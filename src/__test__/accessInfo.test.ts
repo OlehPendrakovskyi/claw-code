@@ -673,6 +673,23 @@ describe('redactText', () => {
         expect(out).not.toContain('PRIVATE_PREFIX');
     });
 
+    it('still joins a credential whose left side terminal codes leave unchanged (issue #43 case 2)', () => {
+        // The left fragment is not the text redaction keeps (a terminal code comes out first), but it holds
+        // no credential of its own: the `@` the details add is still what completes the userinfo across the
+        // join. Raw equality would read the normalisation difference as an existing mask and skip the check.
+        const message = '\u001b[31mhttps://alice:PRIVATE_PREFIX/\u001b[0m';
+        const details = { reason: 'PRIVATE_SUFFIX@host.example/x' };
+        const { left, maskRight } = joinBoundary(message, JSON.stringify(details, null, 2));
+        expect(maskRight).toBe(true);
+        expect(left).not.toContain('PRIVATE_PREFIX');
+    });
+
+    it('asserts what formatNamedEntry emits for a credential split across name and endpoint (issue #43 case 3)', () => {
+        // Case 3 is a regression in a caller, not in joinBoundary: the label must not carry the credential.
+        expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_TOKEN' })).not.toContain('PRIVATE');
+    });
+
     it('masks a quoted URL query value across a line break up to the next `&` or `#`', () => {
         for (const delimiter of ['&', '#']) {
             const text = `fetch "https://host.example/?token=PREFIX\nPRIVATE_SUFFIX${delimiter}ok=1" failed`;
