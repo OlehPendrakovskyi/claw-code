@@ -781,6 +781,13 @@ describe('redactText', () => {
         expect(formatNamedEntry({ name: 'nearby', url: 'pass=PRIVATE' })).toBe('nearby (pass=***)');
     });
 
+    it('masks a malformed URL up to its last `@` when the same-line run does not apply', () => {
+        // The invalid port makes the URL malformed, and its userinfo runs to its last `@`, not to the first
+        // authority `@`; the quote keeps a later pass from finding that last `@`.
+        expect(redactText('https://alice:pass@middle:bad/path"PRIVATE_SUFFIX@host.example')).not.toContain('PRIVATE_SUFFIX');
+        expect(redactText('https://alice:pass@middle:bad/path"PRIVATE_SUFFIX@host.example')).not.toContain('pass');
+    });
+
     it('masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line', () => {
         // `word://` after the space is part of the password, not a new URL: starting one there would leave the
         // password's prefix visible (`https://alice:PRIVATE_PREFIX/part with word://***@host`).

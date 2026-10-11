@@ -4,7 +4,7 @@ Binding rules for this repository, cited by ID.
 
 ## How to read and cite this file
 
-- **IDs are stable.** Rules are `R1`–`R77` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
+- **IDs are stable.** Rules are `R1`–`R78` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
 - **Grouped by topic.** Position carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project; their examples, paths and Check lines are this repository's and are adapted when a rule is copied elsewhere. *claw-code* rules apply to this repository only.
@@ -16,7 +16,7 @@ Binding rules for this repository, cited by ID.
 | [Streaming and event mapping](#streaming-and-event-mapping) | S2, R14, R23, R38 |
 | [Protocols and external contracts](#protocols-and-external-contracts) | R24, R33, R25, R26, R27, R15, R29, R32, R37, R39 |
 | [Untrusted input, secrets and the webview](#untrusted-input-secrets-and-the-webview) | R5, R13, R10, R35, R36, R30, R31, S3, S4 |
-| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77 |
+| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77, R78 |
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
@@ -165,6 +165,9 @@ These rules apply R35 to how a sanitiser is built. A sanitiser that guesses boun
 
 **R77. A sanitiser gate tests the property it stands for, not a proxy for it.** *General, MUST.* A branch that exempts a run from masking, or stops extending one, asks the question it depends on — does this URL parse, does this value have a terminator — rather than a cheaper sign that usually comes with the answer. "No `@` seen yet" is not "not a complete URL": `https://alice:PRIVATE/part@middle with SUFFIX@host` has an `@` and still does not parse, so its password runs on. Where the real test is costly, ask it once per match and reuse the answer (R64).
 *Check:* in `accessInfo.test.ts`, ``masks a malformed URL password holding an earlier `@` and a space up to the last `@` on the line``, ``keeps a malformed URL password whole through an earlier `@` and a nested `://` while its URL does not parse`` and the `https://a:b/@\n` input of `stays linear on large adversarial input`; review.
+
+**R78. A new branch keeps its result in its own variable.** *General, MUST.* A branch added to a scanner records what it finds in a variable of its own, never by overwriting one that other paths read with another meaning. Reusing `atInAuthority` for the `@` a same-line run found made every other malformed URL end its userinfo at its first authority `@` rather than its last, and `https://alice:pass@middle:bad/path"SUFFIX@host` kept `SUFFIX`. Before reusing a variable, list every read of it.
+*Check:* ``masks a malformed URL up to its last `@` when the same-line run does not apply`` in `accessInfo.test.ts`; review.
 
 ## Filesystem and paths
 
@@ -316,6 +319,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 - A scan that restarts on `://`, `@` or a label inside an ambiguous secret — R75
 - A join probe that wants the continuation at the start of the right part — R76
 - A sanitiser gate keyed on a proxy (`no @ yet`) instead of the property it needs (`does not parse`) — R77
+- A new branch that overwrites a variable other paths read — R78
 - A sanitiser fix that over-redacts benign text — R65
 - A rule checker that misses a syntactic form or flags safe code — R67
 - A CI leg that passes without running its tools — R69

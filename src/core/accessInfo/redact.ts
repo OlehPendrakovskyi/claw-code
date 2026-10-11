@@ -808,6 +808,7 @@ function maskUserinfo(text: string): string {
         let colonBeforeSlash = false;
         let atBeforeSlash = -1;
         let atInAuthority = -1;
+        let lineAt = -1;
         let lastAt = -1;
         let nested = -1;
         let malformedTail = false;
@@ -913,9 +914,9 @@ function maskUserinfo(text: string): string {
             }
             if (line.lastAt >= body) {
                 i = line.lastAt;
-                // A malformed authority's userinfo runs to that `@` as well; it was never captured by the
-                // standard scan, so treat it as the userinfo end.
-                atInAuthority = line.lastAt;
+                // The userinfo runs to that `@`; it is kept apart from `atInAuthority`, which other malformed
+                // URLs must not take as their end (they run to `lastAt`).
+                lineAt = line.lastAt;
             } else {
                 // No `@` up to the end of the line: nothing on it can be a userinfo, so it is skipped whole.
                 i = line.end;
@@ -926,10 +927,9 @@ function maskUserinfo(text: string): string {
         // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.
         const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined &&
             URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
-        // `end` = where the userinfo ends. For a parsable URL it is `atInAuthority` (an `@` found in the
-        // standard scan). For a malformed authority the `@` captured by the malformed-branch block above is
-        // in `atInAuthority`; otherwise fall back to the standard `lastAt` / `atBeforeSlash` positions.
-        const end = spacedAt !== -1 ? spacedAt : parsable ? atInAuthority : (atInAuthority !== -1 ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash);
+        // `end` = where the userinfo ends: the `@` a spaced or same-line run found, else the authority's `@` for
+        // a URL that parses, else, for a malformed one, its last `@` (`user:password`) or the last before a `/`.
+        const end = spacedAt !== -1 ? spacedAt : lineAt !== -1 ? lineAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
         if (start !== undefined && end !== -1 && body >= copied) {
             const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
             out += text.slice(copied, body) + masked;
