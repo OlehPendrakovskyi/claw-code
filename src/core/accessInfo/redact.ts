@@ -1148,20 +1148,25 @@ function endsAtCredential(label: string): boolean {
 }
 
 /** Whether redacting `text` followed by `tail` masks part of `tail`, or of `text` that `text` alone keeps: a
- *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. `tail` is read
- *  as `redactText` reads it, so a tail only terminal codes or escapes touch compares as its normalised form and
- *  is not mistaken for a credential the join formed. */
+ *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. Each part is
+ *  normalised on its own, as {@link joinFormedCredential} does, so a tail only terminal codes or escapes touch,
+ *  or an escape split across the join, is not mistaken for a credential the join formed. */
 function consumesTail(text: string, tail: string): boolean {
-    const normalised = normalizeForRedaction(tail);
-    return redactText(`${text}${normalised}`) !== `${redactText(text)}${normalised}`;
+    const plainText = normalizeForRedaction(text);
+    const plainTail = normalizeForRedaction(tail);
+    return maskNormalized(`${plainText}${plainTail}`) !== `${maskNormalized(plainText)}${plainTail}`;
 }
 
-/** Whether redacting `left` and `right` joined masks more than redacting each on its own: a credential spans
- *  the join. Each side is compared as `redactText` emits it, so a credential either side holds on its own,
- *  or a change only terminal codes or escapes make, is not mistaken for one the join formed (R73). */
-function joinFormsCredential(left: string, right: string): boolean {
-    const normalised = normalizeForRedaction(right);
-    return redactText(`${left}${normalised}`) !== `${redactText(left)}${redactText(normalised)}`;
+/** `left` and `right` joined and masked, when that masks more than masking each on its own: a credential
+ *  spans the join. Each side is normalised on its own and the join is masked without normalising again, so
+ *  neither a credential a side holds on its own nor an escape or terminal code split across the join
+ *  (`fail\\u00` + `65d`, which only the join would decode to `failed`) is mistaken for one the join formed
+ *  (R73). */
+function joinFormedCredential(left: string, right: string): string | undefined {
+    const plainLeft = normalizeForRedaction(left);
+    const plainRight = normalizeForRedaction(right);
+    const joined = maskNormalized(`${plainLeft}${plainRight}`);
+    return joined === `${maskNormalized(plainLeft)}${maskNormalized(plainRight)}` ? undefined : joined;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -1219,8 +1224,9 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // same holds for `right`, which may carry a credential of its own next to the rest of the split one. The
     // first mask in the joined text is an earlier credential's whether it sits in a side or spans the join;
     // cutting there with upToFirstMask keeps the label that carries it.
-    if (left !== '' && right !== '' && joinFormsCredential(left, right)) {
-        return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
+    const joined = left !== '' && right !== '' ? joinFormedCredential(left, right) : undefined;
+    if (joined !== undefined) {
+        return { left: upToFirstMask(joined), maskRight: true };
     }
     return { left, maskRight: false };
 }
@@ -1239,7 +1245,13 @@ export function redactText(text: string): string {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
-    const plain = normalizeForRedaction(text);
+    return maskNormalized(normalizeForRedaction(text));
+}
+
+/** The masking passes of {@link redactText} over text already in its normalised form, normalising nothing
+ *  again: two parts normalised on their own and then joined are masked as they are, so an escape or terminal
+ *  code split across the join (`fail\\u00` + `65d`) is not decoded by the join. */
+function maskNormalized(plain: string): string {
     const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';

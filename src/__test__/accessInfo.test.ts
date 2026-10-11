@@ -725,6 +725,14 @@ describe('redactText', () => {
         expect(joinBoundary('request failed', JSON.stringify({ token: 'OTHER' }))).toEqual({ left: 'request failed', maskRight: false });
     });
 
+    it('does not read an escape or terminal code split across the join as a credential (issue #43 case 2)', () => {
+        // `fail\\u00` + `65d` decodes to `failed` only when the two are normalised together, and the shown label
+        // keeps them apart: each side is normalised on its own, so the join forms nothing and nothing is cut.
+        expect(joinBoundary('fail\\u00', '65d')).toEqual({ left: 'fail\\u00', maskRight: false });
+        expect(joinBoundary('fail\u001b[', '31m quota exceeded')).toEqual({ left: 'fail\u001b[', maskRight: false });
+        expect(formatNamedEntry({ name: 'fail\\u00', url: '65d.example' })).toBe('fail\\u00 (65d.example)');
+    });
+
     it('masks the value after a label that ends at a credential even when the label holds an earlier one', () => {
         // The label's own `token="OLD"` (or userinfo) masks on its own; it must not exempt the label from ending
         // at `Bearer`, or the value joined after it is shown as it is (`token=*** Bearer (PRIVATE)`).

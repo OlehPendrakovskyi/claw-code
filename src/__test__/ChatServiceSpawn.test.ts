@@ -1306,6 +1306,14 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
         });
 
+        it('keeps benign details whose escape only completes across the message boundary', () => {
+            // `fail\\u00` + `65d` would decode to `failed` only if normalised together; shown apart, it holds nothing.
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'fail\\u00', data: { details: '65d quota exceeded' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('fail\\u00: 65d quota exceeded');
+        });
+
         it('masks the details after a message that ends at a credential label and holds an earlier credential', () => {
             for (const message of ['token="OLD" Bearer', 'https://alice:OLD@host.example/ Bearer']) {
                 const { child, events } = start();
