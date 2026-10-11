@@ -733,6 +733,17 @@ describe('redactText', () => {
         expect(formatNamedEntry({ name: 'fail\\u00', url: '65d.example' })).toBe('fail\\u00 (65d.example)');
     });
 
+    it('keeps the label through its mask when an unterminated OSC or DCS ends the left side', () => {
+        // Normalising the left with the probe's tail would let the open sequence swallow the tail: no mask would
+        // remain and the label would be cut to `ht`. The left is normalised on its own.
+        for (const open of ['\u001b]', '\u001bP']) {
+            for (const right of ['PRIVATE_SUFFIX@host.example/x', 'PRIVATE_SUFFIX with x@host.example/x']) {
+                expect(joinBoundary(`https://alice:PRIVATE_PREFIX/${open}`, right)).toEqual({ left: 'https://***', maskRight: true });
+                expect(formatNamedEntry({ name: `https://alice:PRIVATE_PREFIX/${open}`, url: right })).toBe('https://*** (***)');
+            }
+        }
+    });
+
     it('masks the value after a label that ends at a credential even when the label holds an earlier one', () => {
         // The label's own `token="OLD"` (or userinfo) masks on its own; it must not exempt the label from ending
         // at `Bearer`, or the value joined after it is shown as it is (`token=*** Bearer (PRIVATE)`).

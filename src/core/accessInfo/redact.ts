@@ -1219,13 +1219,16 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // Both parts are read as redactText reads them (escapes decoded, terminal codes dropped), so an escaped `@`
     // (`SUFFIX\\u0040host`) still marks a userinfo.
     // Only what actually follows completes a userinfo: a trailing `host:port` with no `@` after it is no password.
-    const userinfoProbe = normalizeForRedaction(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
+    // `left` is normalised on its own (R74), so an unterminated OSC or DCS cannot swallow the tail; only the
+    // special-scheme spelling, which needs the `@` the tail adds, is normalised with it.
+    const plainLeft = normalizeForRedaction(left);
+    const userinfoProbe = normalizeSpecialSchemes(`${plainLeft}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
     const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
     const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
         || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(continuation));
     if (opensUserinfo && consumesTail(authority, USERINFO_TAIL)) {
-        return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
+        return { left: upToFirstMask(maskNormalized(userinfoProbe)), maskRight: true };
     }
     // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what
     // follows. The delimiter already puts whitespace in it, so the `@` may come after more whitespace or lines
@@ -1233,8 +1236,8 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
     // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
     if (continuation.includes('@') && consumesTail(left, DELIMITED_USERINFO_TAIL)) {
-        const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
-        return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
+        const redacted = maskNormalized(`${plainLeft}${DELIMITED_USERINFO_TAIL}`);
+        return { left: redacted.startsWith(`${plainLeft} `) ? left : upToFirstMask(redacted), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
