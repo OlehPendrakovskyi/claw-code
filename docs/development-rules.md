@@ -16,7 +16,7 @@ Binding rules for this repository, cited by ID.
 | [Streaming and event mapping](#streaming-and-event-mapping) | S2, R14, R23, R38 |
 | [Protocols and external contracts](#protocols-and-external-contracts) | R24, R33, R25, R26, R27, R15, R29, R32, R37, R39 |
 | [Untrusted input, secrets and the webview](#untrusted-input-secrets-and-the-webview) | R5, R13, R10, R35, R36, R30, R31, S3, S4 |
-| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66 |
+| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73 |
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
@@ -150,6 +150,9 @@ These rules apply R35 to how a sanitiser is built. A sanitiser that guesses boun
 
 **R66. Describing an unknown thrown value takes nothing from it.** *General, MUST.* A helper that turns a caught value into text returns an `Error`'s `message` or a thrown string, and for anything else only its type (`Non-Error value (object)`), with no field values, key names, `String()` or custom `toString`: all of them are untrusted, unbounded, and logged by callers the helper cannot see. Its result still goes through the sanitiser before any egress (R35). Making such a helper "more helpful" changes every caller at once, so the change is reviewed against all of them.
 *Check:* `errors.test.ts`.
+
+**R73. A redaction guard compares against the normalised form, never the raw text.** *General, MUST.* A guard that asks whether redaction changed a value — to decide that a side holds no credential of its own, or that a credential spans a join — compares `redactText(x)` with the normalised form `normalizeForRedaction(x)`, never with the raw `x`. Terminal codes and decoded escapes change the raw text without any credential, so a raw comparison reads a normalisation change as an existing mask (and skips a real credential across a join) or reads a mask that normalisation alone removes as a credential (and truncates benign text). The comparison is symmetric: do not require a side to be credential-free to justify deriving from it, or an earlier independent credential in that side silently defeats the guard.
+*Check:* the ANSI-coloured, earlier-credential and both-sides-credential cases in `accessInfo.test.ts` (`still joins a credential whose left side terminal codes leave unchanged`, `joins a userinfo continuation even when the left side already masks an earlier credential`, `does not mask a credential-free right side that only terminal codes change`); review.
 
 ## Filesystem and paths
 
@@ -296,6 +299,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 - Sanitiser boundaries guessed instead of parsed: URL grammar, value ends, escape layers — R61, R62
 - Redaction after truncation or before a join; a raw fallback after empty sanitising — R63, R35
 - Super-linear scanning of untrusted text — R64
+- A redaction guard that compares raw text instead of the normalised form, or assumes a side is credential-free — R73
 - A sanitiser fix that over-redacts benign text — R65
 - A rule checker that misses a syntactic form or flags safe code — R67
 - A CI leg that passes without running its tools — R69

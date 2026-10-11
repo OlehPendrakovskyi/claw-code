@@ -1145,15 +1145,21 @@ export function redactEndpointText(value: string): string {
 
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
- *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
+ *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value.
+ *  A label that already holds a credential of its own does not end at one (redaction leaves it changed), so it
+ *  takes the join-forms-a-credential branch below instead of masking the whole of `right`. */
 function endsAtCredential(label: string): boolean {
-    return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
+    return redactText(label) === normalizeForRedaction(label)
+        && [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
 
 /** Whether redacting `text` followed by `tail` masks part of `tail`, or of `text` that `text` alone keeps: a
- *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. */
+ *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. `tail` is read
+ *  as `redactText` reads it, so a tail only terminal codes or escapes touch compares as its normalised form and
+ *  is not mistaken for a credential the join formed. */
 function consumesTail(text: string, tail: string): boolean {
-    return redactText(`${text}${tail}`) !== `${redactText(text)}${tail}`;
+    const normalised = normalizeForRedaction(tail);
+    return redactText(`${text}${normalised}`) !== `${redactText(text)}${normalised}`;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -1197,14 +1203,16 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     }
     // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
     if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
-        // A credential held by neither side alone can still be formed by the join itself (issue #43 case 2,
-        // where pretty-printed details put the completing `@` on a later line). Probe the joined text with the
-        // separator dropped: mask only when neither side holds a credential of its own and the concatenation
-        // does. A side is clean when redaction leaves it as its normalised form: raw equality would treat a
-        // side changed only by normalisation (an ANSI-coloured message) as already holding a credential and
-        // skip the join check, even though the fragments still form one across it.
-        if (left !== '' && right !== '' && redactText(left) === normalizeForRedaction(left)
-            && redactText(right) === normalizeForRedaction(right) && consumesTail(left, right)) {
+        // A credential a side alone does not hold can still be formed by the join itself (issue #43 case 2,
+        // where pretty-printed details put the completing `@` on a later line). This branch judges the whole
+        // sides, so unlike the userinfo branch above it cannot assume `left` is credential-free — the left may
+        // carry an earlier, independent credential, whose own mask must not hide a second credential the join
+        // forms. Only `right` must be clean, and read as `redactText` reads it: a `right` that terminal codes
+        // or escapes only touch, or that already holds a credential of its own, is not one this branch can
+        // attribute to the join. The first mask in the joined text is an earlier credential's whether it sits
+        // in a side or spans the join; cutting there with upToFirstMask keeps the label that carries it.
+        if (left !== '' && right !== '' && redactText(right) === normalizeForRedaction(right)
+            && consumesTail(left, normalizeForRedaction(right))) {
             return { left: upToFirstMask(redactText(`${left}${right}`)), maskRight: true };
         }
         return { left, maskRight: false };

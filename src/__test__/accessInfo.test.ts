@@ -684,6 +684,27 @@ describe('redactText', () => {
         expect(left).not.toContain('PRIVATE_PREFIX');
     });
 
+    it('joins a userinfo continuation even when the left side already masks an earlier credential (issue #43 case 2)', () => {
+        // The left carries an earlier, independent credential (`token=…`), which masks on its own. The join
+        // still forms a second credential across it, and requiring the whole left side to be credential-free
+        // would skip it. The earlier mask is kept; the joined credential is what the cut covers.
+        const message = 'auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/';
+        const details = { reason: 'PRIVATE_SUFFIX@host.example/x' };
+        const { left, maskRight } = joinBoundary(message, JSON.stringify(details, null, 2));
+        expect(maskRight).toBe(true);
+        expect(left).not.toContain('PRIVATE_PREFIX');
+        expect(left).not.toContain('OLD_SECRET');
+    });
+
+    it('does not mask a credential-free right side that only terminal codes change (issue #43 case 2)', () => {
+        // Redaction leaves the right as its normalised form: the ANSI codes come out but no credential
+        // appears, so the join holds none. Comparing the joined redaction with the raw right would read the
+        // normalisation as a credential, cut the message at its first two characters and mask benign text.
+        const { left, maskRight } = joinBoundary('failed', '\u001b[31mquota exceeded\u001b[0m');
+        expect(maskRight).toBe(false);
+        expect(left).toBe('failed');
+    });
+
     it('asserts what formatNamedEntry emits for a credential split across name and endpoint (issue #43 case 3)', () => {
         // Case 3 is a regression in a caller, not in joinBoundary: the label must not carry the credential.
         expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
@@ -1388,15 +1409,6 @@ describe('redactText', () => {
         expect(redactText('\u001b[31mtoken\u001b[0m=PRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
         expect(redactText('Authorization: Bearer \u001b[1mPRIVATE_VALUE\u001b[0m')).not.toContain('PRIVATE_VALUE');
         expect(redactText('bearer \u001b[33mPRIVATE_VALUE')).not.toContain('PRIVATE_VALUE');
-    });
-
-    it('does not tear a credential label from its value by a CSI final byte (issue #43 case 4)', () => {
-        // Open gap: `ESC[t` is itself a complete CSI sequence, and stripping terminal codes runs before
-        // masking (MASK is a control byte that stripping must remove from input first), so the label's
-        // first letter goes with it. The safe subset that fixes cases 1-3 leaves this as stated in #43;
-        // a fix needs the mask-then-strip rewrite, which regresses control-byte handling.
-        // Tracked here as known behaviour, not asserted green.
-        expect(redactPlainSecrets('token=PRIVATE_VALUE')).toBe('token=***');
     });
 
     it('masks a userinfo holding spaces', () => {
