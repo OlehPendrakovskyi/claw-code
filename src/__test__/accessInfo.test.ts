@@ -26,7 +26,7 @@ import {
     type AccessInfo,
     type RedactedLabel
 } from '../core/accessInfo';
-import { redactTextAndSecret, joinBoundary } from '../core/accessInfo/redact';
+import { redactTextAndSecret, joinBoundary, stripTerminalCodes } from '../core/accessInfo/redact';
 
 const newSets = () => ({
     keySources: new Set<string>(),
@@ -940,6 +940,25 @@ describe('redactText', () => {
         }
     });
 
+    it('judges a kept final byte on the text left once every code and control byte is gone (issue #56)', () => {
+        // Another code or a control byte between the final byte and the rest of the label.
+        expect(redactText('\u001b(t\u0000oken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('tok\u0000\u001b(en=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b[t\u001b[0moken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b(t\u001b(Boken=PRIVATE_VALUE')).toBe('token=***');
+        // However many codes stand between them.
+        expect(redactText(`toke${'\u001b[0m'.repeat(26)}\u001b[n=PRIVATE_VALUE`)).toBe('token=***');
+        // A byte that a kept neighbour would hide (`mpass` holds no bare `pass`) is judged on its own.
+        expect(redactText('\u001b[0m\u001b[pass=PRIVATE_VALUE')).toBe('pass=***');
+        // A label that needs two final bytes keeps both.
+        expect(redactText('\u001b[t\u001b[oken=PRIVATE_VALUE')).toBe('token=***');
+    });
+
+    it('drops the internal final-byte mark from the input (issue #56)', () => {
+        expect(stripTerminalCodes('name\ufdd0=value')).toBe('name=value');
+        expect(redactText('a\ufdd0token=PRIVATE_VALUE')).toBe('atoken=***');
+    });
+
     it('still strips a final byte that completes no credential label (issue #56)', () => {
         expect(redactText('\u001b[1mname=value')).toBe('name=value');
         expect(redactText('\u001b[0mtoken=PRIVATE_VALUE')).toBe('token=***');
@@ -1682,6 +1701,8 @@ describe('redactText', () => {
             '\u001b['.repeat(size / 2),
             '\u001b[t'.repeat(size / 3) + 'oken=x',
             'a\u001b[b'.repeat(size / 4),
+            'a\u001b[b\u0000'.repeat(size / 5),
+            'x\u001b[0m'.repeat(size / 5) + '\u001b[t=',
             '\\u001b(t'.repeat(size / 8) + 'oken=x',
             '\u001b[1'.repeat(size / 6) + 'm'.repeat(size / 6),
             '\\u001b['.repeat(size / 7) + '0m',
