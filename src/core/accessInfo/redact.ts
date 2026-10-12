@@ -456,7 +456,8 @@ function keepLabelBytes(text: string): string {
 /** A run of name characters with its marked final bytes resolved. With none kept, a run that is already a label
  *  stays so. Otherwise each byte that completes a label with the name characters around it stays (`t` in
  *  `ESC[0m ESC[token`, but not the `m`); and if that keeps no label while keeping every byte would, every byte
- *  stays. So the output holds a label whenever one of these readings does. */
+ *  stays. So the output holds a label whenever one of these readings does. A label that needs some of the marked
+ *  bytes but not the others is not found (`p ESC(a ESC(s ESC(s ESC(x`): R79's known gap, issue #43. */
 function keepRunLabelBytes(run: string): string {
     let bare = '';
     const marked: Array<{ at: number; byte: string }> = [];
