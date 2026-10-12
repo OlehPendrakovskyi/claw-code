@@ -27,7 +27,8 @@ import path, { join, relative, sep } from 'node:path';
 // The snapshot API's RemoteNode provides forEachChild, kind, flags, modifierFlags,
 // getSourceFile, getStart, parent and property getters (name, arguments, expression, …),
 // while the Checker provides getSymbolAtLocation / getTypeAtLocation / getAliasedSymbol /
-// getExportSpecifierLocalTargetSymbol / getShorthandAssignmentValueSymbol.
+// getExportSpecifierLocalTargetSymbol / getShorthandAssignmentValueSymbol. Each checker call is a
+// round trip to the TypeScript process, so repeated lookups are cached (CACHED_QUERIES, #58).
 import * as is from 'typescript/unstable/ast';
 import { API as TSAPI, ModuleKind, SymbolFlags } from 'typescript/unstable/sync';
 import { NodeFlags, ScriptTarget, SyntaxKind, ModifierFlags } from 'typescript/unstable/ast';
@@ -1119,18 +1120,43 @@ function unwrapSymbol(s, project) {
   return proxy;
 }
 
-/** Wrap the checker so every symbol it returns comes back with classic nodes. */
+/** Checker queries answered once per node or symbol (#58). Each checker call is a round trip to the
+ *  TypeScript process, and the checks ask the same question of the same node many times: about 200,000
+ *  `getSymbolAtLocation` calls for some 26,000 nodes over `src/`. These four take one node or symbol and
+ *  only look it up, the snapshot does not change during a run, its nodes keep their identity, and symbols
+ *  come back as the memoised proxies of {@link unwrapSymbol}, so a cached answer is the one a new call
+ *  would give. */
+const CACHED_QUERIES = new Set(['getSymbolAtLocation', 'getImmediateAliasedSymbol', 'getAliasedSymbol', 'getExportSpecifierLocalTargetSymbol']);
+const checkerStats = { queries: 0, cached: 0 };
+
+/** Wrap the checker so every symbol it returns comes back with classic nodes, and each of
+ *  {@link CACHED_QUERIES} is asked once per argument. */
 function wrapChecker(checker, project) {
+  const caches = new Map([...CACHED_QUERIES].map(name => [name, new WeakMap()]));
   return new Proxy(checker, {
     get(t, prop) {
       const fn = t[prop];
       if (typeof fn !== 'function') return fn;
-      return function (...args) {
+      const unwrapped = function (...args) {
         const result = fn.apply(this, args);
         if (result && result.declarations) return unwrapSymbol(result, project);
         if (Array.isArray(result)) {
           return result.map((r) => (r && r.declarations ? unwrapSymbol(r, project) : r));
         }
+        return result;
+      };
+      const cache = caches.get(prop);
+      if (cache === undefined) return unwrapped;
+      return function (...args) {
+        const key = args[0];
+        if (args.length !== 1 || key === null || typeof key !== 'object') return unwrapped.apply(this, args);
+        if (cache.has(key)) {
+          checkerStats.cached++;
+          return cache.get(key);
+        }
+        checkerStats.queries++;
+        const result = unwrapped.apply(this, args);
+        cache.set(key, result);
         return result;
       };
     },
@@ -1186,6 +1212,9 @@ for (const file of files) {
     visit(source);
 }
 
+if (process.env.CHECK_RULES_STATS === '1') {
+    console.error(`check-rules: ${checkerStats.queries} checker queries, ${checkerStats.cached} served from cache`);
+}
 if (findings.length > 0) {
     console.error(findings.join('\n'));
     console.error(`\n${findings.length} rule finding(s). See docs/development-rules.md.`);
