@@ -88,8 +88,9 @@ export class ChatServiceFactory {
   /** The open confirmation per URL, so sends that arrive while it is open ask once. */
   private readonly cleartextPrompts = new Map<string, Promise<boolean>>();
 
-  /** Bumped by each reconcile(), so one that finishes after a newer one discards its plan (R3). */
-  private reconcileGeneration = 0;
+  /** Bumped on every gateway settings or SecretStorage change, before reconcile() runs for it: a plan made
+   *  before the latest change is discarded (reconcile) or made again (resolve), never applied (R3). */
+  private inputsGeneration = 0;
 
   private readonly rejectionWarnings = new Set<string>();
   private readonly listeners: vscode.Disposable[];
@@ -105,9 +106,9 @@ export class ChatServiceFactory {
     this.deviceCredentials = new SecretDeviceCredentialStore(context.secrets);
     this.listeners = [
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('openclaw.gateway')) void this.reconcile();
+        if (event.affectsConfiguration('openclaw.gateway')) this.inputsChanged();
       }),
-      context.secrets.onDidChange(() => void this.reconcile()),
+      context.secrets.onDidChange(() => this.inputsChanged()),
       this.deviceCredentials.onDidChangeIdentity(() => this.gatewayService?.resetDeviceIdentity()),
       this.deviceCredentials,
     ];
@@ -165,7 +166,12 @@ export class ChatServiceFactory {
    */
   async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
     await this.waitForMigration();
+    const generation = this.inputsGeneration;
     const plan = await this.planTransport();
+    // The settings or the token changed while SecretStorage was read: plan again from the current ones.
+    if (generation !== this.inputsGeneration) {
+      return this.resolve(existing);
+    }
     if (plan.kind === 'acpx') {
       this.onStatus?.('acpx', true, null);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
@@ -222,11 +228,16 @@ export class ChatServiceFactory {
    * socket now, not at the next send, and new credentials replace the old
    * ones in place. Connecting stays with resolve().
    */
+  private inputsChanged(): void {
+    this.inputsGeneration += 1;
+    void this.reconcile();
+  }
+
   async reconcile(): Promise<void> {
     if (!this.gatewayService) {
       return;
     }
-    const generation = ++this.reconcileGeneration;
+    const generation = this.inputsGeneration;
     // SEC-1 invariant: an unparked client never points at a URL that may not receive the token unencrypted.
     // Checked on the endpoint the client uses, before anything is awaited, because planTransport() leaves the
     // client alone when SecretStorage fails, and the settings may already name another URL.
@@ -237,7 +248,7 @@ export class ChatServiceFactory {
     try {
       const plan = await this.planTransport();
       // A newer settings change was made while SecretStorage was read: its own reconcile() applies it.
-      if (generation !== this.reconcileGeneration) {
+      if (generation !== this.inputsGeneration) {
         return;
       }
       if (plan.kind === 'connect' && this.isCleartextAllowed(plan.url)) {

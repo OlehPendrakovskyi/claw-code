@@ -106,14 +106,23 @@ export class GatewayConfigService {
     return Array.isArray(raw) ? raw.filter((url): url is string => typeof url === 'string').map((url) => url.trim()) : [];
   }
 
-  /** Add `url` to `openclaw.gateway.allowUnencryptedUrls` in user settings. */
-  static async allowUnencryptedUrl(url: string): Promise<void> {
-    const allowed = GatewayConfigService.getUnencryptedAllowedUrls();
-    if (allowed.includes(url)) {
-      return;
-    }
-    const config = vscode.workspace.getConfiguration('openclaw');
-    await config.update('gateway.allowUnencryptedUrls', [...allowed, url], vscode.ConfigurationTarget.Global);
+  /** The last queued allow-list write; each one starts after it, so none reads a list another is replacing. */
+  private static allowListWrites: Promise<void> = Promise.resolve();
+
+  /** Add `url` to `openclaw.gateway.allowUnencryptedUrls` in user settings. Writes from this window run one at
+   *  a time, each on the list the previous one left: two "Always Allow" answers never overwrite each other. */
+  static allowUnencryptedUrl(url: string): Promise<void> {
+    const write = GatewayConfigService.allowListWrites.then(async () => {
+      const allowed = GatewayConfigService.getUnencryptedAllowedUrls();
+      if (allowed.includes(url)) {
+        return;
+      }
+      const config = vscode.workspace.getConfiguration('openclaw');
+      await config.update('gateway.allowUnencryptedUrls', [...allowed, url], vscode.ConfigurationTarget.Global);
+    });
+    // A failed write is reported to its own caller; the next one still runs.
+    GatewayConfigService.allowListWrites = write.catch(() => undefined);
+    return write;
   }
 
   private static parseUrl(url: string): URL | null {

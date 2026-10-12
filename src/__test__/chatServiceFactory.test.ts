@@ -450,6 +450,30 @@ describe('ChatServiceFactory', () => {
         });
 
         it.each([
+            // The first pass: no dialog, the token read is still open when the transport changes.
+            ['before any dialog', 'ws://127.0.0.1:18789', 0],
+            // The re-plan after "Connect This Time": the dialog closed, then its token read is held open.
+            ['after the dialog is confirmed', REMOTE, 1],
+        ] as const)('plans again when the transport changes while the token is read %s (R3)', async (_, url, readsBefore) => {
+            mockSettings.mockReturnValue({ url, transport: 'auto', protocolVersion: 'auto' });
+            warning.mockResolvedValue('Connect This Time');
+            let releaseRead: (token: string) => void = () => undefined;
+            for (let i = 0; i < readsBefore; i++) mockToken.mockResolvedValueOnce('secret-token');
+            mockToken.mockReturnValueOnce(new Promise((resolve) => { releaseRead = resolve; }));
+            const factory = new ChatServiceFactory(contextStub());
+
+            const send = factory.resolve();
+            for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+            mockSettings.mockReturnValue({ url, transport: 'acpx', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway.transport');
+            releaseRead('secret-token');
+
+            expect((await send).transport).toBe('acpx');
+            expect(GatewayChatService).not.toHaveBeenCalled();
+            expect(mockConnect).not.toHaveBeenCalled();
+        });
+
+        it.each([
             ['auto', 'gateway', 'rejects the send'],
             ['gateway', 'auto', 'falls back to acpx'],
             ['auto', 'acpx', 'uses acpx'],
