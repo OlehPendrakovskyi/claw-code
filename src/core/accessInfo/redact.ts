@@ -406,8 +406,9 @@ const FINAL_BYTE_MARKS = /﷐/g;
 /** The longest credential label (`authorization`): a label that one final byte completes lies within this many
  *  name characters of it on either side, so the check per byte reads no further (R64). */
 const LABEL_WINDOW = 13;
-/** Words that open a credential with no key separator after them. */
-const LABEL_WORD = /bearer|basic/i;
+/** Words that open a credential with no key separator after them, as the Bearer and Basic passes read them: a
+ *  whole word that ends its run of name characters, so `bearertoke` holds none and its `n` is still judged. */
+const LABEL_WORD = /(?<![A-Za-z0-9_])(?:bearer|basic)$/i;
 
 /** Whether a name holds a credential label any masking pass reads: a sensitive key, a credential header, or a
  *  word such as `Bearer`. */

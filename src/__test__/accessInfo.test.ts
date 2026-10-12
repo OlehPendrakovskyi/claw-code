@@ -952,6 +952,10 @@ describe('redactText', () => {
         expect(redactText('\u001b[0m\u001b[pass=PRIVATE_VALUE')).toBe('pass=***');
         // A label that needs two final bytes keeps both.
         expect(redactText('\u001b[t\u001b[oken=PRIVATE_VALUE')).toBe('token=***');
+        // `bearer` and `basic` label only as a whole word ending the run, so inside a name they hide no byte.
+        expect(redactText('bearertoke\u001b[n=PRIVATE_VALUE')).toBe('bearertoken=***');
+        expect(redactText('basictoke\u001b[n=PRIVATE_VALUE')).toBe('basictoken=***');
+        expect(redactText('x.bearertoke\u001b[n=PRIVATE_VALUE')).toBe('x.bearertoken=***');
     });
 
     it('drops the internal final-byte mark from the input (issue #56)', () => {

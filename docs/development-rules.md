@@ -4,7 +4,7 @@ Binding rules for this repository, cited by ID.
 
 ## How to read and cite this file
 
-- **IDs are stable.** Rules are `R1`–`R78` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
+- **IDs are stable.** Rules are `R1`–`R79` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
 - **Grouped by topic.** Position carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project; their examples, paths and Check lines are this repository's and are adapted when a rule is copied elsewhere. *claw-code* rules apply to this repository only.
@@ -323,6 +323,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 - A join probe that wants the continuation at the start of the right part — R76
 - A sanitiser gate keyed on a proxy (`no @ yet`) instead of the property it needs (`does not parse`) — R77
 - A new branch that overwrites a variable other paths read — R78
+- A terminal code stripped with a letter a credential label needs — R79
 - A sanitiser fix that over-redacts benign text — R65
 - A rule checker that misses a syntactic form or flags safe code — R67
 - A CI leg that passes without running its tools — R69
