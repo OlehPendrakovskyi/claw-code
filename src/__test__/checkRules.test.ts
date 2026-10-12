@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { makeTempDir } from './helpers/tempDir';
@@ -61,5 +61,15 @@ describe('scripts/check-rules.mjs', () => {
     it('passes the repository itself', () => {
         const output = execFileSync(process.execPath, [SCRIPT], { cwd: process.cwd(), encoding: 'utf8' });
         expect(output).toContain('R10, R36, R43, R54 clean');
+    }, 30_000);
+
+    // Each checker query is a round trip to the TypeScript process; the checks repeat most of them (#58).
+    it('answers repeated checker queries from the cache (issue #58)', () => {
+        const result = spawnSync(process.execPath, [SCRIPT], { cwd: process.cwd(), encoding: 'utf8', env: { ...process.env, CHECK_RULES_STATS: '1' } });
+        const stats = /check-rules: (\d+) checker queries, (\d+) served from cache/.exec(result.stderr);
+
+        expect(result.status).toBe(0);
+        expect(stats).not.toBeNull();
+        expect(Number(stats![2])).toBeGreaterThan(Number(stats![1]));
     }, 30_000);
 });
