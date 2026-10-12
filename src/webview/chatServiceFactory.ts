@@ -31,6 +31,7 @@ import {
 import { log } from './viewMessaging';
 import { withTimeout as withTimeoutShared } from '../core/async';
 import { errorMessage } from '../core/errors';
+import { redactText } from '../core/accessInfo/redact';
 
 /** Why the shared gateway client is about to drop its runs. */
 export type GatewayInvalidationReason = 'identity' | 'transport';
@@ -222,6 +223,13 @@ export class ChatServiceFactory {
     if (!this.gatewayService) {
       return;
     }
+    // A URL that may not receive the token unencrypted parks the client before anything is awaited:
+    // planTransport() leaves the client alone when SecretStorage fails, which must not keep it connected.
+    const settings = getGatewaySettings();
+    if (settings.transport !== 'acpx' && isValidGatewayUrl(settings.url) && !this.isCleartextAllowed(settings.url)) {
+      this.suspendGateway('identity');
+      return;
+    }
     await this.waitForMigration();
     try {
       const plan = await this.planTransport();
@@ -361,7 +369,8 @@ export class ChatServiceFactory {
       try {
         await allowUnencryptedUrl(url);
       } catch (err) {
-        log.warn(`could not save openclaw.gateway.allowUnencryptedUrls: ${errorMessage(err)}`);
+        // The error can quote the URL, and with it any credentials in its userinfo.
+        log.warn(`could not save openclaw.gateway.allowUnencryptedUrls: ${redactText(errorMessage(err))}`);
       }
       // Saved, the setting holds the answer, so removing the URL there revokes it. Not saved, or saved where
       // it does not take effect, the answer still holds for this window, as "Connect This Time" would.
