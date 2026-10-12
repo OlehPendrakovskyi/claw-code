@@ -69,6 +69,7 @@ vi.mock('../chat/ChatService', () => ({
 } satisfies Partial<typeof import('../chat/ChatService')>));
 
 import { ChatServiceFactory } from '../webview/chatServiceFactory';
+import { log } from '../webview/viewMessaging';
 import { allowUnencryptedUrl, getGatewaySettings, getGatewayToken, getUnencryptedAllowedUrls, migrateLegacyGatewayToken } from '../core/gatewayConfig';
 import { GatewayChatService } from '../core/gatewayChatService';
 import { ChatService } from '../chat/ChatService';
@@ -370,6 +371,31 @@ describe('ChatServiceFactory', () => {
 
             expect([first.transport, second.transport]).toEqual(['gateway', 'gateway']);
             expect(warning).toHaveBeenCalledTimes(1);
+        });
+
+        it('logs a failed save without the credentials the error quotes', async () => {
+            warning.mockResolvedValue('Always Allow This Gateway');
+            vi.mocked(allowUnencryptedUrl).mockRejectedValue(new Error('cannot write ws://alice:PRIVATE@nas.lan:18789 to settings.json'));
+            const factory = new ChatServiceFactory(contextStub());
+
+            await factory.resolve();
+
+            const logged = vi.mocked(log.warn).mock.calls.map(([line]) => line);
+            expect(logged.some((line) => line.includes('allowUnencryptedUrls'))).toBe(true);
+            expect(logged.join('\n')).not.toContain('PRIVATE');
+        });
+
+        // planTransport() leaves the client alone when the token cannot be read; a revocation must not wait on it.
+        it('parks the client when its URL leaves the allow list while SecretStorage fails', async () => {
+            mockAllowedUrls.mockReturnValue([REMOTE]);
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockToken.mockRejectedValue(new Error('keyring locked'));
+            mockAllowedUrls.mockReturnValue([]);
+            await changeConfiguration('openclaw.gateway.allowUnencryptedUrls');
+
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
         });
 
         it.each([
