@@ -1,6 +1,6 @@
 # Claw Code — roadmap
 
-> **Status on 2026-10-12.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Of R0, REL-3, SEC-2 and SEC-3 are done, and SEC-4 and REL-7 are partly done; the rest is open. Feature status lives in one place: the table in §6.
+> **Status on 2026-10-12.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Of R0, REL-3, SEC-2 and SEC-3 are done; REL-6, REL-7, SEC-4 and the P0-5 build-outs are partly done; REL-1, REL-2, REL-4, REL-5, SEC-1, ENG-4 and ENG-8 are open. Feature status lives in one place: the table in §6.
 >
 > **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is not used as or in the product's name or branding, nor in identifiers (namespaces, commands, settings). Published material refers to it only where factually necessary — this note, or third-party file names such as `CLAUDE.md` that the rules ingester reads.
 
