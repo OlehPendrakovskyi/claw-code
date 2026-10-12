@@ -201,7 +201,7 @@ Some settings run commands, carry the token, or change what the agent may do. Yo
 - **Attachments come from your workspace or from your own choice.** An `@`-mention resolves only to a file inside the workspace, with symlink escapes rejected. A file from outside the workspace is attached only when you pick it yourself: in the `+` file dialog, as an open editor in the file search, or by dropping it, which asks for confirmation first. Every attachment is read up to a size limit, through a handle whose own path the operating system confirms is the file checked when it was attached, so a folder swapped for a link in the meantime is caught. Linux, macOS and Windows are supported; elsewhere attachments are refused.
 - **Logs are cleaned of secrets.** Before a log line or an error message is written, credentials in it are removed. This covers URL user names and passwords, tokens in query strings, and `key=value` secrets. The extension does not log prompt text either. An agent's error message can quote your prompt, so the log records only its size; the chat still shows it ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 
-Please report a vulnerability privately to the maintainer through GitHub, not in a public issue. A `SECURITY.md` with a formal reporting path will be added before the public release.
+Please report a vulnerability privately, not in a public issue: [SECURITY.md](SECURITY.md) explains how.
 
 ## Troubleshooting
 
@@ -221,9 +221,7 @@ The first goal, a working chat with the Gateway, is shipped. The next milestone 
 
 - a publisher this project owns, with listings on the VS Code Marketplace and Open VSX;
 - a release workflow;
-- `SECURITY.md`;
-- refusing, or asking you to confirm, a remote `ws://` connection;
-- CodeQL scanning.
+- refusing, or asking you to confirm, a remote `ws://` connection.
 
 After that come these milestones:
 

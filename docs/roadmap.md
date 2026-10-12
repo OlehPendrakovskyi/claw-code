@@ -1,6 +1,6 @@
 # Claw Code — roadmap
 
-> **Status on 2026-10-12.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Of R0, REL-3, SEC-2 and SEC-3 are done; REL-6, REL-7, SEC-4 and the P0-5 build-outs are partly done; REL-1, REL-2, REL-4, REL-5, SEC-1, ENG-4 and ENG-8 are open. Feature status lives in one place: the table in §6.
+> **Status on 2026-10-12.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Of R0, REL-3, REL-5, SEC-2, SEC-3 and ENG-4 are done; REL-6, REL-7, SEC-4 and the P0-5 build-outs are partly done; REL-1, REL-4, SEC-1, ENG-8 and, last, REL-2 are open. Feature status lives in one place: the table in §6.
 >
 > **Naming.** Internally the UX goal was called "Claude for OpenClaw". "Claude" is an Anthropic trademark, so it is not used as or in the product's name or branding, nor in identifiers (namespaces, commands, settings). Published material refers to it only where factually necessary — this note, or third-party file names such as `CLAUDE.md` that the rules ingester reads.
 
@@ -81,10 +81,10 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | ID | Item | Milestone | Status | Effort | Notes |
 | --- | --- | --- | --- | --- | --- |
 | REL-1 | Name availability and trademark check for `Claw Code` | R0 | Todo | S | §3 |
-| REL-2 | Owner-controlled publisher and Open VSX namespace; update `package.json` and derived IDs | R0 | Todo | S | §3 |
+| REL-2 | Owner-controlled publisher and Open VSX namespace; update `package.json` and derived IDs | R0 | Todo | S | §3. The last R0 item (owner's decision 2026-10-12), but before the first publish: the new extension ID starts SecretStorage and `globalState` empty |
 | REL-3 | README for Claw Code | R0 | Done | S | Rewritten for the fork; the upstream README was removed in the same change set |
 | REL-4 | Release workflow (tag → vsce + ovsx → GitHub Release) | R0 | Todo | M | [engineering.md §6](engineering.md#6-cicd) |
-| REL-5 | `SECURITY.md` with a private vulnerability-reporting path | R0 | Todo | S | Required before the Terminal Bridge ships |
+| REL-5 | `SECURITY.md` with a private vulnerability-reporting path | R0 | Done | S | Reports go through GitHub private vulnerability reporting, enabled 2026-10-12 |
 | REL-7 | Pin the packaging tools: add `@vscode/vsce` (MIT) and `ovsx` as dev dependencies, and make `install-local.sh`, `publish-all.sh` and the `publish:*` scripts call them via `pnpm exec`. Done so far: `install-local.sh` pins `@vscode/vsce@4.0.0` (it uses no `ovsx`), and `publish-all.sh` pins `@vscode/vsce@4.0.0` and `ovsx@1.2.0` (previously it ran the deprecated `vsce` package). Remaining: the dev dependencies, and the `publish:vsce` / `publish:ovsx` package scripts, which call binaries that are not installed. `ovsx` is EPL-2.0: as a dev-only dependency it is outside the `--production` licence check, but it needs the owner's approval under the dependency policy | R0 | Partial | S | The README's manual path also pins `@vscode/vsce@4.0.0` |
 | REL-6 | Marketplace listing: current screenshots, icon, categories, Open VSX metadata | R0 | Partial | S | The upstream screenshots were removed; new ones are needed |
 | SEC-1 | Block, or require confirmation for, a non-loopback `ws://` gateway | R0 | Todo | S | §2 requirement 1 |
@@ -94,7 +94,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | ENG-1 | One injected logger; production debug gate; CI file sink with tee/upload; consolidate the four output channels | v1 | Todo | M | [engineering.md §3](engineering.md#3-logging) |
 | ENG-2 | Split the dump files `viewMessaging.ts` and `slashCommands.ts` (maybe `gatewayConfig.ts`) | v1 | Todo | M | [Sprint 1 audit](audits/2026-10-03-sprint1.md) |
 | ENG-3 | Decide the transport layout: keep `gatewayChatService.ts` + `gatewayProtocol/`, or move to the `core/gateway/GatewayClient.ts` target | v1 | Open decision | — | [engineering.md §2](engineering.md#2-code-structure) |
-| ENG-4 | CodeQL scanning | R0 | Todo | S | |
+| ENG-4 | CodeQL scanning | R0 | Done | S | `.github/workflows/codeql.yml`: TypeScript and workflows, `security-extended`; [engineering.md §6](engineering.md#6-cicd) |
 | ENG-5 | Module map and splitting plan (Sprint 1 task 1 artifact) | v1 | Partial | S | Top-level layout is in [engineering.md §2](engineering.md#current-layout) |
 | ENG-7 | Move the VS Code-bound modules out of `core/` (`configIO.ts`, `gatewayConfig.ts`) or record them as exceptions | v1 | Todo | S | [engineering.md §2](engineering.md#2-code-structure) |
 | ENG-8 | Manual test plan for the Gateway-era features (the upstream `TESTING.md` was removed with the old docs) | R0 | Todo | S | |
