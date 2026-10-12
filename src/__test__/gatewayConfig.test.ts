@@ -1,12 +1,14 @@
 import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import {
+  allowUnencryptedUrl,
   DEVICE_IDENTITY_SECRET_KEY,
   DEVICE_TOKENS_SECRET_KEY,
   SecretDeviceCredentialStore,
   deviceHostKind,
   getGatewaySettings,
   getGatewayToken,
+  getUnencryptedAllowedUrls,
   isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
@@ -539,6 +541,63 @@ describe('GatewayConfigService', () => {
             ]);
 
             expect(stored).toBe('typed-token');
+        });
+    });
+
+    describe('openclaw.gateway.allowUnencryptedUrls', () => {
+        /** `read` gives the stored value on every get, so a test can model a write that lands later. */
+        const useAllowList = (value: unknown, read: () => unknown = () => value) => {
+            const update = vi.fn(async (_key: string, _value: unknown, _target?: vscode.ConfigurationTarget): Promise<void> => undefined);
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                get: (key: string) => (key === 'gateway.allowUnencryptedUrls' ? read() : undefined),
+                update,
+            } as Pick<vscode.WorkspaceConfiguration, 'get' | 'update'> as vscode.WorkspaceConfiguration);
+            return update;
+        };
+
+        it('reads the URLs trimmed, as getGatewaySettings trims the gateway URL, and drops hand-edited non-strings', () => {
+            useAllowList(['  ws://nas.lan:18789 ', 42, null, 'ws://10.0.0.5:18789']);
+            expect(getUnencryptedAllowedUrls()).toEqual(['ws://nas.lan:18789', 'ws://10.0.0.5:18789']);
+        });
+
+        it.each([[undefined], ['ws://nas.lan:18789'], [{}]])('reads a hand-edited %p as an empty list', (value) => {
+            useAllowList(value);
+            expect(getUnencryptedAllowedUrls()).toEqual([]);
+        });
+
+        // Two "Always Allow" answers can overlap; both must survive.
+        it('keeps both URLs when two writes overlap', async () => {
+            let stored: unknown = [];
+            const update = useAllowList(undefined, () => stored);
+            update.mockImplementation(async (_key, value) => {
+                await new Promise((resolve) => setImmediate(resolve));
+                stored = value;
+            });
+
+            await Promise.all([allowUnencryptedUrl('ws://nas.lan:18789'), allowUnencryptedUrl('ws://10.0.0.5:18789')]);
+
+            expect(stored).toEqual(['ws://nas.lan:18789', 'ws://10.0.0.5:18789']);
+        });
+
+        it('runs the next write after one that failed', async () => {
+            const update = useAllowList([]);
+            update.mockRejectedValueOnce(new Error('settings.json is read-only'));
+
+            await expect(allowUnencryptedUrl('ws://nas.lan:18789')).rejects.toThrow('read-only');
+            await allowUnencryptedUrl('ws://10.0.0.5:18789');
+
+            expect(update).toHaveBeenLastCalledWith('gateway.allowUnencryptedUrls', ['ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global);
+        });
+
+        it('appends a URL in user settings, once', async () => {
+            const update = useAllowList(['ws://nas.lan:18789']);
+
+            await allowUnencryptedUrl('ws://10.0.0.5:18789');
+            await allowUnencryptedUrl('ws://nas.lan:18789');
+
+            expect(update.mock.calls).toEqual([
+                ['gateway.allowUnencryptedUrls', ['ws://nas.lan:18789', 'ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global],
+            ]);
         });
     });
 

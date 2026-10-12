@@ -97,6 +97,34 @@ export class GatewayConfigService {
     return parsed !== null && parsed.protocol === 'ws:' && !GatewayConfigService.isLoopbackHost(parsed.hostname);
   }
 
+  /** The remote `ws://` gateway URLs the user has allowed to receive the token unencrypted
+   *  (`openclaw.gateway.allowUnencryptedUrls`, user settings only), compared as written. */
+  static getUnencryptedAllowedUrls(): string[] {
+    const config = vscode.workspace.getConfiguration('openclaw');
+    // settings.json is hand-editable, so the value may have any JSON type.
+    const raw: unknown = config.get('gateway.allowUnencryptedUrls');
+    return Array.isArray(raw) ? raw.filter((url): url is string => typeof url === 'string').map((url) => url.trim()) : [];
+  }
+
+  /** The last queued allow-list write; each one starts after it, so none reads a list another is replacing. */
+  private static allowListWrites: Promise<void> = Promise.resolve();
+
+  /** Add `url` to `openclaw.gateway.allowUnencryptedUrls` in user settings. Writes from this window run one at
+   *  a time, each on the list the previous one left: two "Always Allow" answers never overwrite each other. */
+  static allowUnencryptedUrl(url: string): Promise<void> {
+    const write = GatewayConfigService.allowListWrites.then(async () => {
+      const allowed = GatewayConfigService.getUnencryptedAllowedUrls();
+      if (allowed.includes(url)) {
+        return;
+      }
+      const config = vscode.workspace.getConfiguration('openclaw');
+      await config.update('gateway.allowUnencryptedUrls', [...allowed, url], vscode.ConfigurationTarget.Global);
+    });
+    // A failed write is reported to its own caller; the next one still runs.
+    GatewayConfigService.allowListWrites = write.catch(() => undefined);
+    return write;
+  }
+
   private static parseUrl(url: string): URL | null {
     try {
       const parsed = new URL(url);
@@ -556,6 +584,8 @@ export const getGatewaySettings = GatewayConfigService.getGatewaySettings;
 export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
 export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
 export const isLoopbackGatewayUrl = GatewayConfigService.isLoopbackGatewayUrl;
+export const getUnencryptedAllowedUrls = GatewayConfigService.getUnencryptedAllowedUrls;
+export const allowUnencryptedUrl = GatewayConfigService.allowUnencryptedUrl;
 export const resetDeviceIdentity = GatewayConfigService.resetDeviceIdentity;
 export const deviceHostKind = GatewayConfigService.deviceHostKind;
 export const getGatewayToken = GatewayConfigService.getGatewayToken;
