@@ -97,6 +97,25 @@ export class GatewayConfigService {
     return parsed !== null && parsed.protocol === 'ws:' && !GatewayConfigService.isLoopbackHost(parsed.hostname);
   }
 
+  /** The remote `ws://` gateway URLs the user has allowed to receive the token unencrypted
+   *  (`openclaw.gateway.allowUnencryptedUrls`, user settings only), compared as written. */
+  static getUnencryptedAllowedUrls(): string[] {
+    const config = vscode.workspace.getConfiguration('openclaw');
+    // settings.json is hand-editable, so the value may have any JSON type.
+    const raw: unknown = config.get('gateway.allowUnencryptedUrls');
+    return Array.isArray(raw) ? raw.filter((url): url is string => typeof url === 'string').map((url) => url.trim()) : [];
+  }
+
+  /** Add `url` to `openclaw.gateway.allowUnencryptedUrls` in user settings. */
+  static async allowUnencryptedUrl(url: string): Promise<void> {
+    const allowed = GatewayConfigService.getUnencryptedAllowedUrls();
+    if (allowed.includes(url)) {
+      return;
+    }
+    const config = vscode.workspace.getConfiguration('openclaw');
+    await config.update('gateway.allowUnencryptedUrls', [...allowed, url], vscode.ConfigurationTarget.Global);
+  }
+
   private static parseUrl(url: string): URL | null {
     try {
       const parsed = new URL(url);
@@ -556,6 +575,8 @@ export const getGatewaySettings = GatewayConfigService.getGatewaySettings;
 export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
 export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
 export const isLoopbackGatewayUrl = GatewayConfigService.isLoopbackGatewayUrl;
+export const getUnencryptedAllowedUrls = GatewayConfigService.getUnencryptedAllowedUrls;
+export const allowUnencryptedUrl = GatewayConfigService.allowUnencryptedUrl;
 export const resetDeviceIdentity = GatewayConfigService.resetDeviceIdentity;
 export const deviceHostKind = GatewayConfigService.deviceHostKind;
 export const getGatewayToken = GatewayConfigService.getGatewayToken;

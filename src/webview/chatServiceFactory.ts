@@ -17,8 +17,10 @@ import type { PairingState } from '../core/gatewayChatService';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
 import type { ProtocolSetting } from '../core/gatewayProtocol/registry';
 import {
+  allowUnencryptedUrl,
   getGatewaySettings,
   getGatewayToken,
+  getUnencryptedAllowedUrls,
   isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
@@ -28,6 +30,7 @@ import {
 } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
 import { withTimeout as withTimeoutShared } from '../core/async';
+import { errorMessage } from '../core/errors';
 
 /** Why the shared gateway client is about to drop its runs. */
 export type GatewayInvalidationReason = 'identity' | 'transport';
@@ -48,6 +51,8 @@ export type TransportChoice = {
 };
 
 const COPY_COMMAND = 'Copy Command';
+const CONNECT_ONCE = 'Connect This Time';
+const ALWAYS_ALLOW = 'Always Allow This Gateway';
 
 /** Connection probe timeout for `auto` fallback decisions. */
 const CONNECT_TIMEOUT_MS = 4000;
@@ -76,7 +81,10 @@ export class ChatServiceFactory {
   /** Suspended clients hold no runs, so switching away again must not
    *  re-invalidate threads on every acpx send. */
   private gatewaySuspended = false;
-  private readonly cleartextWarnedUrls = new Set<string>();
+  /** Remote `ws://` URLs the user let receive the token unencrypted in this window (SEC-1). */
+  private readonly cleartextConfirmedUrls = new Set<string>();
+  /** The open confirmation per URL, so sends that arrive while it is open ask once. */
+  private readonly cleartextPrompts = new Map<string, Promise<boolean>>();
 
   private readonly rejectionWarnings = new Set<string>();
   private readonly listeners: vscode.Disposable[];
@@ -161,7 +169,22 @@ export class ChatServiceFactory {
       this.onStatus?.('gateway', false, null);
       return { service: this.parkedGateway(plan.url), transport: 'gateway' };
     }
-    this.warnIfCleartext(plan.url);
+    if (!this.isCleartextAllowed(plan.url)) {
+      const confirmed = await this.confirmCleartext(plan.url);
+      // Settings or the token may have changed while the dialog was open: plan again, with the answer
+      // recorded, unless the user declined the URL the settings still name.
+      if (confirmed || getGatewaySettings().url !== plan.url) {
+        return this.resolve(existing);
+      }
+      // Declined: the token is not sent, and no client keeps a socket for it.
+      this.suspendGateway('identity');
+      if (plan.transport === 'gateway') {
+        this.onStatus?.('gateway', false, null);
+        throw new Error(`The gateway token was not sent: ${new URL(plan.url).host} would receive it unencrypted over ws://.`);
+      }
+      this.onStatus?.('acpx', true, null);
+      return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
+    }
     const gateway = this.getOrCreateGateway(plan);
     // connect() lifts the client's suspension, even when it then fails.
     this.gatewaySuspended = false;
@@ -199,8 +222,12 @@ export class ChatServiceFactory {
     await this.waitForMigration();
     try {
       const plan = await this.planTransport();
-      if (plan.kind === 'connect') {
+      if (plan.kind === 'connect' && this.isCleartextAllowed(plan.url)) {
         this.getOrCreateGateway(plan);
+      } else if (plan.kind === 'connect') {
+        // updateConnection would reconnect a live client to the new URL at once, sending the token
+        // before anyone confirmed it: park the client, and the next send asks first.
+        this.suspendGateway('identity');
       }
     } catch (err) {
       log.warn(`gateway settings change could not be applied: ${(err as Error).message}`);
@@ -299,14 +326,46 @@ export class ChatServiceFactory {
     void vscode.window.showWarningMessage(`OpenClaw: ${err.rejection.hint} (${err.rejection.code})`);
   }
 
-  private warnIfCleartext(url: string): void {
-    if (!sendsTokenInCleartext(url) || this.cleartextWarnedUrls.has(url)) {
-      return;
+  /** Whether the token may go to `url`: encrypted or loopback, or a remote `ws://` URL the user
+   *  allowed in this window or in `openclaw.gateway.allowUnencryptedUrls`. */
+  private isCleartextAllowed(url: string): boolean {
+    return !sendsTokenInCleartext(url) || this.cleartextConfirmedUrls.has(url) || getUnencryptedAllowedUrls().includes(url);
+  }
+
+  /** Ask before the token goes unencrypted to `url`; one dialog per URL however many sends wait on it. */
+  private confirmCleartext(url: string): Promise<boolean> {
+    let prompt = this.cleartextPrompts.get(url);
+    if (!prompt) {
+      prompt = this.askCleartext(url).finally(() => this.cleartextPrompts.delete(url));
+      this.cleartextPrompts.set(url, prompt);
     }
-    this.cleartextWarnedUrls.add(url);
-    void vscode.window.showWarningMessage(
-      `OpenClaw: the gateway token is sent unencrypted to ${new URL(url).host}. Use wss:// for a remote gateway.`
+    return prompt;
+  }
+
+  private async askCleartext(url: string): Promise<boolean> {
+    const choice = await vscode.window.showWarningMessage(
+      `OpenClaw: send the gateway token unencrypted to ${new URL(url).host}?`,
+      {
+        modal: true,
+        detail:
+          'openclaw.gateway.url uses ws:// to another machine, so anyone on the network path can read the token. ' +
+          'Use wss://, or a secure tunnel such as SSH port forwarding to a loopback address.',
+      },
+      CONNECT_ONCE,
+      ALWAYS_ALLOW
     );
+    if (choice !== CONNECT_ONCE && choice !== ALWAYS_ALLOW) {
+      return false;
+    }
+    this.cleartextConfirmedUrls.add(url);
+    if (choice === ALWAYS_ALLOW) {
+      try {
+        await allowUnencryptedUrl(url);
+      } catch (err) {
+        log.warn(`could not save openclaw.gateway.allowUnencryptedUrls: ${errorMessage(err)}`);
+      }
+    }
+    return true;
   }
 
   /** Dispose the cached gateway client and the settings listeners (provider teardown). */

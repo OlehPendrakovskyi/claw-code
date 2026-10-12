@@ -23,6 +23,8 @@ vi.mock('../core/gatewayConfig', async () => ({
     sendsTokenInCleartext: (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).sendsTokenInCleartext,
     getGatewaySettings: vi.fn(),
     getGatewayToken: vi.fn(),
+    getUnencryptedAllowedUrls: vi.fn(() => []),
+    allowUnencryptedUrl: vi.fn(async () => undefined),
     migrateLegacyGatewayToken: vi.fn(async () => undefined),
     isLoopbackGatewayUrl: (await vi.importActual<typeof import('../core/gatewayConfig')>('../core/gatewayConfig')).isLoopbackGatewayUrl,
     SecretDeviceCredentialStore: vi.fn(function () { return mockDeviceStore; }),
@@ -67,7 +69,7 @@ vi.mock('../chat/ChatService', () => ({
 } satisfies Partial<typeof import('../chat/ChatService')>));
 
 import { ChatServiceFactory } from '../webview/chatServiceFactory';
-import { getGatewaySettings, getGatewayToken, migrateLegacyGatewayToken } from '../core/gatewayConfig';
+import { allowUnencryptedUrl, getGatewaySettings, getGatewayToken, getUnencryptedAllowedUrls, migrateLegacyGatewayToken } from '../core/gatewayConfig';
 import { GatewayChatService } from '../core/gatewayChatService';
 import { ChatService } from '../chat/ChatService';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
@@ -75,6 +77,7 @@ import type { HandshakeRejection } from '../core/gatewayProtocol/model';
 
 const mockSettings = getGatewaySettings as MockedFunction<typeof GatewayConfig.getGatewaySettings>;
 const mockToken = getGatewayToken as MockedFunction<typeof GatewayConfig.getGatewayToken>;
+const mockAllowedUrls = vi.mocked(getUnencryptedAllowedUrls);
 
 import * as vscode from 'vscode';
 
@@ -127,6 +130,9 @@ beforeEach(() => {
     mockIdentityListeners.length = 0;
     mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
     mockToken.mockResolvedValue('secret-token');
+    // clearAllMocks keeps implementations: a dialog answer or an allow list set by one test must not reach the next.
+    mockAllowedUrls.mockReturnValue([]);
+    vi.mocked(vscode.window.showWarningMessage).mockReset();
 });
 
 describe('ChatServiceFactory', () => {
@@ -207,7 +213,7 @@ describe('ChatServiceFactory', () => {
 
     it('stays on gateway with status false in forced gateway mode when connect times out', async () => {
         mockConnect.mockReturnValue(new Promise(() => { /* hangs -> factory timeout */ }));
-        mockSettings.mockReturnValue({ url: 'ws://x', transport: 'gateway', protocolVersion: 'auto' });
+        mockSettings.mockReturnValue({ url: 'wss://x', transport: 'gateway', protocolVersion: 'auto' });
         const spy = statusSpy();
         const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
 
@@ -268,26 +274,156 @@ describe('ChatServiceFactory', () => {
             await expect(factory.resolve()).rejects.toThrow('ws:// or wss://');
             expect(GatewayChatService).not.toHaveBeenCalled();
         });
+    });
 
-        it('warns once when the token would travel over plain ws:// to a remote host', async () => {
-            mockSettings.mockReturnValue({ url: 'ws://gateway.example:18789', transport: 'gateway', protocolVersion: 'auto' });
+    // SEC-1: the token travels in the first `connect` frame, so plain ws:// to another machine hands it to the network.
+    describe('unencrypted remote gateway', () => {
+        const REMOTE = 'ws://gateway.example:18789';
+        // The overloads type an answer as a MessageItem; the factory passes plain string items.
+        const warning = vi.mocked(vscode.window.showWarningMessage) as unknown as Mock<(...args: unknown[]) => Promise<string | undefined>>;
+
+        beforeEach(() => {
+            mockSettings.mockReturnValue({ url: REMOTE, transport: 'auto', protocolVersion: 'auto' });
             mockConnect.mockResolvedValue(undefined);
-            const factory = new ChatServiceFactory(contextStub());
-
-            await factory.resolve();
-            await factory.resolve();
-
-            expect(vscode.window.showWarningMessage).toHaveBeenCalledTimes(1);
-            expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(expect.stringContaining('gateway.example:18789'));
         });
 
-        it('does not warn for a loopback ws:// gateway', async () => {
-            mockConnect.mockResolvedValue(undefined);
+        it('asks before sending the token, and connects once confirmed without asking again in this window', async () => {
+            warning.mockResolvedValue('Connect This Time');
+            const factory = new ChatServiceFactory(contextStub());
+
+            const choice = await factory.resolve();
+            await factory.resolve();
+
+            expect(choice.transport).toBe('gateway');
+            expect(warning).toHaveBeenCalledTimes(1);
+            expect(warning).toHaveBeenCalledWith(
+                expect.stringContaining('gateway.example:18789'),
+                expect.objectContaining({ modal: true }),
+                'Connect This Time',
+                'Always Allow This Gateway'
+            );
+            expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: REMOTE }));
+            expect(allowUnencryptedUrl).not.toHaveBeenCalled();
+        });
+
+        it('does not create a client or connect when the user declines, and asks again on the next send', async () => {
+            warning.mockResolvedValue(undefined);
+            const spy = statusSpy();
+            const factory = new ChatServiceFactory(contextStub(), spy.onStatus);
+
+            const choice = await factory.resolve();
+            await factory.resolve();
+
+            expect(choice.transport).toBe('acpx');
+            expect(GatewayChatService).not.toHaveBeenCalled();
+            expect(mockConnect).not.toHaveBeenCalled();
+            expect(spy.calls[spy.calls.length - 1]).toEqual(['acpx', true]);
+            expect(warning).toHaveBeenCalledTimes(2);
+        });
+
+        it('rejects the send in forced gateway mode when the user declines', async () => {
+            mockSettings.mockReturnValue({ url: REMOTE, transport: 'gateway', protocolVersion: 'auto' });
+            warning.mockResolvedValue(undefined);
+            const factory = new ChatServiceFactory(contextStub());
+
+            await expect(factory.resolve()).rejects.toThrow('gateway.example:18789 would receive it unencrypted');
+            expect(mockConnect).not.toHaveBeenCalled();
+        });
+
+        it('saves "always allow" to user settings', async () => {
+            warning.mockResolvedValue('Always Allow This Gateway');
+            const factory = new ChatServiceFactory(contextStub());
+
+            const choice = await factory.resolve();
+
+            expect(choice.transport).toBe('gateway');
+            expect(allowUnencryptedUrl).toHaveBeenCalledWith(REMOTE);
+        });
+
+        it('connects without asking when the URL is in openclaw.gateway.allowUnencryptedUrls', async () => {
+            mockAllowedUrls.mockReturnValue([REMOTE]);
+            const factory = new ChatServiceFactory(contextStub());
+
+            const choice = await factory.resolve();
+
+            expect(choice.transport).toBe('gateway');
+            expect(warning).not.toHaveBeenCalled();
+        });
+
+        it('asks once for sends that arrive while the dialog is open', async () => {
+            let answer: (choice: string | undefined) => void = () => undefined;
+            warning.mockReturnValue(new Promise((resolve) => { answer = resolve; }));
+            const factory = new ChatServiceFactory(contextStub());
+
+            const sends = Promise.all([factory.resolve(), factory.resolve()]);
+            await new Promise((resolve) => setImmediate(resolve));
+            answer('Connect This Time');
+
+            expect((await sends).map((choice) => choice.transport)).toEqual(['gateway', 'gateway']);
+            expect(warning).toHaveBeenCalledTimes(1);
+        });
+
+        it('plans again after the dialog, so a URL changed meanwhile is the one used (R2)', async () => {
+            warning.mockImplementation(async () => {
+                mockSettings.mockReturnValue({ url: 'wss://gateway.example:18789', transport: 'auto', protocolVersion: 'auto' });
+                return 'Connect This Time';
+            });
             const factory = new ChatServiceFactory(contextStub());
 
             await factory.resolve();
 
-            expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+            expect(GatewayChatService).toHaveBeenCalledTimes(1);
+            expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: 'wss://gateway.example:18789' }));
+        });
+
+        it('uses a URL changed while the dialog was open even when the user declined the old one (R2)', async () => {
+            warning.mockImplementation(async () => {
+                mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
+                return undefined;
+            });
+            const factory = new ChatServiceFactory(contextStub());
+
+            const choice = await factory.resolve();
+
+            expect(choice.transport).toBe('gateway');
+            expect(GatewayChatService).toHaveBeenCalledWith(expect.objectContaining({ url: 'ws://127.0.0.1:18789' }));
+            expect(mockSuspend).not.toHaveBeenCalled();
+        });
+
+        it('does not ask for a loopback ws:// or a wss:// gateway', async () => {
+            const factory = new ChatServiceFactory(contextStub());
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
+            await factory.resolve();
+            mockSettings.mockReturnValue({ url: 'wss://gateway.example:18789', transport: 'auto', protocolVersion: 'auto' });
+            await factory.resolve();
+
+            expect(warning).not.toHaveBeenCalled();
+        });
+
+        // Before SEC-1, a settings change reconnected a live client to the new URL at once (updateConnection),
+        // and the token went out without even the warning that resolve() showed.
+        it('parks a live client instead of reconnecting it when the URL changes to an unconfirmed remote ws://', async () => {
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockSettings.mockReturnValue({ url: REMOTE, transport: 'auto', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway.url');
+
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
+            expect(warning).not.toHaveBeenCalled();
+        });
+
+        it('parks a client confirmed through the setting once the URL is removed from it', async () => {
+            mockAllowedUrls.mockReturnValue([REMOTE]);
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockAllowedUrls.mockReturnValue([]);
+            await changeConfiguration('openclaw.gateway.allowUnencryptedUrls');
+
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
         });
     });
 

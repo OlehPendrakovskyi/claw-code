@@ -268,6 +268,7 @@ describe('extension activation', () => {
                 'openclaw.chat.attachOpenFile',
                 'openclaw.dashboardUrl',
                 'openclaw.gateway.url',
+                'openclaw.gateway.allowUnencryptedUrls',
                 'openclaw.gateway.transport',
                 'openclaw.gateway.protocolVersion',
             ];
