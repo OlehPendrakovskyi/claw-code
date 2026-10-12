@@ -369,9 +369,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  does `ESC` and a digit (`ESC7`, `ESC8`). A final byte `:`-`?` stays with the text as a delimiter
  *  (`token ESC =value`), and so does a letter right after `ESC`, which may begin a label (`ESCtoken=value`);
  *  only the `ESC` goes. Serialised, an intermediate `"` and a final `\\` are left alone, as each belongs to the
- *  JSON around it. */
+ *  JSON around it. Each final byte is captured (a control string has none): one that completes a credential label
+ *  stays as text ({@link formsLabel}, R79), so `ESC(token=…` keeps its `t`. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?|\u001b(?:[ -/]+[0-9@-~]|[0-9])|(?<!\\)\\+(?:u001b|x1b)(?:[ !#-/]+[0-9@-[\]-~]|[0-9])/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*([@-~])|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*([@-~])|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?|\u001b(?:[ -/]+([0-9@-~])|([0-9]))|(?<!\\)\\+(?:u001b|x1b)(?:[ !#-/]+([0-9@-[\]-~])|([0-9]))/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -383,7 +384,76 @@ const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!
 export function stripTerminalCodes(text: string): string {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
-    return stripCsiSequences(decodeNameEscapes(text)).replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
+    return stripCsiSequences(decodeNameEscapes(text))
+        .replace(TERMINAL_CODE, (
+            match: string,
+            csi: string | undefined,
+            serialisedCsi: string | undefined,
+            escape: string | undefined,
+            escapeDigit: string | undefined,
+            serialisedEscape: string | undefined,
+            serialisedEscapeDigit: string | undefined,
+            offset: number,
+            input: string
+        ) => {
+            const final = csi ?? serialisedCsi ?? escape ?? escapeDigit ?? serialisedEscape ?? serialisedEscapeDigit;
+            return final !== undefined && formsLabel(nameRunEndingAt(input, offset), final, nameRunStartingAt(input, offset + match.length))
+                ? final
+                : '';
+        })
+        .replace(CONTROL_BYTE, '');
+}
+
+/** The longest credential label (`authorization`): a label that a final byte completes lies within this many
+ *  name characters of it on either side, so reading no further keeps stripping linear (R64). */
+const LABEL_WINDOW = 13;
+/** Words that open a credential with no key separator after them. */
+const LABEL_WORD = /bearer|basic/i;
+
+/** Whether a name holds a credential label any masking pass reads: a sensitive key, a credential header, or a
+ *  word such as `Bearer`. */
+function isLabel(name: string): boolean {
+    return SENSITIVE_KEY.test(name) || CREDENTIAL_HEADER_KEY.test(name) || LABEL_WORD.test(name);
+}
+
+/** Whether a terminal code's final byte, with the name characters `before` and `after` the code, spells a
+ *  credential label that the text without the byte does not (`t` in `ESC[token=…`, `n` in `toke ESC[n=…`).
+ *  Such a byte stays as text when the code is stripped (R79), so no label loses a letter to it. */
+function formsLabel(before: string, final: string, after: string): boolean {
+    return NAME_CHAR.test(final) && isLabel(before + final + after) && !isLabel(before + after);
+}
+
+/** Up to {@link LABEL_WINDOW} name characters of `text` ending at `index`. */
+function nameRunEndingAt(text: string, index: number): string {
+    let start = index;
+    while (start > 0 && index - start < LABEL_WINDOW && NAME_CHAR.test(text[start - 1])) {
+        start--;
+    }
+    return text.slice(start, index);
+}
+
+/** Up to {@link LABEL_WINDOW} name characters of `text` from `index`. */
+function nameRunStartingAt(text: string, index: number): string {
+    let end = index;
+    while (end < text.length && end - index < LABEL_WINDOW && NAME_CHAR.test(text[end])) {
+        end++;
+    }
+    return text.slice(index, end);
+}
+
+/** Up to {@link LABEL_WINDOW} name characters at the end of the first `at` chunks of `out`. Empty chunks are
+ *  skipped, but only a bounded number of chunks is read, so the walk stays constant per call. */
+function nameRunEndingAtChunk(out: string[], at: number): string {
+    let name = '';
+    for (let chunk = at - 1, read = 0; chunk >= 0 && read < 2 * LABEL_WINDOW && name.length < LABEL_WINDOW; chunk--, read++) {
+        const piece = out[chunk];
+        const run = nameRunEndingAt(piece, piece.length);
+        name = run.slice(Math.max(0, run.length + name.length - LABEL_WINDOW)) + name;
+        if (run.length < piece.length) {
+            break;
+        }
+    }
+    return name;
 }
 
 /** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -396,6 +466,8 @@ const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
  *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which is dropped with
  *  its parameters, so `to\e[0\0ken` is `token` too. The byte stays, unless it opens a run of tabs and line
  *  breaks: that run goes too (`to\e[\r\nken` is `token`), as it would otherwise split the name.
+ *  An outermost sequence's final byte that completes a credential label stays ({@link formsLabel}, R79):
+ *  `\e[token` is `token`, not `oken`.
  *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
  *  sequence's bytes are dropped once. */
 function stripCsiSequences(text: string): string {
@@ -431,6 +503,11 @@ function stripCsiSequences(text: string): string {
         } else if (char >= '@' && char <= '~') {
             out.length = sequence.at;
             open.pop();
+            // The final byte of an outermost sequence stays when it completes a label (R79); inside an outer
+            // sequence it is one of that sequence's bytes.
+            if (open.length === 0 && formsLabel(nameRunEndingAtChunk(out, out.length), char, nameRunStartingAt(text, i))) {
+                out.push(char);
+            }
         } else {
             out.length = open[0].at;
             open.length = 0;

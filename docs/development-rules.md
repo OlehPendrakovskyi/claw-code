@@ -16,7 +16,7 @@ Binding rules for this repository, cited by ID.
 | [Streaming and event mapping](#streaming-and-event-mapping) | S2, R14, R23, R38 |
 | [Protocols and external contracts](#protocols-and-external-contracts) | R24, R33, R25, R26, R27, R15, R29, R32, R37, R39 |
 | [Untrusted input, secrets and the webview](#untrusted-input-secrets-and-the-webview) | R5, R13, R10, R35, R36, R30, R31, S3, S4 |
-| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77, R78 |
+| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77, R78, R79 |
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
@@ -168,6 +168,9 @@ These rules apply R35 to how a sanitiser is built. A sanitiser that guesses boun
 
 **R78. A new branch keeps its result in its own variable.** *General, MUST.* A branch added to a scanner records what it finds in a variable of its own and never overwrites one that other paths read with another meaning: every path keeps reading what it read before the branch existed. Before a variable is reused, every read of it is listed. In `maskUserinfo`, the same-line run's `@` is `lineAt`, apart from `atInAuthority`, which ends the userinfo of a URL that parses.
 *Check:* ``masks a malformed URL up to its last `@` when the same-line run does not apply`` in `accessInfo.test.ts`; review.
+
+**R79. Stripping a terminal code never removes a byte that would form a credential label.** *General, MUST.* When a CSI or `ESC I+ F` sequence's final byte is a name character, and that byte together with the name characters on each side of the sequence spells a credential label that the text without it does not, the byte stays as text; the sequence's other bytes are still removed. `ESC[token=…` keeps `token`, `toke ESC[n=…` becomes `token=…`, and `ESC[0mtoken=…` still loses its `m`. The check reads a fixed window of name characters on each side, so stripping stays linear (R64). A byte kept this way can label a value the terminal would show under a shorter name (`ESC[Key=value` becomes `Key=***`); that over-redaction is accepted, a leak is not.
+*Check:* in `accessInfo.test.ts`, `keeps a terminal code's final byte that completes a credential label (issue #56)`, `still strips a final byte that completes no credential label (issue #56)` and the `\u001b[t` inputs of `stays linear on large adversarial input`; review.
 
 ## Filesystem and paths
 
@@ -332,7 +335,6 @@ Where the code does not meet a rule yet. Fixing one removes its line.
 - **R56:** C2a in the [diff design](design/diff-and-checkpoints.md) is about 420 words and is due to be split into sub-IDs.
 - **R61:** in `redact.ts`, an unclosed quoted value still ends at a space; a URL that `new URL()` rejects has only its userinfo and sensitive query values masked (`redactUrl`), not the whole form; sensitive names are split across `SENSITIVE_PARAM`, `SENSITIVE_KEY` and `CREDENTIAL_HEADER_KEY` and matched as substrings, so `key` also matches `monkey`.
 - **R62:** `redact.ts` matches escape layers case by case; the single encoded-variant table is the target.
-- **R62:** a terminal sequence whose final byte starts a credential label takes that letter with it when terminal codes are stripped, so the label is no longer seen: `redactText('\u001b[token=PRIVATE')` returns `oken=PRIVATE`. Stripping runs before masking; issue #43 (open question 4) tracks it.
 - **R63:** `namedEntryLabel` in `format.ts` judges a split credential on the raw parts with `joinBoundary` and does not redact the assembled label.
 - **R64:** `redactText` has no size limit; only the acpx stderr path withholds oversized text (`STDERR_WITHHELD`).
 - **R65:** `maskUserinfo`'s spaced-password scan reads `https://host:8080 see bob@example.org` as a userinfo and masks it (`https://***@example.org`), and `joinBoundary` inherits this for a `host:port` message whose details hold an email. The section is under R8's stop criterion; issue #43 tracks it until the rewrite.
