@@ -88,6 +88,9 @@ export class ChatServiceFactory {
   /** The open confirmation per URL, so sends that arrive while it is open ask once. */
   private readonly cleartextPrompts = new Map<string, Promise<boolean>>();
 
+  /** Bumped by each reconcile(), so one that finishes after a newer one discards its plan (R3). */
+  private reconcileGeneration = 0;
+
   private readonly rejectionWarnings = new Set<string>();
   private readonly listeners: vscode.Disposable[];
   private readonly deviceCredentials: SecretDeviceCredentialStore;
@@ -223,6 +226,7 @@ export class ChatServiceFactory {
     if (!this.gatewayService) {
       return;
     }
+    const generation = ++this.reconcileGeneration;
     // SEC-1 invariant: an unparked client never points at a URL that may not receive the token unencrypted.
     // Checked on the endpoint the client uses, before anything is awaited, because planTransport() leaves the
     // client alone when SecretStorage fails, and the settings may already name another URL.
@@ -232,6 +236,10 @@ export class ChatServiceFactory {
     await this.waitForMigration();
     try {
       const plan = await this.planTransport();
+      // A newer settings change was made while SecretStorage was read: its own reconcile() applies it.
+      if (generation !== this.reconcileGeneration) {
+        return;
+      }
       if (plan.kind === 'connect' && this.isCleartextAllowed(plan.url)) {
         this.getOrCreateGateway(plan);
       } else if (plan.kind === 'connect') {

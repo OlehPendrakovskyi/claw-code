@@ -427,6 +427,29 @@ describe('ChatServiceFactory', () => {
         });
 
         it.each([
+            // A stale allowed plan would reconnect to the old URL; a stale unconfirmed one would park the new client.
+            ['an allowed', 'wss://old.example:18789'],
+            ['an unconfirmed', REMOTE],
+        ] as const)('discards %s plan that finishes after a newer settings change (R3)', async (_, staleUrl) => {
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+            let releaseStale: (token: string) => void = () => undefined;
+            mockToken.mockReturnValueOnce(new Promise((resolve) => { releaseStale = resolve; }));
+
+            mockSettings.mockReturnValue({ url: staleUrl, transport: 'auto', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway.url');
+            mockSettings.mockReturnValue({ url: 'wss://new.example:18789', transport: 'auto', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway.url');
+            releaseStale('secret-token');
+            // Each reconcile() waits for the migration and the token read: let both settle.
+            for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+
+            expect(mockUpdateConnection.mock.calls).toEqual([['wss://new.example:18789', 'secret-token', 'auto']]);
+            expect(mockSuspend).not.toHaveBeenCalled();
+        });
+
+        it.each([
             ['auto', 'gateway', 'rejects the send'],
             ['gateway', 'auto', 'falls back to acpx'],
             ['auto', 'acpx', 'uses acpx'],
