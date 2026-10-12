@@ -14,8 +14,9 @@
  * renamed before it is logged, code built at run time); that is review's job.
  * A finding prints `file:line  [rule] message` and the script exits non-zero.
  */
-import { existsSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path, { join, relative, sep } from 'node:path';
+import { pathToFileURL } from 'node:url';
 // TypeScript 7.0 is a Go rewrite and no longer exposes the classic synchronous API
 // through its entry point ('.' points at lib/version.cjs — metadata only). The mechanical
 // rule checker (R10, R36, …) therefore uses the experimental snapshot layer
@@ -51,10 +52,12 @@ const ts = {
   find: (arr, pred) => arr.find(pred),
 };
 
-const ROOT = process.cwd();
-const SRC = join(ROOT, 'src');
-const TEST_DIR = join(SRC, '__test__') + sep;
-const TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
+// The tree under check and the state of one run. {@link checkRules} sets them all before it reads a file,
+// so a run on one API never sees what an earlier run on another tree collected (#61).
+let ROOT;
+let SRC;
+let TEST_DIR;
+let TEMP_HELPER;
 
 /** Names whose value is prompt or payload text, and must not reach a log call. */
 const TEXT_NAMES = new Set(['text', 'prompt', 'content', 'body', 'msg', 'raw', 'payload', 'chunk', 'frame']);
@@ -162,8 +165,8 @@ function memberOf(base, name) {
 }
 
 /** Whole-variable assignments in the program, by the assigned variable's symbol: `run = cp.exec` makes
- *  `cp.exec` one of the values `run` can hold. Filled once, before the checks run. */
-const assignmentsBySymbol = new Map();
+ *  `cp.exec` one of the values `run` can hold. Filled once per run, before the checks run. */
+let assignmentsBySymbol;
 
 function collectAssignments(source, checker) {
     const visit = node => {
@@ -1096,7 +1099,7 @@ function resolveNodeHandle(h, project) {
  *  (assignmentsBySymbol, spawnOptionSymbols edges/options), and the raw snapshot
  *  checker already returns the same symbol object for the same query — so caching
  *  keeps proxy identity stable, as symbol identity was in the classic TS 6 API. */
-const symbolProxies = new WeakMap();
+let symbolProxies;
 function unwrapSymbol(s, project) {
   if (!s || !s.declarations) return s;
   let proxy = symbolProxies.get(s);
@@ -1127,7 +1130,7 @@ function unwrapSymbol(s, project) {
  *  come back as the memoised proxies of {@link unwrapSymbol}, so a cached answer is the one a new call
  *  would give. */
 const CACHED_QUERIES = new Set(['getSymbolAtLocation', 'getImmediateAliasedSymbol', 'getAliasedSymbol', 'getExportSpecifierLocalTargetSymbol']);
-const checkerStats = { queries: 0, cached: 0 };
+let checkerStats;
 
 /** Wrap the checker so every symbol it returns comes back with classic nodes, and each of
  *  {@link CACHED_QUERIES} is asked once per argument. */
@@ -1163,61 +1166,96 @@ function wrapChecker(checker, project) {
   });
 }
 
-const findings = [];
-// One snapshot-program over all files, for symbol resolution only: no module resolution and
-// no lib, so it needs neither node_modules nor a tsconfig and works the same on a fixture tree.
-// A minimal tsconfig is required next to the working directory: the snapshot layer resolves
-// file paths relative to the openProject directory. When the checker runs from a test fixture
-// directory that directory holds no tsconfig, so we create a minimal one on the fly (harmless —
-// each fixture directory is deleted after its test). In the repo root the existing tsconfig is
-// used instead.
-const TS_CONFIG_PATH = path.resolve(ROOT, 'tsconfig-check-rules.json');
-if (!existsSync(TS_CONFIG_PATH)) {
-    writeFileSync(TS_CONFIG_PATH, JSON.stringify({
-        compilerOptions: { noResolve: true, noLib: true, types: [] },
-    }));
-}
-const files = [...walk(SRC)];
-const api = new TSAPI({ cwd: process.cwd() });
-// updateSnapshot initialises the client itself; opening the disk-backed config discovers the
-// scanned src files, so neither a private ensureInitialized() call nor an `openFiles` list is
-// needed. (UpdateSnapshotParams has no `files` field — unknown fields are silently dropped.)
-const snapshot = api.updateSnapshot({ openProject: TS_CONFIG_PATH });
-const project = snapshot.getProjects()[0];
-const program = project.program;
-const checker = wrapChecker(project.checker, project);
-for (const file of files) {
-    collectAssignments(program.getSourceFile(file), checker);
-}
-const spawnOptions = spawnOptionSymbols(files.map(file => program.getSourceFile(file)), { checker });
-for (const file of files) {
-    const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
-    const checks = CHECKS.filter(check => check.scope === scope || check.scope === 'all');
-    const source = program.getSourceFile(file);
-    const context = {
-        file,
-        checker,
-        outputChannels: outputChannelBindings(source),
-        spawnOptions,
-    };
-    const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
-    const visit = node => {
-        for (const check of checks) {
-            if (check.test(node, context)) {
-                findings.push(`${where(node)}  [${check.rule}] ${check.message}`);
-            }
+/**
+ * Runs every check on the `.ts` files under `<root>/src` and returns each finding as `file:line  [rule] message`,
+ * with the file relative to `root`, and the checker query counts of the run (#58). `api` is a TypeScript
+ * `unstable/sync` API the caller owns and closes: the CLI below makes one for its single run, and the tests
+ * share one across their fixture trees instead of starting a process and a TypeScript server per tree (#61).
+ * The run opens one project and closes it again, so the API holds nothing of this tree afterwards.
+ */
+export function checkRules(root, api) {
+    ROOT = root;
+    SRC = join(ROOT, 'src');
+    TEST_DIR = join(SRC, '__test__') + sep;
+    TEMP_HELPER = join(SRC, '__test__', 'helpers', 'tempDir.ts');
+    assignmentsBySymbol = new Map();
+    symbolProxies = new WeakMap();
+    checkerStats = { queries: 0, cached: 0 };
+
+    const findings = [];
+    // One snapshot-program over all files, for symbol resolution only: no module resolution and
+    // no lib, so it needs neither node_modules nor a tsconfig and works the same on a fixture tree.
+    // A minimal tsconfig is required next to the working directory: the snapshot layer resolves
+    // file paths relative to the openProject directory. When the checker runs from a test fixture
+    // directory that directory holds no tsconfig, so we create a minimal one on the fly (harmless —
+    // each fixture directory is deleted after its test). In the repo root the existing tsconfig is
+    // used instead.
+    const TS_CONFIG_PATH = path.resolve(ROOT, 'tsconfig-check-rules.json');
+    if (!existsSync(TS_CONFIG_PATH)) {
+        writeFileSync(TS_CONFIG_PATH, JSON.stringify({
+            compilerOptions: { noResolve: true, noLib: true, types: [] },
+        }));
+    }
+    const files = [...walk(SRC)];
+    // updateSnapshot initialises the client itself; opening the disk-backed config discovers the
+    // scanned src files, so neither a private ensureInitialized() call nor an `openFiles` list is
+    // needed. (UpdateSnapshotParams has no `files` field — unknown fields are silently dropped.)
+    // An opened project stays open across snapshots until it is closed, so the project is taken by
+    // its config path rather than by position, and closed when the run ends.
+    const snapshot = api.updateSnapshot({ openProjects: [TS_CONFIG_PATH] });
+    try {
+        const project = snapshot.getProject(TS_CONFIG_PATH);
+        const program = project.program;
+        const checker = wrapChecker(project.checker, project);
+        for (const file of files) {
+            collectAssignments(program.getSourceFile(file), checker);
         }
-        node.forEachChild(visit);
-    };
-    visit(source);
+        const spawnOptions = spawnOptionSymbols(files.map(file => program.getSourceFile(file)), { checker });
+        for (const file of files) {
+            const scope = file.startsWith(TEST_DIR) ? 'test' : 'source';
+            const checks = CHECKS.filter(check => check.scope === scope || check.scope === 'all');
+            const source = program.getSourceFile(file);
+            const context = {
+                file,
+                checker,
+                outputChannels: outputChannelBindings(source),
+                spawnOptions,
+            };
+            const where = node => `${relative(ROOT, file).split(sep).join('/')}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
+            const visit = node => {
+                for (const check of checks) {
+                    if (check.test(node, context)) {
+                        findings.push(`${where(node)}  [${check.rule}] ${check.message}`);
+                    }
+                }
+                node.forEachChild(visit);
+            };
+            visit(source);
+        }
+    } finally {
+        snapshot.dispose();
+        api.updateSnapshot({ closeProjects: [TS_CONFIG_PATH] }).dispose();
+    }
+    return { findings, stats: { ...checkerStats } };
 }
 
-if (process.env.CHECK_RULES_STATS === '1') {
-    console.error(`check-rules: ${checkerStats.queries} checker queries, ${checkerStats.cached} served from cache`);
+// Run as a script (`node scripts/check-rules.mjs`), not imported: check the working directory. Node loads
+// the main module by its real path, so the argument is compared the same way.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+    const api = new TSAPI({ cwd: process.cwd() });
+    let result;
+    try {
+        result = checkRules(process.cwd(), api);
+    } finally {
+        api.close();
+    }
+    if (process.env.CHECK_RULES_STATS === '1') {
+        console.error(`check-rules: ${result.stats.queries} checker queries, ${result.stats.cached} served from cache`);
+    }
+    if (result.findings.length > 0) {
+        console.error(result.findings.join('\n'));
+        console.error(`\n${result.findings.length} rule finding(s). See docs/development-rules.md.`);
+        process.exit(1);
+    }
+    console.log(`check-rules: ${CHECKS.map(check => check.rule).join(', ')} clean`);
 }
-if (findings.length > 0) {
-    console.error(findings.join('\n'));
-    console.error(`\n${findings.length} rule finding(s). See docs/development-rules.md.`);
-    process.exit(1);
-}
-console.log(`check-rules: ${CHECKS.map(check => check.rule).join(', ')} clean`);

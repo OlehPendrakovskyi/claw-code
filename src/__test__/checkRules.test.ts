@@ -1,6 +1,8 @@
 import { execFileSync, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+import { API } from 'typescript/unstable/sync';
+import { checkRules } from '../../scripts/check-rules.mjs';
 import { makeTempDir } from './helpers/tempDir';
 
 /** `others` are further files in the same tree, for checks that follow imports across files. */
@@ -9,8 +11,8 @@ type Case = { name: string; file: string; line: string; expect: string | null; o
 const SCRIPT = path.resolve(process.cwd(), 'scripts/check-rules.mjs');
 const { cases } = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/check-rules-cases.json'), 'utf8')) as { cases: Case[] };
 
-/** Runs the real script, by node's absolute path, on a tree holding only `files`. */
-function runOn(files: Record<string, string>): { status: number; output: string } {
+/** Writes a tree holding only `files`, hands its root to `use`, and deletes it afterwards. */
+function withTree<T>(files: Record<string, string>, use: (root: string) => T): T {
     const root = makeTempDir('claw-check-rules-');
     try {
         for (const [relative, content] of Object.entries(files)) {
@@ -18,43 +20,74 @@ function runOn(files: Record<string, string>): { status: number; output: string 
             fs.mkdirSync(path.dirname(full), { recursive: true });
             fs.writeFileSync(full, content);
         }
-        try {
-            const output = execFileSync(process.execPath, [SCRIPT], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-            return { status: 0, output };
-        } catch (err) {
-            const failed = err as { status: number; stdout: string; stderr: string };
-            return { status: failed.status, output: `${failed.stdout}${failed.stderr}` };
-        }
+        return use(root);
     } finally {
         fs.rmSync(root, { recursive: true, force: true });
     }
 }
 
 describe('scripts/check-rules.mjs', () => {
+    // One TypeScript server for every fixture tree: a process per case took 40-77 s on CI (#61).
+    let api: API;
+    beforeAll(() => {
+        api = new API({ cwd: process.cwd() });
+    });
+    afterAll(() => {
+        api.close();
+    });
+
+    /** Runs the checks in-process, on the shared API, on a tree holding only `files`. */
+    const findingsOn = (files: Record<string, string>): string[] => withTree(files, root => checkRules(root, api).findings);
+
     it.each(cases)('$name', ({ file, line, expect: rule, others }) => {
-        const result = runOn({ ...others, [file]: `${line}\n` });
+        const findings = findingsOn({ ...others, [file]: `${line}\n` });
 
         if (rule === null) {
-            expect(result).toEqual({ status: 0, output: expect.stringContaining('clean') });
+            expect(findings).toEqual([]);
         } else {
-            expect(result.status).toBe(1);
-            expect(result.output).toContain(`${file}:1  [${rule}]`);
+            expect(findings.join('\n')).toContain(`${file}:1  [${rule}]`);
         }
     });
 
+    // The API keeps a project open across snapshots until it is closed, and lists open projects sorted by path:
+    // a run that took the first one, or left its own open, would check tree `a` again when asked for tree `b`.
+    it('checks only the tree it is given when an earlier run used the same API (issue #61)', () => {
+        const logged = cases.find(c => c.name === 'R10: prompt text as a direct argument')!;
+        const parent = makeTempDir('claw-check-rules-');
+        const write = (tree: string, content: string): string => {
+            const full = path.join(parent, tree, logged.file);
+            fs.mkdirSync(path.dirname(full), { recursive: true });
+            fs.writeFileSync(full, content);
+            return path.join(parent, tree);
+        };
+        try {
+            const first = checkRules(write('a', `${logged.line}\n`), api).findings;
+            const second = checkRules(write('b', 'const ok = 1;\n'), api).findings;
+
+            expect(first).toHaveLength(1);
+            expect(second).toEqual([]);
+            const snapshot = api.updateSnapshot();
+            expect(snapshot.getProjects()).toEqual([]);
+            snapshot.dispose();
+        } finally {
+            fs.rmSync(parent, { recursive: true, force: true });
+        }
+    });
+
+    // The CLI end to end: exit code, every finding's file and line, the total, and the clean line.
     it('reports every finding with its file and line, and the total', () => {
         const byName = (name: string): Case => cases.find(c => c.name === name)!;
         const logged = byName('R10: prompt text as a direct argument');
         const hook = byName('R54: expression-bodied hook');
-        const result = runOn({
+        const result = withTree({
             [logged.file]: `const ok = 1;\n${logged.line}\n`,
             [hook.file]: `${hook.line}\n`,
-        });
+        }, root => spawnSync(process.execPath, [SCRIPT], { cwd: root, encoding: 'utf8' }));
 
         expect(result.status).toBe(1);
-        expect(result.output).toContain(`${logged.file}:2  [R10]`);
-        expect(result.output).toContain(`${hook.file}:1  [R54]`);
-        expect(result.output).toContain('2 rule finding(s)');
+        expect(result.stderr).toContain(`${logged.file}:2  [R10]`);
+        expect(result.stderr).toContain(`${hook.file}:1  [R54]`);
+        expect(result.stderr).toContain('2 rule finding(s)');
     });
 
     // Parsing the whole of src/ takes seconds under coverage and parallel load.
