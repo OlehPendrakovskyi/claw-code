@@ -1,12 +1,14 @@
 import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import {
+  allowUnencryptedUrl,
   DEVICE_IDENTITY_SECRET_KEY,
   DEVICE_TOKENS_SECRET_KEY,
   SecretDeviceCredentialStore,
   deviceHostKind,
   getGatewaySettings,
   getGatewayToken,
+  getUnencryptedAllowedUrls,
   isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
@@ -539,6 +541,38 @@ describe('GatewayConfigService', () => {
             ]);
 
             expect(stored).toBe('typed-token');
+        });
+    });
+
+    describe('openclaw.gateway.allowUnencryptedUrls', () => {
+        const useAllowList = (value: unknown) => {
+            const update = vi.fn(async () => undefined);
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                get: (key: string) => (key === 'gateway.allowUnencryptedUrls' ? value : undefined),
+                update,
+            } as Pick<vscode.WorkspaceConfiguration, 'get' | 'update'> as vscode.WorkspaceConfiguration);
+            return update;
+        };
+
+        it('reads the URLs trimmed, as getGatewaySettings trims the gateway URL, and drops hand-edited non-strings', () => {
+            useAllowList(['  ws://nas.lan:18789 ', 42, null, 'ws://10.0.0.5:18789']);
+            expect(getUnencryptedAllowedUrls()).toEqual(['ws://nas.lan:18789', 'ws://10.0.0.5:18789']);
+        });
+
+        it.each([[undefined], ['ws://nas.lan:18789'], [{}]])('reads a hand-edited %p as an empty list', (value) => {
+            useAllowList(value);
+            expect(getUnencryptedAllowedUrls()).toEqual([]);
+        });
+
+        it('appends a URL in user settings, once', async () => {
+            const update = useAllowList(['ws://nas.lan:18789']);
+
+            await allowUnencryptedUrl('ws://10.0.0.5:18789');
+            await allowUnencryptedUrl('ws://nas.lan:18789');
+
+            expect(update.mock.calls).toEqual([
+                ['gateway.allowUnencryptedUrls', ['ws://nas.lan:18789', 'ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global],
+            ]);
         });
     });
 
