@@ -398,6 +398,34 @@ describe('ChatServiceFactory', () => {
             expect(mockSuspend).toHaveBeenCalledTimes(1);
         });
 
+        // The settings may name a safe URL while the client still uses the revoked one: the client's endpoint decides.
+        it('parks a client on a URL revoked in the same change that switches to a safe URL while SecretStorage fails', async () => {
+            mockAllowedUrls.mockReturnValue([REMOTE]);
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockToken.mockRejectedValue(new Error('keyring locked'));
+            mockAllowedUrls.mockReturnValue([]);
+            mockSettings.mockReturnValue({ url: 'wss://gateway.example:18789', transport: 'auto', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway');
+
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+        });
+
+        it('keeps a client on an allowed URL when the settings switch to an unconfirmed one and SecretStorage fails', async () => {
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockToken.mockRejectedValue(new Error('keyring locked'));
+            mockSettings.mockReturnValue({ url: REMOTE, transport: 'auto', protocolVersion: 'auto' });
+            await changeConfiguration('openclaw.gateway.url');
+
+            // Nothing reaches REMOTE: the client keeps its loopback endpoint, as on any failed token read.
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+            expect(mockSuspend).not.toHaveBeenCalled();
+        });
+
         it.each([
             ['auto', 'gateway', 'rejects the send'],
             ['gateway', 'auto', 'falls back to acpx'],
