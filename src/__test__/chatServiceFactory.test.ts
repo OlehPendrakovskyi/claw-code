@@ -133,6 +133,7 @@ beforeEach(() => {
     // clearAllMocks keeps implementations: a dialog answer or an allow list set by one test must not reach the next.
     mockAllowedUrls.mockReturnValue([]);
     vi.mocked(vscode.window.showWarningMessage).mockReset();
+    vi.mocked(allowUnencryptedUrl).mockReset();
 });
 
 describe('ChatServiceFactory', () => {
@@ -332,12 +333,66 @@ describe('ChatServiceFactory', () => {
 
         it('saves "always allow" to user settings', async () => {
             warning.mockResolvedValue('Always Allow This Gateway');
+            vi.mocked(allowUnencryptedUrl).mockImplementationOnce(async (url) => { mockAllowedUrls.mockReturnValue([url]); });
             const factory = new ChatServiceFactory(contextStub());
 
             const choice = await factory.resolve();
 
             expect(choice.transport).toBe('gateway');
             expect(allowUnencryptedUrl).toHaveBeenCalledWith(REMOTE);
+            expect(warning).toHaveBeenCalledTimes(1);
+        });
+
+        // An "always" answer kept as a window grant too would outlive its removal from the setting.
+        it('parks the client once a URL allowed with "always allow" is removed from the setting', async () => {
+            warning.mockResolvedValue('Always Allow This Gateway');
+            vi.mocked(allowUnencryptedUrl).mockImplementationOnce(async (url) => { mockAllowedUrls.mockReturnValue([url]); });
+            const factory = new ChatServiceFactory(contextStub());
+            await factory.resolve();
+
+            mockAllowedUrls.mockReturnValue([]);
+            await changeConfiguration('openclaw.gateway.allowUnencryptedUrls');
+
+            expect(mockSuspend).toHaveBeenCalledTimes(1);
+            expect(mockUpdateConnection).not.toHaveBeenCalled();
+        });
+
+        it.each([
+            ['the save fails', async () => { throw new Error('settings.json is read-only'); }],
+            ['the saved value does not take effect', async () => undefined],
+        ])('keeps "always allow" for this window when %s, without asking again', async (_, save) => {
+            warning.mockResolvedValue('Always Allow This Gateway');
+            vi.mocked(allowUnencryptedUrl).mockImplementation(save);
+            const factory = new ChatServiceFactory(contextStub());
+
+            const first = await factory.resolve();
+            const second = await factory.resolve();
+
+            expect([first.transport, second.transport]).toEqual(['gateway', 'gateway']);
+            expect(warning).toHaveBeenCalledTimes(1);
+        });
+
+        it.each([
+            ['auto', 'gateway', 'rejects the send'],
+            ['gateway', 'auto', 'falls back to acpx'],
+            ['auto', 'acpx', 'uses acpx'],
+        ] as const)('follows a transport changed from %s to %s while the dialog was open when declined: %s', async (before, after, _outcome) => {
+            mockSettings.mockReturnValue({ url: REMOTE, transport: before, protocolVersion: 'auto' });
+            warning.mockImplementation(async () => {
+                mockSettings.mockReturnValue({ url: REMOTE, transport: after, protocolVersion: 'auto' });
+                return undefined;
+            });
+            const factory = new ChatServiceFactory(contextStub());
+
+            const send = factory.resolve();
+
+            if (after === 'gateway') {
+                await expect(send).rejects.toThrow('would receive it unencrypted');
+            } else {
+                expect((await send).transport).toBe('acpx');
+            }
+            expect(warning).toHaveBeenCalledTimes(1);
+            expect(mockConnect).not.toHaveBeenCalled();
         });
 
         it('connects without asking when the URL is in openclaw.gateway.allowUnencryptedUrls', async () => {
