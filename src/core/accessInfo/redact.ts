@@ -743,6 +743,9 @@ function normalizeSpecialSchemes(text: string): string {
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
 const PARSER_IGNORED = /[\t\r\n]/g;
 const PARSER_IGNORED_CHAR = /[\t\r\n]/;
+/** A character that ends a line: LF, CR and the line and paragraph separators U+2028 and U+2029, which end a
+ *  line as much as LF does (the outer scan stops at them as whitespace). */
+const LINE_END = /[\n\r\u2028\u2029]/;
 /** A tab or line break serialised (`\\t`, `\\n`, `\\r`, or `\\u0009`, `\\u000a`, `\\u000d`) at any depth, with its
  *  whole backslash run. */
 const SERIALISED_BREAK = /(?<!\\)\\+(?:[tnr]|u000[9aAdD])/g;
@@ -793,12 +796,14 @@ function maskBrokenUserinfo(text: string): string {
  *  fragment is left alone. A URL that does not parse is malformed (`https://alice:p"ass@host/`,
  *  `https://alice:p://ss@host`), and its userinfo becomes `***@`, running to the last `@` before the first
  *  `/`. When a `:` comes before that `/`, the userinfo is a `user:password` whose password may hold `/`,
- *  so it runs to the last `@` before whitespace or a later `://`. A `://` before any `/` can only sit
- *  inside a malformed authority, so the scan goes on past it instead of starting a new URL. Over-matching
- *  hides more, never less. Linear: each character is visited once. */
+ *  so it runs to the last `@` before whitespace or a later `://`; once whitespace is in it too, to the last
+ *  `@` on the line, a later `://` included. A `://` before any `/` can only sit inside a malformed
+ *  authority, so the scan goes on past it instead of starting a new URL. Over-matching hides more, never
+ *  less. Linear: each character is visited once. */
 function maskUserinfo(text: string): string {
     let out = '';
     let copied = 0;
+    let line = { end: 0, lastAt: -1 };
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
         const body = at + 3;
         let slash = -1;
@@ -806,22 +811,46 @@ function maskUserinfo(text: string): string {
         let colonBeforeSlash = false;
         let atBeforeSlash = -1;
         let atInAuthority = -1;
+        let lineAt = -1;
         let lastAt = -1;
         let nested = -1;
         let malformedTail = false;
         const start = schemeStart(text, at);
+        // Every parse of this URL's text goes through one cache keyed by the exact input, so a gate, the host
+        // check and `parsable` never parse the same string twice (R77).
+        let parsed: { input: string; url: URL | undefined } | undefined;
+        const parse = (input: string): URL | undefined => {
+            if (parsed?.input !== input) {
+                let url: URL | undefined;
+                try {
+                    url = new URL(input);
+                } catch {
+                    url = undefined;
+                }
+                parsed = { input, url };
+            }
+            return parsed.url;
+        };
+        /** The URL up to `k`, trailing delimiters dropped, parsed. */
+        const parsePrefix = (k: number): URL | undefined => parse(text.slice(start, k).replace(TRAILING_DELIMITERS, ''));
         let i = body;
         // A URL parser drops tabs and line breaks, so a `user:…` with no `@` yet runs on across them
-        // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break.
-        for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && colonBeforeSlash && lastAt === -1)); i++) {
+        // (`https://alice:PREFIX/part\nSUFFIX@host`): its password may hold both `/` and a break. So does one
+        // whose `@` so far leaves the URL unparsable (`https://alice:P/RE@FIX/part\nSUFFIX@host`), where that
+        // `@` is part of the password too. Whether it parses is asked once per URL, at its first break (R64, R77).
+        let unparsableAtBreak: boolean | undefined;
+        const crossesBreak = (k: number): boolean => colonBeforeSlash && (lastAt === -1
+            || (unparsableAtBreak ??= start !== undefined && parsePrefix(k) === undefined));
+        for (; i < text.length && (!WHITESPACE.test(text[i]) || (PARSER_IGNORED_CHAR.test(text[i]) && crossesBreak(i))); i++) {
             // A `://` inside the authority sits in a malformed one (`alice:p://ss://x@host`): skip its `//`, which
             // is no path, and go on. One after the authority ends (`/`, `?` or `#`) starts the next URL, as in
-            // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…` with no `@`
-            // yet (`alice:P/ss://tail@host`): then the whole run stays one malformed userinfo, so its prefix is
-            // not left behind.
+            // `https://host?redirect=https://…`, unless what came before is an unparsable `user:…`
+            // (`alice:P/ss://tail@host`, or `alice:P/art@SUFFIX/word://tail@host`, whose earlier `@` is part of the
+            // password while the URL does not parse, R77): then the whole run stays one malformed userinfo, so its
+            // prefix is not left behind.
             if (text.startsWith('://', i)) {
                 if (authorityEnd !== -1 && !malformedTail) {
-                    const ambiguous = start !== undefined && colonBeforeSlash && lastAt === -1 && !URL.canParse(text.slice(start, i));
+                    const ambiguous = start !== undefined && colonBeforeSlash && parse(text.slice(start, i)) === undefined;
                     if (!ambiguous) {
                         break;
                     }
@@ -855,10 +884,10 @@ function maskUserinfo(text: string): string {
         // after it on the same stretch makes what follows a `user:password`, and the same run applies.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && lastAt === -1) {
-            const ambiguous = colonBeforeSlash && start !== undefined && !URL.canParse(text.slice(start, i));
+            const ambiguous = colonBeforeSlash && start !== undefined && parse(text.slice(start, i)) === undefined;
             let colonSeen = colonBeforeSlash;
             let j = i;
-            for (; j < text.length && text[j] !== '\r' && text[j] !== '\n'; j++) {
+            for (; j < text.length && !LINE_END.test(text[j]); j++) {
                 if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
                     break;
                 }
@@ -875,12 +904,45 @@ function maskUserinfo(text: string): string {
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
         }
+        // The scan stopped early, on whitespace (`:` appeared after `//` so this is a `user:password` form, not
+        // a `host:port` reference): the password may hold `/`, whitespace and scheme-like text
+        // (`https://alice:PRIVATE/part with word://tail@host`), so it runs to the last `@` on the line, and a
+        // later `://` on that line is part of it rather than a new URL that would leave the prefix behind. An `@`
+        // already seen does not end it while the URL up to the whitespace still does not parse
+        // (`https://alice:PRIVATE/part@middle with SUFFIX@host`): that `@` is part of the password too. A URL that
+        // parses with its `@` (`https://alice:pw@host see bob@example.org`) is complete, and prose after it is left alone.
+        if (i < text.length && colonBeforeSlash && start !== undefined && WHITESPACE.test(text[i])
+            && (lastAt === -1 || parsePrefix(i) === undefined)) {
+            // A `host:port` reference such as `https://host:8080 see /docs` is a well-formed authority and its
+            // `:port` is no userinfo, so prose after it is left alone. Fail toward hiding only when the URL up to
+            // the whitespace has no host — i.e. the text after `//` is a `user:password` run, not a host
+            // reference (`alice:123`, `alice:pw/path`). An authority holds no whitespace, so the text after it
+            // cannot give a URL that parses a host.
+            const prefix = parsePrefix(i);
+            if (prefix !== undefined && prefix.hostname !== '' && prefix.username === '') {
+                continue;
+            }
+            // Each line is scanned for its end and last `@` once, however many URLs it holds (R64).
+            if (i >= line.end) {
+                line = scanLine(text, i);
+            }
+            if (line.lastAt >= body) {
+                i = line.lastAt;
+                // The userinfo runs to that `@`; it is kept apart from `atInAuthority`, which other malformed
+                // URLs must not take as their end (they run to `lastAt`).
+                lineAt = line.lastAt;
+            } else {
+                // No `@` up to the end of the line: nothing on it can be a userinfo, so it is skipped whole.
+                i = line.end;
+            }
+        }
         // A URL that parses has the standard authority, ending at `/`, `?` or `#` (`https://host?e=a@b` has
         // no userinfo). One that does not is malformed: its userinfo runs as far as it can (see above).
         // Only a URL with an `@` can have a userinfo, so only such a URL is parsed.
-        const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined &&
-            URL.canParse(text.slice(start, i).replace(TRAILING_DELIMITERS, ''));
-        const end = spacedAt !== -1 ? spacedAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
+        const parsable = spacedAt === -1 && lastAt !== -1 && start !== undefined && parsePrefix(i) !== undefined;
+        // `end` = where the userinfo ends: the `@` a spaced or same-line run found, else the authority's `@` for
+        // a URL that parses, else, for a malformed one, its last `@` (`user:password`) or the last before a `/`.
+        const end = spacedAt !== -1 ? spacedAt : lineAt !== -1 ? lineAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
         if (start !== undefined && end !== -1 && body >= copied) {
             const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
             out += text.slice(copied, body) + masked;
@@ -889,6 +951,15 @@ function maskUserinfo(text: string): string {
         at = i - 3;
     }
     return out + text.slice(copied);
+}
+
+/** The end of the line holding `i` (a {@link LINE_END} or the end of the text) and the last `@` from `i` to it. */
+function scanLine(text: string, i: number): { end: number; lastAt: number } {
+    let lastAt = -1;
+    for (; i < text.length && !LINE_END.test(text[i]); i++) {
+        lastAt = text[i] === '@' ? i : lastAt;
+    }
+    return { end: i, lastAt };
 }
 
 /** The URLs of any scheme (`https://`, `wss://`, `ssh://`, `git+https://`, …) in free-form text, as
@@ -1093,15 +1164,41 @@ export function redactEndpointText(value: string): string {
 
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
  *  starts (`Bearer`, `token=`, `Basic`). Probes are a plain value and a valid Basic credential, which a plain
- *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value. */
+ *  value would not pass for. A caller that joins the label to a value redacted on its own masks that value.
+ *  A credential the label already holds does not exempt it: `token="OLD" Bearer` still ends at one (R74). */
 function endsAtCredential(label: string): boolean {
     return [' x', ' dXNlcjpwYXNz'].some(tail => consumesTail(label, tail));
 }
 
 /** Whether redacting `text` followed by `tail` masks part of `tail`, or of `text` that `text` alone keeps: a
- *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. */
+ *  credential crosses into what follows. One complete inside `text` (`(token="abc")`) does not. Each part is
+ *  normalised on its own, as {@link joinFormedCredential} does, so a tail only terminal codes or escapes touch,
+ *  or an escape split across the join, is not mistaken for a credential the join formed. */
 function consumesTail(text: string, tail: string): boolean {
-    return redactText(`${text}${tail}`) !== `${redactText(text)}${tail}`;
+    const plainText = normalizeForRedaction(text);
+    const plainTail = normalizeForRedaction(tail);
+    return hidesMore(maskNormalized(`${plainText}${plainTail}`), `${maskNormalized(plainText)}${plainTail}`);
+}
+
+/** Whether masking the parts together hides something that masking them apart does not: the two differ and
+ *  the joined form holds a mask. A join can also mask less (`nearby` + `pass=PRIVATE` makes `nearbypass`, no
+ *  longer a whole sensitive key), which leaves no mask behind and forms no credential. Lengths are not compared:
+ *  re-serialising a URL can lengthen it (`é` becomes `%C3%A9`) by more than a mask saves, or shorten it (a
+ *  default `:443` dropped) without masking anything. Any other difference with a mask fails toward hiding. */
+function hidesMore(joined: string, apart: string): boolean {
+    return joined !== apart && joined.includes('***');
+}
+
+/** `left` and `right` joined and masked, when that masks more than masking each on its own: a credential
+ *  spans the join. Each side is normalised on its own and the join is masked without normalising again, so
+ *  neither a credential a side holds on its own nor an escape or terminal code split across the join
+ *  (`fail\\u00` + `65d`, which only the join would decode to `failed`) is mistaken for one the join formed
+ *  (R74). */
+function joinFormedCredential(left: string, right: string): string | undefined {
+    const plainLeft = normalizeForRedaction(left);
+    const plainRight = normalizeForRedaction(right);
+    const joined = maskNormalized(`${plainLeft}${plainRight}`);
+    return hidesMore(joined, `${maskNormalized(plainLeft)}${maskNormalized(plainRight)}`) ? joined : undefined;
 }
 
 /** A URL authority that ends the text with a `:` and no `@` yet (`https://alice:PRIVATE/`): a userinfo whose
@@ -1132,23 +1229,43 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // Both parts are read as redactText reads them (escapes decoded, terminal codes dropped), so an escaped `@`
     // (`SUFFIX\\u0040host`) still marks a userinfo.
     // Only what actually follows completes a userinfo: a trailing `host:port` with no `@` after it is no password.
-    const userinfoProbe = normalizeForRedaction(`${left}${USERINFO_TAIL}`).replace(PARSER_IGNORED, '');
+    // `left` is normalised on its own (R74), so an unterminated OSC or DCS cannot swallow the tail; only the
+    // special-scheme spelling, which needs the `@` the tail adds, is normalised with it.
+    // `schemeLeft` is `left` with that spelling normalised and its line breaks kept; both userinfo probes use it.
+    const schemeLeft = normalizeSpecialSchemes(`${normalizeForRedaction(left)}${USERINFO_TAIL}`).slice(0, -USERINFO_TAIL.length);
+    const userinfoProbe = `${schemeLeft}${USERINFO_TAIL}`.replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
     const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
     const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
         || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(continuation));
     if (opensUserinfo && consumesTail(authority, USERINFO_TAIL)) {
-        return { left: upToFirstMask(redactText(userinfoProbe)), maskRight: true };
+        return { left: upToFirstMask(maskNormalized(userinfoProbe)), maskRight: true };
+    }
+    // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what
+    // follows. The delimiter already puts whitespace in it, so the `@` may come after more whitespace or lines
+    // of pretty-printed details, an independent credential such as `"token": "OTHER"` included (R76). It is
+    // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
+    // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
+    // The probe reads `schemeLeft`, so `https:alice:PREFIX/` is a userinfo here as it is in the direct probe.
+    const delimited = maskNormalized(`${schemeLeft}${DELIMITED_USERINFO_TAIL}`);
+    if (continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
+        return { left: delimited.startsWith(`${schemeLeft} `) ? left : upToFirstMask(delimited), maskRight: true };
     }
     if (endsAtCredential(left)) {
         return { left, maskRight: true };
     }
-    // A userinfo the display delimiter splits (`https://alice:pass word` + `SUFFIX@host`) needs an `@` in what follows.
-    if (!PASSWORD_HEAD.test(continuation) || !consumesTail(left, DELIMITED_USERINFO_TAIL)) {
-        return { left, maskRight: false };
+    // A credential a side alone does not hold can still be formed by the join itself (issue #43 case 2, where
+    // pretty-printed details put the completing `@` on a later line). This branch judges the whole sides, so
+    // unlike the userinfo branch above it cannot assume `left` is credential-free — the left may carry an
+    // earlier, independent credential, whose own mask must not hide a second credential the join forms. The
+    // same holds for `right`, which may carry a credential of its own next to the rest of the split one. The
+    // first mask in the joined text is an earlier credential's whether it sits in a side or spans the join;
+    // cutting there with upToFirstMask keeps the label that carries it.
+    const joined = left !== '' && right !== '' ? joinFormedCredential(left, right) : undefined;
+    if (joined !== undefined) {
+        return { left: upToFirstMask(joined), maskRight: true };
     }
-    const redacted = redactText(`${left}${DELIMITED_USERINFO_TAIL}`);
-    return { left: redacted.startsWith(`${normalizeForRedaction(left)} `) ? left : upToFirstMask(redacted), maskRight: true };
+    return { left, maskRight: false };
 }
 
 /** Redacted text cut after its first `***`. */
@@ -1165,7 +1282,13 @@ export function redactText(text: string): string {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
-    const plain = normalizeForRedaction(text);
+    return maskNormalized(normalizeForRedaction(text));
+}
+
+/** The masking passes of {@link redactText} over text already in its normalised form, normalising nothing
+ *  again: two parts normalised on their own and then joined are masked as they are, so an escape or terminal
+ *  code split across the join (`fail\\u00` + `65d`) is not decoded by the join. */
+function maskNormalized(plain: string): string {
     const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
     const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
     let out = '';

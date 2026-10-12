@@ -26,7 +26,7 @@ import {
     type AccessInfo,
     type RedactedLabel
 } from '../core/accessInfo';
-import { redactTextAndSecret } from '../core/accessInfo/redact';
+import { redactTextAndSecret, joinBoundary } from '../core/accessInfo/redact';
 
 const newSets = () => ({
     keySources: new Set<string>(),
@@ -651,6 +651,219 @@ describe('redactText', () => {
         }
         // A host and port with a path keeps the next line, an address on it included.
         expect(redactText('see https://host:8080/path\nbob@example.org ok')).toBe('see https://host:8080/path\nbob@example.org ok');
+    });
+
+    it('masks a malformed URL password holding both a `/` and a space (issue #43 case 1)', () => {
+        // The password holds both a `/` and a space, which is no host:port and the authority
+        // does not parse as a whole — userinfo runs to the last `@`, `/` and whitespace included.
+        expect(redactText('clone https://alice:PRIVATE_PREFIX/PRIVATE_SUFFIX with space@host.example/repo failed')).not.toContain('PRIVATE_PREFIX');
+        expect(redactText('clone https://alice:PRIVATE_PREFIX/PRIVATE_SUFFIX with space@host.example/repo failed')).not.toContain('PRIVATE_SUFFIX');
+        expect(redactText('clone https://alice:PRIVATE_PREFIX/PRIVATE_SUFFIX with space@host.example/repo failed')).toContain('***');
+    });
+
+    it('joins a URL userinfo fragment with a continuation in structured error details (issue #43 cases 2, 3)', () => {
+        const message = 'https://alice:PRIVATE_PREFIX/';
+        const details = { reason: 'PRIVATE_SUFFIX@host.example/x' };
+        expect(joinBoundary(message, JSON.stringify(details, null, 2)).maskRight).toBe(true);
+        expect(joinBoundary(message, JSON.stringify(details, null, 2)).left).not.toContain('PRIVATE_PREFIX');
+        // A spaced continuation across the join.
+        const { left: out, maskRight } = joinBoundary('https://alice:PRIVATE_PREFIX/', 'PRIVATE_SUFFIX with space@host.example/x');
+        expect(maskRight).toBe(true);
+        expect(out).toContain('***');
+        expect(out).not.toContain('PRIVATE_PREFIX');
+    });
+
+    it('still joins a credential whose left side terminal codes leave unchanged (issue #43 case 2)', () => {
+        // The left fragment is not the text redaction keeps (a terminal code comes out first), but it holds
+        // no credential of its own: the `@` the details add is still what completes the userinfo across the
+        // join. Raw equality would read the normalisation difference as an existing mask and skip the check.
+        const message = '\u001b[31mhttps://alice:PRIVATE_PREFIX/\u001b[0m';
+        const details = { reason: 'PRIVATE_SUFFIX@host.example/x' };
+        const { left, maskRight } = joinBoundary(message, JSON.stringify(details, null, 2));
+        expect(maskRight).toBe(true);
+        expect(left).not.toContain('PRIVATE_PREFIX');
+    });
+
+    it('joins a userinfo continuation even when the left side already masks an earlier credential (issue #43 case 2)', () => {
+        // The left carries an earlier, independent credential (`token=…`), which masks on its own. The join
+        // still forms a second credential across it, and requiring the whole left side to be credential-free
+        // would skip it. The earlier mask is kept; the joined credential is what the cut covers.
+        const message = 'auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/';
+        const details = { reason: 'PRIVATE_SUFFIX@host.example/x' };
+        const { left, maskRight } = joinBoundary(message, JSON.stringify(details, null, 2));
+        expect(maskRight).toBe(true);
+        expect(left).not.toContain('PRIVATE_PREFIX');
+        expect(left).not.toContain('OLD_SECRET');
+    });
+
+    it('does not mask a credential-free right side that only terminal codes change (issue #43 case 2)', () => {
+        // Redaction leaves the right as its normalised form: the ANSI codes come out but no credential
+        // appears, so the join holds none. Comparing the joined redaction with the raw right would read the
+        // normalisation as a credential, cut the message at its first two characters and mask benign text.
+        const { left, maskRight } = joinBoundary('failed', '\u001b[31mquota exceeded\u001b[0m');
+        expect(maskRight).toBe(false);
+        expect(left).toBe('failed');
+    });
+
+    it('joins a split credential when the right side also holds an independent credential (issue #43 case 2)', () => {
+        // Both sides carry a credential: `right` masks its own `token=OTHER`, so comparing it with its normalised
+        // form says nothing about the join. What the join forms is what the joined redaction masks beyond
+        // each side's own (`password` + `=PRIVATE`, `?tok` + `en=PRIVATE`).
+        for (const [left, right] of [['password', '=PRIVATE token=OTHER'], ['https://host.example/?tok', 'en=PRIVATE token=OTHER']]) {
+            const boundary = joinBoundary(left, right);
+            expect(boundary.maskRight).toBe(true);
+            expect(boundary.left).not.toContain('PRIVATE');
+        }
+        // A userinfo whose `@` comes in pretty-printed details after an independent token, on either side of it.
+        for (const details of [{ token: 'OTHER', reason: 'PRIVATE_SUFFIX@host.example/x' }, { reason: 'PRIVATE_SUFFIX@host.example/x', token: 'OTHER' }]) {
+            const boundary = joinBoundary('https://alice:PRIVATE_PREFIX/', JSON.stringify(details, null, 2));
+            expect(boundary.maskRight).toBe(true);
+            expect(boundary.left).not.toContain('PRIVATE_PREFIX');
+        }
+        // Look-alikes: a `host:port` before a detail with an `@`, and an independent detail credential, stay as they are.
+        expect(joinBoundary('see https://host.example:8080/', JSON.stringify({ reason: 'mail admin@example.com' }, null, 2))).toEqual({ left: 'see https://host.example:8080/', maskRight: false });
+        expect(joinBoundary('request failed', JSON.stringify({ token: 'OTHER' }))).toEqual({ left: 'request failed', maskRight: false });
+    });
+
+    it('does not read an escape or terminal code split across the join as a credential (issue #43 case 2)', () => {
+        // `fail\\u00` + `65d` decodes to `failed` only when the two are normalised together, and the shown label
+        // keeps them apart: each side is normalised on its own, so the join forms nothing and nothing is cut.
+        expect(joinBoundary('fail\\u00', '65d')).toEqual({ left: 'fail\\u00', maskRight: false });
+        expect(joinBoundary('fail\u001b[', '31m quota exceeded')).toEqual({ left: 'fail\u001b[', maskRight: false });
+        expect(formatNamedEntry({ name: 'fail\\u00', url: '65d.example' })).toBe('fail\\u00 (65d.example)');
+    });
+
+    it('joins a special scheme spelled without `//` to a structured or spaced continuation', () => {
+        // `https:alice:PREFIX/` and `https:/alice:PREFIX/` are userinfo to a URL parser; the delimited probe reads
+        // the left with that spelling normalised, as the direct probe does, or the continuation would be shown.
+        for (const name of ['https:alice:PRIVATE_PREFIX/', 'https:/alice:PRIVATE_PREFIX/']) {
+            for (const right of [JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2), 'PRIVATE_SUFFIX with space@host.example/x']) {
+                expect(joinBoundary(name, right)).toEqual({ left: 'https://***', maskRight: true });
+                expect(formatNamedEntry({ name, url: right })).not.toContain('PRIVATE');
+            }
+        }
+    });
+
+    it('keeps the label through its mask when an unterminated OSC or DCS ends the left side', () => {
+        // Normalising the left with the probe's tail would let the open sequence swallow the tail: no mask would
+        // remain and the label would be cut to `ht`. The left is normalised on its own.
+        for (const open of ['\u001b]', '\u001bP']) {
+            for (const right of ['PRIVATE_SUFFIX@host.example/x', 'PRIVATE_SUFFIX with x@host.example/x']) {
+                expect(joinBoundary(`https://alice:PRIVATE_PREFIX/${open}`, right)).toEqual({ left: 'https://***', maskRight: true });
+                expect(formatNamedEntry({ name: `https://alice:PRIVATE_PREFIX/${open}`, url: right })).toBe('https://*** (***)');
+            }
+        }
+    });
+
+    it('masks the value after a label that ends at a credential even when the label holds an earlier one', () => {
+        // The label's own `token="OLD"` (or userinfo) masks on its own; it must not exempt the label from ending
+        // at `Bearer`, or the value joined after it is shown as it is (`token=*** Bearer (PRIVATE)`).
+        for (const name of ['token="OLD" Bearer', 'token=OLD\nBearer', 'https://alice:OLD@host.example/ Bearer']) {
+            const label = formatNamedEntry({ name, url: 'PRIVATE' });
+            expect(label).not.toContain('PRIVATE');
+            expect(label).not.toContain('OLD');
+        }
+    });
+
+    it('masks a malformed URL password holding an earlier `@` and a space up to the last `@` on the line', () => {
+        // The `@` before the space does not end the password while the URL up to the space does not parse
+        // (`alice:PRIVATE_PREFIX` is no host and port): stopping there would leave `middle with PRIVATE_SUFFIX` behind.
+        expect(redactText('https://alice:PRIVATE_PREFIX/part@middle with PRIVATE_SUFFIX@host.example/x')).toBe('https://***@host.example/x');
+        // A tab or line break, which a URL parser drops, does not end it either.
+        for (const brk of ['\t', '\n', '\r\n']) {
+            expect(redactText(`https://alice:PRIVATE_PREFIX/part@middle${brk}PRIVATE_SUFFIX@host.example/x`)).toBe('https://***@host.example/x');
+        }
+        // Look-alikes: a URL that parses with its `@` is complete, and an `@` in a parsable path is no userinfo.
+        expect(redactText('https://alice:pw@host.example/a see bob@example.org')).toBe('https://***:***@host.example/a see bob@example.org');
+        expect(redactText('https://host.example:8080/a@b see bob@example.org')).toBe('https://host.example:8080/a@b see bob@example.org');
+    });
+
+    it('keeps a malformed URL password whole through an earlier `@` and a nested `://` while its URL does not parse', () => {
+        // The `@` after `part` does not end the password, and neither does the `://` after it: stopping at either
+        // would leave `PRIVATE_SUFFIX` visible.
+        expect(redactText('https://alice:PRIVATE/part@PRIVATE_SUFFIX/word://tail with x@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('https://alice:PRIVATE/part@PRIVATE_SUFFIX/word://tail@host.example/x')).toBe('https://***@host.example/x');
+        // Look-alike: a URL that parses with its `@` ends where it ends, and a nested URL in its query is its own.
+        expect(redactText('https://alice:pw@host.example/r?u=https://other.example/x see bob@example.org')).toBe('https://***:***@host.example/r?u=https://other.example/x see bob@example.org');
+    });
+
+    it('joins a split query credential even when re-serialising the URL lengthens the output', () => {
+        // `é` becomes `%C3%A9` when the joined URL is serialised, which outweighs the masked one-character value:
+        // a length comparison would miss the `?token=x` the join forms.
+        expect(joinBoundary('https://host/é?tok', 'en=x')).toEqual({ left: 'https://host/%C3%A9?token=***', maskRight: true });
+        expect(formatNamedEntry({ name: 'https://host/é?tok', url: 'en=x' })).not.toContain('(en=x)');
+        // Look-alike: serialising drops a default port without masking anything, which forms no credential.
+        expect(joinBoundary('https://host.example:443', 'x')).toEqual({ left: 'https://host.example:443', maskRight: false });
+    });
+
+    it('does not cut a label when joining it to the right side masks less than masking them apart', () => {
+        // `pass=PRIVATE` masks on its own, but `nearbypass` is no whole sensitive key: the join hides nothing more,
+        // so it forms no credential, and the label is not cut at a mask that is not there (`ne`).
+        expect(joinBoundary('nearby', 'pass=PRIVATE')).toEqual({ left: 'nearby', maskRight: false });
+        expect(formatNamedEntry({ name: 'nearby', url: 'pass=PRIVATE' })).toBe('nearby (pass=***)');
+    });
+
+    it('ends a malformed URL password run at U+2028 and U+2029 as at a line break', () => {
+        // The run goes to the last `@` on its line; the line and paragraph separators end a line as LF does, so an
+        // email on the next line is no part of the password.
+        for (const brk of ['\u2028', '\u2029', '\n']) {
+            for (const text of [`https://alice:note/part ${brk}mail bob@example.org`, `https://alice:note ${brk}mail bob@example.org`]) {
+                expect(redactText(text)).toBe(text);
+            }
+        }
+    });
+
+    it('parses each URL prefix once across the scan gates, the host check and the userinfo end', () => {
+        // R77: the costly property is asked once per match. Count how often the parser sees one prefix: a
+        // malformed one the whitespace gate, the host check and `parsable` all ask about, and a parsable one
+        // the nested-`://` gate and `parsable` both ask about.
+        const cases = [
+            { prefix: 'https://alice:PRIVATE_PREFIX/part@middle', text: 'https://alice:PRIVATE_PREFIX/part@middle with PRIVATE_SUFFIX@host.example/x', expected: 'https://***@host.example/x' },
+            { prefix: 'https://alice:pw@host.example/r?u=https', text: 'https://alice:pw@host.example/r?u=https://other.example/x', expected: 'https://***:***@host.example/r?u=https://other.example/x' },
+        ];
+        for (const { prefix, text, expected } of cases) {
+            let seen = 0;
+            class CountingURL extends URL {
+                constructor(url: string | URL, base?: string | URL) {
+                    seen += String(url) === prefix ? 1 : 0;
+                    super(url, base);
+                }
+                static override canParse(url: string | URL, base?: string | URL): boolean {
+                    seen += String(url) === prefix ? 1 : 0;
+                    return super.canParse(url, base);
+                }
+            }
+            vi.stubGlobal('URL', CountingURL);
+            try {
+                expect(redactText(text)).toBe(expected);
+            } finally {
+                vi.unstubAllGlobals();
+            }
+            expect(seen).toBe(1);
+        }
+    });
+
+    it('masks a malformed URL up to its last `@` when the same-line run does not apply', () => {
+        // The invalid port makes the URL malformed, and its userinfo runs to its last `@`, not to the first
+        // authority `@`; the quote keeps a later pass from finding that last `@`.
+        expect(redactText('https://alice:pass@middle:bad/path"PRIVATE_SUFFIX@host.example')).not.toContain('PRIVATE_SUFFIX');
+        expect(redactText('https://alice:pass@middle:bad/path"PRIVATE_SUFFIX@host.example')).not.toContain('pass');
+    });
+
+    it('masks a malformed URL password holding a space and scheme-like text up to the last `@` on the line', () => {
+        // `word://` after the space is part of the password, not a new URL: starting one there would leave the
+        // password's prefix visible (`https://alice:PRIVATE_PREFIX/part with word://***@host`).
+        expect(redactText('https://alice:PRIVATE_PREFIX/part with word://tail@host.example/x')).toBe('https://***@host.example/x');
+        expect(redactText('clone https://alice:PRIVATE_PREFIX/part word://x://tail@host.example/x failed')).toBe('clone https://***@host.example/x failed');
+        // Look-alike: a `host:port` reference keeps the prose after it, and a later URL's own userinfo is masked
+        // on its own.
+        expect(redactText('see https://host.example:8080 docs and wss://other@host.example/x')).toBe('see https://host.example:8080 docs and wss://***@host.example/x');
+    });
+
+    it('asserts what formatNamedEntry emits for a credential split across name and endpoint (issue #43 case 3)', () => {
+        // Case 3 is a regression in a caller, not in joinBoundary: the label must not carry the credential.
+        expect(formatNamedEntry({ name: 'https://alice:PRIVATE_PREFIX/', url: 'PRIVATE_SUFFIX@host.example/x' })).not.toContain('PRIVATE');
+        expect(formatNamedEntry({ name: 'Bearer', url: 'PRIVATE_TOKEN' })).not.toContain('PRIVATE');
     });
 
     it('masks a quoted URL query value across a line break up to the next `&` or `#`', () => {
@@ -1428,6 +1641,9 @@ describe('redactText', () => {
             '?a="'.repeat(size / 4),
             'a=b'.repeat(size / 3),
             'a://'.repeat(size / 4),
+            'https://a:b/ x'.repeat(size / 14),
+            'https://a:b/@\n'.repeat(size / 14),
+            'https://a:b/ x://'.repeat(size / 17),
             'https://h.example/?' + Array.from({ length: size / 16 }, (_, i) => `token${i}=x`).join('&'),
             "password='" + '\\\\'.repeat(size / 2),
             "bearer '" + '\\\\'.repeat(size / 2) + '\n',

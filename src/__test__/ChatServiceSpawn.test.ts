@@ -1297,6 +1297,52 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe('https://***: ***');
         });
 
+        it('masks a credential split across the message and details when the message only differs by terminal codes', () => {
+            // The message redaction leaves only terminal codes out, so the raw message is not what redaction
+            // emits; the details still hold the `@` that completes the userinfo across the inserted `: `.
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: '\u001b[31mhttps://alice:PRIVATE_PREFIX/\u001b[0m', data: { details: { reason: 'PRIVATE_SUFFIX@host.example/x' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('keeps benign details whose escape only completes across the message boundary', () => {
+            // `fail\\u00` + `65d` would decode to `failed` only if normalised together; shown apart, it holds nothing.
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'fail\\u00', data: { details: '65d quota exceeded' } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe('fail\\u00: 65d quota exceeded');
+        });
+
+        it('masks the details after a message that ends at a credential label and holds an earlier credential', () => {
+            for (const message of ['token="OLD" Bearer', 'https://alice:OLD@host.example/ Bearer']) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message, data: { details: 'PRIVATE' } } }));
+                child.emit('close', 1, null);
+                const shown = (events[0] as { message: string }).message;
+                expect(shown).not.toContain('PRIVATE');
+                expect(shown).not.toContain('OLD');
+            }
+        });
+
+        it('masks a special-scheme userinfo without `//` split between message and structured details', () => {
+            const { child, events } = start();
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https:alice:PRIVATE_PREFIX/', data: { details: { reason: 'PRIVATE_SUFFIX@host.example/x' } } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).not.toContain('PRIVATE');
+        });
+
+        it('masks a URL userinfo split between message and details when the details also hold an independent token', () => {
+            // The `@` that completes the userinfo comes in the details after or before a `token` of their own,
+            // which masks on its own; that mask must not hide the credential the join forms.
+            for (const details of [{ token: 'OTHER', reason: 'PRIVATE_SUFFIX@host.example/x' }, { reason: 'PRIVATE_SUFFIX@host.example/x', token: 'OTHER' }]) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'https://alice:PRIVATE_PREFIX/', data: { details } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe('https://***: ***');
+            }
+        });
+
         it('masks a URL userinfo split between message and details after an earlier credential or without `//`', () => {
             for (const message of ['auth token=OLD_SECRET https://alice:PRIVATE_PREFIX/', 'auth token=OLD_SECRET\nhttps://alice:PRIVATE_PREFIX/', 'token=OLD_SECRET\nhttps:alice:PRIVATE_PREFIX/', 'https:alice:PRIVATE_PREFIX/']) {
                 const { child, events } = start();
