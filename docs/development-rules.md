@@ -4,7 +4,7 @@ Binding rules for this repository, cited by ID.
 
 ## How to read and cite this file
 
-- **IDs are stable.** Rules are `R1`–`R78` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
+- **IDs are stable.** Rules are `R1`–`R79` and `S1`–`S6`. An ID is never renumbered or reused; a new rule takes the next free `R` number. Merged IDs resolve to the rule that absorbed them: `R18` and `R22` → `R38`, `S5` → `R6`.
 - **Grouped by topic.** Position carries no meaning; cite the ID.
 - **Strength.** **MUST**: breaking it is a defect. **SHOULD**: deviate only with the reason stated in the PR.
 - **Scope.** *General* rules apply to any project; their examples, paths and Check lines are this repository's and are adapted when a rule is copied elsewhere. *claw-code* rules apply to this repository only.
@@ -16,7 +16,7 @@ Binding rules for this repository, cited by ID.
 | [Streaming and event mapping](#streaming-and-event-mapping) | S2, R14, R23, R38 |
 | [Protocols and external contracts](#protocols-and-external-contracts) | R24, R33, R25, R26, R27, R15, R29, R32, R37, R39 |
 | [Untrusted input, secrets and the webview](#untrusted-input-secrets-and-the-webview) | R5, R13, R10, R35, R36, R30, R31, S3, S4 |
-| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77, R78 |
+| [Sanitisers and redaction](#sanitisers-and-redaction) | R61, R62, R63, R64, R65, R66, R73, R74, R75, R76, R77, R78, R79 |
 | [Filesystem and paths](#filesystem-and-paths) | R6, R46 |
 | [Testing](#testing) | R7, R34, R49, R12, R44, R50, R51, R53, R54, R70 |
 | [Cross-platform and CI](#cross-platform-and-ci) | R40, R41, R42, R43, R45, R69 |
@@ -169,6 +169,9 @@ These rules apply R35 to how a sanitiser is built. A sanitiser that guesses boun
 **R78. A new branch keeps its result in its own variable.** *General, MUST.* A branch added to a scanner records what it finds in a variable of its own and never overwrites one that other paths read with another meaning: every path keeps reading what it read before the branch existed. Before a variable is reused, every read of it is listed. In `maskUserinfo`, the same-line run's `@` is `lineAt`, apart from `atInAuthority`, which ends the userinfo of a URL that parses.
 *Check:* ``masks a malformed URL up to its last `@` when the same-line run does not apply`` in `accessInfo.test.ts`; review.
 
+**R79. Stripping a terminal code keeps a final byte that completes a credential label.** *General, MUST.* A CSI or `ESC I+ F` final byte that is a name character is judged on the text left once every other code and control byte is gone, within its run of name characters: it stays when it completes a label there on its own (`ESC[token=…`, `ESC(t NUL oken=…`), not when the run is a label without it (`ESC[0mtoken=…` loses the `m`); if none does alone but all of the run's final bytes together would, all stay. Each run is read once, so stripping stays linear (R64). Over-redaction is accepted, a leak is not: `ESC[Key=value` becomes `Key=***`.
+*Check:* in `accessInfo.test.ts`, `keeps a terminal code's final byte that completes a credential label (issue #56)`, `judges a kept final byte on the text left once every code and control byte is gone (issue #56)`, `still strips a final byte that completes no credential label (issue #56)` and the `\u001b[` inputs of `stays linear on large adversarial input`; review.
+
 ## Filesystem and paths
 
 **R6. Filesystem checklist.** *General, MUST.* In order:
@@ -320,6 +323,7 @@ A platform that cannot provide the no-follow open or the handle-path check fails
 - A join probe that wants the continuation at the start of the right part — R76
 - A sanitiser gate keyed on a proxy (`no @ yet`) instead of the property it needs (`does not parse`) — R77
 - A new branch that overwrites a variable other paths read — R78
+- A terminal code stripped with a letter a credential label needs — R79
 - A sanitiser fix that over-redacts benign text — R65
 - A rule checker that misses a syntactic form or flags safe code — R67
 - A CI leg that passes without running its tools — R69
@@ -332,11 +336,13 @@ Where the code does not meet a rule yet. Fixing one removes its line.
 - **R56:** C2a in the [diff design](design/diff-and-checkpoints.md) is about 420 words and is due to be split into sub-IDs.
 - **R61:** in `redact.ts`, an unclosed quoted value still ends at a space; a URL that `new URL()` rejects has only its userinfo and sensitive query values masked (`redactUrl`), not the whole form; sensitive names are split across `SENSITIVE_PARAM`, `SENSITIVE_KEY` and `CREDENTIAL_HEADER_KEY` and matched as substrings, so `key` also matches `monkey`.
 - **R62:** `redact.ts` matches escape layers case by case; the single encoded-variant table is the target.
-- **R62:** a terminal sequence whose final byte starts a credential label takes that letter with it when terminal codes are stripped, so the label is no longer seen: `redactText('\u001b[token=PRIVATE')` returns `oken=PRIVATE`. Stripping runs before masking; issue #43 (open question 4) tracks it.
+- **R62:** a terminal code inside an escape joins the escape's two halves into a different one once it is stripped, as escapes are decoded both before and after stripping: `\u007 ESC[0m ass=PRIVATE` becomes `zss=PRIVATE` and `https://h/?%7 ESC(0 ass=PRIVATE` keeps its value, where `\u0070ass` and `%70ass` read as `pass`. The same holds on `main`; issue #43 (open question 9) tracks it.
 - **R63:** `namedEntryLabel` in `format.ts` judges a split credential on the raw parts with `joinBoundary` and does not redact the assembled label.
 - **R64:** `redactText` has no size limit; only the acpx stderr path withholds oversized text (`STDERR_WITHHELD`).
 - **R65:** `maskUserinfo`'s spaced-password scan reads `https://host:8080 see bob@example.org` as a userinfo and masks it (`https://***@example.org`), and `joinBoundary` inherits this for a `host:port` message whose details hold an email. The section is under R8's stop criterion; issue #43 tracks it until the rewrite.
 - **R65:** `hidesMore` in `redact.ts` takes any `***` in the joined output as a mask the join produced, so input that already holds a literal `***` can read as a join-formed credential: `formatNamedEntry({ name: '*** nearby', url: 'pass=PRIVATE' })` returns `*** (***)`, not `*** nearby (pass=***)`. Userinfo and URL masks are emitted as literal `***`, not as `MASK`, so telling them apart needs mask provenance in `maskUserinfo`, which is under R8's stop criterion; issue #43 tracks it.
 - **R65:** `maskAmbiguousNetworkUserinfo` ends a line only at LF and CR, so a network-path password run crosses U+2028 and U+2029 and masks an email on the next line: `see //alice:note/part \u2028mail bob@example.org` becomes `see //***@example.org`. The `https://` scans end at `LINE_END`; the network-path code is under R8's stop criterion, and issue #43 (open question 7) tracks it.
+- **R79:** a label that needs some of a run's stripped final bytes but not the others is not kept: `p ESC(a ESC(s ESC(s ESC(x=PRIVATE` becomes `p=PRIVATE`, since no byte completes `pass` alone and `passx` holds no bare `pass`. `keepRunLabelBytes` had findings in three consecutive review rounds of PR #59, so under R8 the case is left open; issue #43 (open question 8) tracks it.
+- **R79:** `isLabel` judges a run of name characters without the separator after it, so a `bearer` or `basic` ending the run counts as a label even before `=`, where the Bearer and Basic passes do not apply, and a final byte that would form a key label is dropped: `toke ESC(n-bearer=PRIVATE` becomes `toke-bearer=PRIVATE` (the same on `main`). Under R8, issue #43 (open question 10) tracks it.
 - **R66:** `errorMessage` still passes non-string primitives through `String()` (`uses String() for other values` expects `errorMessage(42)` to be `'42'`).
 - **R67:** `scripts/check-rules.mjs` is still a symbol-resolving denylist for R10, R36 and R43.

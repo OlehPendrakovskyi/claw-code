@@ -369,9 +369,10 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
  *  does `ESC` and a digit (`ESC7`, `ESC8`). A final byte `:`-`?` stays with the text as a delimiter
  *  (`token ESC =value`), and so does a letter right after `ESC`, which may begin a label (`ESCtoken=value`);
  *  only the `ESC` goes. Serialised, an intermediate `"` and a final `\\` are left alone, as each belongs to the
- *  JSON around it. */
+ *  JSON around it. Each final byte is captured (a control string has none) and marked for {@link keepLabelBytes},
+ *  which keeps it when it completes a credential label (R79), so `ESC(token=…` keeps its `t`. */
 // eslint-disable-next-line no-control-regex
-const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*[@-~]|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?|\u001b(?:[ -/]+[0-9@-~]|[0-9])|(?<!\\)\\+(?:u001b|x1b)(?:[ !#-/]+[0-9@-[\]-~]|[0-9])/gi;
+const TERMINAL_CODE = /(?:\u001b\[|\u009b)[0-?]*[ -/]*([@-~])|(?:\u001b[\]PX^_]|[\u009d\u0090\u0098\u009e\u009f])[^\u0007\u001b\u009c\r\n]*(?:\u0007|\u001b\\|\u009c)?|(?<!\\)\\+(?:(?:u001b|x1b)\[|u009b|x9b)[0-?]*[ -/]*([@-~])|(?<!\\)\\+(?:(?:u001b|x1b)[\]PX^_]|u009d|x9d|u0090|x90|u0098|x98|u009e|x9e|u009f|x9f)[^\\"\r\n]*(?:\\+(?:u0007|x07|u009c|x9c)|\\+(?:u001b|x1b)\\+)?|\u001b(?:[ -/]+([0-9@-~])|([0-9]))|(?<!\\)\\+(?:u001b|x1b)(?:[ !#-/]+([0-9@-[\]-~])|([0-9]))/gi;
 
 /** A control byte other than a tab or a line ending (`NUL`, `BS`, `DEL`, a lone `ESC`, a C1 control), raw or serialised
  *  as `\\u0000` or `\\x00` at any depth, with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -383,7 +384,103 @@ const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!
 export function stripTerminalCodes(text: string): string {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
-    return stripCsiSequences(decodeNameEscapes(text)).replace(TERMINAL_CODE, '').replace(CONTROL_BYTE, '');
+    const stripped = stripCsiSequences(decodeNameEscapes(text.replace(FINAL_BYTE_MARKS, '')))
+        .replace(TERMINAL_CODE, (
+            _match: string,
+            csi: string | undefined,
+            serialisedCsi: string | undefined,
+            escape: string | undefined,
+            escapeDigit: string | undefined,
+            serialisedEscape: string | undefined,
+            serialisedEscapeDigit: string | undefined
+        ) => markedFinalByte(csi ?? serialisedCsi ?? escape ?? escapeDigit ?? serialisedEscape ?? serialisedEscapeDigit ?? ''))
+        .replace(CONTROL_BYTE, '');
+    return stripped.includes(FINAL_BYTE_MARK) ? keepLabelBytes(stripped) : stripped;
+}
+
+/** Marks a stripped sequence's final byte that is a name character, which {@link keepLabelBytes} keeps or drops
+ *  once every other terminal code and control byte is gone (R79). A Unicode noncharacter, reserved for internal
+ *  use: {@link stripTerminalCodes} removes it from its input first, so no input can pose as a mark. */
+const FINAL_BYTE_MARK = '﷐';
+const FINAL_BYTE_MARKS = /﷐/g;
+/** The longest credential label (`authorization`): a label that one final byte completes lies within this many
+ *  name characters of it on either side, so the check per byte reads no further (R64). */
+const LABEL_WINDOW = 13;
+/** Words that open a credential with no key separator after them, as the Bearer and Basic passes read them: a
+ *  whole word that ends its run of name characters, so `bearertoke` holds none and its `n` is still judged. */
+const LABEL_WORD = /(?<![A-Za-z0-9_])(?:bearer|basic)$/i;
+
+/** Whether a name holds a credential label any masking pass reads: a sensitive key, a credential header, or a
+ *  word such as `Bearer`. */
+function isLabel(name: string): boolean {
+    return SENSITIVE_KEY.test(name) || CREDENTIAL_HEADER_KEY.test(name) || LABEL_WORD.test(name);
+}
+
+/** A stripped sequence's final byte, marked when it is a name character, otherwise nothing. */
+function markedFinalByte(final: string): string {
+    return final !== '' && NAME_CHAR.test(final) ? FINAL_BYTE_MARK + final : '';
+}
+
+/** Stripped text with each marked final byte kept or dropped (R79), decided on the final text, so a byte that
+ *  another code or a control byte stood next to is judged with the name around it (`ESC(t NUL oken`). Each run
+ *  of name characters holding marked bytes is read once. Linear: a run is tested whole a constant number of
+ *  times, and each marked byte within {@link LABEL_WINDOW}. */
+function keepLabelBytes(text: string): string {
+    let out = '';
+    let i = 0;
+    while (i < text.length) {
+        let end = i;
+        let marked = false;
+        while (end < text.length) {
+            if (text[end] === FINAL_BYTE_MARK && NAME_CHAR.test(text[end + 1] ?? '')) {
+                marked = true;
+                end += 2;
+            } else if (NAME_CHAR.test(text[end])) {
+                end++;
+            } else {
+                break;
+            }
+        }
+        if (end === i) {
+            out += text[i] === FINAL_BYTE_MARK ? '' : text[i];
+            i++;
+            continue;
+        }
+        const run = text.slice(i, end);
+        out += marked ? keepRunLabelBytes(run) : run;
+        i = end;
+    }
+    return out;
+}
+
+/** A run of name characters with its marked final bytes resolved. With none kept, a run that is already a label
+ *  stays so. Otherwise each byte that completes a label with the name characters around it stays (`t` in
+ *  `ESC[0m ESC[token`, but not the `m`); and if that keeps no label while keeping every byte would, every byte
+ *  stays. So the output holds a label whenever one of these readings does. A label that needs some of the marked
+ *  bytes but not the others is not found (`p ESC(a ESC(s ESC(s ESC(x`): R79's known gap, issue #43. */
+function keepRunLabelBytes(run: string): string {
+    let bare = '';
+    const marked: Array<{ at: number; byte: string }> = [];
+    for (let i = 0; i < run.length; i++) {
+        if (run[i] === FINAL_BYTE_MARK) {
+            marked.push({ at: bare.length, byte: run[++i] });
+        } else {
+            bare += run[i];
+        }
+    }
+    if (isLabel(bare)) {
+        return bare;
+    }
+    let kept = '';
+    let copied = 0;
+    for (const { at, byte } of marked) {
+        const window = bare.slice(Math.max(0, at - LABEL_WINDOW + 1), at) + byte + bare.slice(at, at + LABEL_WINDOW - 1);
+        kept += bare.slice(copied, at) + (isLabel(window) ? byte : '');
+        copied = at;
+    }
+    kept += bare.slice(copied);
+    const all = run.replace(FINAL_BYTE_MARKS, '');
+    return isLabel(kept) || !isLabel(all) ? kept : all;
 }
 
 /** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -396,6 +493,8 @@ const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
  *  `to[0mken` with the name hidden. A byte that fits no sequence ends every open one, which is dropped with
  *  its parameters, so `to\e[0\0ken` is `token` too. The byte stays, unless it opens a run of tabs and line
  *  breaks: that run goes too (`to\e[\r\nken` is `token`), as it would otherwise split the name.
+ *  An outermost sequence's final byte that is a name character is marked for {@link keepLabelBytes} (R79),
+ *  so `\e[token` can stay `token`, not `oken`.
  *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
  *  sequence's bytes are dropped once. */
 function stripCsiSequences(text: string): string {
@@ -431,6 +530,11 @@ function stripCsiSequences(text: string): string {
         } else if (char >= '@' && char <= '~') {
             out.length = sequence.at;
             open.pop();
+            // The final byte of an outermost sequence is marked for keepLabelBytes (R79); inside an outer
+            // sequence it is one of that sequence's bytes.
+            if (open.length === 0) {
+                out.push(markedFinalByte(char));
+            }
         } else {
             out.length = open[0].at;
             open.length = 0;

@@ -26,7 +26,7 @@ import {
     type AccessInfo,
     type RedactedLabel
 } from '../core/accessInfo';
-import { redactTextAndSecret, joinBoundary } from '../core/accessInfo/redact';
+import { redactTextAndSecret, joinBoundary, stripTerminalCodes } from '../core/accessInfo/redact';
 
 const newSets = () => ({
     keySources: new Set<string>(),
@@ -921,6 +921,56 @@ describe('redactText', () => {
         expect(redactText('to\u001b[\u001b[0\u0000ken=PRIVATE_VALUE')).toBe('token=***');
     });
 
+    it('keeps a terminal code\'s final byte that completes a credential label (issue #56)', () => {
+        // `ESC[t` is a whole CSI sequence: stripping all of it would take the label's first letter.
+        expect(redactText('\u001b[token=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b[pass=PRIVATE_VALUE')).toBe('pass=***');
+        expect(redactText('\u001b[bearer PRIVATE_VALUE')).toBe('bearer ***');
+        expect(redactText('\u001b(token=PRIVATE_VALUE')).toBe('token=***');
+        // The final byte may end the label as well as start it.
+        expect(redactText('toke\u001b[n=PRIVATE_VALUE')).toBe('token=***');
+        const leaks = ['\u001b[token=PRIVATE_VALUE', '\u001b(token=PRIVATE_VALUE', 'toke\u001b[n=PRIVATE_VALUE', '\u001b[bearer PRIVATE_VALUE'];
+        for (const leak of leaks) {
+            for (const escape of ['\\u001b', '\\x1b']) {
+                expect(redactText(leak.replace('\u001b', escape))).toBe(redactText(leak));
+            }
+            expect(redactText(JSON.stringify({ e: leak }))).not.toContain('PRIVATE');
+            expect(redactText(JSON.stringify({ d: JSON.stringify({ e: leak }) }))).not.toContain('PRIVATE');
+            expect(redactText(JSON.stringify({ e: leak }, null, 2))).not.toContain('PRIVATE');
+        }
+    });
+
+    it('judges a kept final byte on the text left once every code and control byte is gone (issue #56)', () => {
+        // Another code or a control byte between the final byte and the rest of the label.
+        expect(redactText('\u001b(t\u0000oken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('tok\u0000\u001b(en=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b[t\u001b[0moken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b(t\u001b(Boken=PRIVATE_VALUE')).toBe('token=***');
+        // However many codes stand between them.
+        expect(redactText(`toke${'\u001b[0m'.repeat(26)}\u001b[n=PRIVATE_VALUE`)).toBe('token=***');
+        // A byte that a kept neighbour would hide (`mpass` holds no bare `pass`) is judged on its own.
+        expect(redactText('\u001b[0m\u001b[pass=PRIVATE_VALUE')).toBe('pass=***');
+        // A label that needs two final bytes keeps both.
+        expect(redactText('\u001b[t\u001b[oken=PRIVATE_VALUE')).toBe('token=***');
+        // `bearer` and `basic` label only as a whole word ending the run, so inside a name they hide no byte.
+        expect(redactText('bearertoke\u001b[n=PRIVATE_VALUE')).toBe('bearertoken=***');
+        expect(redactText('basictoke\u001b[n=PRIVATE_VALUE')).toBe('basictoken=***');
+        expect(redactText('x.bearertoke\u001b[n=PRIVATE_VALUE')).toBe('x.bearertoken=***');
+    });
+
+    it('drops the internal final-byte mark from the input (issue #56)', () => {
+        expect(stripTerminalCodes('name\ufdd0=value')).toBe('name=value');
+        expect(redactText('a\ufdd0token=PRIVATE_VALUE')).toBe('atoken=***');
+    });
+
+    it('still strips a final byte that completes no credential label (issue #56)', () => {
+        expect(redactText('\u001b[1mname=value')).toBe('name=value');
+        expect(redactText('\u001b[0mtoken=PRIVATE_VALUE')).toBe('token=***');
+        expect(redactText('\u001b[2Jpassenger=1')).toBe('passenger=1');
+        expect(redactText('\u001b[Hbypass=1')).toBe('bypass=1');
+        expect(redactText('\u001b(Bname=value')).toBe('name=value');
+    });
+
     it('redacts URL userinfo inside free-form text', () => {
         expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
             'failed: https://***:***@host.example/repo.git (exit 1)'
@@ -1653,6 +1703,11 @@ describe('redactText', () => {
             'bearer' + '\\\\'.repeat(size / 2) + 'x',
             '\u009d'.repeat(size / 2),
             '\u001b['.repeat(size / 2),
+            '\u001b[t'.repeat(size / 3) + 'oken=x',
+            'a\u001b[b'.repeat(size / 4),
+            'a\u001b[b\u0000'.repeat(size / 5),
+            'x\u001b[0m'.repeat(size / 5) + '\u001b[t=',
+            '\\u001b(t'.repeat(size / 8) + 'oken=x',
             '\u001b[1'.repeat(size / 6) + 'm'.repeat(size / 6),
             '\\u001b['.repeat(size / 7) + '0m',
             'a&password='.repeat(size / 11),
