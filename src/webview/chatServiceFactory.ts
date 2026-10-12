@@ -223,12 +223,11 @@ export class ChatServiceFactory {
     if (!this.gatewayService) {
       return;
     }
-    // A URL that may not receive the token unencrypted parks the client before anything is awaited:
-    // planTransport() leaves the client alone when SecretStorage fails, which must not keep it connected.
-    const settings = getGatewaySettings();
-    if (settings.transport !== 'acpx' && isValidGatewayUrl(settings.url) && !this.isCleartextAllowed(settings.url)) {
+    // SEC-1 invariant: an unparked client never points at a URL that may not receive the token unencrypted.
+    // Checked on the endpoint the client uses, before anything is awaited, because planTransport() leaves the
+    // client alone when SecretStorage fails, and the settings may already name another URL.
+    if (!this.gatewaySuspended && !this.isCleartextAllowed(this.cachedUrl)) {
       this.suspendGateway('identity');
-      return;
     }
     await this.waitForMigration();
     try {
