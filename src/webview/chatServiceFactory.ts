@@ -81,7 +81,8 @@ export class ChatServiceFactory {
   /** Suspended clients hold no runs, so switching away again must not
    *  re-invalidate threads on every acpx send. */
   private gatewaySuspended = false;
-  /** Remote `ws://` URLs the user let receive the token unencrypted in this window (SEC-1). */
+  /** Remote `ws://` URLs the user let receive the token unencrypted in this window only (SEC-1). An
+   *  "always" answer lives in `openclaw.gateway.allowUnencryptedUrls` instead, so removing it there revokes it. */
   private readonly cleartextConfirmedUrls = new Set<string>();
   /** The open confirmation per URL, so sends that arrive while it is open ask once. */
   private readonly cleartextPrompts = new Map<string, Promise<boolean>>();
@@ -172,13 +173,15 @@ export class ChatServiceFactory {
     if (!this.isCleartextAllowed(plan.url)) {
       const confirmed = await this.confirmCleartext(plan.url);
       // Settings or the token may have changed while the dialog was open: plan again, with the answer
-      // recorded, unless the user declined the URL the settings still name.
-      if (confirmed || getGatewaySettings().url !== plan.url) {
+      // recorded, unless the user declined the URL the settings still name. A declined send follows the
+      // transport mode set now, not the one read before the dialog.
+      const current = getGatewaySettings();
+      if (confirmed || current.url !== plan.url || current.transport === 'acpx') {
         return this.resolve(existing);
       }
       // Declined: the token is not sent, and no client keeps a socket for it.
       this.suspendGateway('identity');
-      if (plan.transport === 'gateway') {
+      if (current.transport === 'gateway') {
         this.onStatus?.('gateway', false, null);
         throw new Error(`The gateway token was not sent: ${new URL(plan.url).host} would receive it unencrypted over ws://.`);
       }
@@ -354,17 +357,22 @@ export class ChatServiceFactory {
       CONNECT_ONCE,
       ALWAYS_ALLOW
     );
-    if (choice !== CONNECT_ONCE && choice !== ALWAYS_ALLOW) {
-      return false;
-    }
-    this.cleartextConfirmedUrls.add(url);
     if (choice === ALWAYS_ALLOW) {
       try {
         await allowUnencryptedUrl(url);
       } catch (err) {
         log.warn(`could not save openclaw.gateway.allowUnencryptedUrls: ${errorMessage(err)}`);
       }
+      // Saved, the setting holds the answer, so removing the URL there revokes it. Not saved, or saved where
+      // it does not take effect, the answer still holds for this window, as "Connect This Time" would.
+      if (getUnencryptedAllowedUrls().includes(url)) {
+        return true;
+      }
     }
+    if (choice !== CONNECT_ONCE && choice !== ALWAYS_ALLOW) {
+      return false;
+    }
+    this.cleartextConfirmedUrls.add(url);
     return true;
   }
 
