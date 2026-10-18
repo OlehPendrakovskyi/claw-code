@@ -647,62 +647,55 @@ const SCHEME_CHAR = /[a-z0-9+.-]/i;
 const LETTER = /[a-z]/i;
 /** Characters that end a URL in free-form text. */
 const URL_TERMINATOR = /[\s"'`<>]/;
-/** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
- *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
- *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
- *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, or a `/`
- *  (`//alice:p/ss@host`, running to the last `@` before whitespace or a character that could start another
- *  reference). This fails toward hiding, so a `//host:port/…@…` can be over-masked. A password holding
- *  whitespace is left to {@link maskAmbiguousNetworkUserinfo}, which alone decides by U1 and U2 how far it runs.
- *  Linear: no match crosses whitespace or a character that could start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^\s"'`<>([{=,]*@))/g;
-const WHITESPACE = /\s/;
-/** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
-const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
-/** A `user:` right after `//`, or a bracketed IPv6 host's first `:`. */
-const USERINFO_START = /[^\s/@:"'`<>]*:/y;
-/** An authority that ends with a port. */
-const PORT_END = /:\d+$/;
-/** The scheme a network-path reference is parsed with: it has none of its own, and `http:` is how a browser or
- *  a client resolving it against a web base reads it. */
-const NETWORK_PATH_SCHEME = 'http:';
+/** An authority that is exactly a host name or a bracketed IPv6 literal, a `:` and a port's digits: the only shape
+ *  U2 applies to. Its characters hold no `/`, `?`, `#`, `\\`, quote or whitespace, so it cannot run into a path,
+ *  query or fragment (`alice:123?PRIVATE`), and each match ends at the first character outside it. */
+const HOST_PORT_SOURCE = String.raw`(?:[A-Za-z0-9._~%!$&*+,;=-]+|\[[0-9A-Fa-f:.]+\]):\d+`;
+const HOST_PORT = new RegExp(`^${HOST_PORT_SOURCE}$`);
+/** Whitespace that does not end a line, which separates a port from the next word (U2). */
+const INLINE_SPACE_SOURCE = String.raw`[^\S\r\n\u2028\u2029]`;
+const INLINE_SPACE = new RegExp(INLINE_SPACE_SOURCE);
 
-/** How a URL parser reads an authority that holds no `@`, which U1 and U2 decide by. */
-type AuthorityKind = 'host-port' | 'host' | 'unparsable';
-
-/** What `url`, the parse of a URL whose authority is `authority` (the text after `//` up to whitespace or a `/`),
- *  says that authority is: a host and an explicit port (`host:8080`, `[::1]:8080`, `host:443` though it is the
- *  default), a host alone (`example.com:`, `[::1]`), or neither, so `alice:pass`, `alice:!` and `alice:99999`,
- *  whose digit run is no valid port, are unparsable. Nothing is trimmed first: punctuation after the port may be
- *  the start of a password (`alice:!`), so `host:8080:` is unparsable too. The one place U1 and U2 are decided,
- *  for both URL forms. */
-function authorityKind(url: URL | undefined, authority: string): AuthorityKind {
-    if (url === undefined || url.username !== '' || url.password !== '' || url.hostname === '') {
-        return 'unparsable';
-    }
-    return PORT_END.test(authority) ? 'host-port' : 'host';
-}
-
-/** `authority` parsed under `scheme`. The scheme matters: a non-special one (`ssh:`) takes hosts that `http:`
- *  rejects (`alice%20smith`). */
-function parseAuthority(scheme: string, authority: string): URL | undefined {
+/** A network-path authority parsed as `http:` reads it: it has no scheme of its own. */
+function parseNetworkPath(authority: string): URL | undefined {
     try {
-        return new URL(`${scheme}//${authority}`);
+        return new URL(`http://${authority}`);
     } catch {
         return undefined;
     }
 }
 
-/** Whitespace that does not end a line, which separates a port from the next word (U2). */
-function isInlineSpace(char: string | undefined): boolean {
-    return char !== undefined && WHITESPACE.test(char) && !LINE_END.test(char);
+/** Whether `authority` is a host and an explicit port that `url`, the URL parsed up to it under its own scheme,
+ *  confirms (U2): exactly {@link HOST_PORT}, with a host, no userinfo and a valid port, so `alice:99999` is none.
+ *  Any other authority keeps the masking it had before U2. */
+function isHostPort(authority: string, url: URL | undefined): boolean {
+    return HOST_PORT.test(authority) && url !== undefined && url.hostname !== '' && url.username === '' && url.password === '';
 }
+
+/** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
+ *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
+ *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
+ *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
+ *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}), or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  whitespace or a character that could start another reference). This fails toward hiding, so a
+ *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
+ *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line end or a character that could
+ *  start another match. */
+const NETWORK_PATH_USERINFO = new RegExp(String.raw`(?<![^\s"'${'`'}<>([{=,])\/\/(?:[^\s/"'${'`'}<>]*@|(?=[^\s/@:"'${'`'}<>]*:)(?:[^\s/]*@|(?!${HOST_PORT_SOURCE}${INLINE_SPACE_SOURCE})[^/\r\n\u2028\u2029]*@|[^\s"'${'`'}<>([{=,]*@))`, 'g');
+const WHITESPACE = /\s/;
+/** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
+const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
+/** A `user:password-start` right after `//`, whose second part holds a non-digit, so it is no `host:port`. */
+const NON_PORT_USERINFO = /[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@]/y;
+/** A `user:digits` right after `//` that reads as a host and port, followed by a space or tab. */
+const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
+/** Exactly a host and a port right after `//` ({@link HOST_PORT_SOURCE}), then whitespace other than a line end. */
+const HOST_PORT_THEN_SPACE = new RegExp(`(${HOST_PORT_SOURCE})${INLINE_SPACE_SOURCE}+`, 'y');
 
 /** Mask a network-path userinfo whose password holds both spaces and `/`
  *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
- *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference, when the authority after
- *  `//` does not parse as a host and port (U1, `//alice:pass`, `//alice:99999`). One that does is followed by a
- *  password only within the next word (U2). Linear: a scan stops where the next reference could start, and the search resumes there. */
+ *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference. It applies only where what follows `user:` cannot be a
+ *  port. Linear: a scan stops where the next reference could start, and the search resumes there. */
 function maskAmbiguousNetworkUserinfo(text: string): string {
     let out = '';
     let copied = 0;
@@ -712,37 +705,50 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
         if ((at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) || at < copied) {
             continue;
         }
-        USERINFO_START.lastIndex = at + 2;
-        if (!USERINFO_START.test(text)) {
+        HOST_PORT_THEN_SPACE.lastIndex = at + 2;
+        const hostPort = HOST_PORT_THEN_SPACE.exec(text);
+        if (hostPort !== null && isHostPort(hostPort[1], parseNetworkPath(hostPort[1]))) {
+            // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`. The password goes on only within the
+            // next word, which holds its `@` (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@`
+            // in a later word is prose. The word ends at another reference's `//` (`//public:8080 //alice:…`): the
+            // outer loop takes that one up from there.
+            let runAt = -1;
+            let k = HOST_PORT_THEN_SPACE.lastIndex;
+            for (; k < text.length && !WHITESPACE.test(text[k]) && !(text.startsWith('//', k) && NETWORK_PATH_BOUNDARY.test(text[k - 1])); k++) {
+                runAt = text[k] === '@' ? k : runAt;
+            }
+            if (runAt !== -1) {
+                out += `${text.slice(copied, at + 2)}***@`;
+                copied = runAt + 1;
+            }
+            from = Math.max(from, runAt !== -1 ? runAt + 1 : k);
             continue;
         }
-        let authorityEnd = at + 2;
-        while (authorityEnd < text.length && !WHITESPACE.test(text[authorityEnd]) && text[authorityEnd] !== '/' && text[authorityEnd] !== '@') {
-            authorityEnd++;
-        }
-        const authority = text.slice(at + 2, authorityEnd);
-        const kind = authorityKind(parseAuthority(NETWORK_PATH_SCHEME, authority), authority);
-        if (kind === 'host') {
-            // `//example.com: docs/a@b`: a host with no port holds no userinfo, and prose follows it.
-            continue;
-        }
-        if (kind === 'host-port') {
-            // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`, a prefix that parses as a host and
-            // port, then whitespace other than a line end. The password goes on only within the next word, which
-            // holds its `@` (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@` in a later word
-            // is prose. A host and port followed by a `/` or nothing is no userinfo.
-            if (!isInlineSpace(text[authorityEnd])) {
+        NON_PORT_USERINFO.lastIndex = at + 2;
+        // An exact host and digits that is no valid host and port (`//alice:99999 …`) gets the same-line run below
+        // (U1): NETWORK_PATH_USERINFO leaves every such shape to this function.
+        if (hostPort === null && !NON_PORT_USERINFO.test(text)) {
+            // `//alice:123 PRIVATE/part@host`: a prefix that reads as a host and port, then a space. The run
+            // from the first `/` after it to whitespace is still the password when it holds an `@`, as for
+            // `https://` (maskUserinfo); `//host:8080 see /docs` holds none and keeps its text.
+            PORT_THEN_SPACE.lastIndex = at + 2;
+            if (!PORT_THEN_SPACE.test(text)) {
                 continue;
             }
-            // The word ends at another reference's `//` (`//public:8080 //alice:…`, `/docs,//alice:…`): the outer
-            // loop takes that one up from there.
+            // Neither scan crosses another reference's `//` (`//public:8080 then //alice:…`, `/docs,//alice:…`):
+            // the outer loop takes that one up from there.
             const startsReference = (j: number) => text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]);
-            let runAt = -1;
-            let k = authorityEnd;
-            while (isInlineSpace(text[k])) {
-                k++;
+            let slash = PORT_THEN_SPACE.lastIndex;
+            while (slash < text.length && text[slash] !== '/' && !LINE_END.test(text[slash])) {
+                slash++;
             }
-            for (; k < text.length && !WHITESPACE.test(text[k]) && !startsReference(k); k++) {
+            if (startsReference(slash)) {
+                from = slash;
+                continue;
+            }
+            let runAt = -1;
+            let k = slash;
+            for (; text[slash] === '/' && k < text.length && !WHITESPACE.test(text[k]) && !(k > slash && startsReference(k)); k++) {
                 runAt = text[k] === '@' ? k : runAt;
             }
             if (runAt !== -1) {
@@ -1029,34 +1035,38 @@ function maskUserinfo(text: string): string {
         // A username may hold whitespace too (`https://alice smith:pass@host`): with no `:` before the space, one
         // after it on the same stretch makes what follows a `user:password`, and the same run applies.
         let spacedAt = -1;
-        // How a parser reads the authority before the whitespace, decided once (U1, U2) and reused below.
-        let kind: AuthorityKind | undefined;
-        if (i < text.length && slash === -1 && lastAt === -1) {
-            const prefix = start !== undefined ? parse(text.slice(start, i)) : undefined;
-            const ambiguous = colonBeforeSlash && start !== undefined && prefix === undefined;
+        const hostPort = i < text.length && slash === -1 && lastAt === -1 && start !== undefined
+            && isHostPort(text.slice(body, i), parse(text.slice(start, i)));
+        if (hostPort) {
+            // U2: `https://alice:123 PRIVATE@host` or `https://host:8080 see bob@example.org`, an authority that is
+            // exactly a host and a valid port, then whitespace. The password goes on only within the next word, which
+            // holds its `@` (`PRIVATE/part@host` included); an `@` in a later word is prose, and the host and port
+            // exemption below leaves it alone.
             let j = i;
-            if (colonBeforeSlash && !ambiguous) {
-                kind = authorityKind(prefix, text.slice(body, i));
-                // U2: the prefix parses as a host and port (`https://alice:123 PRIVATE@host` or
-                // `https://host:8080 see bob@example.org`), so a password goes on only within the next word, which
-                // holds its `@` (`PRIVATE/part@host` included); an `@` in a later word is prose. A prefix with no
-                // port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) holds no password at all.
-                if (kind === 'host-port') {
-                    while (isInlineSpace(text[j])) {
-                        j++;
-                    }
-                    for (; j < text.length && !WHITESPACE.test(text[j]) && !text.startsWith('://', j); j++) {
-                        spacedAt = text[j] === '@' ? j : spacedAt;
-                    }
+            while (j < text.length && INLINE_SPACE.test(text[j])) {
+                j++;
+            }
+            for (; j < text.length && !WHITESPACE.test(text[j]) && !text.startsWith('://', j); j++) {
+                spacedAt = text[j] === '@' ? j : spacedAt;
+            }
+            i = spacedAt !== -1 ? spacedAt : i;
+        } else if (i < text.length && slash === -1 && lastAt === -1) {
+            const ambiguous = colonBeforeSlash && start !== undefined && parse(text.slice(start, i)) === undefined;
+            let colonSeen = colonBeforeSlash;
+            let j = i;
+            for (; j < text.length && !LINE_END.test(text[j]); j++) {
+                if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
+                    break;
                 }
-            } else {
-                let colonSeen = colonBeforeSlash;
-                for (; j < text.length && !LINE_END.test(text[j]); j++) {
-                    if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
-                        break;
-                    }
-                    colonSeen ||= text[j] === ':';
-                    spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
+                colonSeen ||= text[j] === ':';
+                spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
+            }
+            // `https://alice:123 PRIVATE/part@host`: the prefix parses as a host and port, so the scan above stopped
+            // at the `/`. A run with no whitespace from there to an `@` is still the password: fail toward hiding.
+            // A `:` with nothing after it before the space (`https://example.com: docs/a@b`) is prose punctuation.
+            if (spacedAt === -1 && !ambiguous && colonBeforeSlash && text[j] === '/' && text[i - 1] !== ':') {
+                for (let k = j; k < text.length && !WHITESPACE.test(text[k]) && !text.startsWith('://', k); k++) {
+                    spacedAt = text[k] === '@' ? k : spacedAt;
                 }
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
@@ -1075,10 +1085,8 @@ function maskUserinfo(text: string): string {
             // the whitespace has no host — i.e. the text after `//` is a `user:password` run, not a host
             // reference (`alice:123`, `alice:pw/path`). An authority holds no whitespace, so the text after it
             // cannot give a URL that parses a host.
-            // A host the spaced block already read (`https://[::1] see a@b`) is that too: `parsePrefix` would drop
-            // the `]` that closes it as trailing punctuation.
             const prefix = parsePrefix(i);
-            if (kind === 'host' || kind === 'host-port' || (prefix !== undefined && prefix.hostname !== '' && prefix.username === '')) {
+            if (prefix !== undefined && prefix.hostname !== '' && prefix.username === '') {
                 continue;
             }
             // Each line is scanned for its end and last `@` once, however many URLs it holds (R64).

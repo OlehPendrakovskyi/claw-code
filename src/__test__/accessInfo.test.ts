@@ -1517,8 +1517,8 @@ describe('redactText', () => {
             // The accepted over-redaction: a host and port followed by an email word reads as a password.
             expect(redactText(`see ${url} bob@example.org`)).not.toContain('bob');
         }
-        // A bracketed IPv6 host reads as any other, with a port or without one.
-        for (const url of ['https://[::1]:8080', '//[::1]:8080', 'https://[::1]', '//[::1]']) {
+        // A bracketed IPv6 host with a port reads as any other host and port.
+        for (const url of ['https://[::1]:8080', '//[::1]:8080']) {
             expect(redactText(`see ${url} see bob@example.org`)).toBe(`see ${url} see bob@example.org`);
         }
         // Punctuation after the authority is not trimmed: it may open a password (`alice:!`), so the authority does
@@ -1527,6 +1527,19 @@ describe('redactText', () => {
             expect(redactText(`fetch ${url} PRIVATE_SUFFIX@host.example/x`)).not.toContain('PRIVATE');
         }
         expect(redactText('https://host:8080: contact bob@example.org')).not.toContain('bob');
+        // U2 applies to an authority that is exactly a host and a port. One that runs into a query, fragment or
+        // backslash, or a URL that parses with no host (`file://C:`), keeps the same-line run it had before.
+        for (const text of [
+            'https://alice:123?PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123#PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123\\PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:?PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:#PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:123?PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'file://C: PRIVATE_SUFFIX@host.example/x',
+        ]) {
+            expect(redactText(text)).not.toContain('PRIVATE');
+        }
         // A digit run that is no valid port (99999) leaves an authority that does not parse: U1's same-line run applies.
         for (const url of ['https://alice:99999', '//alice:99999']) {
             expect(redactText(`fetch ${url} PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x`)).not.toContain('PRIVATE');
@@ -1535,7 +1548,7 @@ describe('redactText', () => {
         for (const user of ['alice%20smith', 'alice%23']) {
             expect(redactText(`fetch ssh://${user}:123 PRIVATE_SUFFIX@host.example/x failed`)).toBe('fetch ssh://***@host.example/x failed');
         }
-        // An authority that parses with no port is followed by no password, in both forms.
+        // A `:` with no port before the space stays prose punctuation, in both forms, as before U2.
         for (const text of ['see //example.com: docs/a@b', 'see https://example.com: docs/a@b']) {
             expect(redactText(text)).toBe(text);
         }

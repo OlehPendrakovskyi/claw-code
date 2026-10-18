@@ -8,13 +8,15 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 ## U. Malformed URL userinfo
 
-**U2. After a host and port, a password goes on only within the next word.** U2 applies when the authority before the whitespace parses, under the URL's own scheme, as a host and an explicit port with no userinfo (`https://host:8080`, `https://[::1]:8080`, `ssh://alice%20smith:123`). A password then continues past that whitespace, which may be any whitespace but a line end, only within the next whitespace-free word, and that word must hold the `@`.
+**U2. After an exact host and port, a password goes on only within the next word.** U2 applies only when the authority before the whitespace is exactly a host name or a bracketed IPv6 literal, a `:` and a port's digits (`HOST_PORT_SOURCE`). The URL up to it must also parse under its own scheme with that host, no userinfo and a valid port (`https://host:8080`, `https://[::1]:8080`, `ssh://alice%20smith:123`, `//host:8080`). A password then continues past that whitespace, which may be any whitespace but a line end, only within the next whitespace-free word, and that word must hold the `@`.
 
 - Masked: `https://alice:123 PRIVATE@host` and `https://alice:123 PRIVATE/part@host`.
 - Kept: `https://host:8080 see bob@example.org`. An `@` in a later word is prose.
-- An authority that parses with no port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) is followed by no password.
-- An authority that does not parse gets U1, including a digit run that is no valid port (`alice:99999`).
-- Nothing after the authority is trimmed before it is parsed. Punctuation there may open a password (`alice:!`), so `https://host:8080: …` does not parse and is masked by U1.
+- Every other authority keeps the masking it had before U2, U1's same-line run included:
+  - an invalid port (`alice:99999`);
+  - punctuation after the port (`alice:!`, `host:8080:`);
+  - text running into a query, fragment or backslash (`alice:123?PRIVATE`);
+  - a URL that parses with no host (`file://C:`).
 - Accepted over-redaction: `https://host:8080 bob@example.org` has the shape of a password and is masked.
 
 **U3. A password run that goes to "the last `@` on its line" ends at LF, CR, U+2028 or U+2029.** These runs (a password holding whitespace, and the search for a path after a port-like prefix) use this one set (`LINE_END`), so an email on a later line of prose is not read as part of such a password.
@@ -28,9 +30,10 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 - `maskUserinfo` and `scanLine` (the `scheme://` form) and `maskAmbiguousNetworkUserinfo` (the `//` form) end a line with `LINE_END`.
 - `NETWORK_PATH_USERINFO` excludes the same four characters from its spaced-password alternative.
-- U1 and U2 are decided in one place, `authorityKind`. It reads an authority that holds no `@`, with prose punctuation dropped, as a host and an explicit port, a host alone, or unparsable. It reads the URL's parse under its own scheme, since a non-special scheme (`ssh:`) accepts hosts that `http:` rejects. A network-path reference is parsed as `http:`.
-  - In `maskUserinfo`, the spaced-password block takes U2 (the next word) for a host and port, nothing for a host alone, and U1's same-line run for an unparsable authority.
-  - `maskAmbiguousNetworkUserinfo` does the same for the `//` form. It is the only pass that decides a network-path password holding whitespace: `NETWORK_PATH_USERINFO` matches no whitespace at all.
+- U2 is decided by `isHostPort`: the exact shape (`HOST_PORT`), confirmed by the URL's parse under its own scheme. A network-path reference is parsed as `http:`. Each pass checks it **before** its existing logic, which is otherwise unchanged:
+  - in `maskUserinfo`, ahead of the spaced-password block;
+  - in `maskAmbiguousNetworkUserinfo`, ahead of the port and non-port branches. An exact host and digits that is no valid host and port goes to the non-port branch's same-line run.
+- `NETWORK_PATH_USERINFO`'s spaced alternative skips the exact shape followed by whitespace (`HOST_PORT_SOURCE` and `INLINE_SPACE_SOURCE` in a lookahead), and leaves it to `maskAmbiguousNetworkUserinfo`. The shape's characters exclude `/`, so the lookahead reads at most one authority from each `//` and stays linear.
 - U3a is held by `maskBrokenUserinfo`, which reads an authority across tabs, LF and CR up to its first `/`, `?`, `#` or other whitespace. It is also held by the break-crossing in `maskUserinfo` (`PARSER_IGNORED_CHAR`), which applies only to a `user:` run.
 
 ## J. Joins
@@ -57,7 +60,8 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    - A port-like ending may belong to a query (`?token=PREFIX:8080`).
    
    Over-masking the join is the safe failure.
-2. **Prose punctuation after a port.** `https://host:8080: contact bob@example.org` is masked, and so is the `ChatService` rendering `message: details`, because `:`, `)` or `,` after the port may open a password.
-3. **U2's over-redaction.** `https://host:8080 bob@example.org` is masked because it has the same shape as `https://alice:123 PRIVATE@host`. Telling them apart would need a guess about the text rather than its syntax.
-4. **U2 and parser-dropped tabs.** `https://host:8080\tthen bob@example.org` is still masked. A parser drops the tab and reads `host:8080then`, which does not parse, so U3a's run applies rather than U2.
-5. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
+2. **U2's narrow shape.** In #80, wider readings were tried and dropped under R8: a host with no port followed by no password, and prose punctuation trimmed before parsing. Each one let a password through in a shape that only looked like a host (`alice:!`, `alice:123?PRIVATE`, `file://C:`). So `https://[::1] see bob@…` and `https://example.com:8080, see bob@…` stay masked.
+3. **Prose punctuation after a port.** `https://host:8080: contact bob@example.org` is masked, and so is the `ChatService` rendering `message: details`, because `:`, `)` or `,` after the port may open a password.
+4. **U2's over-redaction.** `https://host:8080 bob@example.org` is masked because it has the same shape as `https://alice:123 PRIVATE@host`. Telling them apart would need a guess about the text rather than its syntax.
+5. **U2 and parser-dropped tabs.** `https://host:8080\tthen bob@example.org` is still masked. A parser drops the tab and reads `host:8080then`, which does not parse, so U3a's run applies rather than U2.
+6. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
