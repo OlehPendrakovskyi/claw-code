@@ -179,7 +179,7 @@ Each milestone also requires: CI green on all three OSes, CHANGELOG updated, and
 
 | Area | Supported | Notes |
 | --- | --- | --- |
-| VS Code | `^1.105.0` | `engines.vscode` in `package.json` |
+| VS Code | `^1.140.0` | `engines.vscode` in `package.json` |
 | VS Code forks (VSCodium, Cursor, …) | Target, via Open VSX | Not yet tested; to be checked during R0 |
 | OpenClaw Gateway protocol | v4 (OpenClaw 2026.9.x) | `openclaw.gateway.protocolVersion`; new versions are added as adapters |
 | acpx fallback | `acpx` on `PATH` | |

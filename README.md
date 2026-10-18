@@ -67,7 +67,7 @@ It has no telemetry. On the Gateway transport the extension talks only to the Ga
 
 | Area | Supported |
 | --- | --- |
-| VS Code | 1.105 or newer |
+| VS Code | 1.140 or newer |
 | OpenClaw Gateway | Protocol v4 (OpenClaw 2026.9.x) |
 | Operating systems | Linux, macOS and Windows (CI tests all three) |
 | Remote development | SSH, WSL and Tunnel |

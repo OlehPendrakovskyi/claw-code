@@ -18,7 +18,7 @@
   },
   "icon": "assets/images/image.png",
   "engines": {
-    "vscode": "^1.105.0"
+    "vscode": "^1.140.0"
   },
   "categories": [
     "AI",
@@ -323,9 +323,9 @@
     "esbuild": "^0.28.2",
     "jsdom": "^30.1.2",
     "license-checker-rseidelsohn": "^5.0.1",
+    "ovsx": "1.2.0",
     "oxlint": "^1.88.0",
     "oxlint-tsgolint": "7.0.2004",
-    "ovsx": "1.2.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.4"
   },
