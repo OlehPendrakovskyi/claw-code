@@ -813,6 +813,23 @@ describe('redactText', () => {
         }
     });
 
+    it('ends a network-path password run at U+2028 and U+2029 as at a line break (issue #63 case 7)', () => {
+        // The `//` form reads lines as the `https://` form does: neither a password run nor the search for a path
+        // after a port-like prefix goes past a line or paragraph separator.
+        for (const brk of [' ', ' ', '\n', '\r']) {
+            for (const text of [
+                `see //alice:note ${brk}mail bob@example.org`,
+                `see //alice:note/part ${brk}mail bob@example.org`,
+                `see //host:8080 ${brk}/docs@example.org`,
+            ]) {
+                expect(redactText(text)).toBe(text);
+            }
+            // A password on the line before the separator is still masked.
+            expect(redactText(`fetch //alice:pass PRIVATE_SUFFIX/x@host.example/repo${brk}mail bob@example.org`))
+                .toBe(`fetch //***@host.example/repo${brk}mail bob@example.org`);
+        }
+    });
+
     it('parses each URL prefix once across the scan gates, the host check and the userinfo end', () => {
         // R77: the costly property is asked once per match. Count how often the parser sees one prefix: a
         // malformed one the whitespace gate, the host check and `parsable` all ask about, and a parsable one
