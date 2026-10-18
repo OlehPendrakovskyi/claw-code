@@ -651,17 +651,20 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
- *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}), or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}, unless `user:` is followed
+ *  by digits and whitespace, a host and port that {@link maskAmbiguousNetworkUserinfo} reads by U2), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
  *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
  *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line end or a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|(?![^\s/@:"'`<>]*:\d+\s)[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
 const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
 /** A `user:password-start` right after `//`, whose second part holds a non-digit, so it is no `host:port`. */
 const NON_PORT_USERINFO = /[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@]/y;
+/** An authority that ends with a port. */
+const PORT_END = /:\d+$/;
 /** A `user:digits` right after `//` that reads as a host and port, followed by a space or tab. */
 const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
 
@@ -680,27 +683,19 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
         }
         NON_PORT_USERINFO.lastIndex = at + 2;
         if (!NON_PORT_USERINFO.test(text)) {
-            // `//alice:123 PRIVATE/part@host`: a prefix that reads as a host and port, then a space. The run
-            // from the first `/` after it to whitespace is still the password when it holds an `@`, as for
-            // `https://` (maskUserinfo); `//host:8080 see /docs` holds none and keeps its text.
+            // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`, a prefix that reads as a host and
+            // port, then a space. The password goes on only within the next word, which holds its `@`
+            // (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@` in a later word is prose.
             PORT_THEN_SPACE.lastIndex = at + 2;
             if (!PORT_THEN_SPACE.test(text)) {
                 continue;
             }
-            // Neither scan crosses another reference's `//` (`//public:8080 then //alice:…`, `/docs,//alice:…`):
-            // the outer loop takes that one up from there.
+            // The word ends at another reference's `//` (`//public:8080 //alice:…`, `/docs,//alice:…`): the outer
+            // loop takes that one up from there.
             const startsReference = (j: number) => text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]);
-            let slash = PORT_THEN_SPACE.lastIndex;
-            while (slash < text.length && text[slash] !== '/' && !LINE_END.test(text[slash])) {
-                slash++;
-            }
-            if (startsReference(slash)) {
-                from = slash;
-                continue;
-            }
             let runAt = -1;
-            let k = slash;
-            for (; text[slash] === '/' && k < text.length && !WHITESPACE.test(text[k]) && !(k > slash && startsReference(k)); k++) {
+            let k = PORT_THEN_SPACE.lastIndex;
+            for (; k < text.length && !WHITESPACE.test(text[k]) && !startsReference(k); k++) {
                 runAt = text[k] === '@' ? k : runAt;
             }
             if (runAt !== -1) {
@@ -988,22 +983,30 @@ function maskUserinfo(text: string): string {
         // after it on the same stretch makes what follows a `user:password`, and the same run applies.
         let spacedAt = -1;
         if (i < text.length && slash === -1 && lastAt === -1) {
-            const ambiguous = colonBeforeSlash && start !== undefined && parse(text.slice(start, i)) === undefined;
-            let colonSeen = colonBeforeSlash;
+            // Prose punctuation after the URL (`https://host:8080: details`, `(https://host:8080) see`) is no part of it.
+            const ambiguous = colonBeforeSlash && start !== undefined && parsePrefix(i) === undefined;
             let j = i;
-            for (; j < text.length && !LINE_END.test(text[j]); j++) {
-                if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
-                    break;
+            if (colonBeforeSlash && !ambiguous) {
+                // U2: the prefix parses as a host and port (`https://alice:123 PRIVATE@host` or
+                // `https://host:8080 see bob@example.org`), so a password goes on only within the next word, which
+                // holds its `@` (`PRIVATE/part@host` included); an `@` in a later word is prose. A prefix with no
+                // port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) holds no password at all.
+                if (PORT_END.test(text.slice(body, i).replace(TRAILING_DELIMITERS, ''))) {
+                    while (j < text.length && WHITESPACE.test(text[j]) && !LINE_END.test(text[j])) {
+                        j++;
+                    }
+                    for (; j < text.length && !WHITESPACE.test(text[j]) && !text.startsWith('://', j); j++) {
+                        spacedAt = text[j] === '@' ? j : spacedAt;
+                    }
                 }
-                colonSeen ||= text[j] === ':';
-                spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
-            }
-            // `https://alice:123 PRIVATE/part@host`: the prefix parses as a host and port, so the scan above stopped
-            // at the `/`. A run with no whitespace from there to an `@` is still the password: fail toward hiding.
-            // A `:` with nothing after it before the space (`https://example.com: docs/a@b`) is prose punctuation.
-            if (spacedAt === -1 && !ambiguous && colonBeforeSlash && text[j] === '/' && text[i - 1] !== ':') {
-                for (let k = j; k < text.length && !WHITESPACE.test(text[k]) && !text.startsWith('://', k); k++) {
-                    spacedAt = text[k] === '@' ? k : spacedAt;
+            } else {
+                let colonSeen = colonBeforeSlash;
+                for (; j < text.length && !LINE_END.test(text[j]); j++) {
+                    if (!ambiguous && (text[j] === '/' || text.startsWith('://', j))) {
+                        break;
+                    }
+                    colonSeen ||= text[j] === ':';
+                    spacedAt = text[j] === '@' && colonSeen ? j : spacedAt;
                 }
             }
             i = spacedAt !== -1 ? spacedAt : ambiguous ? j : i;
@@ -1332,6 +1335,9 @@ const PASSWORD_HEAD = /^[^\s@]*@/;
 /** What {@link joinBoundary} appends to close an open userinfo, joined directly or after a display delimiter. */
 const USERINFO_TAIL = 'x@h';
 const DELIMITED_USERINFO_TAIL = ' (x@h)';
+/** A URL authority that ends the text with a host and a port (`https://host:8080`, `//alice:123`): by U2, a password
+ *  after it goes on only within the next word, so an `@` the display delimiter puts further away completes none. */
+const HOST_PORT_END = /\/\/[^\s/@:"'`<>]+:\d+$/;
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
@@ -1365,8 +1371,10 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
     // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
     // The probe reads `schemeLeft`, so `https:alice:PREFIX/` is a userinfo here as it is in the direct probe.
+    // A left that ends at a host and port (`https://host:8080` + `contact bob@example.org`) is no such userinfo
+    // (J2): a password split right after it is the direct probe's, and one in the next word the join's below.
     const delimited = maskNormalized(`${schemeLeft}${DELIMITED_USERINFO_TAIL}`);
-    if (continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
+    if (!HOST_PORT_END.test(authority) && continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
         return { left: delimited.startsWith(`${schemeLeft} `) ? left : upToFirstMask(delimited), maskRight: true };
     }
     if (endsAtCredential(left)) {
@@ -1379,7 +1387,11 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // same holds for `right`, which may carry a credential of its own next to the rest of the split one. The
     // first mask in the joined text is an earlier credential's whether it sits in a side or spans the join;
     // cutting there with upToFirstMask keeps the label that carries it.
-    const joined = left !== '' && right !== '' ? joinFormedCredential(left, right) : undefined;
+    // A left that ends at a host and port is joined with the whitespace every caller's delimiter puts between
+    // the parts (J2): glued, its port would run into the right's first word (`https://host:8080contact`) and form
+    // an authority that does not parse, which no caller shows.
+    const separator = HOST_PORT_END.test(authority) ? ' ' : '';
+    const joined = left !== '' && right !== '' ? joinFormedCredential(left, `${separator}${right}`) : undefined;
     if (joined !== undefined) {
         return { left: upToFirstMask(joined), maskRight: true };
     }

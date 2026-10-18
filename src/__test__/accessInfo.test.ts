@@ -1504,6 +1504,39 @@ describe('redactText', () => {
         expect(redactText('C:\\bin\\tool.exe ok')).toBe('C:\\bin\\tool.exe ok');
     });
 
+    it('continues a password after a host and port only within the next word (issue #63 case 5)', () => {
+        // U2: `host:port` parses, so prose after it keeps its text, an email in a later word included.
+        for (const url of ['https://host:8080', '//host:8080']) {
+            for (const text of [`see ${url} see bob@example.org`, `see ${url}  and mail bob@example.org`]) {
+                expect(redactText(text)).toBe(text);
+            }
+            // A password that is the next word, `/` or not, is still masked.
+            for (const word of ['PRIVATE_SUFFIX@host.example/x', 'PRIVATE_SUFFIX/part@host.example/x']) {
+                expect(redactText(`fetch ${url.replace('host:8080', 'alice:123')} ${word} failed`)).toBe(`fetch ${url.startsWith('//') ? '//' : 'https://'}***@host.example/x failed`);
+            }
+            // The accepted over-redaction: a host and port followed by an email word reads as a password.
+            expect(redactText(`see ${url} bob@example.org`)).not.toContain('bob');
+        }
+        // Prose punctuation after the port (ChatService shows `message: details`) is no part of the URL.
+        for (const text of ['https://host:8080: contact bob@example.org', '(https://host:8080) see bob@example.org', 'https://host:8080, see bob@example.org']) {
+            expect(redactText(text)).toBe(text);
+        }
+        expect(redactText('https://alice:123: PRIVATE_SUFFIX@host.example/x')).toBe('https://***@host.example/x');
+        // A `:` with no port before the space stays prose punctuation.
+        expect(redactText('https://example.com: docs/a@b')).toBe('https://example.com: docs/a@b');
+    });
+
+    it('joins a host and port to prose without masking it, and a split password with masking it (issue #63 case 5)', () => {
+        for (const url of ['https://host:8080', '//host:8080']) {
+            expect(joinBoundary(url, 'contact bob@example.org')).toEqual({ left: url, maskRight: false });
+            expect(formatNamedEntry({ name: url, url: 'contact bob@example.org' })).toBe(`${url} (contact bob@example.org)`);
+        }
+        // The password the next word holds, split across the join, is still masked.
+        expect(joinBoundary('https://alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
+        expect(joinBoundary('//alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
+        expect(formatNamedEntry({ name: 'https://alice:123', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+    });
+
     it('masks a network-path password holding spaces and a slash after a port-like prefix', () => {
         expect(redactText('fetch //alice:123 PRIVATE_SUFFIX/part@host.example/x failed')).toBe('fetch //***@host.example/x failed');
         // Prose with a real host and port keeps its text.
