@@ -106,7 +106,7 @@ Not needed: upstream is not synced.
 
 ### Supply chain and security scanning
 
-- **Dependabot** is configured (`.github/dependabot.yml`): npm and GitHub Actions, weekly, minor/patch grouped.
+- **Dependabot** is configured (`.github/dependabot.yml`): npm and GitHub Actions, weekly, minor/patch grouped. Every `github/codeql-action` step is bumped in one group, since CodeQL fails when its `init` and `analyze` versions differ.
 - **CodeQL** (`.github/workflows/codeql.yml`) analyses the TypeScript and the workflows with the `security-extended` queries, on every pull request, on pushes to `main` and weekly. It is not a required check: its alerts are triaged in the Security tab.
 
 ### Secrets
