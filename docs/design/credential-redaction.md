@@ -14,16 +14,21 @@ A terminal code is stripped before any masking pass runs. Its final byte may be 
 
 **T2. A label is judged with the separator after it.** A key or header label counts before any separator: a query name runs on through a tab or other characters (`?toke ESC(n \tx=`), and a key through a serialised control (`toke ESC(n \bx=`). `bearer` and `basic` count only before whitespace that has no key separator after it, as the Bearer and Basic passes need (`bearer =x` opens nothing), or at the end of the text.
 
-**T3. For each kind of label some reading forms, the output holds one.**
-- If the run with no marked byte kept already holds a label of a kind, that kind needs no byte (`ESC[0mtoken=` loses the `m`).
-- Otherwise the bytes of one reading that forms such a label stay, and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
+**T3. The earlier rule's reading stands wherever it holds a label that acts there; otherwise the bytes of one reading that does are kept, and only those.**
+- R79's first rule reads the run first (`firstReading`):
+  - with no marked byte kept, if that is a label;
+  - else with each byte that completes a label with its neighbours on its own;
+  - else with every byte, if that makes a label.
+  
+  It reads every kind of label at once and keeps bytes generously, so the other passes see the run much as it was: a header keeps its whole `cookie`, and a Basic credential keeps the characters that make it base64. Wherever its output holds a label that acts before the separator after the run (T2), it stands.
+- Otherwise, if some reading forms a key label, the bytes of one such reading stay and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`. Failing that, the same holds for a word label.
 - A bounded label also keeps, on each side, the nearest marked byte that is no letter (for `pass`) or no word character (before `bearer`, `basic`), if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`. The masking passes read a name on past the run (`pass ESC(0 \nx`), so a boundary the run seems to have may be none.
-- After a tab or a serialised control (with no key separator after it), one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label that holds as if a letter followed the run holds either way, so such a reading is preferred, the bare run included. One that holds only where the name stops is the fallback.
-- When one output cannot hold both kinds (`ESC(t…ESC(r`, read as `token` or as `bearer`), the key's reading is kept, as on `main`, where such a run keeps its bytes. Which kind masks the value depends on text that may lie anywhere after the run (`token` before `\\…\\tx=`, `bearer` before ` x`), so no bounded look ahead settles it (open question 3). With no reading of either kind, every marked byte goes.
+- After a tab or a serialised control with no key separator after it, one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label counts there only if it holds as though a letter followed the run, the earlier rule's reading included. One that holds only where the name stops is the last resort.
+- A word that only the dropped bytes would form, where the run already holds a key, is not looked for (open question 3).
 
 ### Mechanism
 
-- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`). It tests the run without its marked bytes with the masking passes' own regexes, asks `labelBytes` for each kind it lacks, and checks the combined output with the same regexes.
+- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`, `NAME_GOES_ON_AT`). It takes `firstReading` wherever that holds a label acting there, judged with the masking passes' own regexes, and otherwise asks `labelBytes`: keys, then words, then keys that hold only where the name stops.
 - `labelBytes` matches each allowed label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end, and `keepBoundary` adds the boundary bytes.
 - Each label reads the run once forward and its match once back, with constant work per character, so stripping stays linear (R64).
 - A test checks T3 directly: for a fixed-seed sample of label words split by codes, in query, tab, serialised-control and spaced-separator contexts, if any reading of the final bytes hides the value, the text with its codes must too.
@@ -68,8 +73,9 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
-3. **A key and a word that one output cannot hold both.** When a run's final bytes can spell either a key (`token`) or a `bearer`/`basic`, but not both at once, the key is kept. So `ESC(t…ESC(r PRIVATE`, whose `bearer` reading would mask `PRIVATE`, keeps it visible, as `main` does. #81 tried choosing by redacting both readings over a window around the run, and dropped it under R8:
-   - What decides the outcome can lie past any window (`\\` repeated, then `tx=`).
-   - "Leaves fewer characters visible" is not "hides the value".
+3. **A word that only the dropped bytes would form, next to a key.** When the earlier rule's reading holds a key label, it stands, even where only a `bearer` or `basic` formed by bytes it drops would mask what follows. `token-beare ESC(r PRIVATE` and `ESC(t…ESC(r PRIVATE` keep `PRIVATE`, as `main` does. #81 tried three ways to choose between the kinds and dropped each under R8:
+   - holding one label of each kind at once, which broke headers and Basic credentials that need the bytes the minimal reading drops;
+   - redacting both readings over a window, which failed because what decides can lie past any window (`\\` repeated, then `tx=`), and "fewer characters visible" is not "the value hidden";
+   - always keeping the word before whitespace.
    
    Tracking which input spans each reading hides, and masking a span where neither covers the other, is the alternative.

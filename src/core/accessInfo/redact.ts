@@ -476,53 +476,73 @@ function keepLabelBytes(text: string): string {
 }
 
 /** A run of name characters with its marked final bytes resolved (R79), given the text it sits in and where it
- *  ends there. A key or header label counts before any separator: a query name or a key may run on past the name
- *  characters, through a tab or a serialised control (`?toke ESC(n \tx=`). `bearer` and `basic` count only before
- *  whitespace with no key separator after it, as the Bearer and Basic passes need (T2), or at the end of the text.
- *  For each kind of label that some reading of the marked bytes forms, the output holds one (T3): the run with no
- *  marked byte kept when it already does (`ESC[0mtoken=` loses the `m`), else with the bytes of such a reading
- *  kept and every other marked byte dropped (`p ESC(a ESC(s ESC(s ESC(x=` keeps `a`, `s`, `s`). When one output
- *  cannot hold both kinds, the key's reading wins. */
+ *  ends there. The earlier rule comes first ({@link firstReading}): it keeps the bytes that complete a label on
+ *  their own, or all of them, and it reads every kind of label at once, so the other passes see the run much as it
+ *  was (a header's `cookie`, a Basic credential's characters). Only where its output holds no label that a masking
+ *  pass would act on there (T2) is another reading looked for (T3): `p ESC(a ESC(s ESC(s ESC(x=`, where it keeps
+ *  only `p`, or `toke ESC(n-bearer=`, where `bearer` opens nothing before `=`. A key label counts before any
+ *  separator; `bearer` and `basic` only before whitespace with no key separator after it. After a tab or a
+ *  serialised control, a key label must hold even if the name goes on with a letter (`pass\\nx` reads as
+ *  `passnx` to one pass); a reading that holds only where the name stops is the last resort. */
 function keepRunLabelBytes(run: string, text: string, end: number): string {
     const items: RunItem[] = [];
     for (let i = 0; i < run.length; i++) {
         const optional = run[i] === FINAL_BYTE_MARK;
         items.push({ char: run[optional ? ++i : i], optional });
     }
-    const render = (kept: ReadonlySet<number>): string => items.map((item, k) => (!item.optional || kept.has(k) ? item.char : '')).join('');
-    const bare = render(NONE_KEPT);
     SPACE_AT.lastIndex = end;
     const spaced = SPACE_AT.test(text);
     KEY_SEPARATOR_AT.lastIndex = end;
     const keySeparated = KEY_SEPARATOR_AT.test(text);
     const words = end === text.length || (spaced && !keySeparated);
-    // After a tab or a serialised control, one pass reads the name on with a letter (a key: `pass\\nx` is `passnx`)
-    // and another stops it there (a query name: `?pass\\tx=` holds a bounded `pass`). Before a key separator it is
-    // whitespace (`pass\\t=`). A label that holds as if a letter followed the run holds either way, so it is
-    // preferred; one that holds only where the name stops is the fallback.
+    // A tab or serialised control before a key separator is whitespace there (`pass\\t=`), not more of the name.
     NAME_GOES_ON_AT.lastIndex = end;
     const goesOn = !keySeparated && NAME_GOES_ON_AT.test(text);
-    const holdsKey = (name: string, letterAfter = goesOn): boolean => {
+    const holdsKey = (name: string, letterAfter: boolean): boolean => {
         const read = letterAfter ? `${name}x` : name;
         return SENSITIVE_KEY.test(read) || CREDENTIAL_HEADER_KEY.test(read);
     };
-    const holdsWord = (name: string): boolean => words && LABEL_WORD.test(name);
-    // The bytes that give each kind of label: none when the bare run already holds one, undefined when no reading does.
-    const keyBytes = holdsKey(bare) ? NONE_KEPT
-        : labelBytes(items, 'keys', goesOn) ?? (holdsKey(bare, false) ? NONE_KEPT : labelBytes(items, 'keys', false));
-    const wordBytes = !words ? undefined : holdsWord(bare) ? NONE_KEPT : labelBytes(items, 'words', goesOn);
-    const both = new Set([...(keyBytes ?? []), ...(wordBytes ?? [])]);
-    const output = render(both);
-    if ((keyBytes === undefined || holdsKey(output, false)) && (wordBytes === undefined || holdsWord(output))) {
-        return output;
+    const first = firstReading(items);
+    if (holdsKey(first, goesOn) || (words && LABEL_WORD.test(first))) {
+        return first;
     }
-    // One output cannot hold both: the key's reading is kept, as the run whose bytes all stay keeps it. Which kind
-    // would mask the value depends on text that may lie anywhere after the run (`\\` * n + `tx=`), so neither is
-    // known to be right; a word that only the dropped bytes form is design open question 3.
-    return render(keyBytes ?? NONE_KEPT);
+    const kept = labelBytes(items, 'keys', goesOn) ?? (words ? labelBytes(items, 'words', goesOn) : undefined)
+        ?? (holdsKey(first, false) ? undefined : labelBytes(items, 'keys', false));
+    return kept === undefined ? first : items.map((item, k) => (!item.optional || kept.has(k) ? item.char : '')).join('');
 }
 
-const NONE_KEPT: ReadonlySet<number> = new Set();
+/** The longest credential label (`authorization`): a label that one final byte completes lies within this many
+ *  name characters of it on either side, so {@link firstReading} reads no further per byte (R64). */
+const LABEL_WINDOW = 13;
+
+/** Whether a name holds a credential label any masking pass reads, judged without the separator after it. */
+function isLabel(name: string): boolean {
+    return SENSITIVE_KEY.test(name) || CREDENTIAL_HEADER_KEY.test(name) || LABEL_WORD.test(name);
+}
+
+/** The run as R79's first rule resolves it: with no marked byte kept when that is a label; else with each byte that
+ *  completes a label with the name characters around it (`t` in `ESC[0m ESC[token`, not the `m`); and if that keeps
+ *  no label while keeping every byte would, with every byte. Linear: the run is tested whole a constant number of
+ *  times, and each byte within {@link LABEL_WINDOW}. */
+function firstReading(items: readonly RunItem[]): string {
+    const bare = items.filter(item => !item.optional).map(item => item.char).join('');
+    if (isLabel(bare)) {
+        return bare;
+    }
+    let kept = '';
+    let at = 0;
+    for (const { char, optional } of items) {
+        if (!optional) {
+            kept += char;
+            at++;
+            continue;
+        }
+        const window = bare.slice(Math.max(0, at - LABEL_WINDOW + 1), at) + char + bare.slice(at, at + LABEL_WINDOW - 1);
+        kept += isLabel(window) ? char : '';
+    }
+    const all = items.map(item => item.char).join('');
+    return isLabel(kept) || !isLabel(all) ? kept : all;
+}
 
 /** A character of a run, and whether it is a marked final byte, which a reading may keep or drop. */
 type RunItem = { char: string; optional: boolean };

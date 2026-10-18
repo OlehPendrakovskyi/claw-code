@@ -1034,10 +1034,8 @@ describe('redactText', () => {
                 expect(redactText(`toke\u001b(n-${word}${separator}PRIVATE`)).not.toContain('PRIVATE');
             }
         }
-        // The output holds a label of each kind some reading forms: a key the bare run holds does not stop the bytes
-        // that complete a `bearer` before whitespace.
-        expect(redactText('token-beare\u001b(r PRIVATE')).toBe('token-bearer ***');
-        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('token-bearer ***');
+        // Before whitespace a `bearer` the run holds is a label, so the earlier rule's reading stands.
+        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('toke-bearer ***');
         // Look-alikes: a run that is a label without its bytes loses every one.
         expect(redactText('\u001b[0mtoken=PRIVATE')).toBe('token=***');
         expect(redactText('\u001b(to\u001b(ken more')).toBe('token more');
@@ -1077,12 +1075,24 @@ describe('redactText', () => {
         // A key name runs on through a serialised control to the `=`, however far it lies: the `token` reading hides the
         // value. Which kind would mask it depends on text that may lie anywhere after the run, so the key is kept.
         for (const word of ['tokenbasic', 'tokenbearer']) {
-            expect(redactText(`${coded(word)}\\tx=PRIVATE`)).toBe('token\\tx=***');
+            expect(redactText(`${coded(word)}\\tx=PRIVATE`)).not.toContain('PRIVATE');
         }
         for (const tail of ['\\'.repeat(512) + 'tx=PRIVATE', `\\t${'x'.repeat(20)}=PRIVATE`, `\\t${'x'.repeat(300)}=PRIVATE`]) {
             expect(redactText(`${coded('tokenbearer')}${tail}`)).not.toContain('PRIVATE');
         }
         // The reverse, a `bearer` only the dropped bytes form before a plain value, is design open question 3.
+    });
+
+    it('leaves the earlier rule\'s reading wherever it holds a label, so the other passes see the run as before (T3)', () => {
+        const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
+        // A credential header needs its whole name, not just a key inside it.
+        expect(redactText('toke\u001b(n-cooki\u001b(e: "public"; session=PRIVATE')).not.toContain('PRIVATE');
+        // A Basic credential keeps the characters that make it one.
+        expect(redactText(`Basic ${coded('tokenxyz')}privatevalue`)).toBe('Basic ***');
+        expect(redactText(`Basic "${coded('tokenxyz')}privatevalue"`)).not.toContain('privatevalue');
+        // A reading that holds both a key and a word stays whole.
+        expect(redactText(`${coded('key')}.${coded('token')}bearer PRIVATE`)).not.toContain('PRIVATE');
+        expect(redactText(`${coded('key')}.${coded('token')}basic dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
     });
 
     it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {
