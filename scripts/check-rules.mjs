@@ -14,7 +14,7 @@
  * renamed before it is logged, code built at run time); that is review's job.
  * A finding prints `file:line  [rule] message` and the script exits non-zero.
  */
-import { existsSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import path, { join, relative, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 // TypeScript 7.0 is a Go rewrite and no longer exposes the classic synchronous API
@@ -1189,12 +1189,16 @@ export function checkRules(root, api) {
     // file paths relative to the openProject directory. When the checker runs from a test fixture
     // directory that directory holds no tsconfig, so we create a minimal one on the fly (harmless —
     // each fixture directory is deleted after its test). In the repo root the existing tsconfig is
-    // used instead.
+    // used instead. The `wx` flag checks and creates in one step, so a config that appears meanwhile is kept.
     const TS_CONFIG_PATH = path.resolve(ROOT, 'tsconfig-check-rules.json');
-    if (!existsSync(TS_CONFIG_PATH)) {
+    try {
         writeFileSync(TS_CONFIG_PATH, JSON.stringify({
             compilerOptions: { noResolve: true, noLib: true, types: [] },
-        }));
+        }), { flag: 'wx' });
+    } catch (error) {
+        if (error?.code !== 'EEXIST') {
+            throw error;
+        }
     }
     const files = [...walk(SRC)];
     // updateSnapshot initialises the client itself; opening the disk-backed config discovers the
