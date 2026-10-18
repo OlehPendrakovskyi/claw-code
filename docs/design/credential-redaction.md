@@ -43,7 +43,12 @@ Status: design, not implemented. It replaces choosing one reading of ambiguous t
 
 ### Invariants
 
-**S1. Edits are recorded against the input.** Every pass returns edits: an input span and the text that replaces it. A mask is an edit whose text is `***`; its span is hidden. Other edits change formatting (`token: v` to `token=***`, a re-serialised URL). A pass may decide from parsed or normalised text, but its spans are in input coordinates.
+**S1. Edits are recorded against the input, with what they hide.** Every pass returns edits. An edit is an input span, the text that replaces it, and the input ranges it hides. What an edit hides does not follow from its text:
+- `token: PRIVATE` becomes `token=***`, and hides the range of `PRIVATE`;
+- a re-serialised URL hides the ranges of its userinfo and its sensitive query values, found in the raw text;
+- a formatting-only edit hides nothing.
+
+A pass may decide from parsed or normalised text, but its spans and hidden ranges are in input coordinates.
 
 **S2. A reading is a normalisation of the input with a map back to it.** Each character of a reading maps to the input range it came from: one character, the escape it decodes (`\u0070`), or nothing for one normalisation inserts (`://` after `https:/`). Readings differ only where R79 and R62 leave a choice: which stripped final bytes stay, and so which split escapes decode.
 
@@ -56,20 +61,27 @@ Status: design, not implemented. It replaces choosing one reading of ambiguous t
 
 **S4. The output is the base reading's edits plus what other readings hide.**
 - The base reading applies all of its edits, so with no marked final byte the output is today's.
-- Every other reading contributes only the input characters its masks hide.
+- Every other reading contributes the input ranges its edits hide (S1), whatever their text.
 - Such a character outside every base edit is masked; adjacent ones form one `***`.
-- One inside a base mask is already hidden.
-- One inside a base edit that is not a mask turns that whole edit into `***`. This fails closed: a re-serialised URL or a reformatted pair that another reading finds a credential in is masked whole.
+- One inside a base edit that the edit hides already is hidden.
+- One inside a base edit that the edit does not hide turns that whole edit into `***`. This fails closed: a re-serialised URL or a reformatted pair in which another reading hides more is masked whole.
 
 So the output hides at least what `main` hides today.
 
-**S5. Passes report, they do not rewrite.** Each pass runs, in today's order and with today's regexes, on a view of the reading in which each edit made so far is applied, with a map from the view back to the reading. It returns its edits in view coordinates, which the maps carry back to the input.
+**S5. Passes report, they do not rewrite, and each sees today's intermediate text.** Each pass runs, in today's order and with today's regexes, on a view of the reading in which each edit made so far is applied, with a map from the view back to the reading. It returns its edits in view coordinates, which the maps carry back to the input.
 
-**S6. URLs keep today's spelling.** `redactUrl`'s re-serialised URL is one edit over the URL's span. A URL in which another reading hides a character is masked whole (S4).
+The view after each pass is exactly the string today's pipeline holds at that point:
+- a hidden value stands as the internal `MASK` sentinel, which later passes test for (`MASKED_VALUE` in `maskSensitivePairs`);
+- a userinfo mask stands as today's literal `***@`;
+- `redactUrl`'s masked query values are turned back into `MASK` (`MASKED_QUERY_VALUE`), as `maskNormalized` does now.
+
+Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b's test is that, for every existing input, each view equals today's intermediate string.
+
+**S6. URLs keep today's spelling.** `redactUrl`'s re-serialised URL is one edit over the URL's span. It hides the input ranges of the userinfo and the sensitive query values that it masks, located in the raw text. A URL in which another reading hides a character outside those ranges is masked whole (S4).
 
 **S7. Linear.** Each reading costs one run of the pipeline, the number of readings is bounded (S3), and each map is linear in its text, so the whole costs a constant times the input (R64). Text with no marked final byte runs the pipeline once, as today.
 
-**S8. Joins compare spans.** `joinBoundary`'s J3 test becomes exact: the join hides more when the joined text hides an input character that the parts hidden apart do not. This replaces the subsequence check.
+**S8. Joins compare hidden ranges.** `joinBoundary`'s J3 test becomes exact: the join hides more when the input ranges the joined text's edits hide (S1) hold a character that those of the parts hidden apart do not. This replaces the subsequence check.
 
 **S9. Acceptance is judged on every subset, not on the chosen readings.** The test for S-d generates short inputs (label words split by codes, junk codes, separators and contexts, as in #81's oracle). It asserts that if redacting **any** subset of the final bytes as plain text hides the value, the output hides it too. Its subsets range freely, so it detects a reading S3 does not hold. S-d ships only when it finds no leak that `main` does not share. A shape it still finds stays an open question; it is not claimed fixed.
 
@@ -77,7 +89,7 @@ So the output hides at least what `main` hides today.
 
 - **Data.**
   - `Reading { text: string; from: Int32Array; to: Int32Array }` holds the input range of each character.
-  - `Edit { from: number; to: number; text: string }` is in input coordinates.
+  - `Edit { from: number; to: number; text: string; hides: Array<[number, number]> }` is in input coordinates. When edits compose, as a later pass rewriting text an earlier one produced, their `hides` are carried through, merged and mapped.
   - A `Uint8Array` over the input holds the characters other readings hide.
 - **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` resolves the marks once per reading.
 - **Passes.** Each of the following returns edits instead of text:
@@ -94,7 +106,7 @@ So the output hides at least what `main` hides today.
 | PR | Scope | Output change |
 |---|---|---|
 | S-a | `Reading` and maps for the three normalisation steps; a property test that the base reading with no edits is today's normalised text | none |
-| S-b | Every pass reports edits, `redactUrl` included (S5, S6); the base reading rendered with its edits | none: every existing test passes unchanged |
+| S-b | Every pass reports edits with what they hide, `redactUrl` included (S1, S5, S6); the base reading rendered with its edits | none: every existing test passes unchanged, and each view equals today's intermediate string |
 | S-c | The witness automaton, escape-aware (S3); unit-tested on runs alone | none |
 | S-d | The readings and their union (S3, S4), with S9's acceptance test | cases 8, 9 and 10 masked, as far as S9 confirms |
 | S-e | `joinBoundary` on spans (S8) | closes open question 2 |
