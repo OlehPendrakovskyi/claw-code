@@ -4,7 +4,7 @@
 
 Please do not report a vulnerability in a public issue, pull request or discussion.
 
-Report it privately through GitHub instead: open the repository's **Security** tab and choose **Report a vulnerability**, or go straight to [the private reporting form](https://github.com/OlehPendrakovskyi/claw-code/security/advisories/new). Only the maintainer can see the report.
+Report it privately through GitHub instead: open the repository's **Security** tab and choose **Report a vulnerability**, or go straight to [the private reporting form](https://github.com/OlehPendrakovskyi/vsclaw/security/advisories/new). Only the maintainer can see the report.
 
 A useful report includes:
 

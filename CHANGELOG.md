@@ -26,7 +26,7 @@ The version numbering starts again at 0.1.0, which will be the first VSClaw rele
 ### Changed
 
 - The project was renamed to Claw Code, with its own README, repository and homepage. Commands and settings keep the `openclaw.*` IDs.
-- The project is renamed from Claw Code to VSClaw, after the name-availability check ([REL-1](docs/roadmap.md#3-release-identity-name-and-publisher)) found `claw-code` already taken by an unrelated project. The extension ID becomes `<publisher>.vsclaw`, so a build installed under the old ID is not upgraded by this one and has to be uninstalled first. Commands and settings keep the `openclaw.*` IDs.
+- The project is renamed from Claw Code to VSClaw, after the name-availability check ([REL-1](docs/roadmap.md#3-release-identity-name-and-publisher)) found `claw-code` already taken by an unrelated project. The GitHub repository is renamed to `vsclaw`, and the extension ID becomes `<publisher>.vsclaw`, so a build installed under the old ID is not upgraded by this one and has to be uninstalled first. Commands and settings keep the `openclaw.*` IDs.
 - The acpx transport reads the structured output of acpx (`--format json`) and passes the prompt through standard input. Each run ends exactly once, even when the process is killed or fails to start.
 - Conversation history sent to acpx is capped, and starts from the latest `/compact` summary.
 - Some settings run commands, carry the token, choose the agent, or change what it may approve. These now apply only from user settings; a workspace cannot set them.

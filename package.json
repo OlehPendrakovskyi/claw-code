@@ -8,13 +8,13 @@
     "name": "Oleh Pendrakovskyi"
   },
   "license": "MIT",
-  "homepage": "https://github.com/OlehPendrakovskyi/claw-code",
+  "homepage": "https://github.com/OlehPendrakovskyi/vsclaw",
   "bugs": {
-    "url": "https://github.com/OlehPendrakovskyi/claw-code/issues"
+    "url": "https://github.com/OlehPendrakovskyi/vsclaw/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/OlehPendrakovskyi/claw-code.git"
+    "url": "https://github.com/OlehPendrakovskyi/vsclaw.git"
   },
   "icon": "assets/images/image.png",
   "engines": {
