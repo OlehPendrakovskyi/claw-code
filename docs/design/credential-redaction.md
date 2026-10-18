@@ -57,4 +57,4 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Or it chose by a measure that does not hold: a bounded window around the run, "fewer characters visible", or a key separator after the run, which may be Basic padding. Its separator check also went quadratic. The regression tests from #81 pin every shape that leaked, and `main` masks each of them.
    
-   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and needs its own design (a follow-up to [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63)).
+   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and needs its own design: [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82).
