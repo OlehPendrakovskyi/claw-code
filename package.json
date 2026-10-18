@@ -252,6 +252,15 @@
           "default": "ws://127.0.0.1:18789",
           "description": "OpenClaw Gateway WebSocket URL (ws:// or wss://) for the chat transport. User settings only: the gateway token is sent to this URL, so a workspace cannot redirect it."
         },
+        "openclaw.gateway.allowUnencryptedUrls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "scope": "application",
+          "default": [],
+          "description": "Remote ws:// Gateway URLs that may receive the gateway token unencrypted without asking first. Entries are compared as URLs, so the host's case and a default port do not matter. Anyone on the network path can read a token sent to these; prefer wss:// or a secure tunnel. User settings only: a workspace cannot allow an unencrypted connection."
+        },
         "openclaw.gateway.transport": {
           "type": "string",
           "enum": [

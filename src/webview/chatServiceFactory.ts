@@ -17,8 +17,11 @@ import type { PairingState } from '../core/gatewayChatService';
 import { GatewayConnectError } from '../core/gatewayProtocol/model';
 import type { ProtocolSetting } from '../core/gatewayProtocol/registry';
 import {
+  allowUnencryptedUrl,
+  canonicalGatewayUrl,
   getGatewaySettings,
   getGatewayToken,
+  getUnencryptedAllowedUrls,
   isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
@@ -28,6 +31,8 @@ import {
 } from '../core/gatewayConfig';
 import { log } from './viewMessaging';
 import { withTimeout as withTimeoutShared } from '../core/async';
+import { errorMessage } from '../core/errors';
+import { redactText } from '../core/accessInfo/redact';
 
 /** Why the shared gateway client is about to drop its runs. */
 export type GatewayInvalidationReason = 'identity' | 'transport';
@@ -48,6 +53,8 @@ export type TransportChoice = {
 };
 
 const COPY_COMMAND = 'Copy Command';
+const CONNECT_ONCE = 'Connect This Time';
+const ALWAYS_ALLOW = 'Always Allow This Gateway';
 
 /** Connection probe timeout for `auto` fallback decisions. */
 const CONNECT_TIMEOUT_MS = 4000;
@@ -76,7 +83,19 @@ export class ChatServiceFactory {
   /** Suspended clients hold no runs, so switching away again must not
    *  re-invalidate threads on every acpx send. */
   private gatewaySuspended = false;
-  private readonly cleartextWarnedUrls = new Set<string>();
+  /** Remote `ws://` URLs the user let receive the token unencrypted in this window only (SEC-1). An
+   *  "always" answer lives in `openclaw.gateway.allowUnencryptedUrls` instead, so removing it there revokes it.
+   *  Like every URL key below, held in `canonicalGatewayUrl` form. */
+  private readonly cleartextConfirmedUrls = new Set<string>();
+  /** Remote `ws://` URLs the user declined: no dialog asks again for them until a gateway setting changes, so
+   *  background flows (session list, resume, agent picker) do not reopen it after every dismissal. */
+  private readonly cleartextDeclinedUrls = new Set<string>();
+  /** The open confirmation per URL, so sends that arrive while it is open ask once. */
+  private readonly cleartextPrompts = new Map<string, Promise<boolean>>();
+
+  /** Bumped on every gateway settings or SecretStorage change, before reconcile() runs for it: a plan made
+   *  before the latest change is discarded (reconcile) or made again (resolve), never applied (R3). */
+  private inputsGeneration = 0;
 
   private readonly rejectionWarnings = new Set<string>();
   private readonly listeners: vscode.Disposable[];
@@ -92,9 +111,12 @@ export class ChatServiceFactory {
     this.deviceCredentials = new SecretDeviceCredentialStore(context.secrets);
     this.listeners = [
       vscode.workspace.onDidChangeConfiguration((event) => {
-        if (event.affectsConfiguration('openclaw.gateway')) void this.reconcile();
+        if (event.affectsConfiguration('openclaw.gateway')) {
+          this.cleartextDeclinedUrls.clear();
+          this.inputsChanged();
+        }
       }),
-      context.secrets.onDidChange(() => void this.reconcile()),
+      context.secrets.onDidChange(() => this.inputsChanged()),
       this.deviceCredentials.onDidChangeIdentity(() => this.gatewayService?.resetDeviceIdentity()),
       this.deviceCredentials,
     ];
@@ -152,7 +174,12 @@ export class ChatServiceFactory {
    */
   async resolve(existing?: ChatService | GatewayChatService): Promise<TransportChoice> {
     await this.waitForMigration();
+    const generation = this.inputsGeneration;
     const plan = await this.planTransport();
+    // The settings or the token changed while SecretStorage was read: plan again from the current ones.
+    if (generation !== this.inputsGeneration) {
+      return this.resolve(existing);
+    }
     if (plan.kind === 'acpx') {
       this.onStatus?.('acpx', true, null);
       return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
@@ -161,7 +188,29 @@ export class ChatServiceFactory {
       this.onStatus?.('gateway', false, null);
       return { service: this.parkedGateway(plan.url), transport: 'gateway' };
     }
-    this.warnIfCleartext(plan.url);
+    if (!this.isCleartextAllowed(plan.url)) {
+      const declined = this.cleartextDeclinedUrls.has(canonicalGatewayUrl(plan.url));
+      const confirmed = !declined && (await this.confirmCleartext(plan.url));
+      // Settings or the token may have changed while the dialog was open: plan again, with the answer
+      // recorded, unless the user declined the URL the settings still name and still do not allow. A URL
+      // allowed meanwhile may already carry another send's client, which a stale dismissal must not park.
+      // A declined send follows the transport mode set now, not the one read before the dialog.
+      const current = getGatewaySettings();
+      if (confirmed || current.url !== plan.url || current.transport === 'acpx' || this.isCleartextAllowed(plan.url)) {
+        return this.resolve(existing);
+      }
+      // Declined: the token is not sent, and no client keeps a socket for it.
+      this.suspendGateway('identity');
+      if (current.transport === 'gateway') {
+        this.onStatus?.('gateway', false, null);
+        throw new Error(
+          `The gateway token was not sent: ${new URL(plan.url).host} would receive it unencrypted over ws://. ` +
+            'Use wss://, or add the URL to openclaw.gateway.allowUnencryptedUrls.'
+        );
+      }
+      this.onStatus?.('acpx', true, null);
+      return { service: this.reuseOrCreateAcpx(existing), transport: 'acpx' };
+    }
     const gateway = this.getOrCreateGateway(plan);
     // connect() lifts the client's suspension, even when it then fails.
     this.gatewaySuspended = false;
@@ -192,15 +241,35 @@ export class ChatServiceFactory {
    * socket now, not at the next send, and new credentials replace the old
    * ones in place. Connecting stays with resolve().
    */
+  private inputsChanged(): void {
+    this.inputsGeneration += 1;
+    void this.reconcile();
+  }
+
   async reconcile(): Promise<void> {
     if (!this.gatewayService) {
       return;
     }
+    const generation = this.inputsGeneration;
+    // SEC-1 invariant: an unparked client never points at a URL that may not receive the token unencrypted.
+    // Checked on the endpoint the client uses, before anything is awaited, because planTransport() leaves the
+    // client alone when SecretStorage fails, and the settings may already name another URL.
+    if (!this.gatewaySuspended && !this.isCleartextAllowed(this.cachedUrl)) {
+      this.suspendGateway('identity');
+    }
     await this.waitForMigration();
     try {
       const plan = await this.planTransport();
-      if (plan.kind === 'connect') {
+      // A newer settings change was made while SecretStorage was read: its own reconcile() applies it.
+      if (generation !== this.inputsGeneration) {
+        return;
+      }
+      if (plan.kind === 'connect' && this.isCleartextAllowed(plan.url)) {
         this.getOrCreateGateway(plan);
+      } else if (plan.kind === 'connect') {
+        // updateConnection would reconnect a live client to the new URL at once, sending the token
+        // before anyone confirmed it: park the client, and the next send asks first.
+        this.suspendGateway('identity');
       }
     } catch (err) {
       log.warn(`gateway settings change could not be applied: ${(err as Error).message}`);
@@ -299,14 +368,73 @@ export class ChatServiceFactory {
     void vscode.window.showWarningMessage(`OpenClaw: ${err.rejection.hint} (${err.rejection.code})`);
   }
 
-  private warnIfCleartext(url: string): void {
-    if (!sendsTokenInCleartext(url) || this.cleartextWarnedUrls.has(url)) {
-      return;
+  /** Whether the token may go to `url`: encrypted or loopback, or a remote `ws://` URL the user
+   *  allowed in this window or in `openclaw.gateway.allowUnencryptedUrls`. */
+  private isCleartextAllowed(url: string): boolean {
+    if (!sendsTokenInCleartext(url)) {
+      return true;
     }
-    this.cleartextWarnedUrls.add(url);
-    void vscode.window.showWarningMessage(
-      `OpenClaw: the gateway token is sent unencrypted to ${new URL(url).host}. Use wss:// for a remote gateway.`
+    const canonical = canonicalGatewayUrl(url);
+    return this.cleartextConfirmedUrls.has(canonical) || this.isAllowListed(canonical);
+  }
+
+  /** Whether `canonical` is in `openclaw.gateway.allowUnencryptedUrls`, however each entry is spelled. */
+  private isAllowListed(canonical: string): boolean {
+    return getUnencryptedAllowedUrls().some((entry) => canonicalGatewayUrl(entry) === canonical);
+  }
+
+  /** Ask before the token goes unencrypted to `url`; one dialog per URL however many sends wait on it. */
+  private confirmCleartext(url: string): Promise<boolean> {
+    const canonical = canonicalGatewayUrl(url);
+    let prompt = this.cleartextPrompts.get(canonical);
+    if (!prompt) {
+      // Decided once per dialog, against the inputs it was opened on, not per waiting send: one that joins after
+      // a change planned on the new inputs, yet answers the same dialog. A dismissal is kept only when no
+      // settings or token change arrived while the dialog was open; a settings change clears the kept ones.
+      const openedAt = this.inputsGeneration;
+      prompt = this.askCleartext(url)
+        .then((confirmed) => {
+          if (!confirmed && openedAt === this.inputsGeneration) {
+            this.cleartextDeclinedUrls.add(canonical);
+          }
+          return confirmed;
+        })
+        .finally(() => this.cleartextPrompts.delete(canonical));
+      this.cleartextPrompts.set(canonical, prompt);
+    }
+    return prompt;
+  }
+
+  private async askCleartext(url: string): Promise<boolean> {
+    const choice = await vscode.window.showWarningMessage(
+      `OpenClaw: send the gateway token unencrypted to ${new URL(url).host}?`,
+      {
+        modal: true,
+        detail:
+          'openclaw.gateway.url uses ws:// to another machine, so anyone on the network path can read the token. ' +
+          'Use wss://, or a secure tunnel such as SSH port forwarding to a loopback address.',
+      },
+      CONNECT_ONCE,
+      ALWAYS_ALLOW
     );
+    if (choice === ALWAYS_ALLOW) {
+      try {
+        await allowUnencryptedUrl(url);
+      } catch (err) {
+        // The error can quote the URL, and with it any credentials in its userinfo.
+        log.warn(`could not save openclaw.gateway.allowUnencryptedUrls: ${redactText(errorMessage(err))}`);
+      }
+      // Saved, the setting holds the answer, so removing the URL there revokes it. Not saved, or saved where
+      // it does not take effect, the answer still holds for this window, as "Connect This Time" would.
+      if (this.isAllowListed(canonicalGatewayUrl(url))) {
+        return true;
+      }
+    }
+    if (choice !== CONNECT_ONCE && choice !== ALWAYS_ALLOW) {
+      return false;
+    }
+    this.cleartextConfirmedUrls.add(canonicalGatewayUrl(url));
+    return true;
   }
 
   /** Dispose the cached gateway client and the settings listeners (provider teardown). */

@@ -1,12 +1,15 @@
 import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import {
+  allowUnencryptedUrl,
+  canonicalGatewayUrl,
   DEVICE_IDENTITY_SECRET_KEY,
   DEVICE_TOKENS_SECRET_KEY,
   SecretDeviceCredentialStore,
   deviceHostKind,
   getGatewaySettings,
   getGatewayToken,
+  getUnencryptedAllowedUrls,
   isLoopbackGatewayUrl,
   isValidGatewayUrl,
   migrateLegacyGatewayToken,
@@ -542,6 +545,71 @@ describe('GatewayConfigService', () => {
         });
     });
 
+    describe('openclaw.gateway.allowUnencryptedUrls', () => {
+        /** `read` gives the stored value on every get, so a test can model a write that lands later. */
+        const useAllowList = (value: unknown, read: () => unknown = () => value) => {
+            const update = vi.fn(async (_key: string, _value: unknown, _target?: vscode.ConfigurationTarget): Promise<void> => undefined);
+            vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+                get: (key: string) => (key === 'gateway.allowUnencryptedUrls' ? read() : undefined),
+                update,
+            } as Pick<vscode.WorkspaceConfiguration, 'get' | 'update'> as vscode.WorkspaceConfiguration);
+            return update;
+        };
+
+        it('reads the URLs trimmed, as getGatewaySettings trims the gateway URL, and drops hand-edited non-strings', () => {
+            useAllowList(['  ws://nas.lan:18789 ', 42, null, 'ws://10.0.0.5:18789']);
+            expect(getUnencryptedAllowedUrls()).toEqual(['ws://nas.lan:18789', 'ws://10.0.0.5:18789']);
+        });
+
+        it.each([[undefined], ['ws://nas.lan:18789'], [{}]])('reads a hand-edited %p as an empty list', (value) => {
+            useAllowList(value);
+            expect(getUnencryptedAllowedUrls()).toEqual([]);
+        });
+
+        // Two "Always Allow" answers can overlap; both must survive.
+        it('keeps both URLs when two writes overlap', async () => {
+            let stored: unknown = [];
+            const update = useAllowList(undefined, () => stored);
+            update.mockImplementation(async (_key, value) => {
+                await new Promise((resolve) => setImmediate(resolve));
+                stored = value;
+            });
+
+            await Promise.all([allowUnencryptedUrl('ws://nas.lan:18789'), allowUnencryptedUrl('ws://10.0.0.5:18789')]);
+
+            expect(stored).toEqual(['ws://nas.lan:18789', 'ws://10.0.0.5:18789']);
+        });
+
+        it('runs the next write after one that failed', async () => {
+            const update = useAllowList([]);
+            update.mockRejectedValueOnce(new Error('settings.json is read-only'));
+
+            await expect(allowUnencryptedUrl('ws://nas.lan:18789')).rejects.toThrow('read-only');
+            await allowUnencryptedUrl('ws://10.0.0.5:18789');
+
+            expect(update).toHaveBeenLastCalledWith('gateway.allowUnencryptedUrls', ['ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global);
+        });
+
+        it('appends a URL in user settings, once', async () => {
+            const update = useAllowList(['ws://nas.lan:18789']);
+
+            await allowUnencryptedUrl('ws://10.0.0.5:18789');
+            await allowUnencryptedUrl('ws://nas.lan:18789');
+
+            expect(update.mock.calls).toEqual([
+                ['gateway.allowUnencryptedUrls', ['ws://nas.lan:18789', 'ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global],
+            ]);
+        });
+
+        it('does not append a URL the list already holds in another spelling', async () => {
+            const update = useAllowList(['ws://NAS.lan:18789/']);
+
+            await allowUnencryptedUrl('ws://nas.lan:18789');
+
+            expect(update).not.toHaveBeenCalled();
+        });
+    });
+
     describe('gateway URL checks', () => {
         it.each(['ws://127.0.0.1:18789', 'wss://gateway.example/path', 'ws://[::1]:1', 'ws://localhost'])(
             'accepts %s',
@@ -572,6 +640,23 @@ describe('GatewayConfigService', () => {
             expect(sendsTokenInCleartext('WS://LOCALHOST:1')).toBe(false);
             expect(sendsTokenInCleartext('ws://[::ffff:10.0.0.1]:1')).toBe(true);
             expect(sendsTokenInCleartext('ws://localhostx.example:1')).toBe(true);
+        });
+
+        it('canonicalises a URL as the WebSocket client resolves it', () => {
+            expect(canonicalGatewayUrl('ws://NAS.Lan:80')).toBe('ws://nas.lan/');
+            expect(canonicalGatewayUrl('WSS://gateway.example:443/gw')).toBe('wss://gateway.example/gw');
+            expect(canonicalGatewayUrl('ws://nas.lan:18789')).toBe(canonicalGatewayUrl('ws://nas.lan:18789/'));
+        });
+
+        it('keeps the parts that name another endpoint or credentials apart', () => {
+            expect(canonicalGatewayUrl('ws://nas.lan:18789/a')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789/b'));
+            expect(canonicalGatewayUrl('ws://nas.lan:18789')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18790'));
+            expect(canonicalGatewayUrl('ws://nas.lan:18789/?x=1')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789/'));
+            expect(canonicalGatewayUrl('ws://alice@nas.lan:18789')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789'));
+        });
+
+        it.each(['not a url', 'http://nas.lan', 'ws://nas.lan/#x'])('returns %p, which the client cannot open, as given', (url) => {
+            expect(canonicalGatewayUrl(url)).toBe(url);
         });
 
         it('does not treat a lookalike host as loopback', () => {
