@@ -190,7 +190,34 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    void warnAboutLegacyExtension();
+
     log.info(`activate() complete — ${context.subscriptions.length} subscriptions`);
+}
+
+const LEGACY_EXTENSION_ID = 'openknot.claw-code';
+
+/**
+ * The rename changed the extension ID, so a build installed before it is a different extension: it stays
+ * installed and would keep contributing the same openclaw.* commands, settings and views. Warn once and
+ * offer to open the Extensions view so the user can remove it (roadmap REL-2). The lookup is injectable so
+ * the check is tested without a vscode host.
+ */
+export async function warnAboutLegacyExtension(
+    lookup: (id: string) => unknown = (id) => vscode.extensions.getExtension(id),
+): Promise<void> {
+    if (!lookup(LEGACY_EXTENSION_ID)) {
+        return;
+    }
+    log.warn(`the legacy extension ${LEGACY_EXTENSION_ID} is still installed`);
+    const SHOW = 'Show Extension';
+    const choice = await vscode.window.showWarningMessage(
+        `A build of this extension installed before the rename (${LEGACY_EXTENSION_ID}) is still present. It contributes the same commands and settings; remove it to avoid conflicts.`,
+        SHOW
+    );
+    if (choice === SHOW) {
+        void vscode.commands.executeCommand('workbench.extensions.search', `@id:${LEGACY_EXTENSION_ID}`);
+    }
 }
 
 const RESET_DEVICE_IDENTITY = 'Reset Identity';

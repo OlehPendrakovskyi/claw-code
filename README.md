@@ -4,8 +4,6 @@
 
 It has no telemetry. On the Gateway transport the extension talks only to the Gateway you configure. If the Gateway cannot be reached, it can fall back to the local [`acpx`](https://www.npmjs.com/package/acpx) CLI.
 
-> **Pre-release.** VSClaw is not on the VS Code Marketplace or Open VSX yet. To use it, build and install it from source (see [Install](#install)). For what comes next, see [Status and roadmap](#status-and-roadmap).
-
 - [Features](#features)
 - [Requirements](#requirements)
 - [Install](#install)
@@ -82,7 +80,7 @@ You also need a chat backend. You can use either one, or both:
 
 ## Install
 
-Until the first release on the Marketplace and Open VSX, build and install from source. You need:
+Until the first public release, build and install from source. Afterwards, install from the [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=OlehPendrakovskyi.vsclaw) or [Open VSX](https://open-vsx.org/extension/OlehPendrakovskyi/vsclaw). To build from source you need:
 
 - **git**;
 - **Node.js 24 (24.15 or later)**, the version CI builds with;
@@ -111,12 +109,10 @@ pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o vsclaw.vsix
 code --install-extension vsclaw.vsix --force   # or: cursor --install-extension vsclaw.vsix --force
 ```
 
-> **The extension ID changed when the project was renamed to VSClaw.** A build installed before the rename registers as `openknot.claw-code`; the renamed build registers as `openknot.vsclaw`. VS Code treats these as different extensions, which has two effects:
+> **The extension ID changed.** A local build installed before the rename registers as `openknot.claw-code`; the released VSClaw registers as `OlehPendrakovskyi.vsclaw`. VS Code treats these as different extensions, which has two effects:
 >
 > - Uninstall the old build first: `code --uninstall-extension openknot.claw-code`.
 > - VS Code keeps stored secrets and extension state per extension ID. After the switch, you enter the Gateway token again, pair the device again, and approve each workspace's `.acpxrc.json` again.
->
-> The first public release also moves to a publisher this project owns, which changes the ID once more; see [Status and roadmap](#status-and-roadmap).
 
 ## Connect to your Gateway
 

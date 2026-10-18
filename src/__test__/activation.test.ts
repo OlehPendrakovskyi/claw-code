@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { activate, deactivate } from '../extension';
+import { activate, deactivate, warnAboutLegacyExtension } from '../extension';
 import { connect, log } from '../vscode/commands';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
@@ -205,6 +205,31 @@ describe('extension activation', () => {
             const { context } = makeContext();
             await expect(activate(context)).resolves.toBeUndefined();
             expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
+        });
+    });
+
+    describe('legacy extension id', () => {
+        it('warns and offers to show the extension when the pre-rename build is still installed', async () => {
+            const showWarningMessage = vi.mocked(vscode.window.showWarningMessage);
+            await warnAboutLegacyExtension(id => (id === 'openknot.claw-code' ? { id } : undefined));
+            expect(showWarningMessage).toHaveBeenCalledWith(
+                expect.stringContaining('openknot.claw-code'),
+                'Show Extension',
+            );
+        });
+
+        it('stays quiet when the pre-rename build is not installed', async () => {
+            const showWarningMessage = vi.mocked(vscode.window.showWarningMessage);
+            await warnAboutLegacyExtension(() => undefined);
+            expect(showWarningMessage).not.toHaveBeenCalled();
+        });
+
+        it('activates without a legacy build and without warning', async () => {
+            vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined);
+            const { context } = makeContext();
+            await activate(context);
+            await new Promise(resolve => setImmediate(resolve));
+            expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
         });
     });
 

@@ -1,1 +1,1 @@
-export { activate, deactivate } from './vscode/activate';
+export { activate, deactivate, warnAboutLegacyExtension } from './vscode/activate';

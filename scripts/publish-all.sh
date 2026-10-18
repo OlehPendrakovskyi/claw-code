@@ -34,7 +34,8 @@ echo "Running prepublish build..."
 pnpm run vscode:prepublish
 
 VERSION="$(node -p "require('./package.json').version")"
-VSIX_PATH="out/openclaw-extension-${VERSION}.vsix"
+EXT_NAME="$(node -p "require('./package.json').name")"
+VSIX_PATH="out/${EXT_NAME}-${VERSION}.vsix"
 
 echo "Packaging VSIX to ${VSIX_PATH}..."
 ${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX_PATH}"
@@ -45,7 +46,6 @@ ${X_CMD} "${VSCE}" publish --packagePath "${VSIX_PATH}" -p "${VSCE_PAT}"
 echo "Publishing to Open VSX (ovsx)..."
 ${X_CMD} "${OVSX}" publish --packagePath "${VSIX_PATH}" -p "${OVSX_TOKEN}"
 
-EXT_NAME="$(node -p "require('./package.json').name")"
 PUBLISHER="$(node -p "require('./package.json').publisher")"
 
 echo "Publish complete."

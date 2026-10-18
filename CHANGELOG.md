@@ -26,7 +26,7 @@ The version numbering starts again at 0.1.0, which will be the first VSClaw rele
 ### Changed
 
 - The project was renamed to Claw Code, with its own README, repository and homepage. Commands and settings keep the `openclaw.*` IDs.
-- The project is renamed from Claw Code to VSClaw, after the name-availability check ([REL-1](docs/roadmap.md#3-release-identity-name-and-publisher)) found `claw-code` already taken by an unrelated project. The GitHub repository is renamed to `vsclaw`, and the extension ID becomes `<publisher>.vsclaw`, so a build installed under the old ID is not upgraded by this one and has to be uninstalled first. Commands and settings keep the `openclaw.*` IDs.
+- The project is renamed from Claw Code to VSClaw, after the name-availability check ([REL-1](docs/roadmap.md#3-release-identity-name-and-publisher)) found `claw-code` already taken by an unrelated project. The GitHub repository is renamed to `vsclaw`, the extension is published under the owner's publisher `OlehPendrakovskyi` (name and trademark cleared on USPTO and TMview), and the extension ID becomes `OlehPendrakovskyi.vsclaw`, so a build installed under the old ID is not upgraded by this one and has to be uninstalled first. Commands and settings keep the `openclaw.*` IDs.
 - The acpx transport reads the structured output of acpx (`--format json`) and passes the prompt through standard input. Each run ends exactly once, even when the process is killed or fails to start.
 - Conversation history sent to acpx is capped, and starts from the latest `/compact` summary.
 - Some settings run commands, carry the token, choose the agent, or change what it may approve. These now apply only from user settings; a workspace cannot set them.
@@ -64,6 +64,8 @@ The version numbering starts again at 0.1.0, which will be the first VSClaw rele
 
 ### Development
 
+- A release workflow (`.github/workflows/release.yml`) runs the full gate suite, packages the VSIX, publishes it to the VS Code Marketplace and Open VSX, and creates a GitHub Release when a `v*` tag is pushed.
+- `@vscode/vsce@4.0.0` and `ovsx@1.2.0` are pinned dev dependencies, so the `publish:*` scripts, `scripts/publish-all.sh` and `scripts/install-local.sh` run the pinned tools through `pnpm exec`.
 - The 2,160-line `extension.ts` is split into the modules under `src/core/`, `src/vscode/`, `src/webview/` and `src/overview/`.
 - The runtime dependency [koffi](https://koffi.dev/) makes the macOS and Windows system calls of the attachment reader. Its native binaries for macOS and Windows, x64 and arm64, are copied into `out/native` at build time, since the package carries no `node_modules`.
 - Tests run on Vitest, with coverage thresholds of 93–95%. Linting uses oxlint with type-aware rules, and `pnpm run check:rules` enforces the development rules.
