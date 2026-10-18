@@ -1025,7 +1025,8 @@ describe('redactText', () => {
         expect(redactText('toke\u001b(n-basic=PRIVATE')).toBe('token-basic=***');
         expect(redactText('toke\u001b(n.bearer: PRIVATE')).toBe('token.bearer=***');
         // Nor before whitespace and then a key separator: the Bearer and Basic passes take no value that opens with one.
-        for (const separator of [' =', ' : ', '\t=']) {
+        // A later run's colour reset between them is judged gone too.
+        for (const separator of [' =', ' : ', '\t=', ' \u001b[0m=', ' \\u001b[0m=']) {
             for (const word of ['bearer', 'basic']) {
                 expect(redactText(`toke\u001b(n-${word}${separator}PRIVATE`)).not.toContain('PRIVATE');
             }
@@ -1086,6 +1087,11 @@ describe('redactText', () => {
         // A Basic credential keeps the characters that make it one.
         expect(redactText(`Basic ${coded('tokenxyz')}privatevalue`)).toBe('Basic ***');
         expect(redactText(`Basic "${coded('tokenxyz')}privatevalue"`)).not.toContain('privatevalue');
+        // Even where the first rule keeps no byte, or a `pass` that a tab may carry on: no key separator follows.
+        expect(redactText(`Basic ${coded('toxken')}privatevalue`)).toBe('Basic ***');
+        expect(redactText(`Basic "${coded('toxken')}privatevalue"`)).not.toContain('privatevalue');
+        expect(redactText(`Basic ${coded('token')}pass\tok`)).toBe('Basic ***\tok');
+        expect(redactText(`Basic ${coded('token')}pass\\tok`)).toBe('Basic ***\\tok');
         // A reading that holds both a key and a word stays whole.
         expect(redactText(`${coded('key')}.${coded('token')}bearer PRIVATE`)).not.toContain('PRIVATE');
         expect(redactText(`${coded('key')}.${coded('token')}basic dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
