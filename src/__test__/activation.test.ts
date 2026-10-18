@@ -258,13 +258,22 @@ describe('extension activation', () => {
                 return { dispose: vi.fn() };
             });
             vi.mocked(vscode.window.registerWebviewViewProvider).mockImplementationOnce(() => {
-                throw new Error('view already registered');
+                throw new Error("View provider for 'openclaw.chat' already registered");
             });
             const { context, subscriptions } = makeContext();
             await expect(activate(context)).resolves.toBeUndefined();
             // A collision on a later command or the view is skipped, not fatal; activation completes.
             expect(subscriptions.length).toBeGreaterThan(0);
             expect(vscode.window.createTreeView).toHaveBeenCalled();
+        });
+
+        it('rethrows an unrelated registration failure even when a legacy build is present', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
+            vi.mocked(vscode.commands.registerCommand).mockImplementation(() => {
+                throw new Error('some other failure');
+            });
+            const { context } = makeContext();
+            await expect(activate(context)).rejects.toThrow('some other failure');
         });
 
         it('rethrows a registration failure that is not a legacy collision', async () => {

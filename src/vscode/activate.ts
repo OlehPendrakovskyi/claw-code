@@ -41,15 +41,16 @@ export async function activate(context: vscode.ExtensionContext) {
         void warnAboutLegacyExtensions(legacyInstalled);
     }
 
-    // Every shared registration goes through this: when a pre-rename build already owns the id, VS Code
-    // throws, and that is the state the warning asks the user to fix, so it must not abort the rest of
-    // activation. Any other failure is a real defect and propagates.
+    // Every shared registration goes through this. A pre-rename build owning the same id makes VS Code
+    // throw its duplicate-registration error; that is the state the warning asks the user to fix, so it must
+    // not abort the rest of activation. Only that verified duplicate is swallowed — any other failure is a
+    // real defect and propagates, so activation cannot report success with missing functionality.
     const registerOwn = (what: string, register: () => vscode.Disposable): vscode.Disposable => {
         try {
             return register();
         } catch (err) {
-            if (legacyInstalled.length) {
-                log.warn(`not registering ${what}: a pre-rename build already owns it`);
+            if (legacyInstalled.length && isDuplicateRegistrationError(err)) {
+                log.warn(`not registering ${what}: already owned (a pre-rename build likely registers it)`);
                 return { dispose: () => undefined };
             }
             throw err;
@@ -234,6 +235,17 @@ export async function activate(context: vscode.ExtensionContext) {
 }
 
 const RESET_DEVICE_IDENTITY = 'Reset Identity';
+
+/**
+ * VS Code's own duplicate-registration errors, verbatim from its extension host: a command id
+ * (`command '<id>' already exists`) and a webview view (`View provider for '<viewType>' already
+ * registered`). Matching the message is the only discriminator VS Code offers — `registerCommand` and
+ * `registerWebviewViewProvider` throw nothing typed — so it is confined to this one predicate and read
+ * against the source it names.
+ */
+function isDuplicateRegistrationError(err: unknown): boolean {
+    return err instanceof Error && /\balready (exists|registered)\b/.test(err.message);
+}
 
 /** The chat client notices the deleted identity and reconnects as a new device. */
 async function confirmDeviceIdentityReset(context: vscode.ExtensionContext): Promise<void> {
