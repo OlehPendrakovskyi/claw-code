@@ -1,4 +1,4 @@
-import { readingOf, ReadingBuilder, replaceInReading, type Reading } from '../core/accessInfo/reading';
+import { readingOf, ReadingBuilder, replaceInReading, rewriteInReading, type Reading } from '../core/accessInfo/reading';
 import * as fs from 'fs';
 import * as path from 'path';
 import { readingForRedaction, redactText, redactTextReading, stripTerminalCodes } from '../core/accessInfo/redact';
@@ -76,6 +76,22 @@ describe('reading', () => {
         // A Unicode pattern steps past an empty match by a whole code point, never into a surrogate pair.
         for (const pattern of [/(?:)/gu, /(?:)/g]) {
             expect(replaceInReading(readingOf('a😀'), pattern, () => '-').text).toBe('a😀'.replace(pattern, '-'));
+        }
+    });
+
+    it('rewrites pieces of each match, and steps past an empty match as String.prototype.replace does', () => {
+        const masked = rewriteInReading(readingOf('token=abc'), /=(\w+)/g, match => [
+            { copy: true, start: match.index, end: match.index + 1 },
+            { mask: '***', start: match.index + 1, end: match.index + match[0].length },
+        ]);
+        expect(masked.text).toBe('token=***');
+        expect(masked.hidden).toEqual([[6, 9]]);
+        // An empty match, rewritten or left as it is, with a plain and a Unicode pattern over a surrogate pair.
+        for (const pattern of [/(?=b)/g, /(?:)/gu]) {
+            const input = 'a😀b';
+            expect(rewriteInReading(readingOf(input), pattern, () => undefined).text).toBe(input);
+            expect(rewriteInReading(readingOf(input), pattern, match => [{ put: '-', start: match.index, end: match.index }]).text)
+                .toBe(input.replace(pattern, '-'));
         }
     });
 
@@ -197,8 +213,9 @@ describe('redactTextReading', () => {
             ['{"password":"x y"}', '{"password"=***}', ['x y', '"x y"']],
             // Through the normalisation maps: the value's own input range.
             ['\\u0070ass=x', 'pass=***', ['x']],
-            // A literal `***` is no mask.
+            // A literal `***` is no mask, in a URL's query either, where it turns into the internal sentinel as before.
             ['see *** here', 'see *** here', []],
+            ['https://h.example/?q=***', 'https://h.example/?q=***', []],
         ];
         for (const [input, text, hidden] of cases) {
             const reading = redactTextReading(input);

@@ -1558,6 +1558,11 @@ function maskNormalized(plain: string): string {
     return maskNormalizedIn(readingOf(plain)).text;
 }
 
+/** How many `***` and `MASK` sentinels `text` holds. */
+function maskCount(text: string): number {
+    return text.split('***').length - 1 + (text.split(MASK).length - 1);
+}
+
 /** {@link maskNormalized} on a reading (design S5): each pass sees the same text as before, and the masks it
  *  makes are recorded as hidden input ranges (S1). A URL that {@link redactUrl} re-serialises is one edit over the
  *  URL's span; when it masks anything, that whole span is recorded as hidden for now (S6 asks for its userinfo and
@@ -1576,11 +1581,14 @@ function maskNormalizedIn(plain: Reading): Reading {
     let copied = 0;
     for (const [start, end] of urlSpans(prepared.text)) {
         const url = prepared.text.slice(start, end);
-        const redacted = redactUrl(url).replace(MASKED_QUERY_VALUE, `$1${MASK}`);
+        const reserialised = redactUrl(url);
+        // As before, a masked query value turns back into `MASK` for the passes after this one, a literal `***` in
+        // the input included; only `***` and `MASK` that `redactUrl` itself added are a mask it made.
+        const redacted = reserialised.replace(MASKED_QUERY_VALUE, `$1${MASK}`);
         out.copy(copied, start);
         if (redacted === url) {
             out.copy(start, end);
-        } else if (redacted.includes('***') || redacted.includes(MASK)) {
+        } else if (maskCount(reserialised) > maskCount(url)) {
             out.mask(redacted, start, end);
         } else {
             out.put(redacted, start, end);

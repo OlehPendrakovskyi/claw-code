@@ -221,6 +221,10 @@ export function rewriteInReading(reading: Reading, pattern: RegExp, rewrite: (ma
     const builder = new ReadingBuilder(reading);
     let copied = 0;
     for (; match !== null; match = pattern.exec(reading.text)) {
+        if (match[0] === '') {
+            // As String.prototype.replace does: step past an empty match, by a whole code point for a Unicode pattern.
+            pattern.lastIndex = nextIndex(reading.text, pattern.lastIndex, pattern.unicode || pattern.flags.includes('v'));
+        }
         const pieces = rewrite(match);
         if (pieces === undefined) {
             continue;
