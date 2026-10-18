@@ -42,6 +42,17 @@ describe('reading', () => {
         const inserted = replaceInReading(readingOf('ab'), /(?=b)/g, () => '-');
         expect(inserted.text).toBe('a-b');
         expect([inserted.from[1], inserted.to[1]]).toEqual([1, 1]);
+        // An insertion inside an earlier replacement stands for the overlap of its neighbours, so ranges never
+        // decrease: `%41` became `AB`, both from `[0, 3)`, and a `-` put between them stands for `[0, 3)` too.
+        const composed = replaceInReading(replaceInReading(readingOf('%41'), /%41/g, () => 'AB'), /(?=B)/g, () => '-');
+        expect(composed.text).toBe('A-B');
+        expect([...composed.from]).toEqual([0, 0, 0]);
+        expect([...composed.to]).toEqual([3, 3, 3]);
+        expectWellFormed('%41', composed);
+        // An insertion at either end stands for the empty range there.
+        const ends = replaceInReading(readingOf('ab'), /^|$/g, () => '|');
+        expect(ends.text).toBe('|ab|');
+        expect([ends.from[0], ends.to[0], ends.from[3], ends.to[3]]).toEqual([0, 0, 2, 2]);
         // A Unicode pattern steps past an empty match by a whole code point, never into a surrogate pair.
         for (const pattern of [/(?:)/gu, /(?:)/g]) {
             expect(replaceInReading(readingOf('a😀'), pattern, () => '-').text).toBe('a😀'.replace(pattern, '-'));

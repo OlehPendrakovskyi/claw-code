@@ -46,14 +46,14 @@ export class ReadingBuilder {
     }
 
     /** Appends `text` in place of `source.text` from `start` to `end`: each of its characters stands for the input
-     *  range that whole stretch came from. An empty stretch stands for the empty range where it lies. */
+     *  range that whole stretch came from. An empty stretch (an insertion) stands for what lies between its
+     *  neighbours, so ranges never decrease: the overlap of their ranges when both came from one replacement
+     *  (between the `A` and `B` that `%41` became), else the empty range right after the character before it. */
     put(text: string, start: number, end: number): void {
         if (text === '') {
             return;
         }
-        const at = start < this.source.text.length ? this.source.from[start] : this.inputEnd();
-        const from = end > start ? this.source.from[start] : at;
-        const to = end > start ? this.source.to[end - 1] : at;
+        const [from, to] = end > start ? [this.source.from[start], this.source.to[end - 1]] : this.between(start);
         this.reserve(text.length);
         this.parts.push(text);
         this.from.fill(from, this.length, this.length + text.length);
@@ -86,9 +86,19 @@ export class ReadingBuilder {
         return { text: this.parts.join(''), from: this.from.slice(0, this.length), to: this.to.slice(0, this.length) };
     }
 
-    private inputEnd(): number {
-        const last = this.source.text.length - 1;
-        return last >= 0 ? this.source.to[last] : 0;
+    /** The range an insertion before `source` character `index` stands for (see {@link put}). */
+    private between(index: number): [number, number] {
+        const length = this.source.text.length;
+        if (index === 0) {
+            const at = length > 0 ? this.source.from[0] : 0;
+            return [at, at];
+        }
+        const prevFrom = this.source.from[index - 1];
+        const prevTo = this.source.to[index - 1];
+        if (index < length && this.source.from[index] < prevTo) {
+            return [Math.max(prevFrom, this.source.from[index]), Math.min(prevTo, this.source.to[index])];
+        }
+        return [prevTo, prevTo];
     }
 
     private reserve(extra: number): void {
