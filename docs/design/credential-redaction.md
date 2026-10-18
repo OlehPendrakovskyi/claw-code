@@ -21,7 +21,23 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 - `NETWORK_PATH_USERINFO` excludes the same four characters from its spaced-password alternative.
 - U3a is held by `maskBrokenUserinfo`, which reads an authority across tabs, LF and CR up to its first `/`, `?`, `#` or other whitespace. It is also held by the break-crossing in `maskUserinfo` (`PARSER_IGNORED_CHAR`), which applies only to a `user:` run.
 
+## J. Joins
+
+`joinBoundary` decides how to show two parts that were redacted apart and are displayed together (a label and its endpoint, an error message and its details), when a credential may span them.
+
+**J3. A join hides more only when it hides text the apart rendering shows.** Two renderings are compared: the joined one, `maskNormalized(l + r)`, and the apart one, `maskNormalized(l) + maskNormalized(r)` (R74). The join hides more when both of these hold:
+
+- the joined rendering holds a mask;
+- with every `***` removed from both renderings, the apart text is not a subsequence of the joined text.
+
+A mask that both renderings keep shows no join-formed credential. That includes a side's own credential (`see https://alice:pw@host/ then` + `pass=PRIVATE`) and a literal `***` in the input (`*** nearby` + `pass=PRIVATE`). A credential that runs on from one side into the other hides text of that side, so it still counts.
+
+### Mechanism
+
+- `hidesMore` holds J3 for `joinFormedCredential`, `consumesTail` (the label probe) and the delimited userinfo probe of `joinBoundary`.
+- `isSubsequence` reads each string once, so the check is linear (R64).
+
 ## Open questions
 
 1. **U2: a password after a parsable `host:port`.** `https://alice:123 PRIVATE@host` and `https://host:8080 bob@example.org` have the same shape. The proposed rule masks a password run that continues past whitespace only within the next whitespace-free run, so the second stays over-masked.
-2. **J3: a join that both hides and reveals text.** The proposed subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
+2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
