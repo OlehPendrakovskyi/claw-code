@@ -6,6 +6,26 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 `redactText` masks credentials in text that leaves the process: logs, error messages, the Overview and reports. The text is untrusted, and so is its form: terminal codes, JSON escapes at any depth, pretty-printed structures, and URLs that do not parse. The masking grew one case at a time and has had findings in the same sections over several review rounds. Under R8 it is now rewritten as the invariants below, each with the mechanism that holds it.
 
+## T. Terminal-code stripping
+
+A terminal code is stripped before any masking pass runs. Its final byte may be a letter that a credential label needs (`ESC[token=…`, whose `t` is the final byte), so a final byte that is a name character is marked, and each run of name characters holding marked bytes is resolved once every other code and control byte is gone (R79).
+
+**T1. One label vocabulary.** The strip-time label check knows exactly the labels the masking passes read: `LABELS` in `redact.ts`. Each one says where it may sit in a run: anywhere (`SENSITIVE_KEY`, `CREDENTIAL_HEADER_KEY`), apart from other letters (`pass`), or as a whole word ending the run (`bearer`, `basic`, as `LABEL_WORD`). Every spelling those regexes accept beyond these (`api_key`, `access-key`, `set-cookie`) contains one of them.
+
+**T2. A label is judged with the separator after it.** A key or header label counts only before a key separator (`:` or `=`, after optional closing quotes and whitespace) or before any text but whitespace, which a query name may run on through (`?to ESC(k en+x=`). `bearer` and `basic` count only before whitespace, as the Bearer and Basic passes need. At the end of the text either may follow.
+
+**T3. A run keeps the final bytes of a reading that holds a label, and only those.**
+- If the run with no marked byte kept holds a label that T2 allows, every marked byte goes (`ESC[0mtoken=` loses the `m`).
+- Otherwise, if any subset of the marked bytes kept forms such a label, the bytes of one such reading stay and every other marked byte goes: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
+- With no such reading, every marked byte goes, so a run that forms no credential label loses its codes whole.
+
+### Mechanism
+
+- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`), tests the run without its marked bytes with the masking passes' own regexes, and otherwise asks `labelReading`.
+- `labelReading` matches each allowed label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end.
+- Each label reads the run once forward and its match once back, with constant work per character, so stripping stays linear (R64).
+- A test checks T3 directly: for a fixed-seed sample of label words split by codes, if any reading of the final bytes hides the value, the text with its codes must too.
+
 ## U. Malformed URL userinfo
 
 **U3. A password run that goes to "the last `@` on its line" ends at LF, CR, U+2028 or U+2029.** These runs (a password holding whitespace, and the search for a path after a port-like prefix) use this one set (`LINE_END`), so an email on a later line of prose is not read as part of such a password.

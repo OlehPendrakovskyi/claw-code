@@ -1001,6 +1001,82 @@ describe('redactText', () => {
         expect(redactText('\u001b(Bname=value')).toBe('name=value');
     });
 
+    it('keeps the final bytes of any reading that forms a label, and only those (issue #63 case 8)', () => {
+        // `pass` needs three of the four bytes; `passx` holds no bare `pass`, so the `x` goes.
+        expect(redactText('p\u001b(a\u001b(s\u001b(s\u001b(x=PRIVATE')).toBe('pass=***');
+        expect(redactText('\u001b(0\u001b(p\u001b(z\u001b(a\u001b(s\u001b(s\u001b(m\u001b(s\u001b(y=PRIVATE')).not.toContain('PRIVATE');
+        // A bounded label starts and ends where no fixed letter stands next to it.
+        expect(redactText('by\u001b(pass=1')).toBe('byass=1');
+        expect(redactText('pa\u001b(s\u001b(sx=1')).toBe('pax=1');
+    });
+
+    it('judges a label together with the separator after it (issue #63 case 10)', () => {
+        // `bearer` and `basic` open a credential only before whitespace, so before `=` or `:` the `n` of `token` stays.
+        expect(redactText('toke\u001b(n-bearer=PRIVATE')).toBe('token-bearer=***');
+        expect(redactText('toke\u001b(n-basic=PRIVATE')).toBe('token-basic=***');
+        expect(redactText('toke\u001b(n.bearer: PRIVATE')).toBe('token.bearer=***');
+        // And a key label opens nothing before plain whitespace, so a `bearer` the bytes complete wins there.
+        expect(redactText('token-beare\u001b(r PRIVATE')).toBe('token-bearer ***');
+        // Look-alikes: a run that is a label before its separator loses every byte.
+        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('toke-bearer ***');
+        expect(redactText('\u001b[0mtoken=PRIVATE')).toBe('token=***');
+        // A key label with whitespace after it opens nothing, so its bytes go (no value follows to hide).
+        expect(redactText('\u001b(to\u001b(ken more')).toBe('oen more');
+        // A query name runs on past the name characters, so a key label counts before any text but whitespace.
+        expect(redactText('https://h.example/?to\u001b(ken+x=PRIVATE')).not.toContain('PRIVATE');
+    });
+
+    it('finds every label spelling a masking pass reads with any of its letters as a final byte (T1)', () => {
+        const spellings = ['token', 'api_key', 'api-key', 'apikey', 'key', 'secret', 'password', 'passwd', 'passphrase', 'pass',
+            'credential', 'access_key', 'access-key', 'signature', 'authorization', 'cookie', 'set-cookie'];
+        for (const word of spellings) {
+            for (let at = 0; at < word.length; at++) {
+                if (!/[A-Za-z0-9_]/.test(word[at])) {
+                    continue;
+                }
+                const split = `${word.slice(0, at)}\u001b(${word[at]}${word.slice(at + 1)}`;
+                expect(redactText(`${split}=PRIVATE`)).not.toContain('PRIVATE');
+            }
+        }
+        for (const word of ['bearer', 'basic']) {
+            for (let at = 0; at < word.length; at++) {
+                expect(redactText(`${word.slice(0, at)}\u001b(${word[at]}${word.slice(at + 1)} dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
+            }
+        }
+    });
+
+    it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {
+        // Every subset of the final bytes kept is a reading; if redacting any of them hides the value, redacting the
+        // text with its codes must too. A fixed-seed sample of label words split by codes, with junk codes around.
+        let seed = 7;
+        const next = (n: number): number => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
+        const words = ['token', 'key', 'secret', 'password', 'pass', 'cookie', 'bearer', 'basic', 'api_key'];
+        const separators = ['=', ': ', ' ', '":"', '+x='];
+        for (let round = 0; round < 400; round++) {
+            const parts: Array<{ code?: string; fixed?: string }> = [];
+            for (const char of `${['', 'by', 'x-'][next(3)]}${words[next(words.length)]}${['', 'x', '-bearer'][next(3)]}`) {
+                if (next(4) === 0) {
+                    parts.push({ code: 'xzmT0'[next(5)] });
+                }
+                parts.push(next(2) === 0 && /\w/.test(char) ? { code: char } : { fixed: char });
+            }
+            const codes = parts.filter(part => part.code !== undefined).length;
+            if (codes > 10) {
+                // 2^codes readings: keep the oracle small.
+                continue;
+            }
+            const separator = separators[next(separators.length)];
+            const readings = Array.from({ length: 1 << codes }, (_, mask) => {
+                let c = 0;
+                return parts.map(part => (part.code === undefined ? part.fixed : (mask >> c++) & 1 ? part.code : '')).join('');
+            });
+            if (readings.some(reading => !redactText(`${reading}${separator}PRIVATE`).includes('PRIVATE'))) {
+                const text = parts.map(part => (part.code === undefined ? part.fixed : `\u001b(${part.code}`)).join('');
+                expect(redactText(`${text}${separator}PRIVATE`)).not.toContain('PRIVATE');
+            }
+        }
+    });
+
     it('redacts URL userinfo inside free-form text', () => {
         expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
             'failed: https://***:***@host.example/repo.git (exit 1)'
@@ -1875,6 +1951,11 @@ describe('redactText', () => {
             '\\'.repeat(size) + '"',
             'token=\\\\\\"'.repeat(size / 10),
             '\\\\\\"token\\\\\\":'.repeat(size / 14),
+            // Runs of stripped final bytes that keep a label automaton busy (issue #63 cases 8 and 10).
+            '\u001b(p'.repeat(size / 3) + '=x',
+            'pa\u001b(s'.repeat(size / 4) + '=x',
+            '\u001b(t\u001b(o\u001b(k\u001b(e'.repeat(size / 12) + ' x',
+            'au' + '\u001b(t'.repeat(size / 3) + 'horization=x',
             // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
             // `user:` authority per reference (issue #63 case 5).
             '//[:['.repeat(size / 5) + '/@',

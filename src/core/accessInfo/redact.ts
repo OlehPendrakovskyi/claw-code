@@ -403,18 +403,36 @@ export function stripTerminalCodes(text: string): string {
  *  use: {@link stripTerminalCodes} removes it from its input first, so no input can pose as a mark. */
 const FINAL_BYTE_MARK = '﷐';
 const FINAL_BYTE_MARKS = /﷐/g;
-/** The longest credential label (`authorization`): a label that one final byte completes lies within this many
- *  name characters of it on either side, so the check per byte reads no further (R64). */
-const LABEL_WINDOW = 13;
 /** Words that open a credential with no key separator after them, as the Bearer and Basic passes read them: a
  *  whole word that ends its run of name characters, so `bearertoke` holds none and its `n` is still judged. */
 const LABEL_WORD = /(?<![A-Za-z0-9_])(?:bearer|basic)$/i;
 
-/** Whether a name holds a credential label any masking pass reads: a sensitive key, a credential header, or a
- *  word such as `Bearer`. */
-function isLabel(name: string): boolean {
-    return SENSITIVE_KEY.test(name) || CREDENTIAL_HEADER_KEY.test(name) || LABEL_WORD.test(name);
-}
+/** Where a label may sit in a run of name characters, as the regex of the pass that reads it says (T1): anywhere
+ *  ({@link SENSITIVE_KEY}, {@link CREDENTIAL_HEADER_KEY}), apart from other letters (`pass`), or as a whole word
+ *  that ends the run ({@link LABEL_WORD}). */
+type LabelKind = 'anywhere' | 'letters-apart' | 'word-at-end';
+/** Every credential label a masking pass reads, as the label check at strip time matches them (T1). Spellings a
+ *  regex accepts beyond these (`api_key`, `access-key`, `set-cookie`) each contain one of them. */
+const LABELS: ReadonlyArray<{ word: string; kind: LabelKind }> = [
+    ...['token', 'key', 'secret', 'password', 'passwd', 'passphrase', 'credential', 'signature', 'authorization', 'cookie']
+        .map(word => ({ word, kind: 'anywhere' as const })),
+    { word: 'pass', kind: 'letters-apart' },
+    { word: 'bearer', kind: 'word-at-end' },
+    { word: 'basic', kind: 'word-at-end' },
+];
+/** Each label with, per letter, the bit set of positions it fills in the word, for {@link labelReading}. */
+const LABEL_MATCHERS = LABELS.map(({ word, kind }) => {
+    const positions = new Map<string, number>();
+    word.split('').forEach((letter, j) => positions.set(letter, (positions.get(letter) ?? 0) | (1 << j)));
+    return { word, kind, positions };
+});
+const LETTER_CHAR = /[a-z]/i;
+const WORD_CHAR = /[A-Za-z0-9_]/;
+/** Whitespace, raw or serialised ({@link SPACE}), right after a run: the separator the Bearer and Basic passes read. */
+const SPACE_AT = new RegExp(SPACE, 'y');
+/** A key separator right after a run, as {@link KEY_SEPARATOR} reads it after a name: closing quotes, whitespace,
+ *  then `:` or `=`. */
+const KEY_SEPARATOR_AT = new RegExp(String.raw`\\*["']?${SPACE}*[:=]`, 'y');
 
 /** A stripped sequence's final byte, marked when it is a name character, otherwise nothing. */
 function markedFinalByte(final: string): string {
@@ -423,8 +441,8 @@ function markedFinalByte(final: string): string {
 
 /** Stripped text with each marked final byte kept or dropped (R79), decided on the final text, so a byte that
  *  another code or a control byte stood next to is judged with the name around it (`ESC(t NUL oken`). Each run
- *  of name characters holding marked bytes is read once. Linear: a run is tested whole a constant number of
- *  times, and each marked byte within {@link LABEL_WINDOW}. */
+ *  of name characters holding marked bytes is read once, with the separator after it. Linear: see
+ *  {@link labelReading}. */
 function keepLabelBytes(text: string): string {
     let out = '';
     let i = 0;
@@ -447,40 +465,91 @@ function keepLabelBytes(text: string): string {
             continue;
         }
         const run = text.slice(i, end);
-        out += marked ? keepRunLabelBytes(run) : run;
+        out += marked ? keepRunLabelBytes(run, text, end) : run;
         i = end;
     }
     return out;
 }
 
-/** A run of name characters with its marked final bytes resolved. With none kept, a run that is already a label
- *  stays so. Otherwise each byte that completes a label with the name characters around it stays (`t` in
- *  `ESC[0m ESC[token`, but not the `m`); and if that keeps no label while keeping every byte would, every byte
- *  stays. So the output holds a label whenever one of these readings does. A label that needs some of the marked
- *  bytes but not the others is not found (`p ESC(a ESC(s ESC(s ESC(x`): R79's known gap, issue #43. */
-function keepRunLabelBytes(run: string): string {
-    let bare = '';
-    const marked: Array<{ at: number; byte: string }> = [];
+/** A run of name characters with its marked final bytes resolved (R79), given the text it sits in and where it
+ *  ends there. A label counts only before a separator its pass reads (T2): a key or a header before `:` or `=`,
+ *  or any text but whitespace, which a query name may run on through (`?to ESC(k en+x=`); `bearer` and `basic`
+ *  before whitespace. At the end of the text, either may follow. If the run with no marked byte kept holds such a
+ *  label, every marked byte goes (`ESC[0mtoken=` loses the `m`). Otherwise the bytes of one reading that holds one
+ *  stay, and only those (T3): `p ESC(a ESC(s ESC(s ESC(x=` keeps `a`, `s`, `s` and drops `x`, and
+ *  `toke ESC(n-bearer=` keeps the `n` of `token`, since `bearer` there opens nothing. With no such reading, every
+ *  marked byte goes. */
+function keepRunLabelBytes(run: string, text: string, end: number): string {
+    const items: RunItem[] = [];
     for (let i = 0; i < run.length; i++) {
-        if (run[i] === FINAL_BYTE_MARK) {
-            marked.push({ at: bare.length, byte: run[++i] });
-        } else {
-            bare += run[i];
-        }
+        const optional = run[i] === FINAL_BYTE_MARK;
+        items.push({ char: run[optional ? ++i : i], optional });
     }
-    if (isLabel(bare)) {
+    const bare = items.filter(item => !item.optional).map(item => item.char).join('');
+    SPACE_AT.lastIndex = end;
+    const spaced = SPACE_AT.test(text);
+    KEY_SEPARATOR_AT.lastIndex = end;
+    const keys = !spaced || KEY_SEPARATOR_AT.test(text);
+    const words = spaced || end === text.length;
+    if ((keys && (SENSITIVE_KEY.test(bare) || CREDENTIAL_HEADER_KEY.test(bare))) || (words && LABEL_WORD.test(bare))) {
         return bare;
     }
-    let kept = '';
-    let copied = 0;
-    for (const { at, byte } of marked) {
-        const window = bare.slice(Math.max(0, at - LABEL_WINDOW + 1), at) + byte + bare.slice(at, at + LABEL_WINDOW - 1);
-        kept += bare.slice(copied, at) + (isLabel(window) ? byte : '');
-        copied = at;
+    return labelReading(items, keys, words) ?? bare;
+}
+
+/** A character of a run, and whether it is a marked final byte, which a reading may keep or drop. */
+type RunItem = { char: string; optional: boolean };
+
+/** The first reading of `items` that holds a label of an allowed kind, with the marked bytes it uses kept and every
+ *  other marked byte dropped, or undefined. Each label is matched by a small automaton whose state is the set of
+ *  prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it
+ *  or be skipped. `pass` starts and ends where the nearest fixed character is no letter, and `bearer` or `basic`
+ *  where it is no word character and ends where no fixed character follows, since every marked byte outside the
+ *  match goes. The states before each character are kept, so the bytes of the match are found going back from its
+ *  end. Linear: each label reads the run once forward and its match once back, with constant work per character
+ *  (R64). */
+function labelReading(items: readonly RunItem[], keys: boolean, words: boolean): string | undefined {
+    const nextFixed: string[] = new Array<string>(items.length);
+    for (let k = items.length - 1, next = ''; k >= 0; k--) {
+        nextFixed[k] = next;
+        next = items[k].optional ? next : items[k].char;
     }
-    kept += bare.slice(copied);
-    const all = run.replace(FINAL_BYTE_MARKS, '');
-    return isLabel(kept) || !isLabel(all) ? kept : all;
+    const before = new Uint16Array(items.length);
+    for (const { word, kind, positions } of LABEL_MATCHERS) {
+        if (kind === 'word-at-end' ? !words : !keys) {
+            continue;
+        }
+        const full = 1 << word.length;
+        let alive = 0;
+        let prevFixed = '';
+        for (let k = 0; k < items.length; k++) {
+            const { char, optional } = items[k];
+            const starts = kind === 'anywhere' || (kind === 'letters-apart' ? !LETTER_CHAR.test(prevFixed) : !WORD_CHAR.test(prevFixed));
+            const states = alive | (starts ? 1 : 0);
+            before[k] = states;
+            const advanced = (states & (positions.get(char.toLowerCase()) ?? 0)) << 1;
+            const ends = kind === 'anywhere' || (kind === 'letters-apart' ? !LETTER_CHAR.test(nextFixed[k]) : nextFixed[k] === '');
+            if ((advanced & full) !== 0 && ends) {
+                return readingOf(items, word, before, k);
+            }
+            alive = (advanced & (full - 1)) | (optional ? states : 0);
+            prevFixed = optional ? prevFixed : char;
+        }
+    }
+    return undefined;
+}
+
+/** The run with the marked bytes kept that match `word` ending at `end`, found back from there through `before`,
+ *  the states before each character, and every other marked byte dropped. */
+function readingOf(items: readonly RunItem[], word: string, before: Uint16Array, end: number): string {
+    const kept = new Set<number>();
+    for (let k = end, need = word.length; need > 0; k--) {
+        if (word[need - 1] === items[k].char.toLowerCase() && (before[k] & (1 << (need - 1))) !== 0) {
+            kept.add(k);
+            need--;
+        }
+    }
+    return items.map((item, k) => (!item.optional || kept.has(k) ? item.char : '')).join('');
 }
 
 /** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
