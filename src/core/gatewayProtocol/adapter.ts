@@ -1,5 +1,5 @@
 /**
- * Claw Code — gateway protocol adapter contract.
+ * VSClaw — gateway protocol adapter contract.
  *
  * One implementation per wire version (see ./v4/). The chat service speaks
  * only the neutral model of ./model.ts and asks the adapter for every wire

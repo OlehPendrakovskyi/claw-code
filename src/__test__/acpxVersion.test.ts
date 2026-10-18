@@ -94,7 +94,7 @@ describe('acpxVersion', () => {
             await checkAcpxVersionOnce(LAUNCH, log);
             expect(log.warn).toHaveBeenCalledWith('acpx 0.21.0 is untested');
             expect(warningMock).toHaveBeenCalledTimes(1);
-            expect(warningMock).toHaveBeenCalledWith(expect.stringContaining('acpx 0.21.0 is outside the versions Claw Code was tested with'));
+            expect(warningMock).toHaveBeenCalledWith(expect.stringContaining('acpx 0.21.0 is outside the versions VSClaw was tested with'));
         });
 
         it('warns about an unknown version, and logs only how much acpx printed', async () => {

@@ -1,5 +1,5 @@
 /**
- * Claw Code — version-neutral gateway model.
+ * VSClaw — version-neutral gateway model.
  *
  * What the rest of the extension knows about the OpenClaw Gateway: the
  * requests the chat service issues and the inbound facts it reacts to, free of

@@ -1,5 +1,5 @@
 /**
- * Claw Code — approval and question rows of the chat panel.
+ * VSClaw — approval and question rows of the chat panel.
  *
  * What the provider keeps per operator prompt, how a row reads in the
  * webview, and the checks an answer from the webview must pass before it

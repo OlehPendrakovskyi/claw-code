@@ -1,5 +1,5 @@
 /**
- * Claw Code — Gateway settings and token management.
+ * VSClaw — Gateway settings and token management.
  *
  * Reads the `openclaw.gateway.*` configuration block, manages the gateway
  * auth token in VS Code SecretStorage, and performs a one-time migration of

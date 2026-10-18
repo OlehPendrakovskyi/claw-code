@@ -1,5 +1,5 @@
 /**
- * Claw Code — streamed run text.
+ * VSClaw — streamed run text.
  *
  * The gateway streams a run as cumulative snapshots, suffix deltas and
  * occasional replacements. This reducer turns that stream into updates for the

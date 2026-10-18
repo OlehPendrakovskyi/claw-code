@@ -1,5 +1,5 @@
 /**
- * Claw Code — completing transcript rows the gateway cut.
+ * VSClaw — completing transcript rows the gateway cut.
  *
  * Live `session.message` rows and history-delta rows carry at most 8,000
  * characters of text. A cut row is read again on its own, with the gateway's

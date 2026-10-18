@@ -1,4 +1,4 @@
-# Claw Code — roadmap
+# VSClaw — roadmap
 
 > **Status on 2026-10-12.** Version 0.1.0, not yet released (the numbering restarted from upstream's 0.2.1). The MVP (Gateway chat) is largely shipped; the next milestone is **R0 — public release** (§7). Of R0, REL-3, REL-5, SEC-1…SEC-3 and ENG-4 are done; REL-6, REL-7, SEC-4 and the P0-5 build-outs are partly done; REL-1, REL-4, ENG-8 and, last, REL-2 are open. Feature status lives in one place: the table in §6.
 >
@@ -19,7 +19,7 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, removed by th
 
 ## 1. Product
 
-**Claw Code** is a VS Code companion for [OpenClaw](https://docs.openclaw.ai): a chat panel for Gateway agents with editor context, plus OpenClaw setup and hardening tools. The UX target is parity with the best AI coding extensions (see the appendix) for users who run their agents on an OpenClaw Gateway.
+**VSClaw** is a VS Code companion for [OpenClaw](https://docs.openclaw.ai): a chat panel for Gateway agents with editor context, plus OpenClaw setup and hardening tools. The UX target is parity with the best AI coding extensions (see the appendix) for users who run their agents on an OpenClaw Gateway.
 
 **Project status: community.** A public product for all OpenClaw users, not one owner's customisation. Every requirement covers the full range of setups — local CLI, a Docker gateway on a NAS, a remote server — with data locality, no telemetry and a clear compatibility story.
 
@@ -39,16 +39,16 @@ This replaces the earlier single-file plan (the root `ROADMAP.md`, removed by th
 
 ## 3. Release identity: name and publisher
 
-**Name.** `Claw Code` (owner's choice, 2026-09-24). Fallbacks: `OpenClaw Companion`, `OpenClaw Studio`, `OpenClaw IDE`, `Clawside`. Before the first publish, check availability on the VS Code Marketplace, Open VSX and npm, and check for trademark conflicts (**REL-1**).
+**Name.** `VSClaw` (owner's choice, 2026-10-18), replacing the earlier `Claw Code`. The name-availability check (**REL-1**, 2026-10-18) found `claw-code`/`clawcode` already used by an unrelated, much larger project and its ecosystem on GitHub, npm (`clawcode`) and the Open VSX org namespace, so the project was renamed to avoid the collision. Remaining before the first publish: check availability of `vsclaw` on the VS Code Marketplace, Open VSX and npm, and check for trademark conflicts. Fallbacks: `openclaw-vscode`, `openclaw-ide`, `openclaw-vsc`.
 
 **Publisher (REL-2).** The extension must be published under a **publisher identity the owner registers and controls**, on both registries:
 
 - `package.json` still carries `"publisher": "openknot"`, inherited from the upstream package. That publisher is not ours, so publishing under it is impossible and would also misrepresent the project as the upstream extension. Register a new VS Code Marketplace publisher and a matching Open VSX namespace, and set `package.json` `publisher` to it.
-- The extension ID becomes `<publisher>.claw-code`. Everything derived from the ID follows it: the URI handler authority (`vscode://<publisher>.claw-code/…`, P2-4), the Marketplace/Open VSX listing URLs, and any docs or deep links that name the ID.
+- The extension ID becomes `<publisher>.vsclaw`. Everything derived from the ID follows it: the URI handler authority (`vscode://<publisher>.vsclaw/…`, P2-4), the Marketplace/Open VSX listing URLs, and any docs or deep links that name the ID.
 - **Storage moves with the ID.** VS Code scopes SecretStorage and `globalState` by extension ID, so under a new ID the gateway token, the paired device identity and device tokens (`gatewayConfig.ts`), and the persisted acpx approvals (`acpxProjectConfig.ts`, via `activate.ts:79`) start empty. Make the change **before the first public release** so no published user is affected; anyone running a local build re-enters the token and re-pairs once. The `openclaw.*` setting and command IDs are not tied to the publisher and do not change.
 - Publishing credentials (`VSCE_PAT` for that publisher, `OVSX_TOKEN` for that namespace) belong to the owner and live only in GitHub Secrets ([engineering.md §6](engineering.md#6-cicd)).
-- **Remove the legacy extension ID when installing the new one.** VS Code treats `<publisher>.claw-code` as a different extension from the current `openknot.claw-code` build, so installing it is not an upgrade: both stay installed and both contribute the same `openclaw.*` commands, settings and views. The switch therefore includes (a) a migration note in the README and CHANGELOG — uninstall `openknot.claw-code` first (`code --uninstall-extension openknot.claw-code`); (b) `scripts/install-local.sh` uninstalling the legacy ID before installing the new VSIX; and (c) an activation check (`vscode.extensions.getExtension('openknot.claw-code')`) that, if the legacy build is still present, warns the user and offers to open it in the Extensions view for removal.
-- Leftover upstream naming goes in the same change: `scripts/install-local.sh` still packages `openclaw-extension-<version>.vsix`.
+- **Remove the legacy extension ID when installing the new one.** VS Code treats `<publisher>.vsclaw` as a different extension from the current `openknot.claw-code` build, so installing it is not an upgrade: both stay installed and both contribute the same `openclaw.*` commands, settings and views. The switch therefore includes (a) a migration note in the README and CHANGELOG — uninstall `openknot.claw-code` first (`code --uninstall-extension openknot.claw-code`); (b) `scripts/install-local.sh` uninstalling the legacy ID before installing the new VSIX; and (c) an activation check (`vscode.extensions.getExtension('openknot.claw-code')`) that, if the legacy build is still present, warns the user and offers to open it in the Extensions view for removal.
+- Leftover upstream naming goes in the same change: `scripts/install-local.sh` packaged `openclaw-extension-<version>.vsix`, now `vsclaw-<version>.vsix`.
 
 ## 4. Architecture
 
@@ -80,9 +80,9 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 
 | ID | Item | Milestone | Status | Effort | Notes |
 | --- | --- | --- | --- | --- | --- |
-| REL-1 | Name availability and trademark check for `Claw Code` | R0 | Todo | S | §3 |
+| REL-1 | Name availability and trademark check for `VSClaw` | R0 | Todo | S | §3 |
 | REL-2 | Owner-controlled publisher and Open VSX namespace; update `package.json` and derived IDs | R0 | Todo | S | §3. The last R0 item (owner's decision 2026-10-12), but before the first publish: the new extension ID starts SecretStorage and `globalState` empty |
-| REL-3 | README for Claw Code | R0 | Done | S | Rewritten for the fork; the upstream README was removed in the same change set |
+| REL-3 | README for VSClaw | R0 | Done | S | Rewritten for the fork; the upstream README was removed in the same change set |
 | REL-4 | Release workflow (tag → vsce + ovsx → GitHub Release) | R0 | Todo | M | [engineering.md §6](engineering.md#6-cicd) |
 | REL-5 | `SECURITY.md` with a private vulnerability-reporting path | R0 | Done | S | Reports go through GitHub private vulnerability reporting, enabled 2026-10-12 |
 | REL-7 | Pin the packaging tools: add `@vscode/vsce` (MIT) and `ovsx` as dev dependencies, and make `install-local.sh`, `publish-all.sh` and the `publish:*` scripts call them via `pnpm exec`. Done so far: `install-local.sh` pins `@vscode/vsce@4.0.0` (it uses no `ovsx`), and `publish-all.sh` pins `@vscode/vsce@4.0.0` and `ovsx@1.2.0` (previously it ran the deprecated `vsce` package). Remaining: the dev dependencies, and the `publish:vsce` / `publish:ovsx` package scripts, which call binaries that are not installed. `ovsx` is EPL-2.0: as a dev-only dependency it is outside the `--production` licence check, but it needs the owner's approval under the dependency policy | R0 | Partial | S | The README's manual path also pins `@vscode/vsce@4.0.0` |
@@ -147,7 +147,7 @@ Effort: **S** ≈ hours to a day, **M** ≈ 2–4 days, **L** ≈ a week or more
 | P2-1 | AI titles for new sessions (`sessions.title.prepare` → `displayName`) | v2 | Todo | S | Local dynamic subjects exist |
 | P2-2 | Auto-archive and per-workspace groups in history | v2 | Todo | M | |
 | P2-3 | Side questions (`/btw`) in a separate one-shot session | v2 | Todo | M | |
-| P2-4 | URI handler `vscode://<publisher>.claw-code/open?prompt=…&session=…` | v2 | Todo | S | Authority follows REL-2 |
+| P2-4 | URI handler `vscode://<publisher>.vsclaw/open?prompt=…&session=…` | v2 | Todo | S | Authority follows REL-2 |
 | P2-5 | Copy response to clipboard | v2 | Todo | S | No copy action exists yet; conversation export to Markdown/JSON is a separate, finished feature |
 | P2-6 | `@terminal` mentions and a `/tasks` map of background processes | v2 | Todo | M–L | |
 | P2-7 | Screen-reader announcements for replies, tool steps and status; focus-last-message command | v2 | Partial | M | A persistent aria-live region announces approvals, questions and status changes |

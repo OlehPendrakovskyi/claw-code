@@ -1,6 +1,6 @@
 {
-  "name": "claw-code",
-  "displayName": "Claw Code",
+  "name": "vsclaw",
+  "displayName": "VSClaw",
   "description": "Chat with the agents on your OpenClaw Gateway from VS Code, with your code as context, and set up and harden OpenClaw",
   "version": "0.1.0",
   "publisher": "openknot",
@@ -26,7 +26,7 @@
   ],
   "keywords": [
     "openclaw",
-    "claw-code",
+    "vsclaw",
     "ai",
     "agent",
     "chat",

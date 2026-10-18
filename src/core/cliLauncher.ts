@@ -1,5 +1,5 @@
 /**
- * Claw Code — starting a Node CLI (acpx, openclaw) the extension runs itself.
+ * VSClaw — starting a Node CLI (acpx, openclaw) the extension runs itself.
  *
  * Only absolute PATH entries are searched, so nothing comes from the cwd,
  * which can be the workspace. Windows cannot spawn an npm `.cmd` shim

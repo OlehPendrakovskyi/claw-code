@@ -1,5 +1,5 @@
 /**
- * Claw Code — PATH for the processes the extension starts itself.
+ * VSClaw — PATH for the processes the extension starts itself.
  *
  * A relative PATH entry (`.`, `bin`, and on POSIX an empty one) resolves
  * against the child's cwd, which can be the workspace, so a child gets only

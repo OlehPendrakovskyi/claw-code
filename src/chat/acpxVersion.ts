@@ -1,5 +1,5 @@
 /**
- * Claw Code — which acpx the chat runs, checked against the versions it was tested with.
+ * VSClaw — which acpx the chat runs, checked against the versions it was tested with.
  *
  * acpx is installed by the user, so any release can be on PATH. What the extension relies
  * on (stderr content, flags, exit codes; development rule R29) was read from the source of
@@ -96,6 +96,6 @@ function report(stdout: string | undefined, log: vscode.LogOutputChannel): void 
     }
     const tested = `${ACPX_TESTED_FROM} or later, before ${ACPX_UNTESTED_FROM}`;
     void vscode.window.showWarningMessage(release
-        ? `acpx ${release.join('.')} is outside the versions Claw Code was tested with (${tested}). Chat may not work as expected.`
-        : `The acpx version could not be read, so Claw Code cannot tell whether it was tested with it (${tested}). Chat may not work as expected.`);
+        ? `acpx ${release.join('.')} is outside the versions VSClaw was tested with (${tested}). Chat may not work as expected.`
+        : `The acpx version could not be read, so VSClaw cannot tell whether it was tested with it (${tested}). Chat may not work as expected.`);
 }

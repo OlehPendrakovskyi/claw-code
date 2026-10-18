@@ -1,5 +1,5 @@
 /**
- * Claw Code — hardening command parsing.
+ * VSClaw — hardening command parsing.
  *
  * The `openclaw.hardening.command` setting is user-level only (application
  * scope), yet it is still never interpolated into a shell: it is parsed into

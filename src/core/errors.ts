@@ -1,5 +1,5 @@
 /**
- * Error handling utilities for Claw Code.
+ * Error handling utilities for VSClaw.
  */
 
 /**

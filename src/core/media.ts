@@ -1,5 +1,5 @@
 /**
- * Media type utilities for Claw Code.
+ * Media type utilities for VSClaw.
  */
 
 /**

@@ -1,12 +1,12 @@
 # Changelog
 
-All notable changes to Claw Code are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to VSClaw are documented in this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Claw Code is a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) at version 0.2.1. This changelog starts at that fork. Changes made before the fork are recorded in the upstream repository. Each entry below is described relative to upstream 0.2.1.
+VSClaw is a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension) at version 0.2.1. This changelog starts at that fork. Changes made before the fork are recorded in the upstream repository. Each entry below is described relative to upstream 0.2.1.
 
 ## Unreleased
 
-The version numbering starts again at 0.1.0, which will be the first Claw Code release. The 0.2.1 that local builds carried before was the upstream version.
+The version numbering starts again at 0.1.0, which will be the first VSClaw release. The 0.2.1 that local builds carried before was the upstream version.
 
 ### Added
 
@@ -21,17 +21,18 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 - Line-range mentions such as `@src/app.ts#L5-10`, and **OpenClaw: Insert Selection Mention** (`Alt+K`, or `Cmd+Alt+K` on macOS).
 - Settings `openclaw.chat.attachOpenFile`, `openclaw.chat.hideToolActivity` and `openclaw.dashboardUrl`.
 - Image attachments on the acpx transport.
-- A warning, once per session, when the acpx on PATH is a version Claw Code was not tested with, or its version cannot be read. The chat still runs ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
+- A warning, once per session, when the acpx on PATH is a version VSClaw was not tested with, or its version cannot be read. The chat still runs ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 
 ### Changed
 
-- The project is renamed to Claw Code, with its own README, repository and homepage. Commands and settings keep the `openclaw.*` IDs.
+- The project was renamed to Claw Code, with its own README, repository and homepage. Commands and settings keep the `openclaw.*` IDs.
+- The project is renamed from Claw Code to VSClaw, after the name-availability check ([REL-1](docs/roadmap.md#3-release-identity-name-and-publisher)) found `claw-code` already taken by an unrelated project. The extension ID becomes `<publisher>.vsclaw`, so a build installed under the old ID is not upgraded by this one and has to be uninstalled first. Commands and settings keep the `openclaw.*` IDs.
 - The acpx transport reads the structured output of acpx (`--format json`) and passes the prompt through standard input. Each run ends exactly once, even when the process is killed or fails to start.
 - Conversation history sent to acpx is capped, and starts from the latest `/compact` summary.
 - Some settings run commands, carry the token, choose the agent, or change what it may approve. These now apply only from user settings; a workspace cannot set them.
 - `openclaw.autoConnect` runs the connect command only from user settings.
 - A blank `openclaw.hardening.command` now falls back to `openclaw`, as a blank `openclaw.command` already falls back to `openclaw status`, instead of stopping with an error ([#41](https://github.com/OlehPendrakovskyi/claw-code/issues/41)).
-- The `package.json` metadata describes Claw Code. It adds an issues link, uses the categories `AI` and `Chat`, and drops the `pnpm` field, which pnpm no longer reads.
+- The `package.json` metadata describes VSClaw. It adds an issues link, uses the categories `AI` and `Chat`, and drops the `pnpm` field, which pnpm no longer reads.
 - Gateway error messages explain what went wrong. Authentication and protocol errors stop the reconnect attempts. A pending pairing pauses them, and rate limits slow them down.
 
 ### Removed
@@ -51,7 +52,7 @@ The version numbering starts again at 0.1.0, which will be the first Claw Code r
 ### Security
 
 - The Gateway token is kept in VS Code's SecretStorage. A token in the old plaintext setting `openclaw.gateway.token` in user settings is moved there and deleted from `settings.json`, unless a different token is already saved, in which case it is only deleted. If SecretStorage or the deletion fails, the setting stays and a warning says so. A token in workspace settings is never used, and is deleted once the workspace is trusted.
-- Claw Code asks before it sends the token unencrypted, over `ws://`, to a Gateway on another machine, and sends nothing if you decline; it does not ask again for that Gateway until a gateway setting changes. You can allow it for the current window, or for good with the new setting `openclaw.gateway.allowUnencryptedUrls`, whose entries are compared as URLs. Changing the URL to such a Gateway no longer reconnects to it before you have confirmed.
+- VSClaw asks before it sends the token unencrypted, over `ws://`, to a Gateway on another machine, and sends nothing if you decline; it does not ask again for that Gateway until a gateway setting changes. You can allow it for the current window, or for good with the new setting `openclaw.gateway.allowUnencryptedUrls`, whose entries are compared as URLs. Changing the URL to such a Gateway no longer reconnects to it before you have confirmed.
 - Credentials are removed from the error messages and log lines of acpx, Connect, the Gateway transport, the access summary and the hardening status. This covers URL user names and passwords, sensitive values in query strings, and secrets written as `key=value`.
 - The extension no longer writes prompt text to its logs: a sent prompt is logged by its length, and the debug panel logs only the type of each message. acpx's stderr and an agent's error message, either of which can quote the prompt, are logged only by their size; the chat still shows the error, with credentials removed ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 - `@`-mentions attach only files inside the workspace, with symlink escapes rejected. A file dropped from outside the workspace is attached only after you confirm it. Every attachment is read up to a size limit, through a handle whose own path the operating system confirms is the file checked when it was attached: the fd link on Linux, `F_GETPATH` on macOS, `GetFinalPathNameByHandleW` on Windows, where a final symlink or junction is not followed either. On any other system attachments are refused ([#40](https://github.com/OlehPendrakovskyi/claw-code/issues/40)).

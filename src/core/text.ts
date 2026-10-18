@@ -1,5 +1,5 @@
 /**
- * Text manipulation utilities for Claw Code.
+ * Text manipulation utilities for VSClaw.
  */
 
 /**

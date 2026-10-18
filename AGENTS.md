@@ -1,6 +1,6 @@
 # Instructions for coding agents
 
-Claw Code is a VS Code extension for OpenClaw (TypeScript strict, esbuild, Vitest, oxlint, pnpm).
+VSClaw is a VS Code extension for OpenClaw (TypeScript strict, esbuild, Vitest, oxlint, pnpm).
 
 Before changing code or docs, read:
 
