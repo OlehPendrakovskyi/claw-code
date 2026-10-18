@@ -64,6 +64,10 @@ export const commands = {
     executeCommand: vi.fn(),
 };
 
+export const extensions = {
+    getExtension: vi.fn((_id: string) => undefined as unknown),
+};
+
 type MockWorkspaceFolder = { name?: string; uri: { fsPath: string } };
 
 function workspaceFolderList(): MockWorkspaceFolder[] | undefined {

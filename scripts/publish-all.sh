@@ -2,15 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Pinned packaging and publishing tools (roadmap REL-7). `vsce` alone would resolve the
-# deprecated `vsce` package, not `@vscode/vsce`.
-VSCE="@vscode/vsce@4.0.0"
-OVSX="ovsx@1.2.0"
-X_CMD="npx --yes"
-
-if command -v bun >/dev/null 2>&1; then
-  X_CMD="bunx"
-fi
+# Pinned packaging and publishing tools (roadmap REL-7). `pnpm exec` runs the installed package
+# binaries (dev dependencies), so pass the binary name, not a version spec it cannot resolve.
+# `vsce` alone would resolve the deprecated `vsce` package, not `@vscode/vsce`.
+VSCE="vsce"
+OVSX="ovsx"
 
 if [[ -f "${ROOT_DIR}/.env" ]]; then
   set -a
@@ -34,18 +30,18 @@ echo "Running prepublish build..."
 pnpm run vscode:prepublish
 
 VERSION="$(node -p "require('./package.json').version")"
-VSIX_PATH="out/openclaw-extension-${VERSION}.vsix"
+EXT_NAME="$(node -p "require('./package.json').name")"
+VSIX_PATH="out/${EXT_NAME}-${VERSION}.vsix"
 
 echo "Packaging VSIX to ${VSIX_PATH}..."
-${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX_PATH}"
+pnpm exec "${VSCE}" package --no-dependencies -o "${VSIX_PATH}"
 
 echo "Publishing to VS Code Marketplace (vsce)..."
-${X_CMD} "${VSCE}" publish --packagePath "${VSIX_PATH}" -p "${VSCE_PAT}"
+pnpm exec "${VSCE}" publish --packagePath "${VSIX_PATH}" -p "${VSCE_PAT}"
 
 echo "Publishing to Open VSX (ovsx)..."
-${X_CMD} "${OVSX}" publish --packagePath "${VSIX_PATH}" -p "${OVSX_TOKEN}"
+pnpm exec "${OVSX}" publish --packagePath "${VSIX_PATH}" -p "${OVSX_TOKEN}"
 
-EXT_NAME="$(node -p "require('./package.json').name")"
 PUBLISHER="$(node -p "require('./package.json').publisher")"
 
 echo "Publish complete."

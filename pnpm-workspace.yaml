@@ -4,6 +4,10 @@ allowBuilds:
   unrs-resolver: true
   # Its install script builds from source; the prebuilt @koromix/koffi-* binaries make that unnecessary.
   koffi: false
+  # Dev-only packaging tools (REL-7). vsce is invoked with an explicit PAT and signs nothing, and keytar
+  # only backs its interactive credential store, so neither native build script is needed.
+  "@vscode/vsce-sign": false
+  keytar: false
 overrides:
   "minimatch@10>brace-expansion": ^5.0.7
 # The packaged extension carries koffi's native binaries for every OS that uses them

@@ -4,12 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${ROOT_DIR}"
 
-# Pinned so a source install runs the same packager every time (roadmap REL-7).
-VSCE="@vscode/vsce@4.0.0"
-X_CMD="npx --yes"
-if command -v bun >/dev/null 2>&1; then
-  X_CMD="bunx"
-fi
+# Pinned packaging and publishing tools (roadmap REL-7). `pnpm exec` runs the installed package
+# binaries (dev dependencies), so pass the binary name, not a version spec it cannot resolve.
+VSCE="vsce"
 
 echo "Compiling..."
 pnpm run compile
@@ -18,7 +15,7 @@ VERSION="$(node -p "require('./package.json').version")"
 VSIX="vsclaw-${VERSION}.vsix"
 
 echo "Packaging ${VSIX}..."
-${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX}"
+pnpm exec "${VSCE}" package --no-dependencies -o "${VSIX}"
 
 IDE="cursor"
 if ! command -v cursor >/dev/null 2>&1; then
@@ -31,10 +28,13 @@ if ! command -v cursor >/dev/null 2>&1; then
   fi
 fi
 
-# The rename changed the extension ID, so the old build is a different extension that would
-# stay installed and contribute the same openclaw.* commands, settings and views (roadmap REL-2).
-echo "Removing the legacy extension id (openknot.claw-code), if present..."
-"${IDE}" --uninstall-extension openknot.claw-code >/dev/null 2>&1 || true
+# The rename and the publisher change both changed the extension ID, so a pre-rename build is a different
+# extension that would stay installed and contribute the same openclaw.* commands, settings and views
+# (roadmap REL-2).
+echo "Removing the pre-rename extension ids, if present..."
+for id in openknot.claw-code openknot.vsclaw; do
+  "${IDE}" --uninstall-extension "${id}" >/dev/null 2>&1 || true
+done
 
 echo "Installing into ${IDE}..."
 "${IDE}" --install-extension "${VSIX}" --force

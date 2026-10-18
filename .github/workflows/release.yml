@@ -1,0 +1,104 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # A tag does not trigger ci.yml, and the release job runs only on Ubuntu (where the
+  # packaged native-library runtime test is skipped), so require the full three-OS matrix
+  # on this exact commit before publishing — roadmap §7 requires CI green on all three OSes.
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build-and-publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 12
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Check rules
+        run: pnpm run check:rules
+
+      - name: Compile
+        run: pnpm run compile
+
+      - name: Test
+        run: pnpm run test:coverage
+
+      - name: Licence check
+        run: pnpm run license:check
+
+      # The tag is the source of truth (engineering.md §6, Workflow 2): the version comes from the tag with
+      # no manual bump, so fail unless it matches the manifest rather than publish a stale package.json.
+      - name: Resolve version from the tag
+        id: version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION="$(node -p "require('./package.json').version")"
+          if [ "${TAG_VERSION}" != "${MANIFEST_VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${MANIFEST_VERSION}"
+            exit 1
+          fi
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Package VSIX
+        id: vsix
+        run: |
+          EXT_NAME="$(node -p "require('./package.json').name")"
+          VSIX="out/${EXT_NAME}-${{ steps.version.outputs.version }}.vsix"
+          echo "vsix=${VSIX}" >> "$GITHUB_OUTPUT"
+          # vsce and ovsx are pinned dev dependencies (REL-7): `pnpm exec` runs the installed binary, so
+          # pass the binary name, not a `@vscode/vsce@<version>` spec (which `pnpm exec` cannot resolve).
+          pnpm exec vsce package --no-dependencies -o "${VSIX}"
+
+      - name: Publish to VS Code Marketplace
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          # --skip-duplicate keeps a retry past a version that already published, so a later-step
+          # failure (Open VSX, the GitHub Release) can be recovered by re-running the job.
+          pnpm exec vsce publish --packagePath "${{ steps.vsix.outputs.vsix }}" -p "${VSCE_PAT}" --skip-duplicate
+
+      - name: Publish to Open VSX
+        env:
+          OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+        run: |
+          pnpm exec ovsx publish --packagePath "${{ steps.vsix.outputs.vsix }}" -p "${OVSX_TOKEN}" --skip-duplicate
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            "${{ steps.vsix.outputs.vsix }}" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes

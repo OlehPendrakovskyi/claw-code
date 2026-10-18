@@ -6,6 +6,7 @@ import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
+import { detectLegacyExtensions, warnAboutLegacyExtensions } from './legacyExtension';
 import { migrateLegacyGatewayToken, promptForGatewayToken, resetDeviceIdentity } from '../core/gatewayConfig';
 import { errorMessage } from '../core/errors';
 import { redactText } from '../core/accessInfo/redact';
@@ -31,6 +32,18 @@ import {
 
 export async function activate(context: vscode.ExtensionContext) {
     log.info('activate() start');
+
+    // A pre-rename build is a different extension contributing the same openclaw.* commands, views and
+    // settings, so VS Code gives each id one owner: registering a command twice throws, while createTreeView
+    // silently replaces the existing view and leaves the other build's handlers bound to a provider it no
+    // longer owns (roadmap REL-2). Rather than register into that half-working coexistence, this build stays
+    // dormant while a pre-rename build is present — one owner per id — and asks the user to remove it.
+    const legacyInstalled = detectLegacyExtensions();
+    if (legacyInstalled.length) {
+        log.warn(`dormant: a build from before the rename is installed (${legacyInstalled.join(', ')})`);
+        void warnAboutLegacyExtensions(legacyInstalled);
+        return;
+    }
 
     const statusBarItem = initStatusBar();
     setStatus('idle');

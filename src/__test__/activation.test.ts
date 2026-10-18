@@ -3,8 +3,15 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { activate, deactivate } from '../extension';
 import { connect, log } from '../vscode/commands';
+import { detectLegacyExtensions, warnAboutLegacyExtensions } from '../vscode/legacyExtension';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
+
+vi.mock('../vscode/legacyExtension', async () => ({
+    ...await vi.importActual<typeof import('../vscode/legacyExtension')>('../vscode/legacyExtension'),
+    detectLegacyExtensions: vi.fn(() => []),
+    warnAboutLegacyExtensions: vi.fn(async () => undefined),
+}));
 
 vi.mock('../chat/acpxProjectConfig', async () => ({
     ...await vi.importActual<typeof import('../chat/acpxProjectConfig')>('../chat/acpxProjectConfig'),
@@ -205,6 +212,33 @@ describe('extension activation', () => {
             const { context } = makeContext();
             await expect(activate(context)).resolves.toBeUndefined();
             expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
+        });
+    });
+
+    describe('legacy extension id', () => {
+        afterEach(() => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue([]);
+        });
+
+        it('warns and stays dormant when a pre-rename build is installed', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.vsclaw']);
+            const { context, subscriptions } = makeContext();
+            await expect(activate(context)).resolves.toBeUndefined();
+            expect(warnAboutLegacyExtensions).toHaveBeenCalledWith(['openknot.vsclaw']);
+            // One owner per id: the later build registers nothing while a pre-rename build owns them.
+            expect(vscode.commands.registerCommand).not.toHaveBeenCalled();
+            expect(vscode.window.createTreeView).not.toHaveBeenCalled();
+            expect(vscode.window.registerWebviewViewProvider).not.toHaveBeenCalled();
+            expect(subscriptions).toHaveLength(0);
+        });
+
+        it('does not warn and registers normally when no pre-rename build is installed', async () => {
+            const { context, subscriptions } = makeContext();
+            await activate(context);
+            expect(warnAboutLegacyExtensions).not.toHaveBeenCalled();
+            expect(vscode.commands.registerCommand).toHaveBeenCalled();
+            expect(vscode.window.createTreeView).toHaveBeenCalled();
+            expect(subscriptions.length).toBeGreaterThan(0);
         });
     });
 
