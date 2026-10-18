@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Reusable so the release can require this exact matrix (all three OSes) on the
+  # tagged commit before anything is published; a tag alone does not trigger CI.
+  workflow_call:
 
 permissions:
   contents: read
