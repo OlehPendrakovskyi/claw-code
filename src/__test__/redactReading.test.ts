@@ -1,7 +1,7 @@
 import { readingOf, ReadingBuilder, replaceInReading, type Reading } from '../core/accessInfo/reading';
 import * as fs from 'fs';
 import * as path from 'path';
-import { readingForRedaction, stripTerminalCodes } from '../core/accessInfo/redact';
+import { readingForRedaction, redactText, redactTextReading, stripTerminalCodes } from '../core/accessInfo/redact';
 
 type GoldenCase = { input: string; normalized: string; stripped: string };
 
@@ -151,13 +151,78 @@ describe('readingForRedaction', () => {
         const atoms = ['\u001b[', '\u001b(', '\u001b]', '\u009b', '\u0007', '\\u001b[', '\\x1b(', '\\u0070', '\\u00', '\\/', '\\"', '\\t',
             '\t', '\n', '\u0000', '﷐', 'token', 'pass', '=', ' ', '@', '//', 'https://', 'https:/', 'h\tttp:', 'a', '0', 'm', 'é', '😀'];
         let seed = 11;
-        const next = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) >>> 8) % n;
+        // `Math.imul` keeps the product in 32 bits; a plain `*` overflows 2^53, loses the low bits and cycles early.
+        const next = (n: number): number => ((seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff) >>> 8) % n;
+        const inputs = new Set<string>();
         for (let round = 0; round < 2000; round++) {
             let input = '';
             for (let k = 1 + next(10); k > 0; k--) {
                 input += atoms[next(atoms.length)];
             }
+            inputs.add(input);
             expectWellFormed(input, readingForRedaction(input));
+        }
+        // The sample is about as varied as it claims (short inputs repeat), which a generator that cycles would not be.
+        expect(inputs.size).toBeGreaterThan(1500);
+    });
+});
+
+/** The input text of each range `reading` records as hidden. */
+const hiddenTexts = (input: string, reading: Reading): string[] => (reading.hidden ?? []).map(([from, to]) => input.slice(from, to));
+
+/** Redaction outputs before #82 S-b, generated once from the implementation it names. */
+const outputs: { cases: Array<{ input: string; redactText: string }> } = (() => {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/redact-output-golden.json'), 'utf8'));
+    const cases: unknown = typeof parsed === 'object' && parsed !== null && 'cases' in parsed ? parsed.cases : undefined;
+    const isCase = (value: unknown): value is { input: string; redactText: string } => typeof value === 'object' && value !== null
+        && 'input' in value && 'redactText' in value && typeof value.input === 'string' && typeof value.redactText === 'string';
+    if (!Array.isArray(cases) || !cases.every(isCase)) {
+        throw new Error('redact-output-golden.json: expected { cases: { input, redactText }[] }');
+    }
+    return { cases };
+})();
+
+describe('redactTextReading', () => {
+    it('records the input range of every value a pass masks, whatever text replaced it (S1)', () => {
+        const cases: Array<[string, string, string[]]> = [
+            ['token=PRIVATE', 'token=***', ['PRIVATE']],
+            ['token: PRIVATE_PREFIX PRIVATE_SUFFIX', 'token=***', ['PRIVATE_PREFIX PRIVATE_SUFFIX']],
+            ['see https://alice:pw@h.example/x', 'see https://***:***@h.example/x', ['alice:pw']],
+            ['see //alice:pw@host/x', 'see //***@host/x', ['alice:pw']],
+            ['Bearer abc', 'Bearer ***', ['abc']],
+            ['Basic dXNlcjpwYXNz', 'Basic ***', [' dXNlcjpwYXNz']],
+            ['Authorization: Basic dXNlcjpwYXNz', 'Authorization=***', ['Basic dXNlcjpwYXNz']],
+            ['https://h.example/?token=abc', 'https://h.example/?token=***', ['abc']],
+            // A quoted value is masked between its quotes first, then the pair whole.
+            ['{"password":"x y"}', '{"password"=***}', ['x y', '"x y"']],
+            // Through the normalisation maps: the value's own input range.
+            ['\\u0070ass=x', 'pass=***', ['x']],
+            // A literal `***` is no mask.
+            ['see *** here', 'see *** here', []],
+        ];
+        for (const [input, text, hidden] of cases) {
+            const reading = redactTextReading(input);
+            expect(reading.text).toBe(text);
+            expect(hiddenTexts(input, reading)).toEqual(hidden);
+        }
+    });
+
+    it('has redactText\'s output as its text, and shows nothing it records as hidden (S5)', () => {
+        for (const { input, redactText: expected } of outputs.cases) {
+            const reading = redactTextReading(input);
+            expect(reading.text).toBe(expected);
+            expect(redactText(input)).toBe(expected);
+            const hidden = new Uint8Array(input.length);
+            for (const [from, to] of reading.hidden ?? []) {
+                expect(0 <= from && from <= to && to <= input.length).toBe(true);
+                hidden.fill(1, from, to);
+            }
+            // A character copied from the input (a one-character range) is never one a mask hid.
+            for (let i = 0; i < reading.text.length; i++) {
+                if (reading.to[i] - reading.from[i] === 1 && reading.text[i] === input[reading.from[i]]) {
+                    expect(hidden[reading.from[i]]).toBe(0);
+                }
+            }
         }
     });
 });

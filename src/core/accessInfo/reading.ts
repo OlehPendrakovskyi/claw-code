@@ -7,6 +7,9 @@ export interface Reading {
     readonly text: string;
     readonly from: Int32Array;
     readonly to: Int32Array;
+    /** The input ranges the masks made so far hide (design S1), whatever text replaced them: `token: PRIVATE` made
+     *  `token=***` hides the range of `PRIVATE`. A pass that copies or rewrites masked text keeps them. */
+    readonly hidden?: ReadonlyArray<readonly [number, number]>;
 }
 
 /** The input itself, each character standing for itself. */
@@ -24,13 +27,19 @@ export function readingOf(input: string): Reading {
  *  standing for the input range that stretch came from. Linear in what is appended. */
 export class ReadingBuilder {
     private readonly parts: string[] = [];
+    private readonly masked: Array<readonly [number, number]> = [];
+    /** Whether all that was appended is `source` copied in order from its start. Such a prefix is only counted, not
+     *  copied, until something else is appended ({@link materialize}), and {@link build} returns `source` itself
+     *  when it is the whole: a pass that changes nothing costs no copy. */
+    private unchanged = true;
     private from: Int32Array;
     private to: Int32Array;
     private length = 0;
 
     constructor(private readonly source: Reading) {
-        this.from = new Int32Array(Math.max(16, source.text.length));
-        this.to = new Int32Array(Math.max(16, source.text.length));
+        // Grown by doubling as text is appended, so a builder that ends up returning its source allocates little.
+        this.from = new Int32Array(16);
+        this.to = new Int32Array(16);
     }
 
     /** Appends `source.text` from `start` to `end`, each character with its own range. */
@@ -38,6 +47,11 @@ export class ReadingBuilder {
         if (end <= start) {
             return;
         }
+        if (this.unchanged && start === this.length) {
+            this.length = end;
+            return;
+        }
+        this.materialize();
         this.reserve(end - start);
         this.parts.push(this.source.text.slice(start, end));
         this.from.set(this.source.from.subarray(start, end), this.length);
@@ -53,12 +67,23 @@ export class ReadingBuilder {
         if (text === '') {
             return;
         }
+        this.materialize();
         const [from, to] = end > start ? [this.source.from[start], this.source.to[end - 1]] : this.between(start);
         this.reserve(text.length);
         this.parts.push(text);
         this.from.fill(from, this.length, this.length + text.length);
         this.to.fill(to, this.length, this.length + text.length);
         this.length += text.length;
+    }
+
+    /** {@link put}, for a mask: `text` hides `source.text` from `start` to `end`, and that stretch's input range is
+     *  recorded as hidden. */
+    mask(text: string, start: number, end: number): void {
+        this.materialize();
+        if (end > start) {
+            this.masked.push([this.source.from[start], this.source.to[end - 1]]);
+        }
+        this.put(text, start, end);
     }
 
     /** The number of characters appended so far. */
@@ -68,6 +93,10 @@ export class ReadingBuilder {
 
     /** Drops every character appended after the first `size`, for a scanner that backs out what it appended. */
     truncate(size: number): void {
+        if (this.unchanged) {
+            this.length = Math.min(this.length, size);
+            return;
+        }
         let excess = this.length - size;
         while (excess > 0) {
             const last = this.parts[this.parts.length - 1];
@@ -83,7 +112,29 @@ export class ReadingBuilder {
     }
 
     build(): Reading {
-        return { text: this.parts.join(''), from: this.from.slice(0, this.length), to: this.to.slice(0, this.length) };
+        if (this.unchanged && this.length === this.source.text.length) {
+            return this.source;
+        }
+        this.materialize();
+        const hidden = this.masked.length === 0 ? this.source.hidden : [...(this.source.hidden ?? []), ...this.masked];
+        return { text: this.parts.join(''), from: this.from.slice(0, this.length), to: this.to.slice(0, this.length), hidden };
+    }
+
+    /** Copies in the prefix of `source` counted so far, once something other than an in-order copy is appended. */
+    private materialize(): void {
+        if (!this.unchanged) {
+            return;
+        }
+        this.unchanged = false;
+        const prefix = this.length;
+        this.length = 0;
+        if (prefix > 0) {
+            this.reserve(prefix);
+            this.parts.push(this.source.text.slice(0, prefix));
+            this.from.set(this.source.from.subarray(0, prefix), 0);
+            this.to.set(this.source.to.subarray(0, prefix), 0);
+            this.length = prefix;
+        }
     }
 
     /** The range an insertion before `source` character `index` stands for (see {@link put}). */
@@ -149,4 +200,43 @@ function nextIndex(text: string, index: number, unicode: boolean): number {
     const unit = text.charCodeAt(index);
     const following = text.charCodeAt(index + 1);
     return unit >= 0xd800 && unit <= 0xdbff && following >= 0xdc00 && following <= 0xdfff ? index + 2 : index + 1;
+}
+
+/** One piece of what a match of {@link rewriteInReading} becomes, over `source.text` from `start` to `end`: that text
+ *  copied, other `text` put in its place, or other `text` masking it. */
+export type Piece =
+    | { readonly copy: true; readonly start: number; readonly end: number }
+    | { readonly put: string; readonly start: number; readonly end: number }
+    | { readonly mask: string; readonly start: number; readonly end: number };
+
+/** `reading` with every match of the global `pattern` rewritten as `rewrite` says, piece by piece, in order and
+ *  covering the match, or left as it is when `rewrite` gives undefined. The text is what `String.prototype.replace`
+ *  would give with the pieces' texts joined; a masked piece is recorded as hidden. */
+export function rewriteInReading(reading: Reading, pattern: RegExp, rewrite: (match: RegExpExecArray) => readonly Piece[] | undefined): Reading {
+    pattern.lastIndex = 0;
+    let match = pattern.exec(reading.text);
+    if (match === null) {
+        return reading;
+    }
+    const builder = new ReadingBuilder(reading);
+    let copied = 0;
+    for (; match !== null; match = pattern.exec(reading.text)) {
+        const pieces = rewrite(match);
+        if (pieces === undefined) {
+            continue;
+        }
+        builder.copy(copied, match.index);
+        for (const piece of pieces) {
+            if ('copy' in piece) {
+                builder.copy(piece.start, piece.end);
+            } else if ('put' in piece) {
+                builder.put(piece.put, piece.start, piece.end);
+            } else {
+                builder.mask(piece.mask, piece.start, piece.end);
+            }
+        }
+        copied = match.index + match[0].length;
+    }
+    builder.copy(copied, reading.text.length);
+    return builder.build();
 }

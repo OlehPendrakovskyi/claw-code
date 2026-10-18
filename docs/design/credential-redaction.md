@@ -39,7 +39,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
 
-Status: in progress: S-a (`reading.ts`, `readingForRedaction`) is built; S-b to S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+Status: in progress: S-a (`reading.ts`, `readingForRedaction`) and S-b (`redactTextReading`, passes recording what they hide) are built; S-c to S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
 
 ### Invariants
 
@@ -75,9 +75,9 @@ The view after each pass is exactly the string today's pipeline holds at that po
 - a userinfo mask stands as today's literal `***@`;
 - `redactUrl`'s masked query values are turned back into `MASK` (`MASKED_QUERY_VALUE`), as `maskNormalized` does now.
 
-Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b's test is that, for every existing input, each view equals today's intermediate string.
+Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b holds this by construction: each pass's string form returns its reading form's text, so there is one implementation of each, and the existing tests and a golden corpus of outputs from before S-b check the final text.
 
-**S6. URLs keep today's spelling.** `redactUrl`'s re-serialised URL is one edit over the URL's span. It hides the input ranges of the userinfo and the sensitive query values that it masks, located in the raw text. A URL in which another reading hides a character outside those ranges is masked whole (S4).
+**S6. URLs keep today's spelling.** `redactUrl`'s re-serialised URL is one edit over the URL's span. It hides the input ranges of the userinfo and the sensitive query values that it masks, located in the raw text. A URL in which another reading hides a character outside those ranges is masked whole (S4). *As built in S-b:* such an edit records the URL's whole span as hidden, which over-hides. Most credentials in URLs are masked, with exact ranges, by the earlier userinfo and query passes before `redactUrl` sees them. Locating `redactUrl`'s own masks in the raw text is a follow-up before S-d.
 
 **S7. Linear.** Each reading costs one run of the pipeline, the number of readings is bounded (S3), and each map is linear in its text, so the whole costs a constant times the input (R64). Text with no marked final byte runs the pipeline once, as today.
 
@@ -106,7 +106,7 @@ Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b's test i
 | PR | Scope | Output change |
 |---|---|---|
 | S-a | `Reading` and maps for the three normalisation steps; a golden corpus, generated from the pre-refactor implementation, that the base reading's text must equal | none |
-| S-b | Every pass reports edits with what they hide, `redactUrl` included (S1, S5, S6); the base reading rendered with its edits | none: every existing test passes unchanged, and each view equals today's intermediate string |
+| S-b | Every pass reports edits with what they hide, `redactUrl` included (S1, S5, S6); the base reading rendered with its edits; a golden corpus of today's outputs | none: every existing test and the corpus pass unchanged, and each view equals today's intermediate string |
 | S-c | The witness automaton, escape-aware (S3); unit-tested on runs alone | none |
 | S-d | The readings and their union (S3, S4), with S9's acceptance test | cases 8, 9 and 10 masked, as far as S9 confirms |
 | S-e | `joinBoundary` on spans (S8) | closes open question 2 |
