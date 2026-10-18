@@ -359,6 +359,26 @@ describe('ChatServiceFactory', () => {
             expect(warning).toHaveBeenCalledTimes(2);
         });
 
+        // Another send may already use the client the grant allowed: the stale dismissal must not park it.
+        it('connects rather than parking when the URL is allowed while its dialog is open and the dialog is then dismissed', async () => {
+            let answer: (choice: string | undefined) => void = () => undefined;
+            warning.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+            const factory = new ChatServiceFactory(contextStub());
+
+            const first = factory.resolve();
+            await new Promise((resolve) => setImmediate(resolve));
+            mockAllowedUrls.mockReturnValue([REMOTE]);
+            await changeConfiguration('openclaw.gateway.allowUnencryptedUrls');
+            const second = await factory.resolve();
+            answer(undefined);
+            const dismissed = await first;
+
+            expect(second.transport).toBe('gateway');
+            expect(dismissed.transport).toBe('gateway');
+            expect(mockSuspend).not.toHaveBeenCalled();
+            expect(warning).toHaveBeenCalledTimes(1);
+        });
+
         it('rejects the send in forced gateway mode when the user declines, and every later send without asking', async () => {
             mockSettings.mockReturnValue({ url: REMOTE, transport: 'gateway', protocolVersion: 'auto' });
             warning.mockResolvedValue(undefined);

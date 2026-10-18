@@ -192,10 +192,11 @@ export class ChatServiceFactory {
       const declined = this.cleartextDeclinedUrls.has(canonicalGatewayUrl(plan.url));
       const confirmed = !declined && (await this.confirmCleartext(plan.url));
       // Settings or the token may have changed while the dialog was open: plan again, with the answer
-      // recorded, unless the user declined the URL the settings still name. A declined send follows the
-      // transport mode set now, not the one read before the dialog.
+      // recorded, unless the user declined the URL the settings still name and still do not allow. A URL
+      // allowed meanwhile may already carry another send's client, which a stale dismissal must not park.
+      // A declined send follows the transport mode set now, not the one read before the dialog.
       const current = getGatewaySettings();
-      if (confirmed || current.url !== plan.url || current.transport === 'acpx') {
+      if (confirmed || current.url !== plan.url || current.transport === 'acpx' || this.isCleartextAllowed(plan.url)) {
         return this.resolve(existing);
       }
       // Declined: the token is not sent, and no client keeps a socket for it. The answer is kept only when no
