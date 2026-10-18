@@ -476,8 +476,11 @@ describe('ChatServiceFactory', () => {
         });
 
         it('keeps a client on an allowed URL when the settings switch to an unconfirmed one and SecretStorage fails', async () => {
+            // Start on loopback: the block's REMOTE default would decline and create no client to keep.
+            mockSettings.mockReturnValue({ url: 'ws://127.0.0.1:18789', transport: 'auto', protocolVersion: 'auto' });
             const factory = new ChatServiceFactory(contextStub());
-            await factory.resolve();
+            const first = await factory.resolve();
+            expect(first.transport).toBe('gateway');
 
             mockToken.mockRejectedValue(new Error('keyring locked'));
             mockSettings.mockReturnValue({ url: REMOTE, transport: 'auto', protocolVersion: 'auto' });
