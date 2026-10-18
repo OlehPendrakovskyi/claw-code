@@ -8,7 +8,10 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 ## U. Malformed URL userinfo
 
-**U3. A line ends at LF, CR, U+2028 or U+2029.** Every userinfo scanner and regex uses this one set (`LINE_END`). A password run that goes to "the last `@` on its line" stops there, and so does the search for a path after a port-like prefix. An email on the next line is never read as part of a password.
+**U3. A password run that goes to "the last `@` on its line" ends at LF, CR, U+2028 or U+2029.** These runs (a password holding whitespace, and the search for a path after a port-like prefix) use this one set (`LINE_END`), so an email on a later line of prose is not read as part of such a password.
+
+- **U3a. Exception: characters a URL parser drops.** A parser removes tabs, LF and CR anywhere in a URL, so a userinfo that holds no other whitespace runs across them as the parser reads it. Examples: `https://alice:123\nmore\nPRIVATE@host` and `//example.com\nbob@example.org`, which a parser reads as one URL and which are masked as one.
+- **U3b. No exception for U+2028 and U+2029.** A parser treats them as whitespace, so they always end a run.
 
 **U4. The network-path form follows the same rules as the scheme form.** `//alice:…` (RFC 3986 §4.2) and `https://alice:…` are delimited alike. Every userinfo test covers both spellings.
 
@@ -16,6 +19,7 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 - `maskUserinfo` and `scanLine` (the `scheme://` form) and `maskAmbiguousNetworkUserinfo` (the `//` form) end a line with `LINE_END`.
 - `NETWORK_PATH_USERINFO` excludes the same four characters from its spaced-password alternative.
+- U3a is held by `maskBrokenUserinfo`, which reads an authority across tabs, LF and CR up to its first `/`, `?`, `#` or other whitespace. It is also held by the break-crossing in `maskUserinfo` (`PARSER_IGNORED_CHAR`), which applies only to a `user:` run.
 
 ## Open questions
 
