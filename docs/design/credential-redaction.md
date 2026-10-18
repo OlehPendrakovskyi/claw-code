@@ -105,7 +105,7 @@ Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b's test i
 
 | PR | Scope | Output change |
 |---|---|---|
-| S-a | `Reading` and maps for the three normalisation steps; a property test that the base reading with no edits is today's normalised text | none |
+| S-a | `Reading` and maps for the three normalisation steps; a golden corpus, generated from the pre-refactor implementation, that the base reading's text must equal | none |
 | S-b | Every pass reports edits with what they hide, `redactUrl` included (S1, S5, S6); the base reading rendered with its edits | none: every existing test passes unchanged, and each view equals today's intermediate string |
 | S-c | The witness automaton, escape-aware (S3); unit-tested on runs alone | none |
 | S-d | The readings and their union (S3, S4), with S9's acceptance test | cases 8, 9 and 10 masked, as far as S9 confirms |

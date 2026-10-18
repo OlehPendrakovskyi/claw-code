@@ -1,5 +1,13 @@
 import { readingOf, ReadingBuilder, replaceInReading, type Reading } from '../core/accessInfo/reading';
-import { readingForRedaction } from '../core/accessInfo/redact';
+import * as fs from 'fs';
+import * as path from 'path';
+import { readingForRedaction, stripTerminalCodes } from '../core/accessInfo/redact';
+
+/** Inputs and their normalisation before #82 S-a, generated once from the pre-refactor implementation. */
+const golden = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/redact-normalization-golden.json'), 'utf8')) as {
+    generatedFrom: string;
+    cases: Array<{ input: string; normalized: string; stripped: string }>;
+};
 
 /** The input range character `i` of `reading` stands for, as a string of `input`. */
 const source = (input: string, reading: Reading, i: number): string => input.slice(reading.from[i], reading.to[i]);
@@ -72,6 +80,18 @@ describe('reading', () => {
 });
 
 describe('readingForRedaction', () => {
+    it('has the text the normalisation had before readings (S-a), on a golden corpus', () => {
+        // Generated from the implementation at the commit it names; a difference is a change in what redactText
+        // masks, so the corpus is not regenerated to make it pass.
+        expect(golden.cases.length).toBeGreaterThan(1000);
+        for (const { input, normalized, stripped } of golden.cases) {
+            const reading = readingForRedaction(input);
+            expect(reading.text).toBe(normalized);
+            expect(stripTerminalCodes(input)).toBe(stripped);
+            expectWellFormed(input, reading);
+        }
+    });
+
     it('maps a decoded escape to the whole escape', () => {
         const input = '\\u0070ass=x';
         const reading = readingForRedaction(input);
