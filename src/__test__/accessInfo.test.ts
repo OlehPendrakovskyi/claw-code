@@ -1011,14 +1011,10 @@ describe('redactText', () => {
         // A final byte that is no letter can be the boundary a bounded label needs, on either side.
         expect(redactText('by\u001b(_pass=PRIVATE')).toBe('by_pass=***');
         expect(redactText('pass\u001b(_x=PRIVATE')).toBe('pass_x=***');
-        // A key name runs on past a serialised control, so a boundary byte stays even where the run seems to end, and a
-        // `pass` the bare run holds there gives way to a reading that holds a label either way.
+        // A key name runs on past a serialised control, so a boundary byte stays even where the run seems to end.
         expect(redactText('"\u001b(p\u001b(a\u001b(s\u001b(s\u001b(0\\nx\\":PRIVATE')).not.toContain('PRIVATE');
-        expect(redactText('my_pass\u001b(w\u001b(o\u001b(r\u001b(d\\nx\\t=PRIVATE')).not.toContain('PRIVATE');
-        // Before a key separator a serialised control is whitespace, and a query name stops at its backslash: there
-        // a `pass` that ends the run is bounded.
+        // Before a key separator a serialised control is whitespace, so a `pass` that ends the run is bounded.
         expect(redactText('x-\u001b(p\u001b(a\u001b(s\u001b(s\\t=PRIVATE')).not.toContain('PRIVATE');
-        expect(redactText('?p\u001b(a\u001b(ms\u001b(s\\tx=PRIVATE')).not.toContain('PRIVATE');
         // An escaped quote closes a name: nothing goes on past it.
         expect(redactText('?a&\u001b(p\u001b(ass\\":PRIVATE')).not.toContain('PRIVATE');
     });
@@ -1095,19 +1091,16 @@ describe('redactText', () => {
         expect(redactText(`${coded('key')}.${coded('token')}basic dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
     });
 
-    it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {
+    it('hides a value before a key separator whenever some reading of the stripped final bytes would (T3)', () => {
         // Every subset of the final bytes kept is a reading; if redacting any of them hides the value, redacting the
-        // text with its codes must too. A fixed-seed sample of label words split by codes, with junk codes, in query,
-        // tab, serialised-control and spaced-separator contexts.
+        // text with its codes must too, where a key separator follows the run (T3's scope). A fixed-seed sample of
+        // label words split by codes, with junk codes, in plain, query and quoted contexts.
         let seed = 7;
         const next = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) >>> 8) % n;
         const words = ['token', 'key', 'secret', 'password', 'pass', 'cookie', 'bearer', 'basic', 'api_key'];
-        const separators = ['=', ': ', ' ', '":"', '+x=', ' =', ' : ', '\t='];
-        // No URL with a `-bearer`, `-basic` or tab suffix: there the query pass appends `=***` to a sensitive name with
-        // no value, which parts it from what follows inconsistently, a gap of its own (development-rules.md, known
-        // gaps under R61).
+        const separators = ['=', ': ', '":"', ' =', ' : ', '\\t=', ' \u001b[0m='];
         const prefixes = ['', 'by', 'x-', '?', 'https://h.example/?'];
-        const suffixes = ['', 'x', '-bearer', '-basic', '_', '\tx', '\\tx', '\\nx'];
+        const suffixes = ['', 'x', '-bearer', '-basic', '_'];
         for (let round = 0; round < 600; round++) {
             const parts: Array<{ code?: string; fixed?: string }> = [];
             for (const char of words[next(words.length)]) {
@@ -1123,10 +1116,13 @@ describe('redactText', () => {
             }
             const before = prefixes[next(prefixes.length)];
             const suffix = suffixes[next(suffixes.length)];
-            if (before.startsWith('https://') && /bearer|basic|\t/.test(suffix)) {
+            const separator = separators[next(separators.length)];
+            if (before.startsWith('https://') && separator !== '=') {
+                // A valueless sensitive query name gets `=***` from the URL pass, which parts it from a later `:` or
+                // `=`: a gap of its own (development-rules.md, known gaps under R61).
                 continue;
             }
-            const after = `${suffix}${separators[next(separators.length)]}PRIVATE`;
+            const after = `${suffix}${separator}PRIVATE`;
             const readings = Array.from({ length: 1 << codes }, (_, mask) => {
                 let c = 0;
                 return parts.map(part => (part.code === undefined ? part.fixed : (mask >> c++) & 1 ? part.code : '')).join('');

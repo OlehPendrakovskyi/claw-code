@@ -12,24 +12,22 @@ A terminal code is stripped before any masking pass runs. Its final byte may be 
 
 **T1. One label vocabulary.** The strip-time label check knows exactly the labels the masking passes read: `LABELS` in `redact.ts`. Each one says where it may sit in a run: anywhere (`SENSITIVE_KEY`, `CREDENTIAL_HEADER_KEY`), apart from other letters (`pass`), or as a whole word ending the run (`bearer`, `basic`, as `LABEL_WORD`). Every spelling those regexes accept beyond these (`api_key`, `access-key`, `set-cookie`) contains one of them.
 
-**T2. A label is judged with the separator after it.** A key or header label counts before any separator: a query name runs on through a tab or other characters (`?toke ESC(n \tx=`), and a key through a serialised control (`toke ESC(n \bx=`). `bearer` and `basic` count only before whitespace that has no key separator after it, as the Bearer and Basic passes need (`bearer =x` opens nothing), or at the end of the text.
+**T2. T3 acts only right before a key separator.** The separator is `:` or `=`, after optional closing quotes and whitespace, raw or serialised. There, only a key or header label masks the value: `bearer` and `basic` take no value that opens with `=` or `:`. The separator is judged with the marked bytes of later runs and without them, since either may be what is left (`bearer ESC[0m=` reads `bearer =`). Anywhere else (prose, a Basic payload, a name that runs on through a tab or serialised control), the first rule's reading stands unchanged.
 
-**T3. The earlier rule's reading stands wherever it holds a label that acts there; otherwise the bytes of one reading that does are kept, and only those.**
+**T3. Right before a key separator, a reading that forms a key label adds its bytes to the first rule's.**
 - R79's first rule reads the run first (`firstReading`):
   - with no marked byte kept, if that is a label;
   - else with each byte that completes a label with its neighbours on its own;
   - else with every byte, if that makes a label.
   
-  It reads every kind of label at once and keeps bytes generously, so the other passes see the run much as it was: a header keeps its whole `cookie`, and a Basic credential keeps the characters that make it base64. Wherever its output holds a label that acts before the separator after the run (T2), it stands.
-- Otherwise, if some reading forms a key label, the bytes of one such reading stay and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`. Failing that, the same holds for a word label.
-- A bounded label also keeps, on each side, the nearest marked byte that is no letter (for `pass`) or no word character (before `bearer`, `basic`), if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`. The masking passes read a name on past the run (`pass ESC(0 \nx`), so a boundary the run seems to have may be none.
-- After a tab or a serialised control with no key separator after it, one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label counts there only if it holds as though a letter followed the run, the earlier rule's reading included. One that holds only where the name stops is the last resort.
-- A word that only the dropped bytes would form, where the run already holds a key, is not looked for (open question 3).
+  It keeps bytes generously, so the other passes see the run much as it was: a header keeps its whole `cookie`, and a Basic payload keeps the characters that make it base64.
+- If a key separator follows and that reading holds no key or header label, the bytes of one reading that forms one are **added** to the bytes it kept, and none of those is dropped. `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`. If the result still holds no key label, the first rule's reading stands.
+- `pass` also keeps, on each side, the nearest marked byte that is no letter, if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`.
 
 ### Mechanism
 
-- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`, `NAME_GOES_ON_AT`). It takes `firstReading` wherever that holds a label acting there, judged with the masking passes' own regexes, and otherwise asks `labelBytes`: keys, then words, then keys that hold only where the name stops.
-- `labelBytes` matches each allowed label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end, and `keepBoundary` adds the boundary bytes.
+- `keepLabelBytes` judges the separator after each run (`separated`), on the text and on `withoutMarkedBytes`, which is built once and only when needed. `keepRunLabelBytes` takes `firstReading`'s kept bytes and, before a separator where they hold no key label, adds those `labelBytes` finds.
+- `labelBytes` matches each key label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end, and `keepBoundary` adds the boundary bytes.
 - Each label reads the run once forward and its match once back, with constant work per character, so stripping stays linear (R64).
 - A test checks T3 directly: for a fixed-seed sample of label words split by codes, in query, tab, serialised-control and spaced-separator contexts, if any reading of the final bytes hides the value, the text with its codes must too.
 
@@ -73,9 +71,8 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
-3. **A word that only the dropped bytes would form, next to a key.** When the earlier rule's reading holds a key label, it stands, even where only a `bearer` or `basic` formed by bytes it drops would mask what follows. `token-beare ESC(r PRIVATE` and `ESC(t…ESC(r PRIVATE` keep `PRIVATE`, as `main` does. #81 tried three ways to choose between the kinds and dropped each under R8:
-   - holding one label of each kind at once, which broke headers and Basic credentials that need the bytes the minimal reading drops;
-   - redacting both readings over a window, which failed because what decides can lie past any window (`\\` repeated, then `tx=`), and "fewer characters visible" is not "the value hidden";
-   - always keeping the word before whitespace.
+3. **Readings away from a key separator.** T3 acts only right before a key separator. Elsewhere the first rule's reading stands, as on `main`, even where another reading would mask what follows. Examples, all the same on `main`:
+   - a `bearer` that only the dropped bytes form before a plain value (`token-beare ESC(r PRIVATE`);
+   - a key whose name runs on through a serialised control (`my_pass ESC(w…ESC(d \nx\t=PRIVATE`, `?p ESC(a…ESC(s \tx=PRIVATE`).
    
-   Tracking which input spans each reading hides, and masking a span where neither covers the other, is the alternative.
+   #81 tried wider rules over five review rounds and dropped each under R8. Each one changed text that another pass depends on: a header's name, a Basic payload, a label of the other kind. Or it chose between readings by a measure that does not hold: a bounded window around the run, or "fewer characters visible". Tracking which input spans each reading hides, and masking a span where neither covers the other, is the alternative.
