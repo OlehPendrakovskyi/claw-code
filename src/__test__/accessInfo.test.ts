@@ -1072,6 +1072,18 @@ describe('redactText', () => {
         }
     });
 
+    it('resolves a key and a word that one output cannot both hold by what the masking passes hide after the run (T3)', () => {
+        const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
+        // Before a serialised tab and `x=`, the key name runs on to the `=`: only `token` hides the value.
+        for (const word of ['tokenbasic', 'tokenbearer']) {
+            expect(redactText(`${coded(word)}\\tx=PRIVATE`)).toBe('token\\tx=***');
+        }
+        // Before a plain value, only `bearer` does.
+        for (const tail of [' PRIVATE', '\\tPRIVATE']) {
+            expect(redactText(`${coded('tokenbearer')}${tail}`)).not.toContain('PRIVATE');
+        }
+    });
+
     it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {
         // Every subset of the final bytes kept is a reading; if redacting any of them hides the value, redacting the
         // text with its codes must too. A fixed-seed sample of label words split by codes, with junk codes, in query,
@@ -1994,6 +2006,8 @@ describe('redactText', () => {
             'pa\u001b(s'.repeat(size / 4) + '=x',
             '\u001b(t\u001b(o\u001b(k\u001b(e'.repeat(size / 12) + ' x',
             'au' + '\u001b(t'.repeat(size / 3) + 'horization=x',
+            // Every run a key and a word that one output cannot both hold, each resolved by a bounded probe.
+            'tokenbearer'.split('').map(char => `\u001b(${char}`).join('').concat(' x ').repeat(size / 36),
             // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
             // `user:` authority per reference (issue #63 case 5).
             '//[:['.repeat(size / 5) + '/@',

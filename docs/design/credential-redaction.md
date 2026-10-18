@@ -19,7 +19,7 @@ A terminal code is stripped before any masking pass runs. Its final byte may be 
 - Otherwise the bytes of one reading that forms such a label stay, and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
 - A bounded label also keeps, on each side, the nearest marked byte that is no letter (for `pass`) or no word character (before `bearer`, `basic`), if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`. The masking passes read a name on past the run (`pass ESC(0 \nx`), so a boundary the run seems to have may be none.
 - After a tab or a serialised control (with no key separator after it), one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label that holds as if a letter followed the run holds either way, so such a reading is preferred, the bare run included. One that holds only where the name stops is the fallback.
-- When one output cannot hold both kinds, the kind the separator opens wins: a word before whitespace, else a key. With no reading of either kind, every marked byte goes.
+- When one output cannot hold both kinds (`ESC(t…ESC(r`, read as `token` or as `bearer`), the one the masking passes hide more after wins. Both outputs are redacted with up to 256 characters of text on each side, and the one that leaves less visible is kept (`hidesMoreAfter`). Which kind masks the value depends on what follows: `token` before `\tx=`, `bearer` before ` x`. A tie goes to the word. With no reading of either kind, every marked byte goes.
 
 ### Mechanism
 

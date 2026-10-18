@@ -469,7 +469,7 @@ function keepLabelBytes(text: string): string {
             continue;
         }
         const run = text.slice(i, end);
-        out += marked ? keepRunLabelBytes(run, text, end) : run;
+        out += marked ? keepRunLabelBytes(run, text, i, end) : run;
         i = end;
     }
     return out;
@@ -482,8 +482,8 @@ function keepLabelBytes(text: string): string {
  *  For each kind of label that some reading of the marked bytes forms, the output holds one (T3): the run with no
  *  marked byte kept when it already does (`ESC[0mtoken=` loses the `m`), else with the bytes of such a reading
  *  kept and every other marked byte dropped (`p ESC(a ESC(s ESC(s ESC(x=` keeps `a`, `s`, `s`). When one output
- *  cannot hold both kinds, the one the separator after the run opens wins: a word before whitespace, else a key. */
-function keepRunLabelBytes(run: string, text: string, end: number): string {
+ *  cannot hold both kinds, the one the masking passes hide more after wins ({@link hidesMoreAfter}). */
+function keepRunLabelBytes(run: string, text: string, start: number, end: number): string {
     const items: RunItem[] = [];
     for (let i = 0; i < run.length; i++) {
         const optional = run[i] === FINAL_BYTE_MARK;
@@ -516,10 +516,29 @@ function keepRunLabelBytes(run: string, text: string, end: number): string {
     if ((keyBytes === undefined || holdsKey(output, false)) && (wordBytes === undefined || holdsWord(output))) {
         return output;
     }
-    return render((spaced ? wordBytes : keyBytes) ?? NONE_KEPT);
+    const keyed = render(keyBytes ?? NONE_KEPT);
+    const worded = render(wordBytes ?? NONE_KEPT);
+    return hidesMoreAfter(text, start, end, keyed, worded) ? keyed : worded;
 }
 
 const NONE_KEPT: ReadonlySet<number> = new Set();
+
+/** How far around a run {@link hidesMoreAfter} reads, so a conflict costs a bounded redaction (R64). */
+const PROBE_WINDOW = 256;
+/** A marked final byte and the mark, as left in the text around a run that is not resolved yet. */
+const MARKED_BYTES = /\ufdd0[A-Za-z0-9_.-]?/g;
+
+/** Whether the run read as `keyed` leaves less of its surroundings visible than read as `worded`, once the masking
+ *  passes run over both with up to {@link PROBE_WINDOW} characters of text on each side. Which kind of label masks
+ *  the value depends on what follows (T3): `token` + `\\tx=` is a key whose name runs on to the `=`, `bearer` +
+ *  ` x` a Bearer credential, so neither is assumed. A tie goes to the word, which reads the next word as a value
+ *  whatever comes after it. Marked bytes around the run are left out, as their own runs drop them by default. */
+function hidesMoreAfter(text: string, start: number, end: number, keyed: string, worded: string): boolean {
+    const before = text.slice(Math.max(0, start - PROBE_WINDOW), start).replace(MARKED_BYTES, '');
+    const after = text.slice(end, end + PROBE_WINDOW).replace(MARKED_BYTES, '');
+    const visible = (run: string): number => redactText(`${before}${run}${after}`).replace(MASK_TEXTS, '').length - run.length;
+    return visible(keyed) < visible(worded);
+}
 
 /** A character of a run, and whether it is a marked final byte, which a reading may keep or drop. */
 type RunItem = { char: string; optional: boolean };
