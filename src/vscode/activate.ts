@@ -33,13 +33,28 @@ import {
 export async function activate(context: vscode.ExtensionContext) {
     log.info('activate() start');
 
-    // A pre-rename build is a different extension that registers the same openclaw.* commands. Detect it
-    // before we register ours: in a shared extension host it owns those IDs and our registration would
-    // otherwise abort activation (roadmap REL-2).
+    // A pre-rename build is a different extension that registers the same openclaw.* commands and views.
+    // Detect it before we register ours: in a shared extension host it owns those ids and our registration
+    // would otherwise throw and abort activation (roadmap REL-2).
     const legacyInstalled = detectLegacyExtensions();
     if (legacyInstalled.length) {
         void warnAboutLegacyExtensions(legacyInstalled);
     }
+
+    // Every shared registration goes through this: when a pre-rename build already owns the id, VS Code
+    // throws, and that is the state the warning asks the user to fix, so it must not abort the rest of
+    // activation. Any other failure is a real defect and propagates.
+    const registerOwn = (what: string, register: () => vscode.Disposable): vscode.Disposable => {
+        try {
+            return register();
+        } catch (err) {
+            if (legacyInstalled.length) {
+                log.warn(`not registering ${what}: a pre-rename build already owns it`);
+                return { dispose: () => undefined };
+            }
+            throw err;
+        }
+    };
 
     const statusBarItem = initStatusBar();
     setStatus('idle');
@@ -71,15 +86,15 @@ export async function activate(context: vscode.ExtensionContext) {
     ];
 
     for (const [id, handler] of commandRegistrations) {
-        context.subscriptions.push(registerOwnCommand(id, handler, legacyInstalled.length > 0));
+        context.subscriptions.push(registerOwn(id, () => vscode.commands.registerCommand(id, handler)));
     }
     log.info('commands registered');
 
     const overviewProvider = new OverviewTreeProvider();
     setOverviewProvider(overviewProvider);
-    const overviewView = vscode.window.createTreeView('openclaw.overview', {
-        treeDataProvider: overviewProvider
-    });
+    const overviewView = registerOwn('openclaw.overview', () =>
+        vscode.window.createTreeView('openclaw.overview', { treeDataProvider: overviewProvider })
+    );
     context.subscriptions.push(overviewView);
     void overviewProvider.refreshTools();
     log.info('overview tree view created');
@@ -108,67 +123,83 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.workspace.onDidGrantWorkspaceTrust(() => void runTokenMigration())
     );
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider),
+        registerOwn(ChatViewProvider.viewType, () =>
+            vscode.window.registerWebviewViewProvider(ChatViewProvider.viewType, provider)
+        ),
         provider
     );
     log.info('chat view provider registered');
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.connectGateway', () => {
-            // Saving the token must leave the extension connected, not just
-            // configured: after a submitted token, resolve the chat gateway
-            // transport (not the CLI connect flow) so the socket and the
-            // transport badge reflect the new credentials immediately.
-            void promptForGatewayToken(context)
-                .then(async (saved) => {
-                    if (saved) {
-                        await chatViewProvider?.connectGatewayTransport();
-                    }
-                })
-                .catch((err: unknown) => {
-                    const message = errorMessage(err);
-                    log.error(`connectGateway failed: ${redactText(message)}`);
-                    void vscode.window.showErrorMessage(
-                        'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
-                    );
-                });
-        })
+        registerOwn('openclaw.chat.connectGateway', () =>
+            vscode.commands.registerCommand('openclaw.chat.connectGateway', () => {
+                // Saving the token must leave the extension connected, not just
+                // configured: after a submitted token, resolve the chat gateway
+                // transport (not the CLI connect flow) so the socket and the
+                // transport badge reflect the new credentials immediately.
+                void promptForGatewayToken(context)
+                    .then(async (saved) => {
+                        if (saved) {
+                            await chatViewProvider?.connectGatewayTransport();
+                        }
+                    })
+                    .catch((err: unknown) => {
+                        const message = errorMessage(err);
+                        log.error(`connectGateway failed: ${redactText(message)}`);
+                        void vscode.window.showErrorMessage(
+                            'OpenClaw: failed to save gateway token or connect. Check the logs for details.'
+                        );
+                    });
+            })
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.gateway.resetDeviceIdentity', () => confirmDeviceIdentityReset(context))
+        registerOwn('openclaw.gateway.resetDeviceIdentity', () =>
+            vscode.commands.registerCommand('openclaw.gateway.resetDeviceIdentity', () => confirmDeviceIdentityReset(context))
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.open', () => {
-            vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
-        })
+        registerOwn('openclaw.chat.open', () =>
+            vscode.commands.registerCommand('openclaw.chat.open', () => {
+                vscode.commands.executeCommand(`${ChatViewProvider.viewType}.focus`);
+            })
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.popOut', () => {
-            chatViewProvider?.popOut();
-        })
+        registerOwn('openclaw.chat.popOut', () =>
+            vscode.commands.registerCommand('openclaw.chat.popOut', () => {
+                chatViewProvider?.popOut();
+            })
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.newSession', () => {
-            chatViewProvider?.newSession();
-        })
+        registerOwn('openclaw.chat.newSession', () =>
+            vscode.commands.registerCommand('openclaw.chat.newSession', () => {
+                chatViewProvider?.newSession();
+            })
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.pickAgent', () => {
-            void chatViewProvider?.showAgentPicker();
-        })
+        registerOwn('openclaw.chat.pickAgent', () =>
+            vscode.commands.registerCommand('openclaw.chat.pickAgent', () => {
+                void chatViewProvider?.showAgentPicker();
+            })
+        )
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('openclaw.chat.debug', () => {
-            if (chatViewProvider && !chatViewProvider.revealDebugPanel()) {
-                chatViewProvider.attachDebugPanel(openDebugChatPanel(context.extensionUri));
-            }
-        })
+        registerOwn('openclaw.chat.debug', () =>
+            vscode.commands.registerCommand('openclaw.chat.debug', () => {
+                if (chatViewProvider && !chatViewProvider.revealDebugPanel()) {
+                    chatViewProvider.attachDebugPanel(openDebugChatPanel(context.extensionUri));
+                }
+            })
+        )
     );
 
     const config = vscode.workspace.getConfiguration('openclaw');
@@ -200,27 +231,6 @@ export async function activate(context: vscode.ExtensionContext) {
     );
 
     log.info(`activate() complete — ${context.subscriptions.length} subscriptions`);
-}
-
-/**
- * Registers one of our commands. When a pre-rename build already owns the ID in this extension host, VS Code
- * throws `command '<id>' already exists`; that is the state the warning asks the user to fix, so it must not
- * abort the rest of activation. Any other failure is a real defect and propagates.
- */
-function registerOwnCommand(
-    id: string,
-    handler: (...args: never[]) => unknown,
-    legacyInstalled: boolean,
-): vscode.Disposable {
-    try {
-        return vscode.commands.registerCommand(id, handler);
-    } catch (err) {
-        if (legacyInstalled) {
-            log.warn(`not registering ${id}: a pre-rename build already owns it`);
-            return { dispose: () => undefined };
-        }
-        throw err;
-    }
 }
 
 const RESET_DEVICE_IDENTITY = 'Reset Identity';

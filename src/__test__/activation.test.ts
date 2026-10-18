@@ -248,6 +248,33 @@ describe('extension activation', () => {
             expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
             expect(subscriptions.length).toBeGreaterThan(0);
         });
+
+        it('keeps activating when a pre-rename build owns a later chat command and the chat view', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
+            vi.mocked(vscode.commands.registerCommand).mockImplementation((id: string) => {
+                if (id === 'openclaw.chat.open') {
+                    throw new Error(`command '${id}' already exists`);
+                }
+                return { dispose: vi.fn() };
+            });
+            vi.mocked(vscode.window.registerWebviewViewProvider).mockImplementationOnce(() => {
+                throw new Error('view already registered');
+            });
+            const { context, subscriptions } = makeContext();
+            await expect(activate(context)).resolves.toBeUndefined();
+            // A collision on a later command or the view is skipped, not fatal; activation completes.
+            expect(subscriptions.length).toBeGreaterThan(0);
+            expect(vscode.window.createTreeView).toHaveBeenCalled();
+        });
+
+        it('rethrows a registration failure that is not a legacy collision', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue([]);
+            vi.mocked(vscode.commands.registerCommand).mockImplementationOnce(() => {
+                throw new Error('some other failure');
+            });
+            const { context } = makeContext();
+            await expect(activate(context)).rejects.toThrow('some other failure');
+        });
     });
 
     describe('auto-connect', () => {
