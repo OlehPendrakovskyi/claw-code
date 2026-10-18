@@ -1517,17 +1517,16 @@ describe('redactText', () => {
             // The accepted over-redaction: a host and port followed by an email word reads as a password.
             expect(redactText(`see ${url} bob@example.org`)).not.toContain('bob');
         }
-        // Prose punctuation after the port (ChatService shows `message: details`) is no part of the URL.
-        for (const text of ['https://host:8080: contact bob@example.org', '(https://host:8080) see bob@example.org', 'https://host:8080, see bob@example.org']) {
-            expect(redactText(text)).toBe(text);
+        // A bracketed IPv6 host reads as any other, with a port or without one.
+        for (const url of ['https://[::1]:8080', '//[::1]:8080', 'https://[::1]', '//[::1]']) {
+            expect(redactText(`see ${url} see bob@example.org`)).toBe(`see ${url} see bob@example.org`);
         }
-        expect(redactText('https://alice:123: PRIVATE_SUFFIX@host.example/x')).toBe('https://***@host.example/x');
-        // A `:` with no port before the space stays prose punctuation.
-        expect(redactText('https://example.com: docs/a@b')).toBe('https://example.com: docs/a@b');
-        // The network-path form drops prose punctuation too, and reads a bracketed IPv6 host with a port.
-        for (const text of ['see //host:8080: contact bob@example.org', 'see (//host:8080) see bob@example.org', 'see https://[::1]:8080 see bob@example.org']) {
-            expect(redactText(text)).toBe(text);
+        // Punctuation after the authority is not trimmed: it may open a password (`alice:!`), so the authority does
+        // not parse and U1's same-line run applies. Prose punctuation after a port is over-masked the same way.
+        for (const url of ['https://alice:!', '//alice:!', 'https://alice:123:']) {
+            expect(redactText(`fetch ${url} PRIVATE_SUFFIX@host.example/x`)).not.toContain('PRIVATE');
         }
+        expect(redactText('https://host:8080: contact bob@example.org')).not.toContain('bob');
         // A digit run that is no valid port (99999) leaves an authority that does not parse: U1's same-line run applies.
         for (const url of ['https://alice:99999', '//alice:99999']) {
             expect(redactText(`fetch ${url} PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x`)).not.toContain('PRIVATE');
@@ -1547,16 +1546,19 @@ describe('redactText', () => {
         }
     });
 
-    it('joins a host and port to prose without masking it, and a split password with masking it (issue #63 case 5)', () => {
-        for (const url of ['https://host:8080', '//host:8080']) {
-            expect(joinBoundary(url, 'contact bob@example.org')).toEqual({ left: url, maskRight: false });
-            expect(formatNamedEntry({ name: url, url: 'contact bob@example.org' })).toBe(`${url} (contact bob@example.org)`);
+    it('masks a join after a host and port whenever an `@` follows, as R76 requires (issue #63 case 5)', () => {
+        // The join form of case 5 stays over-masked: a password's leading digits look like a port, and the right side
+        // may put its `@` past other fields or lines, so the delimited probe applies to every left side.
+        for (const url of ['https://host:8080', '//host:8080', 'https://[::1]:8080']) {
+            expect(joinBoundary(url, 'contact bob@example.org').maskRight).toBe(true);
         }
+        // A split query credential whose prefix ends like a port is still masked.
+        expect(joinBoundary('https://api.example?token=PREFIX:8080', 'PRIVATE_SUFFIX').maskRight).toBe(true);
+        expect(formatNamedEntry({ name: 'https://api.example?token=PREFIX:8080', url: 'PRIVATE_SUFFIX' })).not.toContain('PRIVATE');
         // The password the next word holds, split across the join, is still masked.
         expect(joinBoundary('https://alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
         expect(joinBoundary('//alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
         expect(formatNamedEntry({ name: 'https://alice:123', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
-        expect(joinBoundary('https://[::1]:8080', 'contact bob@example.org')).toEqual({ left: 'https://[::1]:8080', maskRight: false });
         // Structured details are no prose: the `@` may sit past other fields or lines, so R76's probe still applies,
         // for a valid port (a password's digits look like one), an invalid one, and the network-path form.
         const pretty = JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2);
