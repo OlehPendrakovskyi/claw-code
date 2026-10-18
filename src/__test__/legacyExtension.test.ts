@@ -35,12 +35,12 @@ describe('legacy extension warning', () => {
     });
 
     it('warns once and offers to show the extensions', async () => {
-        vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('Show Extensions');
+        vi.mocked(vscode.window.showWarningMessage).mockResolvedValue({ title: 'Show Extensions' });
         await warnAboutLegacyExtensions(['openknot.claw-code']);
         expect(log.warn).toHaveBeenCalledWith(expect.stringContaining('openknot.claw-code'));
         expect(vscode.window.showWarningMessage).toHaveBeenCalledWith(
             expect.stringContaining('openknot.claw-code'),
-            'Show Extensions',
+            { title: 'Show Extensions' },
         );
         expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
             'workbench.extensions.search',
@@ -49,7 +49,7 @@ describe('legacy extension warning', () => {
     });
 
     it('searches for every installed pre-rename id at once', async () => {
-        vi.mocked(vscode.window.showWarningMessage).mockResolvedValue('Show Extensions');
+        vi.mocked(vscode.window.showWarningMessage).mockResolvedValue({ title: 'Show Extensions' });
         await warnAboutLegacyExtensions(['openknot.claw-code', 'openknot.vsclaw']);
         expect(vscode.commands.executeCommand).toHaveBeenCalledWith(
             'workbench.extensions.search',

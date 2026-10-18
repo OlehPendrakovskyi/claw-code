@@ -14,6 +14,9 @@ export function detectLegacyExtensions(
     return LEGACY_EXTENSION_IDS.filter((id) => Boolean(lookup(id)));
 }
 
+/** The action offered when a pre-rename build is installed, so the user can open the Extensions view. */
+const SHOW_EXTENSIONS: vscode.MessageItem = { title: 'Show Extensions' };
+
 /**
  * Each pre-rename build is a different extension that contributes the same openclaw.* commands, settings and
  * views, so installing VSClaw is not an upgrade and each stays active. Warn once and offer to open the
@@ -22,12 +25,11 @@ export function detectLegacyExtensions(
  */
 export async function warnAboutLegacyExtensions(installed: readonly string[]): Promise<void> {
     log.warn(`a build from before the rename is still installed: ${installed.join(', ')}`);
-    const SHOW = 'Show Extensions';
     const choice = await vscode.window.showWarningMessage(
         `A build installed before the rename is still present (${installed.join(', ')}). It contributes the same commands and settings; remove it to avoid conflicts.`,
-        SHOW
+        SHOW_EXTENSIONS
     );
-    if (choice === SHOW) {
+    if (choice?.title === SHOW_EXTENSIONS.title) {
         void vscode.commands.executeCommand(
             'workbench.extensions.search',
             installed.map((id) => `@id:${id}`).join(' ')
