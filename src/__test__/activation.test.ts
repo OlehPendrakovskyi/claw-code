@@ -218,71 +218,27 @@ describe('extension activation', () => {
     describe('legacy extension id', () => {
         afterEach(() => {
             vi.mocked(detectLegacyExtensions).mockReturnValue([]);
-            vi.mocked(vscode.commands.registerCommand).mockImplementation(() => ({ dispose: vi.fn() }));
         });
 
-        it('warns at activation when a pre-rename build is installed', async () => {
+        it('warns and stays dormant when a pre-rename build is installed', async () => {
             vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.vsclaw']);
-            const { context } = makeContext();
-            await activate(context);
+            const { context, subscriptions } = makeContext();
+            await expect(activate(context)).resolves.toBeUndefined();
             expect(warnAboutLegacyExtensions).toHaveBeenCalledWith(['openknot.vsclaw']);
+            // One owner per id: the later build registers nothing while a pre-rename build owns them.
+            expect(vscode.commands.registerCommand).not.toHaveBeenCalled();
+            expect(vscode.window.createTreeView).not.toHaveBeenCalled();
+            expect(vscode.window.registerWebviewViewProvider).not.toHaveBeenCalled();
+            expect(subscriptions).toHaveLength(0);
         });
 
-        it('does not warn when no pre-rename build is installed', async () => {
-            const { context } = makeContext();
+        it('does not warn and registers normally when no pre-rename build is installed', async () => {
+            const { context, subscriptions } = makeContext();
             await activate(context);
             expect(warnAboutLegacyExtensions).not.toHaveBeenCalled();
-        });
-
-        it('keeps activating when a pre-rename build already owns a command id', async () => {
-            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
-            vi.mocked(vscode.commands.registerCommand).mockImplementation((id: string) => {
-                if (id === 'openclaw.connect') {
-                    throw new Error(`command '${id}' already exists`);
-                }
-                return { dispose: vi.fn() };
-            });
-            const { context, subscriptions } = makeContext();
-            await expect(activate(context)).resolves.toBeUndefined();
-            // The conflicting id is skipped, the rest still register, and activation completes.
-            expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
-            expect(subscriptions.length).toBeGreaterThan(0);
-        });
-
-        it('keeps activating when a pre-rename build owns a later chat command and the chat view', async () => {
-            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
-            vi.mocked(vscode.commands.registerCommand).mockImplementation((id: string) => {
-                if (id === 'openclaw.chat.open') {
-                    throw new Error(`command '${id}' already exists`);
-                }
-                return { dispose: vi.fn() };
-            });
-            vi.mocked(vscode.window.registerWebviewViewProvider).mockImplementationOnce(() => {
-                throw new Error("View provider for 'openclaw.chat' already registered");
-            });
-            const { context, subscriptions } = makeContext();
-            await expect(activate(context)).resolves.toBeUndefined();
-            // A collision on a later command or the view is skipped, not fatal; activation completes.
-            expect(subscriptions.length).toBeGreaterThan(0);
+            expect(vscode.commands.registerCommand).toHaveBeenCalled();
             expect(vscode.window.createTreeView).toHaveBeenCalled();
-        });
-
-        it('rethrows an unrelated registration failure even when a legacy build is present', async () => {
-            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
-            vi.mocked(vscode.commands.registerCommand).mockImplementation(() => {
-                throw new Error('some other failure');
-            });
-            const { context } = makeContext();
-            await expect(activate(context)).rejects.toThrow('some other failure');
-        });
-
-        it('rethrows a registration failure that is not a legacy collision', async () => {
-            vi.mocked(detectLegacyExtensions).mockReturnValue([]);
-            vi.mocked(vscode.commands.registerCommand).mockImplementationOnce(() => {
-                throw new Error('some other failure');
-            });
-            const { context } = makeContext();
-            await expect(activate(context)).rejects.toThrow('some other failure');
+            expect(subscriptions.length).toBeGreaterThan(0);
         });
     });
 

@@ -18,15 +18,16 @@ export function detectLegacyExtensions(
 const SHOW_EXTENSIONS: vscode.MessageItem = { title: 'Show Extensions' };
 
 /**
- * Each pre-rename build is a different extension that contributes the same openclaw.* commands, settings and
- * views, so installing VSClaw is not an upgrade and each stays active. Warn once and offer to open the
- * Extensions view so the user can remove it (roadmap REL-2). The caller does not await it, so it cannot
- * delay activation.
+ * A pre-rename build is a different extension contributing the same openclaw.* commands, views and settings,
+ * and VS Code gives each id one owner. So while one is present this build stays dormant (roadmap REL-2) and
+ * this warning asks the user to remove it, then reload so this build can take over. The lookup of what to
+ * remove is the caller's; this only presents it and, on request, opens the Extensions view filtered to the
+ * installed pre-rename ids.
  */
 export async function warnAboutLegacyExtensions(installed: readonly string[]): Promise<void> {
     log.warn(`a build from before the rename is still installed: ${installed.join(', ')}`);
     const choice = await vscode.window.showWarningMessage(
-        `A build installed before the rename is still present (${installed.join(', ')}). It contributes the same commands and settings; remove it to avoid conflicts.`,
+        `A build of this extension from before the rename is still installed (${installed.join(', ')}). VSClaw stays inactive until it is removed: uninstall it, then reload the window.`,
         SHOW_EXTENSIONS
     );
     if (choice?.title === SHOW_EXTENSIONS.title) {
