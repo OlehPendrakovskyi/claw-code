@@ -3,11 +3,23 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readingForRedaction, stripTerminalCodes } from '../core/accessInfo/redact';
 
+type GoldenCase = { input: string; normalized: string; stripped: string };
+
+/** Whether `value` is a golden case: three strings. */
+function isGoldenCase(value: unknown): value is GoldenCase {
+    return typeof value === 'object' && value !== null && 'input' in value && 'normalized' in value && 'stripped' in value
+        && typeof value.input === 'string' && typeof value.normalized === 'string' && typeof value.stripped === 'string';
+}
+
 /** Inputs and their normalisation before #82 S-a, generated once from the pre-refactor implementation. */
-const golden = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/redact-normalization-golden.json'), 'utf8')) as {
-    generatedFrom: string;
-    cases: Array<{ input: string; normalized: string; stripped: string }>;
-};
+const golden: { cases: GoldenCase[] } = (() => {
+    const parsed: unknown = JSON.parse(fs.readFileSync(path.resolve(process.cwd(), 'src/__test__/fixtures/redact-normalization-golden.json'), 'utf8'));
+    const cases: unknown = typeof parsed === 'object' && parsed !== null && 'cases' in parsed ? parsed.cases : undefined;
+    if (!Array.isArray(cases) || !cases.every(isGoldenCase)) {
+        throw new Error('redact-normalization-golden.json: expected { cases: { input, normalized, stripped }[] }');
+    }
+    return { cases };
+})();
 
 /** The input range character `i` of `reading` stands for, as a string of `input`. */
 const source = (input: string, reading: Reading, i: number): string => input.slice(reading.from[i], reading.to[i]);
