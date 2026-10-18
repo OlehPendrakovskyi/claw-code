@@ -1072,16 +1072,17 @@ describe('redactText', () => {
         }
     });
 
-    it('resolves a key and a word that one output cannot both hold by what the masking passes hide after the run (T3)', () => {
+    it('keeps the key when one output cannot hold both a key and a word (T3)', () => {
         const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
-        // Before a serialised tab and `x=`, the key name runs on to the `=`: only `token` hides the value.
+        // A key name runs on through a serialised control to the `=`, however far it lies: the `token` reading hides the
+        // value. Which kind would mask it depends on text that may lie anywhere after the run, so the key is kept.
         for (const word of ['tokenbasic', 'tokenbearer']) {
             expect(redactText(`${coded(word)}\\tx=PRIVATE`)).toBe('token\\tx=***');
         }
-        // Before a plain value, only `bearer` does.
-        for (const tail of [' PRIVATE', '\\tPRIVATE']) {
+        for (const tail of ['\\'.repeat(512) + 'tx=PRIVATE', `\\t${'x'.repeat(20)}=PRIVATE`, `\\t${'x'.repeat(300)}=PRIVATE`]) {
             expect(redactText(`${coded('tokenbearer')}${tail}`)).not.toContain('PRIVATE');
         }
+        // The reverse, a `bearer` only the dropped bytes form before a plain value, is design open question 3.
     });
 
     it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {

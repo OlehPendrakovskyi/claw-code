@@ -19,7 +19,7 @@ A terminal code is stripped before any masking pass runs. Its final byte may be 
 - Otherwise the bytes of one reading that forms such a label stay, and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
 - A bounded label also keeps, on each side, the nearest marked byte that is no letter (for `pass`) or no word character (before `bearer`, `basic`), if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`. The masking passes read a name on past the run (`pass ESC(0 \nx`), so a boundary the run seems to have may be none.
 - After a tab or a serialised control (with no key separator after it), one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label that holds as if a letter followed the run holds either way, so such a reading is preferred, the bare run included. One that holds only where the name stops is the fallback.
-- When one output cannot hold both kinds (`ESC(t…ESC(r`, read as `token` or as `bearer`), the one the masking passes hide more after wins. Both outputs are redacted with up to 256 characters of text on each side, and the one that leaves less visible is kept (`hidesMoreAfter`). Which kind masks the value depends on what follows: `token` before `\tx=`, `bearer` before ` x`. A tie goes to the word. With no reading of either kind, every marked byte goes.
+- When one output cannot hold both kinds (`ESC(t…ESC(r`, read as `token` or as `bearer`), the key's reading is kept, as on `main`, where such a run keeps its bytes. Which kind masks the value depends on text that may lie anywhere after the run (`token` before `\\…\\tx=`, `bearer` before ` x`), so no bounded look ahead settles it (open question 3). With no reading of either kind, every marked byte goes.
 
 ### Mechanism
 
@@ -68,3 +68,8 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
+3. **A key and a word that one output cannot hold both.** When a run's final bytes can spell either a key (`token`) or a `bearer`/`basic`, but not both at once, the key is kept. So `ESC(t…ESC(r PRIVATE`, whose `bearer` reading would mask `PRIVATE`, keeps it visible, as `main` does. #81 tried choosing by redacting both readings over a window around the run, and dropped it under R8:
+   - What decides the outcome can lie past any window (`\\` repeated, then `tx=`).
+   - "Leaves fewer characters visible" is not "hides the value".
+   
+   Tracking which input spans each reading hides, and masking a span where neither covers the other, is the alternative.
