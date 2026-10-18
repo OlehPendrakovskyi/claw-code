@@ -6,6 +6,7 @@ import type { ToolEntry } from '../core/tools';
 import { OverviewTreeProvider } from '../overview/OverviewTreeProvider';
 import { initStatusBar, setStatus, disposeStatusBar } from './statusbar';
 import { openOpenClawConfig } from './config';
+import { detectLegacyExtensions, warnAboutLegacyExtensions } from './legacyExtension';
 import { migrateLegacyGatewayToken, promptForGatewayToken, resetDeviceIdentity } from '../core/gatewayConfig';
 import { errorMessage } from '../core/errors';
 import { redactText } from '../core/accessInfo/redact';
@@ -31,6 +32,14 @@ import {
 
 export async function activate(context: vscode.ExtensionContext) {
     log.info('activate() start');
+
+    // A pre-rename build is a different extension that registers the same openclaw.* commands. Detect it
+    // before we register ours: in a shared extension host it owns those IDs and our registration would
+    // otherwise abort activation (roadmap REL-2).
+    const legacyInstalled = detectLegacyExtensions();
+    if (legacyInstalled.length) {
+        void warnAboutLegacyExtensions(legacyInstalled);
+    }
 
     const statusBarItem = initStatusBar();
     setStatus('idle');
@@ -62,7 +71,7 @@ export async function activate(context: vscode.ExtensionContext) {
     ];
 
     for (const [id, handler] of commandRegistrations) {
-        context.subscriptions.push(vscode.commands.registerCommand(id, handler));
+        context.subscriptions.push(registerOwnCommand(id, handler, legacyInstalled.length > 0));
     }
     log.info('commands registered');
 
@@ -190,33 +199,27 @@ export async function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    void warnAboutLegacyExtension();
-
     log.info(`activate() complete — ${context.subscriptions.length} subscriptions`);
 }
 
-const LEGACY_EXTENSION_ID = 'openknot.claw-code';
-
 /**
- * The rename changed the extension ID, so a build installed before it is a different extension: it stays
- * installed and would keep contributing the same openclaw.* commands, settings and views. Warn once and
- * offer to open the Extensions view so the user can remove it (roadmap REL-2). The lookup is injectable so
- * the check is tested without a vscode host.
+ * Registers one of our commands. When a pre-rename build already owns the ID in this extension host, VS Code
+ * throws `command '<id>' already exists`; that is the state the warning asks the user to fix, so it must not
+ * abort the rest of activation. Any other failure is a real defect and propagates.
  */
-export async function warnAboutLegacyExtension(
-    lookup: (id: string) => unknown = (id) => vscode.extensions.getExtension(id),
-): Promise<void> {
-    if (!lookup(LEGACY_EXTENSION_ID)) {
-        return;
-    }
-    log.warn(`the legacy extension ${LEGACY_EXTENSION_ID} is still installed`);
-    const SHOW = 'Show Extension';
-    const choice = await vscode.window.showWarningMessage(
-        `A build of this extension installed before the rename (${LEGACY_EXTENSION_ID}) is still present. It contributes the same commands and settings; remove it to avoid conflicts.`,
-        SHOW
-    );
-    if (choice === SHOW) {
-        void vscode.commands.executeCommand('workbench.extensions.search', `@id:${LEGACY_EXTENSION_ID}`);
+function registerOwnCommand(
+    id: string,
+    handler: (...args: never[]) => unknown,
+    legacyInstalled: boolean,
+): vscode.Disposable {
+    try {
+        return vscode.commands.registerCommand(id, handler);
+    } catch (err) {
+        if (legacyInstalled) {
+            log.warn(`not registering ${id}: a pre-rename build already owns it`);
+            return { dispose: () => undefined };
+        }
+        throw err;
     }
 }
 

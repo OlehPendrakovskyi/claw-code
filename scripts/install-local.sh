@@ -31,10 +31,13 @@ if ! command -v cursor >/dev/null 2>&1; then
   fi
 fi
 
-# The rename changed the extension ID, so the old build is a different extension that would
-# stay installed and contribute the same openclaw.* commands, settings and views (roadmap REL-2).
-echo "Removing the legacy extension id (openknot.claw-code), if present..."
-"${IDE}" --uninstall-extension openknot.claw-code >/dev/null 2>&1 || true
+# The rename and the publisher change both changed the extension ID, so a pre-rename build is a different
+# extension that would stay installed and contribute the same openclaw.* commands, settings and views
+# (roadmap REL-2).
+echo "Removing the pre-rename extension ids, if present..."
+for id in openknot.claw-code openknot.vsclaw; do
+  "${IDE}" --uninstall-extension "${id}" >/dev/null 2>&1 || true
+done
 
 echo "Installing into ${IDE}..."
 "${IDE}" --install-extension "${VSIX}" --force

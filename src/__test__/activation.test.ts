@@ -1,10 +1,17 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { activate, deactivate, warnAboutLegacyExtension } from '../extension';
+import { activate, deactivate } from '../extension';
 import { connect, log } from '../vscode/commands';
+import { detectLegacyExtensions, warnAboutLegacyExtensions } from '../vscode/legacyExtension';
 import { migrateLegacyGatewayToken, promptForGatewayToken } from '../core/gatewayConfig';
 import { useProjectConfigApprovalStore } from '../chat/acpxProjectConfig';
+
+vi.mock('../vscode/legacyExtension', async () => ({
+    ...await vi.importActual<typeof import('../vscode/legacyExtension')>('../vscode/legacyExtension'),
+    detectLegacyExtensions: vi.fn(() => []),
+    warnAboutLegacyExtensions: vi.fn(async () => undefined),
+}));
 
 vi.mock('../chat/acpxProjectConfig', async () => ({
     ...await vi.importActual<typeof import('../chat/acpxProjectConfig')>('../chat/acpxProjectConfig'),
@@ -209,27 +216,37 @@ describe('extension activation', () => {
     });
 
     describe('legacy extension id', () => {
-        it('warns and offers to show the extension when the pre-rename build is still installed', async () => {
-            const showWarningMessage = vi.mocked(vscode.window.showWarningMessage);
-            await warnAboutLegacyExtension(id => (id === 'openknot.claw-code' ? { id } : undefined));
-            expect(showWarningMessage).toHaveBeenCalledWith(
-                expect.stringContaining('openknot.claw-code'),
-                'Show Extension',
-            );
+        afterEach(() => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue([]);
+            vi.mocked(vscode.commands.registerCommand).mockImplementation(() => ({ dispose: vi.fn() }));
         });
 
-        it('stays quiet when the pre-rename build is not installed', async () => {
-            const showWarningMessage = vi.mocked(vscode.window.showWarningMessage);
-            await warnAboutLegacyExtension(() => undefined);
-            expect(showWarningMessage).not.toHaveBeenCalled();
-        });
-
-        it('activates without a legacy build and without warning', async () => {
-            vi.mocked(vscode.extensions.getExtension).mockReturnValue(undefined);
+        it('warns at activation when a pre-rename build is installed', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.vsclaw']);
             const { context } = makeContext();
             await activate(context);
-            await new Promise(resolve => setImmediate(resolve));
-            expect(vscode.window.showWarningMessage).not.toHaveBeenCalled();
+            expect(warnAboutLegacyExtensions).toHaveBeenCalledWith(['openknot.vsclaw']);
+        });
+
+        it('does not warn when no pre-rename build is installed', async () => {
+            const { context } = makeContext();
+            await activate(context);
+            expect(warnAboutLegacyExtensions).not.toHaveBeenCalled();
+        });
+
+        it('keeps activating when a pre-rename build already owns a command id', async () => {
+            vi.mocked(detectLegacyExtensions).mockReturnValue(['openknot.claw-code']);
+            vi.mocked(vscode.commands.registerCommand).mockImplementation((id: string) => {
+                if (id === 'openclaw.connect') {
+                    throw new Error(`command '${id}' already exists`);
+                }
+                return { dispose: vi.fn() };
+            });
+            const { context, subscriptions } = makeContext();
+            await expect(activate(context)).resolves.toBeUndefined();
+            // The conflicting id is skipped, the rest still register, and activation completes.
+            expect(vscode.window.registerWebviewViewProvider).toHaveBeenCalled();
+            expect(subscriptions.length).toBeGreaterThan(0);
         });
     });
 

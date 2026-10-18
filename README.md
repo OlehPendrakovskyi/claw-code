@@ -109,9 +109,9 @@ pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o vsclaw.vsix
 code --install-extension vsclaw.vsix --force   # or: cursor --install-extension vsclaw.vsix --force
 ```
 
-> **The extension ID changed.** A local build installed before the rename registers as `openknot.claw-code`; the released VSClaw registers as `OlehPendrakovskyi.vsclaw`. VS Code treats these as different extensions, which has two effects:
+> **The extension ID changed.** A local build installed before the rename registers as `openknot.claw-code`, and one built between the rename and the publisher change registers as `openknot.vsclaw`; the released VSClaw registers as `OlehPendrakovskyi.vsclaw`. VS Code treats these as different extensions, which has two effects:
 >
-> - Uninstall the old build first: `code --uninstall-extension openknot.claw-code`.
+> - Uninstall the old build first: `code --uninstall-extension openknot.claw-code` (and `code --uninstall-extension openknot.vsclaw` if you installed a build between the rename and the publisher change).
 > - VS Code keeps stored secrets and extension state per extension ID. After the switch, you enter the Gateway token again, pair the device again, and approve each workspace's `.acpxrc.json` again.
 
 ## Connect to your Gateway

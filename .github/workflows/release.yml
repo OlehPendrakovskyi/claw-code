@@ -50,36 +50,46 @@ jobs:
       - name: Licence check
         run: pnpm run license:check
 
+      # The tag is the source of truth (engineering.md §6, Workflow 2): the version comes from the tag with
+      # no manual bump, so fail unless it matches the manifest rather than publish a stale package.json.
+      - name: Resolve version from the tag
+        id: version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          MANIFEST_VERSION="$(node -p "require('./package.json').version")"
+          if [ "${TAG_VERSION}" != "${MANIFEST_VERSION}" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match package.json version ${MANIFEST_VERSION}"
+            exit 1
+          fi
+          echo "version=${TAG_VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Package VSIX
         id: vsix
         run: |
-          VERSION="$(node -p "require('./package.json').version")"
-          PUBLISHER="$(node -p "require('./package.json').publisher")"
           EXT_NAME="$(node -p "require('./package.json').name")"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "publisher=${PUBLISHER}" >> "$GITHUB_OUTPUT"
-          echo "ext_name=${EXT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "vsix=out/${EXT_NAME}-${VERSION}.vsix"
-          pnpm exec @vscode/vsce@4.0.0 package --no-dependencies -o "out/${EXT_NAME}-${VERSION}.vsix"
+          VSIX="out/${EXT_NAME}-${{ steps.version.outputs.version }}.vsix"
+          echo "vsix=${VSIX}" >> "$GITHUB_OUTPUT"
+          # vsce and ovsx are pinned dev dependencies (REL-7): `pnpm exec` runs the installed binary, so
+          # pass the binary name, not a `@vscode/vsce@<version>` spec (which `pnpm exec` cannot resolve).
+          pnpm exec vsce package --no-dependencies -o "${VSIX}"
 
       - name: Publish to VS Code Marketplace
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
         run: |
-          pnpm exec @vscode/vsce@4.0.0 publish --packagePath "out/${{ steps.vsix.outputs.ext_name }}-${{ steps.vsix.outputs.version }}.vsix" -p "${VSCE_PAT}"
+          pnpm exec vsce publish --packagePath "${{ steps.vsix.outputs.vsix }}" -p "${VSCE_PAT}"
 
       - name: Publish to Open VSX
         env:
           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
         run: |
-          pnpm exec ovsx@1.2.0 publish --packagePath "out/${{ steps.vsix.outputs.ext_name }}-${{ steps.vsix.outputs.version }}.vsix" -p "${OVSX_TOKEN}"
+          pnpm exec ovsx publish --packagePath "${{ steps.vsix.outputs.vsix }}" -p "${OVSX_TOKEN}"
 
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VERSION="${{ steps.vsix.outputs.version }}"
-          gh release create "v${VERSION}" \
-            "out/${{ steps.vsix.outputs.ext_name }}-${VERSION}.vsix" \
-            --title "v${VERSION}" \
+          gh release create "v${{ steps.version.outputs.version }}" \
+            "${{ steps.vsix.outputs.vsix }}" \
+            --title "v${{ steps.version.outputs.version }}" \
             --generate-notes
