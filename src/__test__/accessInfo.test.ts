@@ -1008,6 +1008,19 @@ describe('redactText', () => {
         // A bounded label starts and ends where no fixed letter stands next to it.
         expect(redactText('by\u001b(pass=1')).toBe('byass=1');
         expect(redactText('pa\u001b(s\u001b(sx=1')).toBe('pax=1');
+        // A final byte that is no letter can be the boundary a bounded label needs, on either side.
+        expect(redactText('by\u001b(_pass=PRIVATE')).toBe('by_pass=***');
+        expect(redactText('pass\u001b(_x=PRIVATE')).toBe('pass_x=***');
+        // A key name runs on past a serialised control, so a boundary byte stays even where the run seems to end, and a
+        // `pass` the bare run holds there gives way to a reading that holds a label either way.
+        expect(redactText('"\u001b(p\u001b(a\u001b(s\u001b(s\u001b(0\\nx\\":PRIVATE')).not.toContain('PRIVATE');
+        expect(redactText('my_pass\u001b(w\u001b(o\u001b(r\u001b(d\\nx\\t=PRIVATE')).not.toContain('PRIVATE');
+        // Before a key separator a serialised control is whitespace, and a query name stops at its backslash: there
+        // a `pass` that ends the run is bounded.
+        expect(redactText('x-\u001b(p\u001b(a\u001b(s\u001b(s\\t=PRIVATE')).not.toContain('PRIVATE');
+        expect(redactText('?p\u001b(a\u001b(ms\u001b(s\\tx=PRIVATE')).not.toContain('PRIVATE');
+        // An escaped quote closes a name: nothing goes on past it.
+        expect(redactText('?a&\u001b(p\u001b(ass\\":PRIVATE')).not.toContain('PRIVATE');
     });
 
     it('judges a label together with the separator after it (issue #63 case 10)', () => {
@@ -1015,15 +1028,29 @@ describe('redactText', () => {
         expect(redactText('toke\u001b(n-bearer=PRIVATE')).toBe('token-bearer=***');
         expect(redactText('toke\u001b(n-basic=PRIVATE')).toBe('token-basic=***');
         expect(redactText('toke\u001b(n.bearer: PRIVATE')).toBe('token.bearer=***');
-        // And a key label opens nothing before plain whitespace, so a `bearer` the bytes complete wins there.
+        // Nor before whitespace and then a key separator: the Bearer and Basic passes take no value that opens with one.
+        for (const separator of [' =', ' : ', '\t=']) {
+            for (const word of ['bearer', 'basic']) {
+                expect(redactText(`toke\u001b(n-${word}${separator}PRIVATE`)).not.toContain('PRIVATE');
+            }
+        }
+        // The output holds a label of each kind some reading forms: a key the bare run holds does not stop the bytes
+        // that complete a `bearer` before whitespace.
         expect(redactText('token-beare\u001b(r PRIVATE')).toBe('token-bearer ***');
-        // Look-alikes: a run that is a label before its separator loses every byte.
-        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('toke-bearer ***');
+        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('token-bearer ***');
+        // Look-alikes: a run that is a label without its bytes loses every one.
         expect(redactText('\u001b[0mtoken=PRIVATE')).toBe('token=***');
-        // A key label with whitespace after it opens nothing, so its bytes go (no value follows to hide).
-        expect(redactText('\u001b(to\u001b(ken more')).toBe('oen more');
-        // A query name runs on past the name characters, so a key label counts before any text but whitespace.
-        expect(redactText('https://h.example/?to\u001b(ken+x=PRIVATE')).not.toContain('PRIVATE');
+        expect(redactText('\u001b(to\u001b(ken more')).toBe('token more');
+        // A key label counts before any separator: a query name or a key runs on through other characters, a tab or
+        // a serialised control.
+        for (const text of [
+            'https://h.example/?to\u001b(ken+x=PRIVATE',
+            'https://h.example/?toke\u001b(n\tx=PRIVATE',
+            'https://h.example/?toke\u001b(n\\tx=PRIVATE',
+            'toke\u001b(n\\bx=PRIVATE',
+        ]) {
+            expect(redactText(text)).not.toContain('PRIVATE');
+        }
     });
 
     it('finds every label spelling a masking pass reads with any of its letters as a final byte (T1)', () => {
@@ -1047,16 +1074,22 @@ describe('redactText', () => {
 
     it('hides a value whenever some reading of the stripped final bytes would (T3)', () => {
         // Every subset of the final bytes kept is a reading; if redacting any of them hides the value, redacting the
-        // text with its codes must too. A fixed-seed sample of label words split by codes, with junk codes around.
+        // text with its codes must too. A fixed-seed sample of label words split by codes, with junk codes, in query,
+        // tab, serialised-control and spaced-separator contexts.
         let seed = 7;
-        const next = (n: number): number => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) % n;
+        const next = (n: number): number => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) >>> 8) % n;
         const words = ['token', 'key', 'secret', 'password', 'pass', 'cookie', 'bearer', 'basic', 'api_key'];
-        const separators = ['=', ': ', ' ', '":"', '+x='];
-        for (let round = 0; round < 400; round++) {
+        const separators = ['=', ': ', ' ', '":"', '+x=', ' =', ' : ', '\t='];
+        // No URL with a `-bearer`, `-basic` or tab suffix: there the query pass appends `=***` to a sensitive name with
+        // no value, which parts it from what follows inconsistently, a gap of its own (development-rules.md, known
+        // gaps under R61).
+        const prefixes = ['', 'by', 'x-', '?', 'https://h.example/?'];
+        const suffixes = ['', 'x', '-bearer', '-basic', '_', '\tx', '\\tx', '\\nx'];
+        for (let round = 0; round < 600; round++) {
             const parts: Array<{ code?: string; fixed?: string }> = [];
-            for (const char of `${['', 'by', 'x-'][next(3)]}${words[next(words.length)]}${['', 'x', '-bearer'][next(3)]}`) {
+            for (const char of words[next(words.length)]) {
                 if (next(4) === 0) {
-                    parts.push({ code: 'xzmT0'[next(5)] });
+                    parts.push({ code: 'xzmT0_'[next(6)] });
                 }
                 parts.push(next(2) === 0 && /\w/.test(char) ? { code: char } : { fixed: char });
             }
@@ -1065,14 +1098,19 @@ describe('redactText', () => {
                 // 2^codes readings: keep the oracle small.
                 continue;
             }
-            const separator = separators[next(separators.length)];
+            const before = prefixes[next(prefixes.length)];
+            const suffix = suffixes[next(suffixes.length)];
+            if (before.startsWith('https://') && /bearer|basic|\t/.test(suffix)) {
+                continue;
+            }
+            const after = `${suffix}${separators[next(separators.length)]}PRIVATE`;
             const readings = Array.from({ length: 1 << codes }, (_, mask) => {
                 let c = 0;
                 return parts.map(part => (part.code === undefined ? part.fixed : (mask >> c++) & 1 ? part.code : '')).join('');
             });
-            if (readings.some(reading => !redactText(`${reading}${separator}PRIVATE`).includes('PRIVATE'))) {
+            if (readings.some(reading => !redactText(`${before}${reading}${after}`).includes('PRIVATE'))) {
                 const text = parts.map(part => (part.code === undefined ? part.fixed : `\u001b(${part.code}`)).join('');
-                expect(redactText(`${text}${separator}PRIVATE`)).not.toContain('PRIVATE');
+                expect(redactText(`${before}${text}${after}`)).not.toContain('PRIVATE');
             }
         }
     });

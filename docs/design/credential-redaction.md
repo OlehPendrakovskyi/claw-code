@@ -12,19 +12,21 @@ A terminal code is stripped before any masking pass runs. Its final byte may be 
 
 **T1. One label vocabulary.** The strip-time label check knows exactly the labels the masking passes read: `LABELS` in `redact.ts`. Each one says where it may sit in a run: anywhere (`SENSITIVE_KEY`, `CREDENTIAL_HEADER_KEY`), apart from other letters (`pass`), or as a whole word ending the run (`bearer`, `basic`, as `LABEL_WORD`). Every spelling those regexes accept beyond these (`api_key`, `access-key`, `set-cookie`) contains one of them.
 
-**T2. A label is judged with the separator after it.** A key or header label counts only before a key separator (`:` or `=`, after optional closing quotes and whitespace) or before any text but whitespace, which a query name may run on through (`?to ESC(k en+x=`). `bearer` and `basic` count only before whitespace, as the Bearer and Basic passes need. At the end of the text either may follow.
+**T2. A label is judged with the separator after it.** A key or header label counts before any separator: a query name runs on through a tab or other characters (`?toke ESC(n \tx=`), and a key through a serialised control (`toke ESC(n \bx=`). `bearer` and `basic` count only before whitespace that has no key separator after it, as the Bearer and Basic passes need (`bearer =x` opens nothing), or at the end of the text.
 
-**T3. A run keeps the final bytes of a reading that holds a label, and only those.**
-- If the run with no marked byte kept holds a label that T2 allows, every marked byte goes (`ESC[0mtoken=` loses the `m`).
-- Otherwise, if any subset of the marked bytes kept forms such a label, the bytes of one such reading stay and every other marked byte goes: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
-- With no such reading, every marked byte goes, so a run that forms no credential label loses its codes whole.
+**T3. For each kind of label some reading forms, the output holds one.**
+- If the run with no marked byte kept already holds a label of a kind, that kind needs no byte (`ESC[0mtoken=` loses the `m`).
+- Otherwise the bytes of one reading that forms such a label stay, and no others: `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`.
+- A bounded label also keeps, on each side, the nearest marked byte that is no letter (for `pass`) or no word character (before `bearer`, `basic`), if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`. The masking passes read a name on past the run (`pass ESC(0 \nx`), so a boundary the run seems to have may be none.
+- After a tab or a serialised control (with no key separator after it), one pass reads the name on with a letter (a key: `pass\nx` reads as `passnx`), and another stops it there (a query name: `?pass\tx=` holds a bounded `pass`). A key label that holds as if a letter followed the run holds either way, so such a reading is preferred, the bare run included. One that holds only where the name stops is the fallback.
+- When one output cannot hold both kinds, the kind the separator opens wins: a word before whitespace, else a key. With no reading of either kind, every marked byte goes.
 
 ### Mechanism
 
-- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`), tests the run without its marked bytes with the masking passes' own regexes, and otherwise asks `labelReading`.
-- `labelReading` matches each allowed label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end.
+- `keepRunLabelBytes` reads T2 from the text right after the run (`SPACE_AT`, `KEY_SEPARATOR_AT`). It tests the run without its marked bytes with the masking passes' own regexes, asks `labelBytes` for each kind it lacks, and checks the combined output with the same regexes.
+- `labelBytes` matches each allowed label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end, and `keepBoundary` adds the boundary bytes.
 - Each label reads the run once forward and its match once back, with constant work per character, so stripping stays linear (R64).
-- A test checks T3 directly: for a fixed-seed sample of label words split by codes, if any reading of the final bytes hides the value, the text with its codes must too.
+- A test checks T3 directly: for a fixed-seed sample of label words split by codes, in query, tab, serialised-control and spaced-separator contexts, if any reading of the final bytes hides the value, the text with its codes must too.
 
 ## U. Malformed URL userinfo
 
