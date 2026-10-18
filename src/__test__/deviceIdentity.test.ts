@@ -74,8 +74,8 @@ describe('deviceIdentity', () => {
         });
 
         it('refuses keys that are not Ed25519, and junk', () => {
-            const rsa = generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-            expect(importDeviceIdentity(rsa)).toBeNull();
+            const ec = generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+            expect(importDeviceIdentity(ec)).toBeNull();
             expect(importDeviceIdentity('not a key')).toBeNull();
             expect(importDeviceIdentity('')).toBeNull();
         });
