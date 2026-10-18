@@ -1,6 +1,6 @@
 # Design: credential redaction
 
-Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/accessInfo/redact.ts`) around stated invariants, tracked in [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63). Unlike the other designs here, this one describes a shipped feature that is being reworked. Status: in progress. The rules below are added section by section as each part of the rework lands. Back to the [roadmap](../roadmap.md).
+Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/accessInfo/redact.ts`) around stated invariants, tracked in [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63). Unlike the other designs here, this one describes a shipped feature that is being reworked. Status: in progress. The rules below are added section by section as each part of the rework lands; what is still open is listed under [Open questions](#open-questions). Back to the [roadmap](../roadmap.md).
 
 ## Problem
 
@@ -46,3 +46,15 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
+3. **Which final bytes of a stripped terminal code to keep (cases 8 and 10).** When a terminal code is stripped, its final byte may be a letter a credential label needs (`ESC[token=…`). R79 keeps a byte that completes a label on its own, or all of a run's bytes if together they make one. That misses:
+   - a label that needs some of the bytes but not the others: `p ESC(a ESC(s ESC(s ESC(x=PRIVATE` becomes `p=PRIVATE` (case 8);
+   - a label judged without the separator after it: `toke ESC(n-bearer=PRIVATE` becomes `toke-bearer=PRIVATE`, because `bearer` counts though the Bearer pass needs whitespace (case 10).
+   
+   #81 tried, over six review rounds, to pick the one reading of the bytes that holds a label. It was dropped under R8. Every rule that chose a reading changed text another pass depends on:
+   - a header's whole name (`cookie`);
+   - a Basic payload, whose base64 length changes with any byte;
+   - a label of the other kind (`key.bearer`).
+   
+   Or it chose by a measure that does not hold: a bounded window around the run, "fewer characters visible", or a key separator after the run, which may be Basic padding. Its separator check also went quadratic. The regression tests from #81 pin every shape that leaked, and `main` masks each of them.
+   
+   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and needs its own design: [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82).
