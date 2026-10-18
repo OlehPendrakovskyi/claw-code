@@ -42,6 +42,10 @@ describe('reading', () => {
         const inserted = replaceInReading(readingOf('ab'), /(?=b)/g, () => '-');
         expect(inserted.text).toBe('a-b');
         expect([inserted.from[1], inserted.to[1]]).toEqual([1, 1]);
+        // A Unicode pattern steps past an empty match by a whole code point, never into a surrogate pair.
+        for (const pattern of [/(?:)/gu, /(?:)/g]) {
+            expect(replaceInReading(readingOf('a😀'), pattern, () => '-').text).toBe('a😀'.replace(pattern, '-'));
+        }
     });
 
     it('backs out what a scanner appended', () => {
@@ -78,13 +82,16 @@ describe('readingForRedaction', () => {
         expectWellFormed(input, reading);
     });
 
-    it('maps a kept final byte to itself (R79)', () => {
-        const input = '\u001b[token=v';
-        const reading = readingForRedaction(input);
-        expect(reading.text).toBe('token=v');
-        expect(source(input, reading, 0)).toBe('t');
-        expect(reading.from[0]).toBe(2);
-        expectWellFormed(input, reading);
+    it('maps a kept final byte to itself, not to its sequence (R79)', () => {
+        // CSI and `ESC I+ F` forms, raw and serialised: the kept `t` stands for the input `t` alone.
+        for (const code of ['\u001b[', '\u001b(', '\\u001b[', '\\u001b(', '\\x1b(', '\\\\u001b(']) {
+            const input = `x ${code}token=v`;
+            const reading = readingForRedaction(input);
+            expect(reading.text).toBe('x token=v');
+            expect(source(input, reading, 2)).toBe('t');
+            expect(reading.from[2]).toBe(2 + code.length);
+            expectWellFormed(input, reading);
+        }
     });
 
     it('maps a rewritten scheme to its whole spelling', () => {

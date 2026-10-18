@@ -392,18 +392,38 @@ export function stripTerminalCodes(text: string): string {
     return stripTerminalCodesIn(readingOf(text)).text;
 }
 
+/** `reading` with every {@link TERMINAL_CODE} replaced by its marked final byte, as {@link stripTerminalCodes} did
+ *  with `replace`. Groups 1 to 6 are a CSI's final byte, raw or serialised, and an escape sequence's, raw or
+ *  serialised, after intermediate bytes or as a digit. Each alternative that captures one ends with it, so the mark
+ *  and the byte stand for the match's last character, the byte itself. */
+function markFinalBytes(reading: Reading): Reading {
+    const text = reading.text;
+    TERMINAL_CODE.lastIndex = 0;
+    let match = TERMINAL_CODE.exec(text);
+    if (match === null) {
+        return reading;
+    }
+    const out = new ReadingBuilder(reading);
+    let copied = 0;
+    for (; match !== null; match = TERMINAL_CODE.exec(text)) {
+        const end = match.index + match[0].length;
+        out.copy(copied, match.index);
+        const final = match.slice(1, 7).find(group => group !== undefined);
+        if (final !== undefined) {
+            out.put(markedFinalByte(final), end - 1, end);
+        }
+        copied = end;
+    }
+    out.copy(copied, text.length);
+    return out.build();
+}
+
 /** {@link stripTerminalCodes} on a reading. */
 function stripTerminalCodesIn(reading: Reading): Reading {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
     const csiStripped = stripCsiSequencesIn(decodeNameEscapesIn(replaceInReading(reading, FINAL_BYTE_MARKS, () => '')));
-    // Groups 1 to 6 are a CSI's final byte, raw or serialised, and an escape sequence's, raw or serialised, after
-    // intermediate bytes or as a digit.
-    const stripped = replaceInReading(
-        replaceInReading(csiStripped, TERMINAL_CODE, match => markedFinalByte(match.slice(1, 7).find(group => group !== undefined) ?? '')),
-        CONTROL_BYTE,
-        () => ''
-    );
+    const stripped = replaceInReading(markFinalBytes(csiStripped), CONTROL_BYTE, () => '');
     return stripped.text.includes(FINAL_BYTE_MARK) ? keepLabelBytesIn(stripped) : stripped;
 }
 

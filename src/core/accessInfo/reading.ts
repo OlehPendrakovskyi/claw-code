@@ -123,9 +123,20 @@ export function replaceInReading(reading: Reading, pattern: RegExp, replacer: (m
         builder.put(replacer(match), start, end);
         copied = end;
         if (match[0] === '') {
-            pattern.lastIndex++;
+            pattern.lastIndex = nextIndex(reading.text, pattern.lastIndex, pattern.unicode || pattern.flags.includes('v'));
         }
     }
     builder.copy(copied, reading.text.length);
     return builder.build();
+}
+
+/** The index after `index` in `text`, as `String.prototype.replace` advances past an empty match: by a whole code
+ *  point for a Unicode pattern, so it never lands inside a surrogate pair, else by one unit. */
+function nextIndex(text: string, index: number, unicode: boolean): number {
+    if (!unicode || index + 1 >= text.length) {
+        return index + 1;
+    }
+    const unit = text.charCodeAt(index);
+    const following = text.charCodeAt(index + 1);
+    return unit >= 0xd800 && unit <= 0xdbff && following >= 0xdc00 && following <= 0xdfff ? index + 2 : index + 1;
 }
