@@ -1,35 +1,10 @@
 # Design: credential redaction
 
-Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/accessInfo/redact.ts`) around stated invariants, tracked in [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63). Unlike the other designs here, this one describes a shipped feature that is being reworked. Status: in progress. The rules below are added section by section as each part of the rework lands. Back to the [roadmap](../roadmap.md).
+Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/accessInfo/redact.ts`) around stated invariants, tracked in [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63). Unlike the other designs here, this one describes a shipped feature that is being reworked. Status: in progress. The rules below are added section by section as each part of the rework lands; what is still open is listed under [Open questions](#open-questions). Back to the [roadmap](../roadmap.md).
 
 ## Problem
 
 `redactText` masks credentials in text that leaves the process: logs, error messages, the Overview and reports. The text is untrusted, and so is its form: terminal codes, JSON escapes at any depth, pretty-printed structures, and URLs that do not parse. The masking grew one case at a time and has had findings in the same sections over several review rounds. Under R8 it is now rewritten as the invariants below, each with the mechanism that holds it.
-
-## T. Terminal-code stripping
-
-A terminal code is stripped before any masking pass runs. Its final byte may be a letter that a credential label needs (`ESC[token=…`, whose `t` is the final byte), so a final byte that is a name character is marked, and each run of name characters holding marked bytes is resolved once every other code and control byte is gone (R79).
-
-**T1. One label vocabulary.** The strip-time label check knows exactly the labels the masking passes read: `LABELS` in `redact.ts`. Each one says where it may sit in a run: anywhere (`SENSITIVE_KEY`, `CREDENTIAL_HEADER_KEY`), apart from other letters (`pass`), or as a whole word ending the run (`bearer`, `basic`, as `LABEL_WORD`). Every spelling those regexes accept beyond these (`api_key`, `access-key`, `set-cookie`) contains one of them.
-
-**T2. T3 acts only right before a key separator.** The separator is `:` or `=`, after optional closing quotes and whitespace, raw or serialised. There, only a key or header label masks the value: `bearer` and `basic` take no value that opens with `=` or `:`. The separator is judged with the marked bytes of later runs and without them, since either may be what is left (`bearer ESC[0m=` reads `bearer =`). Anywhere else (prose, a Basic payload, a name that runs on through a tab or serialised control), the first rule's reading stands unchanged.
-
-**T3. Right before a key separator, a reading that forms a key label adds its bytes to the first rule's.**
-- R79's first rule reads the run first (`firstReading`):
-  - with no marked byte kept, if that is a label;
-  - else with each byte that completes a label with its neighbours on its own;
-  - else with every byte, if that makes a label.
-  
-  It keeps bytes generously, so the other passes see the run much as it was: a header keeps its whole `cookie`, and a Basic payload keeps the characters that make it base64.
-- If a key separator follows and that reading holds no key or header label, the bytes of one reading that forms one are **added** to the bytes it kept, and none of those is dropped. `p ESC(a ESC(s ESC(s ESC(x=` becomes `pass=`, and `toke ESC(n-bearer=` becomes `token-bearer=`. If the result still holds no key label, the first rule's reading stands.
-- `pass` also keeps, on each side, the nearest marked byte that is no letter, if one comes before the next fixed character: `by ESC(_ pass=` becomes `by_pass=`.
-
-### Mechanism
-
-- `keepLabelBytes` judges the separator after each run (`separated`), on the text and on `withoutMarkedBytes`, which is built once and only when needed. `keepRunLabelBytes` takes `firstReading`'s kept bytes and, before a separator where they hold no key label, adds those `labelBytes` finds.
-- `labelBytes` matches each key label with a small automaton. Its state is the set of prefix lengths matched so far, as bits: a fixed character must extend a prefix, and a marked one may extend it or be skipped. Where a bounded label may start and end is read from the nearest fixed character on each side, since every marked byte outside the match goes. The states before each character are kept, so `readingOf` finds the match's bytes going back from its end, and `keepBoundary` adds the boundary bytes.
-- Each label reads the run once forward and its match once back, with constant work per character, so stripping stays linear (R64).
-- A test checks T3 directly: for a fixed-seed sample of label words split by codes, in query, tab, serialised-control and spaced-separator contexts, if any reading of the final bytes hides the value, the text with its codes must too.
 
 ## U. Malformed URL userinfo
 
@@ -71,8 +46,15 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
-3. **Readings away from a key separator.** T3 acts only right before a key separator. Elsewhere the first rule's reading stands, as on `main`, even where another reading would mask what follows. Examples, all the same on `main`:
-   - a `bearer` that only the dropped bytes form before a plain value (`token-beare ESC(r PRIVATE`);
-   - a key whose name runs on through a serialised control (`my_pass ESC(w…ESC(d \nx\t=PRIVATE`, `?p ESC(a…ESC(s \tx=PRIVATE`).
+3. **Which final bytes of a stripped terminal code to keep (cases 8 and 10).** When a terminal code is stripped, its final byte may be a letter a credential label needs (`ESC[token=…`). R79 keeps a byte that completes a label on its own, or all of a run's bytes if together they make one. That misses:
+   - a label that needs some of the bytes but not the others: `p ESC(a ESC(s ESC(s ESC(x=PRIVATE` becomes `p=PRIVATE` (case 8);
+   - a label judged without the separator after it: `toke ESC(n-bearer=PRIVATE` becomes `toke-bearer=PRIVATE`, because `bearer` counts though the Bearer pass needs whitespace (case 10).
    
-   #81 tried wider rules over five review rounds and dropped each under R8. Each one changed text that another pass depends on: a header's name, a Basic payload, a label of the other kind. Or it chose between readings by a measure that does not hold: a bounded window around the run, or "fewer characters visible". Tracking which input spans each reading hides, and masking a span where neither covers the other, is the alternative.
+   #81 tried, over six review rounds, to pick the one reading of the bytes that holds a label. It was dropped under R8. Every rule that chose a reading changed text another pass depends on:
+   - a header's whole name (`cookie`);
+   - a Basic payload, whose base64 length changes with any byte;
+   - a label of the other kind (`key.bearer`).
+   
+   Or it chose by a measure that does not hold: a bounded window around the run, "fewer characters visible", or a key separator after the run, which may be Basic padding. Its separator check also went quadratic. The regression tests from #81 pin every shape that leaked, and `main` masks each of them.
+   
+   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and needs its own design (a follow-up to [#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63)).
