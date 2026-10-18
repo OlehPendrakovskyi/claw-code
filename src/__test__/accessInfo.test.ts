@@ -1504,6 +1504,76 @@ describe('redactText', () => {
         expect(redactText('C:\\bin\\tool.exe ok')).toBe('C:\\bin\\tool.exe ok');
     });
 
+    it('masks a password run after a port-like prefix in every shape reviewed for issue #63 case 5', () => {
+        // Case 5 itself stays open (design doc, open question 1): `https://host:8080 see bob@example.org` has the shape
+        // of `https://alice:123 PRIVATE_PREFIX PRIVATE_SUFFIX@host`, and a password split between a label and its
+        // details looks like it too. These shapes each leaked under a narrower rule tried in #80.
+        for (const url of ['https://host:8080', '//host:8080']) {
+            expect(redactText(`see ${url} see bob@example.org`)).not.toContain('bob');
+        }
+        for (const text of [
+            'fetch https://alice:123 PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:123 PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch https://alice:123 PRIVATE_SUFFIX/part@host.example/x',
+            'fetch //alice:99999 PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:123\u00a0PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:123\u2003PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:123\tPRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch https://alice:123\tPRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch ssh://alice%20smith:123 PRIVATE_SUFFIX@host.example/x',
+            'fetch ssh://alice%23:123 PRIVATE_SUFFIX@host.example/x',
+            'https://alice:! PRIVATE_SUFFIX@host.example/x',
+            'see //alice:! PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123? PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123?PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123#PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'https://alice:123\\PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:?PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'fetch //alice:#PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x',
+            'file://C: PRIVATE_SUFFIX@host.example/x',
+        ]) {
+            expect(redactText(text)).not.toContain('PRIVATE');
+        }
+        // A `:` with no port before the space stays prose punctuation, in both forms.
+        for (const text of ['see //example.com: docs/a@b', 'see https://example.com: docs/a@b']) {
+            expect(redactText(text)).toBe(text);
+        }
+    });
+
+    it('masks a join after a port-like prefix whenever an `@` follows, as R76 requires (issue #63 case 5)', () => {
+        // The join form of case 5 stays over-masked: a password's leading digits look like a port, and the right side
+        // may put its `@` past other fields or lines, so the delimited probe applies to every left side.
+        for (const url of ['https://host:8080', '//host:8080', 'https://[::1]:8080']) {
+            expect(joinBoundary(url, 'contact bob@example.org').maskRight).toBe(true);
+        }
+        // A spaced password prefix on the left, completed past other words or lines on the right.
+        for (const left of ['https://alice:123 PRIVATE_PREFIX', '//alice:123 PRIVATE_PREFIX']) {
+            for (const right of ['reason PRIVATE_SUFFIX@host.example/x', JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2)]) {
+                expect(joinBoundary(left, right).maskRight).toBe(true);
+                expect(formatNamedEntry({ name: left, url: right })).not.toContain('PRIVATE');
+            }
+        }
+        // A split query credential whose prefix ends like a port is still masked.
+        expect(joinBoundary('https://api.example?token=PREFIX:8080', 'PRIVATE_SUFFIX').maskRight).toBe(true);
+        expect(formatNamedEntry({ name: 'https://api.example?token=PREFIX:8080', url: 'PRIVATE_SUFFIX' })).not.toContain('PRIVATE');
+        // The password the next word holds, split across the join, is still masked.
+        expect(joinBoundary('https://alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
+        expect(joinBoundary('//alice:123 PRIVATE_PREFIX', 'PRIVATE_SUFFIX@host.example/x').maskRight).toBe(true);
+        expect(formatNamedEntry({ name: 'https://alice:123', url: 'PRIVATE_SUFFIX@host.example/x' })).toBe('https://*** (***)');
+        // Structured details are no prose: the `@` may sit past other fields or lines, so R76's probe still applies,
+        // for a valid port (a password's digits look like one), an invalid one, and the network-path form.
+        const pretty = JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2);
+        const fields = '{"token": "OTHER", "reason": "PRIVATE_SUFFIX@host.example/x"}';
+        // Details on several lines are no one line of prose either, structured or not.
+        const lines = 'reason\n  PRIVATE_SUFFIX@host.example/x';
+        for (const name of ['https://alice:123', 'https://alice:99999', '//alice:123', 'https://host:8080']) {
+            for (const details of [pretty, fields, lines]) {
+                expect(joinBoundary(name, details).maskRight).toBe(true);
+                expect(formatNamedEntry({ name, url: details })).not.toContain('PRIVATE');
+            }
+        }
+    });
+
     it('masks a network-path password holding spaces and a slash after a port-like prefix', () => {
         expect(redactText('fetch //alice:123 PRIVATE_SUFFIX/part@host.example/x failed')).toBe('fetch //***@host.example/x failed');
         // Prose with a real host and port keeps its text.
@@ -1805,6 +1875,13 @@ describe('redactText', () => {
             '\\'.repeat(size) + '"',
             'token=\\\\\\"'.repeat(size / 10),
             '\\\\\\"token\\\\\\":'.repeat(size / 14),
+            // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
+            // `user:` authority per reference (issue #63 case 5).
+            '//[:['.repeat(size / 5) + '/@',
+            ' //[:1'.repeat(size / 6) + ' x@',
+            ' //a:1 x'.repeat(size / 8) + '@',
+            ' //a:b x'.repeat(size / 8) + '@',
+            'ssh://a%20:1 '.repeat(size / 13) + 'x@',
         ];
         for (const input of inputs) {
             const started = performance.now();
