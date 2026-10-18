@@ -1,3 +1,5 @@
+import { ReadingBuilder, readingOf, replaceInReading, type Reading } from './reading.js';
+
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
 const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|secret|credential|access_key|signature|authorization|cookie)/i;
 
@@ -94,16 +96,21 @@ const SLASH_ESCAPE = /(?<!\\)\\+\//g;
  *  with them are still recognised. A backslash stays escaped and a quote becomes a backslash-escaped one
  *  ({@link quoteEscapeRun}), so a key quoted with `\\u0022` is found and no string's structure changes. */
 function decodeNameEscapes(text: string): string {
-    return text.replace(PRINTABLE_ESCAPE, (escape, code: string) => {
+    return decodeNameEscapesIn(readingOf(text)).text;
+}
+
+/** {@link decodeNameEscapes} on a reading: a decoded character stands for its whole escape. */
+function decodeNameEscapesIn(reading: Reading): Reading {
+    const decoded = replaceInReading(reading, PRINTABLE_ESCAPE, ([escape, code]) => {
         const value = parseInt(code, 16);
         if (value === 0x7f || value === BACKSLASH_CODE) {
             return escape;
         }
         const char = String.fromCharCode(value);
         return QUOTE_CODES.has(value) ? '\\'.repeat(quoteEscapeRun(escape.indexOf('u'))) + char : char;
-    })
-        // JSON may escape `/` (`\/\/alice:pw@host\/x`), at any depth; only the backslashes before a `/` go.
-        .replace(SLASH_ESCAPE, '/');
+    });
+    // JSON may escape `/` (`\/\/alice:pw@host\/x`), at any depth; only the backslashes before a `/` go.
+    return replaceInReading(decoded, SLASH_ESCAPE, () => '/');
 }
 
 /** How many backslashes escape a quote that a `\\u00XX` escape after `run` backslashes spells: as many when
@@ -382,20 +389,22 @@ const CONTROL_BYTE = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]|(?<!
 /** Text without terminal colour and other CSI codes, or any other control byte but tabs and line endings,
  *  which could sit between a label and its value (`token\u0000=…`). */
 export function stripTerminalCodes(text: string): string {
+    return stripTerminalCodesIn(readingOf(text)).text;
+}
+
+/** {@link stripTerminalCodes} on a reading. */
+function stripTerminalCodesIn(reading: Reading): Reading {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
-    const stripped = stripCsiSequences(decodeNameEscapes(text.replace(FINAL_BYTE_MARKS, '')))
-        .replace(TERMINAL_CODE, (
-            _match: string,
-            csi: string | undefined,
-            serialisedCsi: string | undefined,
-            escape: string | undefined,
-            escapeDigit: string | undefined,
-            serialisedEscape: string | undefined,
-            serialisedEscapeDigit: string | undefined
-        ) => markedFinalByte(csi ?? serialisedCsi ?? escape ?? escapeDigit ?? serialisedEscape ?? serialisedEscapeDigit ?? ''))
-        .replace(CONTROL_BYTE, '');
-    return stripped.includes(FINAL_BYTE_MARK) ? keepLabelBytes(stripped) : stripped;
+    const csiStripped = stripCsiSequencesIn(decodeNameEscapesIn(replaceInReading(reading, FINAL_BYTE_MARKS, () => '')));
+    // Groups 1 to 6 are a CSI's final byte, raw or serialised, and an escape sequence's, raw or serialised, after
+    // intermediate bytes or as a digit.
+    const stripped = replaceInReading(
+        replaceInReading(csiStripped, TERMINAL_CODE, match => markedFinalByte(match.slice(1, 7).find(group => group !== undefined) ?? '')),
+        CONTROL_BYTE,
+        () => ''
+    );
+    return stripped.text.includes(FINAL_BYTE_MARK) ? keepLabelBytesIn(stripped) : stripped;
 }
 
 /** Marks a stripped sequence's final byte that is a name character, which {@link keepLabelBytes} keeps or drops
@@ -425,8 +434,9 @@ function markedFinalByte(final: string): string {
  *  another code or a control byte stood next to is judged with the name around it (`ESC(t NUL oken`). Each run
  *  of name characters holding marked bytes is read once. Linear: a run is tested whole a constant number of
  *  times, and each marked byte within {@link LABEL_WINDOW}. */
-function keepLabelBytes(text: string): string {
-    let out = '';
+function keepLabelBytesIn(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let i = 0;
     while (i < text.length) {
         let end = i;
@@ -442,15 +452,25 @@ function keepLabelBytes(text: string): string {
             }
         }
         if (end === i) {
-            out += text[i] === FINAL_BYTE_MARK ? '' : text[i];
+            if (text[i] !== FINAL_BYTE_MARK) {
+                out.copy(i, i + 1);
+            }
             i++;
             continue;
         }
-        const run = text.slice(i, end);
-        out += marked ? keepRunLabelBytes(run) : run;
+        if (!marked) {
+            out.copy(i, end);
+        } else {
+            const keep = keepRunLabelBytes(text.slice(i, end));
+            for (let k = 0; k < keep.length; k++) {
+                if (keep[k]) {
+                    out.copy(i + k, i + k + 1);
+                }
+            }
+        }
         i = end;
     }
-    return out;
+    return out.build();
 }
 
 /** A run of name characters with its marked final bytes resolved. With none kept, a run that is already a label
@@ -458,29 +478,38 @@ function keepLabelBytes(text: string): string {
  *  `ESC[0m ESC[token`, but not the `m`); and if that keeps no label while keeping every byte would, every byte
  *  stays. So the output holds a label whenever one of these readings does. A label that needs some of the marked
  *  bytes but not the others is not found (`p ESC(a ESC(s ESC(s ESC(x`): R79's known gap, issue #43. */
-function keepRunLabelBytes(run: string): string {
+function keepRunLabelBytes(run: string): boolean[] {
     let bare = '';
-    const marked: Array<{ at: number; byte: string }> = [];
+    const fixed: boolean[] = new Array<boolean>(run.length).fill(false);
+    const marked: Array<{ at: number; byte: string; index: number }> = [];
     for (let i = 0; i < run.length; i++) {
         if (run[i] === FINAL_BYTE_MARK) {
-            marked.push({ at: bare.length, byte: run[++i] });
+            marked.push({ at: bare.length, byte: run[i + 1], index: i + 1 });
+            i++;
         } else {
             bare += run[i];
+            fixed[i] = true;
         }
     }
     if (isLabel(bare)) {
-        return bare;
+        return fixed;
     }
-    let kept = '';
+    const kept = [...fixed];
+    let keptText = '';
     let copied = 0;
-    for (const { at, byte } of marked) {
+    for (const { at, byte, index } of marked) {
         const window = bare.slice(Math.max(0, at - LABEL_WINDOW + 1), at) + byte + bare.slice(at, at + LABEL_WINDOW - 1);
-        kept += bare.slice(copied, at) + (isLabel(window) ? byte : '');
+        const keep = isLabel(window);
+        keptText += bare.slice(copied, at) + (keep ? byte : '');
+        kept[index] = keep;
         copied = at;
     }
-    kept += bare.slice(copied);
+    keptText += bare.slice(copied);
     const all = run.replace(FINAL_BYTE_MARKS, '');
-    return isLabel(kept) || !isLabel(all) ? kept : all;
+    if (isLabel(keptText) || !isLabel(all)) {
+        return kept;
+    }
+    return run.split('').map(char => char !== FINAL_BYTE_MARK);
 }
 
 /** The opener of a CSI sequence, raw or serialised with its whole backslash run, as in {@link TERMINAL_CODE}. */
@@ -497,8 +526,13 @@ const CSI_OPENER_HERE = new RegExp(CSI_OPENER_SOURCE, 'iy');
  *  so `\e[token` can stay `token`, not `oken`.
  *  Linear: text outside a sequence is copied a stretch at a time, a byte inside one is copied once, and a
  *  sequence's bytes are dropped once. */
-function stripCsiSequences(text: string): string {
-    const out: string[] = [];
+function stripCsiSequencesIn(reading: Reading): Reading {
+    const text = reading.text;
+    NEXT_CSI_OPENER.lastIndex = 0;
+    if (!NEXT_CSI_OPENER.test(text)) {
+        return reading;
+    }
+    const out = new ReadingBuilder(reading);
     const open: { at: number; intermediate: boolean }[] = [];
     let i = 0;
     while (i < text.length) {
@@ -508,19 +542,19 @@ function stripCsiSequences(text: string): string {
             if (next === null) {
                 break;
             }
-            out.push(text.slice(i, next.index));
+            out.copy(i, next.index);
             i = next.index;
         }
         CSI_OPENER_HERE.lastIndex = i;
         const opener = CSI_OPENER_HERE.exec(text);
         if (opener !== null) {
-            open.push({ at: out.length, intermediate: false });
-            out.push(opener[0]);
+            open.push({ at: out.size, intermediate: false });
+            out.copy(i, CSI_OPENER_HERE.lastIndex);
             i = CSI_OPENER_HERE.lastIndex;
             continue;
         }
         const char = text[i++];
-        out.push(char);
+        out.copy(i - 1, i);
         const sequence = open[open.length - 1];
         if (!sequence.intermediate && char >= '0' && char <= '?') {
             continue;
@@ -528,18 +562,18 @@ function stripCsiSequences(text: string): string {
         if (char >= ' ' && char <= '/') {
             sequence.intermediate = true;
         } else if (char >= '@' && char <= '~') {
-            out.length = sequence.at;
+            out.truncate(sequence.at);
             open.pop();
             // The final byte of an outermost sequence is marked for keepLabelBytes (R79); inside an outer
-            // sequence it is one of that sequence's bytes.
+            // sequence it is one of that sequence's bytes. The mark and the byte stand for the byte.
             if (open.length === 0) {
-                out.push(markedFinalByte(char));
+                out.put(markedFinalByte(char), i - 1, i);
             }
         } else {
-            out.length = open[0].at;
+            out.truncate(open[0].at);
             open.length = 0;
             if (!PARSER_IGNORED_CHAR.test(char)) {
-                out.push(char);
+                out.copy(i - 1, i);
                 continue;
             }
             while (PARSER_IGNORED_CHAR.test(text[i] ?? '')) {
@@ -547,7 +581,8 @@ function stripCsiSequences(text: string): string {
             }
         }
     }
-    return out.join('') + text.slice(i);
+    out.copy(i, text.length);
+    return out.build();
 }
 
 const BEARER = new RegExp(String.raw`\b(bearer)${SPACE}+`, 'gi');
@@ -788,7 +823,17 @@ const BREAK = /[\t\r\n]/g;
  *  shows the standard spelling, as {@link redactEndpoint} does. Linear: the next `@`, break and authority end
  *  are each found once per stretch. */
 function normalizeSpecialSchemes(text: string): string {
-    let out = '';
+    return normalizeSpecialSchemesIn(readingOf(text)).text;
+}
+
+/** {@link normalizeSpecialSchemes} on a reading: a scheme it rewrites stands for the whole of its spelling. */
+function normalizeSpecialSchemesIn(reading: Reading): Reading {
+    const text = reading.text;
+    SPECIAL_SCHEME.lastIndex = 0;
+    if (!SPECIAL_SCHEME.test(text)) {
+        return reading;
+    }
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     let nextAt = -1;
     let nextLineBreak = -1;
@@ -838,10 +883,12 @@ function normalizeSpecialSchemes(text: string): string {
         if (nextAt >= nextLineBreak && !userinfoAcrossBreaks(end, colon)) {
             continue;
         }
-        out += `${text.slice(copied, match.index)}${text.slice(match.index, colon).replace(PARSER_IGNORED, '').replace(SERIALISED_BREAK, '')}://`;
+        out.copy(copied, match.index);
+        out.put(`${text.slice(match.index, colon).replace(PARSER_IGNORED, '').replace(SERIALISED_BREAK, '')}://`, match.index, end);
         copied = end;
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** A tab or line break, which a URL parser drops anywhere in a URL. */
@@ -1420,7 +1467,13 @@ function maskNormalized(plain: string): string {
 
 /** Text as {@link redactText} reads it before masking anything. */
 function normalizeForRedaction(text: string): string {
-    return normalizeSpecialSchemes(decodeNameEscapes(stripTerminalCodes(text)));
+    return readingForRedaction(text).text;
+}
+
+/** The base reading of `text` (design S2, S3): what {@link redactText} masks, with the input range each of its
+ *  characters came from. */
+export function readingForRedaction(text: string): Reading {
+    return normalizeSpecialSchemesIn(decodeNameEscapesIn(stripTerminalCodesIn(readingOf(text))));
 }
 
 /** {@link redactText}, with a known `secret` masked in every form it can take. The text is redacted as it is,

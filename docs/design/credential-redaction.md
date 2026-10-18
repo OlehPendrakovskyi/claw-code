@@ -39,7 +39,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
 
-Status: design, not implemented. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+Status: in progress: S-a (`reading.ts`, `readingForRedaction`) is built; S-b to S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
 
 ### Invariants
 
