@@ -124,7 +124,7 @@ code --install-extension claw-code.vsix --force   # or: cursor --install-extensi
 
 The first time you connect, the Gateway may ask you to approve this device. This step is called pairing. Approve the device on the Gateway, for example in the OpenClaw Control UI. To start again with a new device identity, run **OpenClaw: Reset Gateway Device Identity**.
 
-> **Use `wss://` for a Gateway on another machine.** The token is sent as soon as the connection opens. Over plain `ws://`, a Gateway on a NAS or a server receives it unencrypted across the network. Claw Code asks before it sends the token that way: **Connect This Time** allows it until the window closes, **Always Allow This Gateway** adds the URL to `openclaw.gateway.allowUnencryptedUrls`, and closing the dialog sends nothing. Use `wss://` or a secure tunnel instead, such as SSH port forwarding, Tailscale or WireGuard.
+> **Use `wss://` for a Gateway on another machine.** The token is sent as soon as the connection opens. Over plain `ws://`, a Gateway on a NAS or a server receives it unencrypted across the network. Claw Code asks before it sends the token that way: **Connect This Time** allows it until the window closes, **Always Allow This Gateway** adds the URL to `openclaw.gateway.allowUnencryptedUrls`, and closing the dialog sends nothing and stops it asking for that URL until you change a gateway setting. Use `wss://` or a secure tunnel instead, such as SSH port forwarding, Tailscale or WireGuard.
 
 ### Local CLI fallback
 
@@ -221,7 +221,7 @@ To read the logs, open the **Output** panel and choose the **OpenClaw**, **OpenC
 The first goal, a working chat with the Gateway, is shipped. The next milestone is **R0, the public release**. It covers:
 
 - a publisher this project owns, with listings on the VS Code Marketplace and Open VSX;
-- a release workflow;
+- a release workflow.
 
 After that come these milestones:
 

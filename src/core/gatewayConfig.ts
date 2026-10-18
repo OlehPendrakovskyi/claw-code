@@ -97,8 +97,15 @@ export class GatewayConfigService {
     return parsed !== null && parsed.protocol === 'ws:' && !GatewayConfigService.isLoopbackHost(parsed.hostname);
   }
 
+  /** `url` in the form the WebSocket client resolves it to (lower-case host, no default port, `/` for an empty
+   *  path), so two spellings of one endpoint compare equal; a URL that does not parse is returned as given. */
+  static canonicalGatewayUrl(url: string): string {
+    return GatewayConfigService.parseUrl(url)?.href ?? url;
+  }
+
   /** The remote `ws://` gateway URLs the user has allowed to receive the token unencrypted
-   *  (`openclaw.gateway.allowUnencryptedUrls`, user settings only), compared as written. */
+   *  (`openclaw.gateway.allowUnencryptedUrls`, user settings only), as written; compare them through
+   *  `canonicalGatewayUrl`. */
   static getUnencryptedAllowedUrls(): string[] {
     const config = vscode.workspace.getConfiguration('openclaw');
     // settings.json is hand-editable, so the value may have any JSON type.
@@ -114,7 +121,8 @@ export class GatewayConfigService {
   static allowUnencryptedUrl(url: string): Promise<void> {
     const write = GatewayConfigService.allowListWrites.then(async () => {
       const allowed = GatewayConfigService.getUnencryptedAllowedUrls();
-      if (allowed.includes(url)) {
+      const canonical = GatewayConfigService.canonicalGatewayUrl(url);
+      if (allowed.some((entry) => GatewayConfigService.canonicalGatewayUrl(entry) === canonical)) {
         return;
       }
       const config = vscode.workspace.getConfiguration('openclaw');
@@ -584,6 +592,7 @@ export const getGatewaySettings = GatewayConfigService.getGatewaySettings;
 export const isValidGatewayUrl = GatewayConfigService.isValidGatewayUrl;
 export const sendsTokenInCleartext = GatewayConfigService.sendsTokenInCleartext;
 export const isLoopbackGatewayUrl = GatewayConfigService.isLoopbackGatewayUrl;
+export const canonicalGatewayUrl = GatewayConfigService.canonicalGatewayUrl;
 export const getUnencryptedAllowedUrls = GatewayConfigService.getUnencryptedAllowedUrls;
 export const allowUnencryptedUrl = GatewayConfigService.allowUnencryptedUrl;
 export const resetDeviceIdentity = GatewayConfigService.resetDeviceIdentity;

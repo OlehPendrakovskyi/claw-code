@@ -259,7 +259,7 @@
           },
           "scope": "application",
           "default": [],
-          "description": "Remote ws:// Gateway URLs that may receive the gateway token unencrypted without asking first, each written exactly as in openclaw.gateway.url. Anyone on the network path can read a token sent to these; prefer wss:// or a secure tunnel. User settings only: a workspace cannot allow an unencrypted connection."
+          "description": "Remote ws:// Gateway URLs that may receive the gateway token unencrypted without asking first. Entries are compared as URLs, so the host's case and a default port do not matter. Anyone on the network path can read a token sent to these; prefer wss:// or a secure tunnel. User settings only: a workspace cannot allow an unencrypted connection."
         },
         "openclaw.gateway.transport": {
           "type": "string",

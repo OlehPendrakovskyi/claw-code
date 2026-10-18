@@ -2,6 +2,7 @@ import type { Mock } from 'vitest';
 import * as vscode from 'vscode';
 import {
   allowUnencryptedUrl,
+  canonicalGatewayUrl,
   DEVICE_IDENTITY_SECRET_KEY,
   DEVICE_TOKENS_SECRET_KEY,
   SecretDeviceCredentialStore,
@@ -599,6 +600,14 @@ describe('GatewayConfigService', () => {
                 ['gateway.allowUnencryptedUrls', ['ws://nas.lan:18789', 'ws://10.0.0.5:18789'], vscode.ConfigurationTarget.Global],
             ]);
         });
+
+        it('does not append a URL the list already holds in another spelling', async () => {
+            const update = useAllowList(['ws://NAS.lan:18789/']);
+
+            await allowUnencryptedUrl('ws://nas.lan:18789');
+
+            expect(update).not.toHaveBeenCalled();
+        });
     });
 
     describe('gateway URL checks', () => {
@@ -631,6 +640,23 @@ describe('GatewayConfigService', () => {
             expect(sendsTokenInCleartext('WS://LOCALHOST:1')).toBe(false);
             expect(sendsTokenInCleartext('ws://[::ffff:10.0.0.1]:1')).toBe(true);
             expect(sendsTokenInCleartext('ws://localhostx.example:1')).toBe(true);
+        });
+
+        it('canonicalises a URL as the WebSocket client resolves it', () => {
+            expect(canonicalGatewayUrl('ws://NAS.Lan:80')).toBe('ws://nas.lan/');
+            expect(canonicalGatewayUrl('WSS://gateway.example:443/gw')).toBe('wss://gateway.example/gw');
+            expect(canonicalGatewayUrl('ws://nas.lan:18789')).toBe(canonicalGatewayUrl('ws://nas.lan:18789/'));
+        });
+
+        it('keeps the parts that name another endpoint or credentials apart', () => {
+            expect(canonicalGatewayUrl('ws://nas.lan:18789/a')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789/b'));
+            expect(canonicalGatewayUrl('ws://nas.lan:18789')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18790'));
+            expect(canonicalGatewayUrl('ws://nas.lan:18789/?x=1')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789/'));
+            expect(canonicalGatewayUrl('ws://alice@nas.lan:18789')).not.toBe(canonicalGatewayUrl('ws://nas.lan:18789'));
+        });
+
+        it.each(['not a url', 'http://nas.lan', 'ws://nas.lan/#x'])('returns %p, which the client cannot open, as given', (url) => {
+            expect(canonicalGatewayUrl(url)).toBe(url);
         });
 
         it('does not treat a lookalike host as loopback', () => {
