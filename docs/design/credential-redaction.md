@@ -37,6 +37,59 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 - `hidesMore` holds J3 for `joinFormedCredential`, `consumesTail` (the label probe) and the delimited userinfo probe of `joinBoundary`.
 - `isSubsequence` reads each string once, so the check is linear (R64).
 
+## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
+
+Status: design, not implemented. It replaces choosing one reading of ambiguous text with masking everything any of a fixed set of readings hides. That closes cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+
+### Invariants
+
+**S1. A mask is a set of input characters.** Every masking decision marks characters of the original input as hidden. A pass may decide from parsed or normalised text, but what it hides is recorded in input coordinates.
+
+**S2. A reading is a normalisation of the input with a map back to it.** Each character of a reading maps to the input range it came from: one character, the escape it decodes (`\u0070`), or nothing for one normalisation inserts (`://` after `https:/`). Readings differ only where R79 and R62 leave a choice: which stripped final bytes stay, and so which split escapes decode.
+
+**S3. The readings are a fixed, small set.** There are four:
+- the base reading, R79's first rule, which is today's output;
+- every final byte dropped;
+- every final byte kept;
+- every run with the bytes of its first key-label reading added, found by the linear label automaton from #81's history (`labelBytes` in #81, commit 68db3b2).
+
+The count does not grow with the input.
+
+**S4. The output hides the union.** An input character that any reading hides is hidden in the output. The output is the base reading, with each maximal run of characters whose input range holds a hidden character replaced by one `***`. Since the base reading is one of the set, the output hides at least what `main` hides today.
+
+**S5. Passes report, they do not rewrite.** Each masking pass runs, in today's order and with today's regexes, on a view of the reading in which every span hidden so far is folded to one `MASK` character. It returns the spans it hides in view coordinates, which the fold maps back to the reading and then to the input.
+
+**S6. URLs keep their spelling.** `redactUrl` and `redactEndpoint` use `new URL()` only to decide which components are credentials, and locate them in the raw text. The output keeps the input's spelling: no added trailing `/`, `é` not `%C3%A9`, a default port kept, and each duplicate of a sensitive parameter masked rather than dropped.
+
+**S7. Linear.** Each reading costs one run of the pipeline, and each fold and map is linear in its text, so the whole costs a constant times the input (R64).
+
+**S8. Joins compare spans.** `joinBoundary`'s J3 test becomes exact: the join hides more when the joined text hides an input character that the parts hidden apart do not. This replaces the subsequence check.
+
+### Mechanism
+
+- **Data.** `Reading { text: string; from: Int32Array; to: Int32Array }` holds the input range of each character. A `Uint8Array` over the input holds hidden characters, and a union is a bitwise OR.
+- **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` builds the four readings from the same marked text in one pass, so the marks are resolved once per reading.
+- **Passes.** Each of `maskBrokenUserinfo`, `maskUserinfo`, `NETWORK_PATH_USERINFO`, `maskAmbiguousNetworkUserinfo`, `maskSensitivePairs`, `maskQueryPairs`, `redactUrl` and `maskPlainSecrets` (with the Bearer, Basic and header masks inside it) returns hidden spans instead of text. The fold helper turns view spans into reading spans.
+- **Rendering.** `renderHidden(base, hidden)` writes the base reading with hidden runs as `***`. `redactTextAndSecret` keeps running `maskSecretFragments` on the rendered text, as today.
+
+### Delivery
+
+| PR | Scope | Output change |
+|---|---|---|
+| S-a | `Reading` and maps for the three normalisation steps; a property test that rendering with nothing hidden gives today's normalised text | none |
+| S-b | Every pass but `redactUrl` reports spans. `redactUrl` stays a replacement inside the base reading only | none; every existing test passes unchanged |
+| S-c | `redactUrl` and `redactEndpoint` report spans (S6) | URL spelling; the tests that assert a re-serialised form are updated |
+| S-d | The four readings and their union (S3, S4) | cases 8, 9 and 10 masked; the #81 oracle becomes a property test over the set |
+| S-e | `joinBoundary` on spans (S8) | closes open question 2 |
+
+Effort: L–XL in total. S-a and S-b are refactors with unchanged output, so their tests are today's tests.
+
+### Open questions for the design
+
+1. **S6's spelling change.** It reaches `redactEndpointText`, which the Overview and the hardening report show. Keeping the input's spelling is arguably better fidelity, but it is visible.
+2. **The reading set.** A fixed set covers every shape #81 found. Exhaustive readings, 2^n per run, would not be linear. Is a fixed set enough, or should a run with more than a few final bytes withhold its text instead?
+3. **R0.** Cases 8, 9 and 10 are leaks on contrived terminal-code input. Should #82 block R0 (SEC-4), or ship after it with these cases documented?
+
 ## Open questions
 
 1. **Case 5: prose after a host and port** ([#63](https://github.com/OlehPendrakovskyi/vsclaw/issues/63)). `https://host:8080 see bob@example.org` is masked as `https://***@example.org/`, and its join form shows `https://*** (***)`. #80 tried six review rounds of narrower rules (the next word only after a host and port, then a host with no port, trimmed punctuation, a join rule) and dropped them under R8. Each one let a password through, because these inputs are syntactically the same:
@@ -57,4 +110,4 @@ A mask that both renderings keep shows no join-formed credential. That includes 
    
    Or it chose by a measure that does not hold: a bounded window around the run, "fewer characters visible", or a key separator after the run, which may be Basic padding. Its separator check also went quadratic. The regression tests from #81 pin every shape that leaked, and `main` masks each of them.
    
-   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and needs its own design: [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82).
+   The direction is span-based masking: compute which input spans any reading of the bytes would hide, and mask their union, instead of choosing a reading. It covers cases 5, 8, 9 and 10 alike and is designed in [section S](#s-span-based-masking-planned-82) ([#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82)).
