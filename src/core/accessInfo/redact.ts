@@ -652,26 +652,49 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
  *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}, unless `user:` is followed
- *  by digits and whitespace, a host and port that {@link maskAmbiguousNetworkUserinfo} reads by U2), or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  by digits, prose punctuation and whitespace, which {@link maskAmbiguousNetworkUserinfo} reads as U2 or U1
+ *  says), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
  *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
  *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line end or a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|(?![^\s/@:"'`<>]*:\d+\s)[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|(?!(?:\[[^\]\s]*\]|[^\s/@:"'`<>]*):\d+[)\]}.,;:!?]*\s)[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
 const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
-/** A `user:password-start` right after `//`, whose second part holds a non-digit, so it is no `host:port`. */
-const NON_PORT_USERINFO = /[^\s/@:"'`<>]*:[^\s/@]*[^\d\s/@]/y;
+/** A `user:` right after `//`, or a bracketed IPv6 host's first `:`. */
+const USERINFO_START = /[^\s/@:"'`<>]*:/y;
 /** An authority that ends with a port. */
 const PORT_END = /:\d+$/;
-/** A `user:digits` right after `//` that reads as a host and port, followed by a space or tab. */
-const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
+/** A base for parsing a network-path authority on its own. */
+const AUTHORITY_BASE = 'http://base.invalid';
+
+/** Whether `authority`, the text after `//` up to whitespace or a `/`, is a host and a port with no userinfo once
+ *  prose punctuation after it is dropped (`host:8080`, `host:8080:`, `[::1]:8080`), as a URL parser reads it: a
+ *  digit run that is no valid port (`alice:99999`) is no port (U2). */
+function isHostPort(authority: string): boolean {
+    const trimmed = authority.replace(TRAILING_DELIMITERS, '');
+    if (!PORT_END.test(trimmed)) {
+        return false;
+    }
+    try {
+        const url = new URL(`//${trimmed}`, AUTHORITY_BASE);
+        return url.username === '' && url.password === '' && url.hostname !== '';
+    } catch {
+        return false;
+    }
+}
+
+/** Whitespace that does not end a line, which separates a port from the next word (U2). */
+function isInlineSpace(char: string | undefined): boolean {
+    return char !== undefined && WHITESPACE.test(char) && !LINE_END.test(char);
+}
 
 /** Mask a network-path userinfo whose password holds both spaces and `/`
  *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
- *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference. It applies only where what follows `user:` cannot be a
- *  port. Linear: a scan stops where the next reference could start, and the search resumes there. */
+ *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference, when the authority after
+ *  `//` does not parse as a host and port (U1, `//alice:pass`, `//alice:99999`). One that does is followed by a
+ *  password only within the next word (U2). Linear: a scan stops where the next reference could start, and the search resumes there. */
 function maskAmbiguousNetworkUserinfo(text: string): string {
     let out = '';
     let copied = 0;
@@ -681,20 +704,30 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
         if ((at > 0 && !NETWORK_PATH_BOUNDARY.test(text[at - 1])) || at < copied) {
             continue;
         }
-        NON_PORT_USERINFO.lastIndex = at + 2;
-        if (!NON_PORT_USERINFO.test(text)) {
-            // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`, a prefix that reads as a host and
-            // port, then a space. The password goes on only within the next word, which holds its `@`
-            // (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@` in a later word is prose.
-            PORT_THEN_SPACE.lastIndex = at + 2;
-            if (!PORT_THEN_SPACE.test(text)) {
+        USERINFO_START.lastIndex = at + 2;
+        if (!USERINFO_START.test(text)) {
+            continue;
+        }
+        let authorityEnd = at + 2;
+        while (authorityEnd < text.length && !WHITESPACE.test(text[authorityEnd]) && text[authorityEnd] !== '/' && text[authorityEnd] !== '@') {
+            authorityEnd++;
+        }
+        if (isHostPort(text.slice(at + 2, authorityEnd))) {
+            // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`, a prefix that parses as a host and
+            // port, then whitespace other than a line end. The password goes on only within the next word, which
+            // holds its `@` (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@` in a later word
+            // is prose. A host and port followed by a `/` or nothing is no userinfo.
+            if (!isInlineSpace(text[authorityEnd])) {
                 continue;
             }
             // The word ends at another reference's `//` (`//public:8080 //alice:…`, `/docs,//alice:…`): the outer
             // loop takes that one up from there.
             const startsReference = (j: number) => text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]);
             let runAt = -1;
-            let k = PORT_THEN_SPACE.lastIndex;
+            let k = authorityEnd;
+            while (isInlineSpace(text[k])) {
+                k++;
+            }
             for (; k < text.length && !WHITESPACE.test(text[k]) && !startsReference(k); k++) {
                 runAt = text[k] === '@' ? k : runAt;
             }
@@ -991,8 +1024,8 @@ function maskUserinfo(text: string): string {
                 // `https://host:8080 see bob@example.org`), so a password goes on only within the next word, which
                 // holds its `@` (`PRIVATE/part@host` included); an `@` in a later word is prose. A prefix with no
                 // port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) holds no password at all.
-                if (PORT_END.test(text.slice(body, i).replace(TRAILING_DELIMITERS, ''))) {
-                    while (j < text.length && WHITESPACE.test(text[j]) && !LINE_END.test(text[j])) {
+                if (isHostPort(text.slice(body, i))) {
+                    while (isInlineSpace(text[j])) {
                         j++;
                     }
                     for (; j < text.length && !WHITESPACE.test(text[j]) && !text.startsWith('://', j); j++) {
@@ -1335,9 +1368,17 @@ const PASSWORD_HEAD = /^[^\s@]*@/;
 /** What {@link joinBoundary} appends to close an open userinfo, joined directly or after a display delimiter. */
 const USERINFO_TAIL = 'x@h';
 const DELIMITED_USERINFO_TAIL = ' (x@h)';
-/** A URL authority that ends the text with a host and a port (`https://host:8080`, `//alice:123`): by U2, a password
- *  after it goes on only within the next word, so an `@` the display delimiter puts further away completes none. */
-const HOST_PORT_END = /\/\/[^\s/@:"'`<>]+:\d+$/;
+/** The authority that ends the text, after its `//` (`https://host:8080` gives `host:8080`). */
+const LAST_AUTHORITY = /\/\/([^\s/]*)$/;
+/** Text that reads as one line of prose: no line end, and nothing that opens a structured field (quotes,
+ *  brackets, `=` or `:`), past which R76 lets a split password's `@` sit. */
+const PLAIN_PROSE = /^[^\r\n\u2028\u2029"'`{}[\]<>=:]*$/;
+
+/** Whether the text ends with a URL authority that parses as a host and a port ({@link isHostPort}). */
+function endsAtHostPort(text: string): boolean {
+    const authority = LAST_AUTHORITY.exec(text)?.[1];
+    return authority !== undefined && isHostPort(authority);
+}
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
@@ -1371,10 +1412,12 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // checked before a label that ends at a credential, so a left whose earlier credential runs to its end
     // (`token=OLD https://alice:PREFIX/`) is cut at that credential rather than shown as it is.
     // The probe reads `schemeLeft`, so `https:alice:PREFIX/` is a userinfo here as it is in the direct probe.
-    // A left that ends at a host and port (`https://host:8080` + `contact bob@example.org`) is no such userinfo
-    // (J2): a password split right after it is the direct probe's, and one in the next word the join's below.
+    // A left that ends at a host and port, joined to one line of prose (`https://host:8080` + `contact bob@example.org`),
+    // is read as U2 reads the joined text (J2): a password split right after it is the direct probe's, and one in
+    // the next word the join's below. Structured details keep the probe: a password's digits look like a port.
+    const hostPort = endsAtHostPort(authority);
     const delimited = maskNormalized(`${schemeLeft}${DELIMITED_USERINFO_TAIL}`);
-    if (!HOST_PORT_END.test(authority) && continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
+    if (!(hostPort && PLAIN_PROSE.test(continuation)) && continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
         return { left: delimited.startsWith(`${schemeLeft} `) ? left : upToFirstMask(delimited), maskRight: true };
     }
     if (endsAtCredential(left)) {
@@ -1390,7 +1433,7 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // A left that ends at a host and port is joined with the whitespace every caller's delimiter puts between
     // the parts (J2): glued, its port would run into the right's first word (`https://host:8080contact`) and form
     // an authority that does not parse, which no caller shows.
-    const separator = HOST_PORT_END.test(authority) ? ' ' : '';
+    const separator = hostPort ? ' ' : '';
     const joined = left !== '' && right !== '' ? joinFormedCredential(left, `${separator}${right}`) : undefined;
     if (joined !== undefined) {
         return { left: upToFirstMask(joined), maskRight: true };

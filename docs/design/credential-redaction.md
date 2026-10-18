@@ -8,11 +8,12 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 ## U. Malformed URL userinfo
 
-**U2. After a host and port, a password goes on only within the next word.** The authority before the whitespace parses and ends with an all-digit port, once prose punctuation after it is dropped (`https://host:8080:`, `(https://host:8080)`). A password then continues past that whitespace only within the next whitespace-free word, and that word must hold the `@`.
+**U2. After a host and port, a password goes on only within the next word.** U2 applies when the authority before the whitespace parses as a host and a port, with no userinfo, once prose punctuation after it is dropped (`https://host:8080:`, `(https://host:8080)`, `https://[::1]:8080`). A password then continues past that whitespace, which may be any whitespace but a line end, only within the next whitespace-free word, and that word must hold the `@`.
 
 - Masked: `https://alice:123 PRIVATE@host` and `https://alice:123 PRIVATE/part@host`.
 - Kept: `https://host:8080 see bob@example.org` and `https://host:8080: contact bob@example.org`. An `@` in a later word is prose.
 - An authority that parses with no port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) is followed by no password.
+- A digit run that is no valid port (`alice:99999`) leaves an authority that does not parse, so U1 applies to it.
 - Accepted over-redaction: `https://host:8080 bob@example.org` has the shape of a password and is masked.
 
 **U3. A password run that goes to "the last `@` on its line" ends at LF, CR, U+2028 or U+2029.** These runs (a password holding whitespace, and the search for a path after a port-like prefix) use this one set (`LINE_END`), so an email on a later line of prose is not read as part of such a password.
@@ -26,7 +27,10 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 - `maskUserinfo` and `scanLine` (the `scheme://` form) and `maskAmbiguousNetworkUserinfo` (the `//` form) end a line with `LINE_END`.
 - `NETWORK_PATH_USERINFO` excludes the same four characters from its spaced-password alternative.
-- U2 is held in `maskUserinfo` by its spaced-password block, which reads the prefix with `parsePrefix` (trailing punctuation dropped) and then only the next word. In `maskAmbiguousNetworkUserinfo` it is held by the `PORT_THEN_SPACE` branch, which reads only the next word. `NETWORK_PATH_USERINFO`'s spaced alternative skips a `user:digits` followed by whitespace and leaves it to that branch.
+- U2 is decided by one function, `isHostPort`, which parses the authority with prose punctuation dropped.
+  - In `maskUserinfo`, the spaced-password block calls it and then reads only the next word.
+  - In `maskAmbiguousNetworkUserinfo`, a host and port reads only the next word, and any other `user:` authority gets U1's same-line run.
+  - `NETWORK_PATH_USERINFO`'s spaced alternative skips a `user:digits` followed by punctuation and whitespace, and leaves it to that function.
 - U3a is held by `maskBrokenUserinfo`, which reads an authority across tabs, LF and CR up to its first `/`, `?`, `#` or other whitespace. It is also held by the break-crossing in `maskUserinfo` (`PARSER_IGNORED_CHAR`), which applies only to a `user:` run.
 
 ## J. Joins
@@ -35,10 +39,11 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 **J2. An open userinfo is completed only as the U rules complete it.**
 
-- A left side that ends at a host and port (`https://host:8080`, `//alice:123`) takes no password from an `@` further on in the right side. So the delimited `(x@h)` probe, which stands for such an `@`, does not apply to it.
+- A left side that ends at a host and port (`https://host:8080`, `//alice:123`), joined to one line of plain prose, takes no password from an `@` further on in the right side. So the delimited `(x@h)` probe, which stands for such an `@`, does not apply to it. Plain prose holds no line end, quote, bracket, `=` or `:`.
+- Structured or multi-line details keep the probe, as R76 requires. A password's leading digits look like a port, so `https://alice:123` + `{"reason": "SUFFIX@host"}` may still be a split password.
 - A password split right after the port (`https://alice:123` + `PRIVATE@host`) is still found by the direct userinfo probe.
 - The join of such a left side is judged with the whitespace that every caller's delimiter puts between the parts. Glued, the port would run into the right's first word (`8080contact`), which no caller shows.
-- A left side whose authority does not parse keeps the `(x@h)` probe, for the pretty-printed continuations of R76.
+- A left side whose authority does not parse (`https://alice:99999`) always keeps the probe.
 
 **J3. A join hides more only when it hides text the apart rendering shows.** Two renderings are compared: the joined one, `maskNormalized(l + r)`, and the apart one, `maskNormalized(l) + maskNormalized(r)` (R74). The join hides more when both of these hold:
 
@@ -49,7 +54,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ### Mechanism
 
-- J2 is held by `HOST_PORT_END` in `joinBoundary`, which gates the delimited probe and picks the separator of the final join.
+- J2 is held in `joinBoundary` by `endsAtHostPort` (the same `isHostPort`) and `PLAIN_PROSE`. They gate the delimited probe, and `endsAtHostPort` also picks the separator of the final join.
 - `hidesMore` holds J3 for `joinFormedCredential`, `consumesTail` (the label probe) and the delimited userinfo probe of `joinBoundary`.
 - `isSubsequence` reads each string once, so the check is linear (R64).
 
