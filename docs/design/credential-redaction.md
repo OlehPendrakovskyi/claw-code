@@ -39,55 +39,72 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
 
-Status: design, not implemented. It replaces choosing one reading of ambiguous text with masking everything any of a fixed set of readings hides. That closes cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+Status: design, not implemented. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
 
 ### Invariants
 
-**S1. A mask is a set of input characters.** Every masking decision marks characters of the original input as hidden. A pass may decide from parsed or normalised text, but what it hides is recorded in input coordinates.
+**S1. Edits are recorded against the input.** Every pass returns edits: an input span and the text that replaces it. A mask is an edit whose text is `***`; its span is hidden. Other edits change formatting (`token: v` to `token=***`, a re-serialised URL). A pass may decide from parsed or normalised text, but its spans are in input coordinates.
 
 **S2. A reading is a normalisation of the input with a map back to it.** Each character of a reading maps to the input range it came from: one character, the escape it decodes (`\u0070`), or nothing for one normalisation inserts (`://` after `https:/`). Readings differ only where R79 and R62 leave a choice: which stripped final bytes stay, and so which split escapes decode.
 
-**S3. The readings are a fixed, small set.** There are four:
-- the base reading, R79's first rule, which is today's output;
-- every final byte dropped;
-- every final byte kept;
-- every run with the bytes of its first key-label reading added, found by the linear label automaton from #81's history (`labelBytes` in #81, commit 68db3b2).
+**S3. The readings: the base reading, the extremes, and one witness reading per label.**
+- The base reading is R79's first rule, which is today's output.
+- One reading drops every final byte, and one keeps every final byte.
+- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes `\u00XX` and `%XX` escapes whose digits are final bytes (case 9). A run with no such reading keeps its base bytes.
+- Each witness reading is rendered on its own: it does not add to the base reading, so a byte that blocks the label there (`passx.basic`) is dropped.
+- The set has at most 3 + the vocabulary's size readings, whatever the input. Text with no marked final byte has only the base reading.
 
-The count does not grow with the input.
+**S4. The output is the base reading's edits plus what other readings hide.**
+- The base reading applies all of its edits, so with no marked final byte the output is today's.
+- Every other reading contributes only the input characters its masks hide.
+- Such a character outside every base edit is masked; adjacent ones form one `***`.
+- One inside a base mask is already hidden.
+- One inside a base edit that is not a mask turns that whole edit into `***`. This fails closed: a re-serialised URL or a reformatted pair that another reading finds a credential in is masked whole.
 
-**S4. The output hides the union.** An input character that any reading hides is hidden in the output. The output is the base reading, with each maximal run of characters whose input range holds a hidden character replaced by one `***`. Since the base reading is one of the set, the output hides at least what `main` hides today.
+So the output hides at least what `main` hides today.
 
-**S5. Passes report, they do not rewrite.** Each masking pass runs, in today's order and with today's regexes, on a view of the reading in which every span hidden so far is folded to one `MASK` character. It returns the spans it hides in view coordinates, which the fold maps back to the reading and then to the input.
+**S5. Passes report, they do not rewrite.** Each pass runs, in today's order and with today's regexes, on a view of the reading in which each edit made so far is applied, with a map from the view back to the reading. It returns its edits in view coordinates, which the maps carry back to the input.
 
-**S6. URLs keep their spelling.** `redactUrl` and `redactEndpoint` use `new URL()` only to decide which components are credentials, and locate them in the raw text. The output keeps the input's spelling: no added trailing `/`, `é` not `%C3%A9`, a default port kept, and each duplicate of a sensitive parameter masked rather than dropped.
+**S6. URLs keep today's spelling.** `redactUrl`'s re-serialised URL is one edit over the URL's span. A URL in which another reading hides a character is masked whole (S4).
 
-**S7. Linear.** Each reading costs one run of the pipeline, and each fold and map is linear in its text, so the whole costs a constant times the input (R64).
+**S7. Linear.** Each reading costs one run of the pipeline, the number of readings is bounded (S3), and each map is linear in its text, so the whole costs a constant times the input (R64). Text with no marked final byte runs the pipeline once, as today.
 
 **S8. Joins compare spans.** `joinBoundary`'s J3 test becomes exact: the join hides more when the joined text hides an input character that the parts hidden apart do not. This replaces the subsequence check.
 
+**S9. Acceptance is judged on every subset, not on the chosen readings.** The test for S-d generates short inputs (label words split by codes, junk codes, separators and contexts, as in #81's oracle). It asserts that if redacting **any** subset of the final bytes as plain text hides the value, the output hides it too. Its subsets range freely, so it detects a reading S3 does not hold. S-d ships only when it finds no leak that `main` does not share. A shape it still finds stays an open question; it is not claimed fixed.
+
 ### Mechanism
 
-- **Data.** `Reading { text: string; from: Int32Array; to: Int32Array }` holds the input range of each character. A `Uint8Array` over the input holds hidden characters, and a union is a bitwise OR.
-- **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` builds the four readings from the same marked text in one pass, so the marks are resolved once per reading.
-- **Passes.** Each of `maskBrokenUserinfo`, `maskUserinfo`, `NETWORK_PATH_USERINFO`, `maskAmbiguousNetworkUserinfo`, `maskSensitivePairs`, `maskQueryPairs`, `redactUrl` and `maskPlainSecrets` (with the Bearer, Basic and header masks inside it) returns hidden spans instead of text. The fold helper turns view spans into reading spans.
-- **Rendering.** `renderHidden(base, hidden)` writes the base reading with hidden runs as `***`. `redactTextAndSecret` keeps running `maskSecretFragments` on the rendered text, as today.
+- **Data.**
+  - `Reading { text: string; from: Int32Array; to: Int32Array }` holds the input range of each character.
+  - `Edit { from: number; to: number; text: string }` is in input coordinates.
+  - A `Uint8Array` over the input holds the characters other readings hide.
+- **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` resolves the marks once per reading.
+- **Passes.** Each of the following returns edits instead of text:
+  - `maskBrokenUserinfo`, `maskUserinfo` and `NETWORK_PATH_USERINFO`;
+  - `maskAmbiguousNetworkUserinfo`, `maskSensitivePairs` and `maskQueryPairs`;
+  - `redactUrl`;
+  - `maskPlainSecrets`, with the Bearer, Basic and header masks inside it.
+  
+  A helper applies a pass's edits to its view and maps them back.
+- **Rendering.** `render(base, edits, hidden)` applies S4. `redactTextAndSecret` keeps running `maskSecretFragments` on the rendered text, as today.
 
 ### Delivery
 
 | PR | Scope | Output change |
 |---|---|---|
-| S-a | `Reading` and maps for the three normalisation steps; a property test that rendering with nothing hidden gives today's normalised text | none |
-| S-b | Every pass but `redactUrl` reports spans. `redactUrl` stays a replacement inside the base reading only | none; every existing test passes unchanged |
-| S-c | `redactUrl` and `redactEndpoint` report spans (S6) | URL spelling; the tests that assert a re-serialised form are updated |
-| S-d | The four readings and their union (S3, S4) | cases 8, 9 and 10 masked; the #81 oracle becomes a property test over the set |
+| S-a | `Reading` and maps for the three normalisation steps; a property test that the base reading with no edits is today's normalised text | none |
+| S-b | Every pass reports edits, `redactUrl` included (S5, S6); the base reading rendered with its edits | none: every existing test passes unchanged |
+| S-c | The witness automaton, escape-aware (S3); unit-tested on runs alone | none |
+| S-d | The readings and their union (S3, S4), with S9's acceptance test | cases 8, 9 and 10 masked, as far as S9 confirms |
 | S-e | `joinBoundary` on spans (S8) | closes open question 2 |
 
-Effort: L–XL in total. S-a and S-b are refactors with unchanged output, so their tests are today's tests.
+Effort: L–XL in total. S-a, S-b and S-c change no output.
 
 ### Open questions for the design
 
-1. **S6's spelling change.** It reaches `redactEndpointText`, which the Overview and the hardening report show. Keeping the input's spelling is arguably better fidelity, but it is visible.
-2. **The reading set.** A fixed set covers every shape #81 found. Exhaustive readings, 2^n per run, would not be linear. Is a fixed set enough, or should a run with more than a few final bytes withhold its text instead?
+1. **Cost.** Text with marked final bytes runs the pipeline once per reading, up to 3 + the vocabulary's size times. Linear, but each such text costs about 16 times as much. Should a text above a size limit with many marked bytes be withheld instead (R64)?
+2. **Witnesses across runs.** A witness reading picks each run's bytes on its own. A label whose masking depends on two runs together (a key in one run, a continuation in the next) is not chosen jointly. S9's test is what would show whether this matters.
 3. **R0.** Cases 8, 9 and 10 are leaks on contrived terminal-code input. Should #82 block R0 (SEC-4), or ship after it with these cases documented?
 
 ## Open questions
