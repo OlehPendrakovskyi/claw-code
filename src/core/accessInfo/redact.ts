@@ -1284,13 +1284,27 @@ function consumesTail(text: string, tail: string): boolean {
     return hidesMore(maskNormalized(`${plainText}${plainTail}`), `${maskNormalized(plainText)}${plainTail}`);
 }
 
-/** Whether masking the parts together hides something that masking them apart does not: the two differ and
- *  the joined form holds a mask. A join can also mask less (`nearby` + `pass=PRIVATE` makes `nearbypass`, no
- *  longer a whole sensitive key), which leaves no mask behind and forms no credential. Lengths are not compared:
- *  re-serialising a URL can lengthen it (`é` becomes `%C3%A9`) by more than a mask saves, or shorten it (a
- *  default `:443` dropped) without masking anything. Any other difference with a mask fails toward hiding. */
+/** Whether masking the parts together hides something that masking them apart does not (J3): the joined form
+ *  holds a mask, and some text the apart form shows is missing from it, which is the case when the apart form's
+ *  text outside masks is no subsequence of the joined form's. A join can also mask less (`nearby` +
+ *  `pass=PRIVATE` makes `nearbypass`, no longer a whole sensitive key), which hides nothing, even when a mask
+ *  of a side's own credential or a literal `***` stays in both forms. Lengths are not compared: re-serialising
+ *  a URL can lengthen it (`é` becomes `%C3%A9`) by more than a mask saves, or shorten it (a default `:443`
+ *  dropped) without masking anything. Text such re-serialising changes next to a mask fails toward hiding. */
 function hidesMore(joined: string, apart: string): boolean {
-    return joined !== apart && joined.includes('***');
+    return joined.includes('***') && !isSubsequence(apart.replace(MASK_TEXTS, ''), joined.replace(MASK_TEXTS, ''));
+}
+
+/** Every `***`, a mask or a literal one. */
+const MASK_TEXTS = /\*\*\*/g;
+
+/** Whether `part` is a subsequence of `whole`. Linear: each string is read once. */
+function isSubsequence(part: string, whole: string): boolean {
+    let i = 0;
+    for (let j = 0; i < part.length && j < whole.length; j++) {
+        i += part[i] === whole[j] ? 1 : 0;
+    }
+    return i === part.length;
 }
 
 /** `left` and `right` joined and masked, when that masks more than masking each on its own: a credential

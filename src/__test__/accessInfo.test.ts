@@ -803,6 +803,19 @@ describe('redactText', () => {
         expect(formatNamedEntry({ name: 'nearby', url: 'pass=PRIVATE' })).toBe('nearby (pass=***)');
     });
 
+    it('does not read a literal `***` or a side\'s own mask as one the join formed (issue #63 case 6)', () => {
+        // A literal `***` in the input is no mask the join produced.
+        expect(joinBoundary('*** nearby', 'pass=PRIVATE')).toEqual({ left: '*** nearby', maskRight: false });
+        expect(formatNamedEntry({ name: '*** nearby', url: 'pass=PRIVATE' })).toBe('*** nearby (pass=***)');
+        // The join masks less (`thenpass` is no whole key), while the left's own credential leaves a mask in both
+        // renderings: the join hides nothing the sides show apart.
+        expect(joinBoundary('see https://alice:pw@h.example/ then', 'pass=PRIVATE')).toEqual({ left: 'see https://alice:pw@h.example/ then', maskRight: false });
+        expect(formatNamedEntry({ name: 'see https://alice:pw@h.example/ then', url: 'pass=PRIVATE' })).toBe('see https://***:***@h.example/ then (pass=***)');
+        // A credential the left side carries on into the right still masks the right, beside a literal `***`.
+        expect(joinBoundary('*** token=PRIVATE_PREFIX', 'PRIVATE_SUFFIX more')).toEqual({ left: '*** token=PRIVATE_PREFIX', maskRight: true });
+        expect(formatNamedEntry({ name: '*** token=PRIVATE_PREFIX', url: 'PRIVATE_SUFFIX more' })).toBe('*** token=*** (***)');
+    });
+
     it('ends a malformed URL password run at U+2028 and U+2029 as at a line break', () => {
         // The run goes to the last `@` on its line; the line and paragraph separators end a line as LF does, so an
         // email on the next line is no part of the password.
