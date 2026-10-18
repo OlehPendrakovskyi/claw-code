@@ -651,12 +651,12 @@ const URL_TERMINATOR = /[\s"'`<>]/;
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
  *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
- *  (running to the last `@` before a `/` or the end of its line), or a `/` (`//alice:p/ss@host`, running to the last `@` before
+ *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}), or a `/` (`//alice:p/ss@host`, running to the last `@` before
  *  whitespace or a character that could start another reference). This fails toward hiding, so a
  *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
- *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line break or a character that could
+ *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line end or a character that could
  *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n]*@|[^\s"'`<>([{=,]*@))/g;
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
 const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
@@ -667,7 +667,7 @@ const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
 
 /** Mask a network-path userinfo whose password holds both spaces and `/`
  *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
- *  before the end of the line or the next reference. It applies only where what follows `user:` cannot be a
+ *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference. It applies only where what follows `user:` cannot be a
  *  port. Linear: a scan stops where the next reference could start, and the search resumes there. */
 function maskAmbiguousNetworkUserinfo(text: string): string {
     let out = '';
@@ -691,7 +691,7 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
             // the outer loop takes that one up from there.
             const startsReference = (j: number) => text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]);
             let slash = PORT_THEN_SPACE.lastIndex;
-            while (slash < text.length && text[slash] !== '/' && text[slash] !== '\n' && text[slash] !== '\r') {
+            while (slash < text.length && text[slash] !== '/' && !LINE_END.test(text[slash])) {
                 slash++;
             }
             if (startsReference(slash)) {
@@ -712,7 +712,7 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
         }
         let lastAt = -1;
         let j = at + 2;
-        while (j < text.length && text[j] !== '\n' && text[j] !== '\r' &&
+        while (j < text.length && !LINE_END.test(text[j]) &&
             !(text.startsWith('//', j) && NETWORK_PATH_BOUNDARY.test(text[j - 1]))) {
             lastAt = text[j] === '@' ? j : lastAt;
             j++;
