@@ -199,11 +199,7 @@ export class ChatServiceFactory {
       if (confirmed || current.url !== plan.url || current.transport === 'acpx' || this.isCleartextAllowed(plan.url)) {
         return this.resolve(existing);
       }
-      // Declined: the token is not sent, and no client keeps a socket for it. The answer is kept only when no
-      // settings or token change arrived during the dialog: a settings change clears the kept answers.
-      if (generation === this.inputsGeneration) {
-        this.cleartextDeclinedUrls.add(canonicalGatewayUrl(plan.url));
-      }
+      // Declined: the token is not sent, and no client keeps a socket for it.
       this.suspendGateway('identity');
       if (current.transport === 'gateway') {
         this.onStatus?.('gateway', false, null);
@@ -392,7 +388,18 @@ export class ChatServiceFactory {
     const canonical = canonicalGatewayUrl(url);
     let prompt = this.cleartextPrompts.get(canonical);
     if (!prompt) {
-      prompt = this.askCleartext(url).finally(() => this.cleartextPrompts.delete(canonical));
+      // Decided once per dialog, against the inputs it was opened on, not per waiting send: one that joins after
+      // a change planned on the new inputs, yet answers the same dialog. A dismissal is kept only when no
+      // settings or token change arrived while the dialog was open; a settings change clears the kept ones.
+      const openedAt = this.inputsGeneration;
+      prompt = this.askCleartext(url)
+        .then((confirmed) => {
+          if (!confirmed && openedAt === this.inputsGeneration) {
+            this.cleartextDeclinedUrls.add(canonical);
+          }
+          return confirmed;
+        })
+        .finally(() => this.cleartextPrompts.delete(canonical));
       this.cleartextPrompts.set(canonical, prompt);
     }
     return prompt;

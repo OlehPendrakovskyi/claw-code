@@ -359,6 +359,27 @@ describe('ChatServiceFactory', () => {
             expect(warning).toHaveBeenCalledTimes(2);
         });
 
+        // The joining send planned after the change, but the dialog it waits on was opened before it.
+        it('does not keep a dismissal when a send joins the open dialog after the token changed', async () => {
+            let answer: (choice: string | undefined) => void = () => undefined;
+            warning.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+            const factory = new ChatServiceFactory(contextStub());
+
+            const first = factory.resolve();
+            await new Promise((resolve) => setImmediate(resolve));
+            await changeSecrets();
+            const second = factory.resolve();
+            await new Promise((resolve) => setImmediate(resolve));
+            answer(undefined);
+            await Promise.all([first, second]);
+            expect(warning).toHaveBeenCalledTimes(1);
+
+            warning.mockResolvedValue(undefined);
+            await factory.resolve();
+
+            expect(warning).toHaveBeenCalledTimes(2);
+        });
+
         // Another send may already use the client the grant allowed: the stale dismissal must not park it.
         it('connects rather than parking when the URL is allowed while its dialog is open and the dialog is then dismissed', async () => {
             let answer: (choice: string | undefined) => void = () => undefined;
