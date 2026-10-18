@@ -1,5 +1,5 @@
 /**
- * Claw Code — agent picker.
+ * VSClaw — agent picker.
  *
  * Lists main-agent sessions over the gateway transport for the command
  * palette picker (the webview session list uses the same helpers).

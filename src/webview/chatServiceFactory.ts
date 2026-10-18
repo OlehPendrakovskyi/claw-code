@@ -1,5 +1,5 @@
 /**
- * Claw Code — chat transport factory (DI seam).
+ * VSClaw — chat transport factory (DI seam).
  *
  * Resolves the chat backend per `openclaw.gateway.transport`:
  * - `acpx`: local CLI transport (legacy ChatService).
@@ -460,7 +460,7 @@ export class ChatServiceFactory {
     this.shownPairing = shown;
     const followUp =
       state.status === 'pending'
-        ? 'Claw Code connects as soon as it is approved.'
+        ? 'VSClaw connects as soon as it is approved.'
         : 'It was not approved in time: approve it, then send a message to reconnect.';
     const command = state.request.requestId ? `openclaw devices approve ${state.request.requestId}` : null;
     void vscode.window.showWarningMessage(`OpenClaw: ${state.hint} ${followUp}`, ...(command ? [COPY_COMMAND] : [])).then((choice) => {

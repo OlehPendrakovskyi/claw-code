@@ -56,7 +56,7 @@ import {
   PROTOCOL_VERSION,
 } from './schema';
 
-const CLIENT_DISPLAY_NAME = 'Claw Code';
+const CLIENT_DISPLAY_NAME = 'VSClaw';
 
 const METHOD_BY_OPERATION: Record<GatewayOperation, string> = {
   send: Methods.chatSend,
@@ -256,7 +256,7 @@ export const v4Adapter: GatewayProtocolAdapter = {
       role: CLIENT_ROLE,
       scopes: [...REQUESTED_SCOPES],
       auth: connectAuth(hello),
-      userAgent: `claw-code/${hello.clientVersion}`,
+      userAgent: `vsclaw/${hello.clientVersion}`,
     };
     return request(Methods.connect, device ? { ...params, device: toConnectDevice(device) } : params);
   },

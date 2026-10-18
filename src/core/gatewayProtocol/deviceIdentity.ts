@@ -1,5 +1,5 @@
 /**
- * Claw Code — device identity for the gateway handshake.
+ * VSClaw — device identity for the gateway handshake.
  *
  * One Ed25519 keypair identifies this client to gateways that pair devices.
  * As the gateway derives and verifies it (infra/device-identity.ts,

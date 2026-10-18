@@ -1,5 +1,5 @@
 /**
- * Asynchronous control utilities for Claw Code.
+ * Asynchronous control utilities for VSClaw.
  */
 
 /**

@@ -1,5 +1,5 @@
 /**
- * Claw Code — GatewayChatService.
+ * VSClaw — GatewayChatService.
  *
  * WebSocket client for the OpenClaw Gateway: socket, handshake, keepalive,
  * reconnect with backoff, RPC correlation, and the bookkeeping that turns

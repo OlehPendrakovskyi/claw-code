@@ -1,10 +1,10 @@
-# Claw Code
+# VSClaw
 
-**Claw Code** is a VS Code extension for [OpenClaw](https://docs.openclaw.ai). It lets you chat with the agents on your OpenClaw Gateway from the editor, with your code as context. It also sets up, runs and hardens OpenClaw from the activity bar.
+**VSClaw** is a VS Code extension for [OpenClaw](https://docs.openclaw.ai). It lets you chat with the agents on your OpenClaw Gateway from the editor, with your code as context. It also sets up, runs and hardens OpenClaw from the activity bar.
 
 It has no telemetry. On the Gateway transport the extension talks only to the Gateway you configure. If the Gateway cannot be reached, it can fall back to the local [`acpx`](https://www.npmjs.com/package/acpx) CLI.
 
-> **Pre-release.** Claw Code is not on the VS Code Marketplace or Open VSX yet. To use it, build and install it from source (see [Install](#install)). For what comes next, see [Status and roadmap](#status-and-roadmap).
+> **Pre-release.** VSClaw is not on the VS Code Marketplace or Open VSX yet. To use it, build and install it from source (see [Install](#install)). For what comes next, see [Status and roadmap](#status-and-roadmap).
 
 - [Features](#features)
 - [Requirements](#requirements)
@@ -107,14 +107,16 @@ git clone https://github.com/OlehPendrakovskyi/claw-code.git
 cd claw-code
 pnpm install
 pnpm run compile
-pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o claw-code.vsix
-code --install-extension claw-code.vsix --force   # or: cursor --install-extension claw-code.vsix --force
+pnpm dlx @vscode/vsce@4.0.0 package --no-dependencies -o vsclaw.vsix
+code --install-extension vsclaw.vsix --force   # or: cursor --install-extension vsclaw.vsix --force
 ```
 
-> **The extension ID will change before the first release.** Today's build installs as `openknot.claw-code`, a publisher name inherited from the upstream project. The public release will use a publisher that this project owns. VS Code treats the new ID as a different extension, which has two effects:
+> **The extension ID changed when the project was renamed to VSClaw.** A build installed before the rename registers as `openknot.claw-code`; the renamed build registers as `openknot.vsclaw`. VS Code treats these as different extensions, which has two effects:
 >
 > - Uninstall the old build first: `code --uninstall-extension openknot.claw-code`.
 > - VS Code keeps stored secrets and extension state per extension ID. After the switch, you enter the Gateway token again, pair the device again, and approve each workspace's `.acpxrc.json` again.
+>
+> The first public release also moves to a publisher this project owns, which changes the ID once more; see [Status and roadmap](#status-and-roadmap).
 
 ## Connect to your Gateway
 
@@ -124,7 +126,7 @@ code --install-extension claw-code.vsix --force   # or: cursor --install-extensi
 
 The first time you connect, the Gateway may ask you to approve this device. This step is called pairing. Approve the device on the Gateway, for example in the OpenClaw Control UI. To start again with a new device identity, run **OpenClaw: Reset Gateway Device Identity**.
 
-> **Use `wss://` for a Gateway on another machine.** The token is sent as soon as the connection opens. Over plain `ws://`, a Gateway on a NAS or a server receives it unencrypted across the network. Claw Code asks before it sends the token that way: **Connect This Time** allows it until the window closes, **Always Allow This Gateway** adds the URL to `openclaw.gateway.allowUnencryptedUrls`, and closing the dialog sends nothing and stops it asking for that URL until you change a gateway setting. Use `wss://` or a secure tunnel instead, such as SSH port forwarding, Tailscale or WireGuard.
+> **Use `wss://` for a Gateway on another machine.** The token is sent as soon as the connection opens. Over plain `ws://`, a Gateway on a NAS or a server receives it unencrypted across the network. VSClaw asks before it sends the token that way: **Connect This Time** allows it until the window closes, **Always Allow This Gateway** adds the URL to `openclaw.gateway.allowUnencryptedUrls`, and closing the dialog sends nothing and stops it asking for that URL until you change a gateway setting. Use `wss://` or a secure tunnel instead, such as SSH port forwarding, Tailscale or WireGuard.
 
 ### Local CLI fallback
 
@@ -134,7 +136,7 @@ The first time you connect, the Gateway may ask you to approve this device. This
 - `acpx`: always the local CLI.
 - `auto` (the default): the Gateway when it can be reached, otherwise acpx.
 
-With acpx, `openclaw.chat.agent` chooses the agent and `openclaw.chat.permissions` decides what it may do. A workspace can redefine the commands acpx runs for agents and MCP servers in an `.acpxrc.json` file. Claw Code uses that file only after you approve it, and asks again whenever the file changes.
+With acpx, `openclaw.chat.agent` chooses the agent and `openclaw.chat.permissions` decides what it may do. A workspace can redefine the commands acpx runs for agents and MCP servers in an `.acpxrc.json` file. VSClaw uses that file only after you approve it, and asks again whenever the file changes.
 
 ## Where your code lives
 
@@ -198,7 +200,7 @@ Some settings run commands, carry the token, or change what the agent may do. Yo
 - **No telemetry.** On the Gateway transport, the only connection is the WebSocket to your Gateway.
 - **The acpx transport is configured outside the extension.** Your prompts and the context you attach go to the agent and model provider that your local `acpx` uses.
 - **Secrets stay in SecretStorage.** This covers the Gateway token and the device identity. A token found in the old plaintext setting `openclaw.gateway.token` in your user settings is moved into SecretStorage and deleted from `settings.json`. If a token is already saved, a different one in the setting is deleted, not adopted. If SecretStorage cannot store the token, or the setting cannot be deleted, the token stays in `settings.json` and a warning tells you what to do. A token in workspace settings is never used; it is deleted once you trust the workspace.
-- **A workspace you open cannot redirect you silently.** Only your user settings can change where the token goes, which commands Claw Code runs, or what the agent may approve. The one exception needs your approval: on the acpx transport, a workspace's `.acpxrc.json` can change the commands acpx runs for agents and MCP servers, and it is used only after you approve that exact file (see [Local CLI fallback](#local-cli-fallback)).
+- **A workspace you open cannot redirect you silently.** Only your user settings can change where the token goes, which commands VSClaw runs, or what the agent may approve. The one exception needs your approval: on the acpx transport, a workspace's `.acpxrc.json` can change the commands acpx runs for agents and MCP servers, and it is used only after you approve that exact file (see [Local CLI fallback](#local-cli-fallback)).
 - **Attachments come from your workspace or from your own choice.** An `@`-mention resolves only to a file inside the workspace, with symlink escapes rejected. A file from outside the workspace is attached only when you pick it yourself: in the `+` file dialog, as an open editor in the file search, or by dropping it, which asks for confirmation first. Every attachment is read up to a size limit, through a handle whose own path the operating system confirms is the file checked when it was attached, so a folder swapped for a link in the meantime is caught. Linux, macOS and Windows are supported; elsewhere attachments are refused.
 - **Logs are cleaned of secrets.** Before a log line or an error message is written, credentials in it are removed. This covers URL user names and passwords, tokens in query strings, and `key=value` secrets. The extension does not log prompt text either. An agent's error message can quote your prompt, so the log records only its size; the chat still shows it ([#42](https://github.com/OlehPendrakovskyi/claw-code/issues/42)).
 
@@ -270,4 +272,4 @@ Use Conventional Commits and the branch prefixes `feat/`, `fix/`, `chore/`, `ref
 
 [MIT](LICENSE).
 
-Claw Code started as a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension), © OpenKnot AI / Val Alexander, at version 0.2.1. It is now an independent project, and it does not sync with upstream. Thank you for the original work.
+VSClaw started as a fork of [openknots/openclaw-extension](https://github.com/openknots/openclaw-extension), © OpenKnot AI / Val Alexander, at version 0.2.1. It is now an independent project, and it does not sync with upstream. Thank you for the original work.

@@ -1,5 +1,5 @@
 /**
- * Claw Code — pending operator prompts.
+ * VSClaw — pending operator prompts.
  *
  * The approvals and questions a gateway connection waits on an operator for,
  * kept across reconnects: a prompt leaves once it is resolved (here or

@@ -9,17 +9,17 @@ Report it privately through GitHub instead: open the repository's **Security** t
 A useful report includes:
 
 - what an attacker can do, and what they need first (a workspace the user opens, a Gateway they control, a position on the network, …);
-- the steps to reproduce it, with the Claw Code version or commit, your VS Code version, and your operating system;
+- the steps to reproduce it, with the VSClaw version or commit, your VS Code version, and your operating system;
 - which transport is involved: the Gateway WebSocket or the local acpx CLI;
 - any logs, with your own tokens and secrets removed.
 
 ## What happens next
 
-Claw Code has a single maintainer, so replies are best effort. You will get an answer in the private report, and the fix is developed in a private fork where it can be. Once a fixed version is available, the report is published as a GitHub security advisory, crediting you unless you ask not to be named.
+VSClaw has a single maintainer, so replies are best effort. You will get an answer in the private report, and the fix is developed in a private fork where it can be. Once a fixed version is available, the report is published as a GitHub security advisory, crediting you unless you ask not to be named.
 
 ## Supported versions
 
-Claw Code has not had its first release yet. Until it does, fixes go to the `main` branch only. Once releases exist, only the latest one receives security fixes.
+VSClaw has not had its first release yet. Until it does, fixes go to the `main` branch only. Once releases exist, only the latest one receives security fixes.
 
 ## Scope
 

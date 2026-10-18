@@ -50,7 +50,7 @@ An earlier target layout put the transport under `src/core/gateway/` (`GatewayCl
 
 - One logger class, injected into services (easy to mock), with levels debug / info / warn / error and two streams: the event dispatcher (RPC → log) and the transport (WS lifecycle).
 - **Production** (VS Code on the user's machine): no writing to disk; the Output Channel only, at warn and above; debug only behind an env var or dev setting.
-- **CI**: a file log (`logs/claw-code.log`), teed to the job log and/or uploaded on failure as a short-retention artifact. GitHub Actions artifacts cannot be access-restricted and this repository is public, so an uploaded log is readable by anyone with read access. The file is treated as potentially containing credentials: safety comes from the red lines, never from assuming CI is secret-free.
+- **CI**: a file log (`logs/vsclaw.log`), teed to the job log and/or uploaded on failure as a short-retention artifact. GitHub Actions artifacts cannot be access-restricted and this repository is public, so an uploaded log is readable by anyone with read access. The file is treated as potentially containing credentials: safety comes from the red lines, never from assuming CI is secret-free.
 - Errors carry stable codes (a `LogEvent` enum) and a context bag of safe fields only (sessionKey, iteration, event type); stack traces never reach the UI.
 - **Debug isolation**: develop against a separate dev gateway so agents' working memory is not polluted by debug traffic.
 

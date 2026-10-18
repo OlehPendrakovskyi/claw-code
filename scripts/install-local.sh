@@ -15,7 +15,7 @@ echo "Compiling..."
 pnpm run compile
 
 VERSION="$(node -p "require('./package.json').version")"
-VSIX="openclaw-extension-${VERSION}.vsix"
+VSIX="vsclaw-${VERSION}.vsix"
 
 echo "Packaging ${VSIX}..."
 ${X_CMD} "${VSCE}" package --no-dependencies -o "${VSIX}"
@@ -30,6 +30,11 @@ if ! command -v cursor >/dev/null 2>&1; then
     exit 1
   fi
 fi
+
+# The rename changed the extension ID, so the old build is a different extension that would
+# stay installed and contribute the same openclaw.* commands, settings and views (roadmap REL-2).
+echo "Removing the legacy extension id (openknot.claw-code), if present..."
+"${IDE}" --uninstall-extension openknot.claw-code >/dev/null 2>&1 || true
 
 echo "Installing into ${IDE}..."
 "${IDE}" --install-extension "${VSIX}" --force

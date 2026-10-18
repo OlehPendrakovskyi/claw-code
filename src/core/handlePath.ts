@@ -1,5 +1,5 @@
 /**
- * Claw Code — what the operating system says an opened file is, where Node cannot ask.
+ * VSClaw — what the operating system says an opened file is, where Node cannot ask.
  *
  * The attachment reader proves a file is inside the workspace by the opened handle's own
  * path (development rule R6). Linux answers through /proc/self/fd, which Node reads. macOS

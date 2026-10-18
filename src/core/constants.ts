@@ -1,5 +1,5 @@
 /**
- * Shared constants for Claw Code.
+ * Shared constants for VSClaw.
  *
  * The `openclaw.*` command ids and settings keys mirror `package.json`
  * `contributes`, which is the source of truth; keep both in sync.

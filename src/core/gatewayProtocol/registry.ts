@@ -1,5 +1,5 @@
 /**
- * Claw Code — supported gateway protocol versions and their negotiation.
+ * VSClaw — supported gateway protocol versions and their negotiation.
  *
  * `openclaw.gateway.protocolVersion` selects the range the handshake offers:
  * `auto` offers every supported version, a number exactly that one. The

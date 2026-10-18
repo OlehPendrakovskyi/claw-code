@@ -1,5 +1,5 @@
 /**
- * Claw Code — the bounded read loop shared by the file readers.
+ * VSClaw — the bounded read loop shared by the file readers.
  *
  * Readers differ in how much they trust the file they were handed: the
  * attachment reader re-checks a verified handle, the acpx config reader

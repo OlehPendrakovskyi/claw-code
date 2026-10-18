@@ -1,5 +1,5 @@
 /**
- * Claw Code — agent session list helpers.
+ * VSClaw — agent session list helpers.
  *
  * Pure, VS Code-free helpers over the gateway's session summaries and
  * transcript snapshots (see gatewayProtocol/model.ts). Only main-agent

@@ -1,5 +1,5 @@
 /**
- * Claw Code — canonical runtime type guards and coercion helpers.
+ * VSClaw — canonical runtime type guards and coercion helpers.
  *
  * Small, dependency-free primitives for narrowing and coercing `unknown`
  * payload fields (gateway frames, history rows, JSON parses, settings values).
