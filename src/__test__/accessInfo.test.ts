@@ -1532,6 +1532,14 @@ describe('redactText', () => {
         for (const url of ['https://alice:99999', '//alice:99999']) {
             expect(redactText(`fetch ${url} PRIVATE_PREFIX PRIVATE_SUFFIX@host.example/x`)).not.toContain('PRIVATE');
         }
+        // A non-special scheme is judged by its own parser (`alice%20smith` is a valid opaque host there).
+        for (const user of ['alice%20smith', 'alice%23']) {
+            expect(redactText(`fetch ssh://${user}:123 PRIVATE_SUFFIX@host.example/x failed`)).toBe('fetch ssh://***@host.example/x failed');
+        }
+        // An authority that parses with no port is followed by no password, in both forms.
+        for (const text of ['see //example.com: docs/a@b', 'see https://example.com: docs/a@b']) {
+            expect(redactText(text)).toBe(text);
+        }
         // Any whitespace other than a line end separates the port from the next word, in both forms.
         for (const space of ['\u00a0', '\u2003']) {
             expect(redactText(`fetch //alice:123${space}PRIVATE_SUFFIX@host.example/x`)).toBe('fetch //***@host.example/x');
@@ -1553,8 +1561,10 @@ describe('redactText', () => {
         // for a valid port (a password's digits look like one), an invalid one, and the network-path form.
         const pretty = JSON.stringify({ reason: 'PRIVATE_SUFFIX@host.example/x' }, null, 2);
         const fields = '{"token": "OTHER", "reason": "PRIVATE_SUFFIX@host.example/x"}';
+        // Details on several lines are no one line of prose either, structured or not.
+        const lines = 'reason\n  PRIVATE_SUFFIX@host.example/x';
         for (const name of ['https://alice:123', 'https://alice:99999', '//alice:123', 'https://host:8080']) {
-            for (const details of [pretty, fields]) {
+            for (const details of [pretty, fields, lines]) {
                 expect(joinBoundary(name, details).maskRight).toBe(true);
                 expect(formatNamedEntry({ name, url: details })).not.toContain('PRIVATE');
             }
@@ -1862,6 +1872,13 @@ describe('redactText', () => {
             '\\'.repeat(size) + '"',
             'token=\\\\\\"'.repeat(size / 10),
             '\\\\\\"token\\\\\\":'.repeat(size / 14),
+            // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
+            // `user:` authority per reference (issue #63 case 5).
+            '//[:['.repeat(size / 5) + '/@',
+            ' //[:1'.repeat(size / 6) + ' x@',
+            ' //a:1 x'.repeat(size / 8) + '@',
+            ' //a:b x'.repeat(size / 8) + '@',
+            'ssh://a%20:1 '.repeat(size / 13) + 'x@',
         ];
         for (const input of inputs) {
             const started = performance.now();

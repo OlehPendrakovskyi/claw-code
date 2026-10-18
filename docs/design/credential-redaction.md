@@ -27,10 +27,9 @@ Covers roadmap item **SEC-4**: the rewrite of credential redaction (`src/core/ac
 
 - `maskUserinfo` and `scanLine` (the `scheme://` form) and `maskAmbiguousNetworkUserinfo` (the `//` form) end a line with `LINE_END`.
 - `NETWORK_PATH_USERINFO` excludes the same four characters from its spaced-password alternative.
-- U2 is decided by one function, `isHostPort`, which parses the authority with prose punctuation dropped.
-  - In `maskUserinfo`, the spaced-password block calls it and then reads only the next word.
-  - In `maskAmbiguousNetworkUserinfo`, a host and port reads only the next word, and any other `user:` authority gets U1's same-line run.
-  - `NETWORK_PATH_USERINFO`'s spaced alternative skips a `user:digits` followed by punctuation and whitespace, and leaves it to that function.
+- U1 and U2 are decided in one place, `authorityKind`. It reads an authority that holds no `@`, with prose punctuation dropped, as a host and an explicit port, a host alone, or unparsable. It reads the URL's parse under its own scheme, since a non-special scheme (`ssh:`) accepts hosts that `http:` rejects. A network-path reference is parsed as `http:`.
+  - In `maskUserinfo`, the spaced-password block takes U2 (the next word) for a host and port, nothing for a host alone, and U1's same-line run for an unparsable authority.
+  - `maskAmbiguousNetworkUserinfo` does the same for the `//` form. It is the only pass that decides a network-path password holding whitespace: `NETWORK_PATH_USERINFO` matches no whitespace at all.
 - U3a is held by `maskBrokenUserinfo`, which reads an authority across tabs, LF and CR up to its first `/`, `?`, `#` or other whitespace. It is also held by the break-crossing in `maskUserinfo` (`PARSER_IGNORED_CHAR`), which applies only to a `user:` run.
 
 ## J. Joins
@@ -54,7 +53,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ### Mechanism
 
-- J2 is held in `joinBoundary` by `endsAtHostPort` (the same `isHostPort`) and `PLAIN_PROSE`. They gate the delimited probe, and `endsAtHostPort` also picks the separator of the final join.
+- J2 is held in `joinBoundary` by `endsAtHostPort` (`authorityKind` under the left side's own scheme) and `PLAIN_PROSE`, which is tested on the right side before its line breaks are dropped. They gate the delimited probe, and `endsAtHostPort` also picks the separator of the final join.
 - `hidesMore` holds J3 for `joinFormedCredential`, `consumesTail` (the label probe) and the delimited userinfo probe of `joinBoundary`.
 - `isSubsequence` reads each string once, so the check is linear (R64).
 

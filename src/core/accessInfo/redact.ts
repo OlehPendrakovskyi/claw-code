@@ -650,15 +650,12 @@ const URL_TERMINATOR = /[\s"'`<>]/;
 /** The userinfo of a network-path reference (`//alice:secret@host/x`, RFC 3986 §4.2): a `//` that starts
  *  the text or follows whitespace, a quote, a bracket, `(`, `=` or `,`, so the `//` of `https://` and of a
  *  path such as `a//b` never matches. The userinfo runs to the last `@` before the first `/`, since a
- *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, spaces
- *  (running to the last `@` before a `/` or the end of its line, a {@link LINE_END}, unless `user:` is followed
- *  by digits, prose punctuation and whitespace, which {@link maskAmbiguousNetworkUserinfo} reads as U2 or U1
- *  says), or a `/` (`//alice:p/ss@host`, running to the last `@` before
- *  whitespace or a character that could start another reference). This fails toward hiding, so a
- *  `//host:port/…@…` can be over-masked. A password holding both spaces and `/` is left to
- *  {@link maskAmbiguousNetworkUserinfo}. Linear: no match crosses a line end or a character that could
- *  start another match. */
-const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|(?!(?:\[[^\]\s]*\]|[^\s/@:"'`<>]*):\d+[)\]}.,;:!?]*\s)[^/\r\n\u2028\u2029]*@|[^\s"'`<>([{=,]*@))/g;
+ *  password may hold `@`. A `user:password` form may also hold a quote, backtick or angle bracket, or a `/`
+ *  (`//alice:p/ss@host`, running to the last `@` before whitespace or a character that could start another
+ *  reference). This fails toward hiding, so a `//host:port/…@…` can be over-masked. A password holding
+ *  whitespace is left to {@link maskAmbiguousNetworkUserinfo}, which alone decides by U1 and U2 how far it runs.
+ *  Linear: no match crosses whitespace or a character that could start another match. */
+const NETWORK_PATH_USERINFO = /(?<![^\s"'`<>([{=,])\/\/(?:[^\s/"'`<>]*@|(?=[^\s/@:"'`<>]*:)(?:[^\s/]*@|[^\s"'`<>([{=,]*@))/g;
 const WHITESPACE = /\s/;
 /** What may precede the `//` of a network-path reference, as in {@link NETWORK_PATH_USERINFO}. */
 const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
@@ -666,22 +663,32 @@ const NETWORK_PATH_BOUNDARY = /[\s"'`<>([{=,]/;
 const USERINFO_START = /[^\s/@:"'`<>]*:/y;
 /** An authority that ends with a port. */
 const PORT_END = /:\d+$/;
-/** A base for parsing a network-path authority on its own. */
-const AUTHORITY_BASE = 'http://base.invalid';
+/** The scheme a network-path reference is parsed with: it has none of its own, and `http:` is how a browser or
+ *  a client resolving it against a web base reads it. */
+const NETWORK_PATH_SCHEME = 'http:';
 
-/** Whether `authority`, the text after `//` up to whitespace or a `/`, is a host and a port with no userinfo once
- *  prose punctuation after it is dropped (`host:8080`, `host:8080:`, `[::1]:8080`), as a URL parser reads it: a
- *  digit run that is no valid port (`alice:99999`) is no port (U2). */
-function isHostPort(authority: string): boolean {
-    const trimmed = authority.replace(TRAILING_DELIMITERS, '');
-    if (!PORT_END.test(trimmed)) {
-        return false;
+/** How a URL parser reads an authority that holds no `@`, which U1 and U2 decide by. */
+type AuthorityKind = 'host-port' | 'host' | 'unparsable';
+
+/** What `url`, the parse of a URL whose authority is `authority` (the text after `//` up to whitespace or a `/`,
+ *  with prose punctuation after it dropped, as in `host:8080:`), says that authority is: a host and an explicit
+ *  port (`host:8080`, `[::1]:8080`, `host:443` though it is the default), a host alone (`example.com:`), or
+ *  neither, so `alice:pass` and `alice:99999`, whose digit run is no valid port, are unparsable. The one place U1
+ *  and U2 are decided, for both forms and for joins. */
+function authorityKind(url: URL | undefined, authority: string): AuthorityKind {
+    if (url === undefined || url.username !== '' || url.password !== '' || url.hostname === '') {
+        return 'unparsable';
     }
+    return PORT_END.test(authority.replace(TRAILING_DELIMITERS, '')) ? 'host-port' : 'host';
+}
+
+/** `authority` parsed under `scheme`, prose punctuation after it dropped. The scheme matters: a non-special one
+ *  (`ssh:`) takes hosts that `http:` rejects (`alice%20smith`). */
+function parseAuthority(scheme: string, authority: string): URL | undefined {
     try {
-        const url = new URL(`//${trimmed}`, AUTHORITY_BASE);
-        return url.username === '' && url.password === '' && url.hostname !== '';
+        return new URL(`${scheme}//${authority.replace(TRAILING_DELIMITERS, '')}`);
     } catch {
-        return false;
+        return undefined;
     }
 }
 
@@ -712,7 +719,13 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
         while (authorityEnd < text.length && !WHITESPACE.test(text[authorityEnd]) && text[authorityEnd] !== '/' && text[authorityEnd] !== '@') {
             authorityEnd++;
         }
-        if (isHostPort(text.slice(at + 2, authorityEnd))) {
+        const authority = text.slice(at + 2, authorityEnd);
+        const kind = authorityKind(parseAuthority(NETWORK_PATH_SCHEME, authority), authority);
+        if (kind === 'host') {
+            // `//example.com: docs/a@b`: a host with no port holds no userinfo, and prose follows it.
+            continue;
+        }
+        if (kind === 'host-port') {
             // U2: `//alice:123 PRIVATE@host` or `//host:8080 see bob@example.org`, a prefix that parses as a host and
             // port, then whitespace other than a line end. The password goes on only within the next word, which
             // holds its `@` (`PRIVATE/part@host` included), as for `https://` (maskUserinfo); an `@` in a later word
@@ -1024,7 +1037,7 @@ function maskUserinfo(text: string): string {
                 // `https://host:8080 see bob@example.org`), so a password goes on only within the next word, which
                 // holds its `@` (`PRIVATE/part@host` included); an `@` in a later word is prose. A prefix with no
                 // port (`https://example.com: docs/a@b`, `https://[::1] see a@b`) holds no password at all.
-                if (isHostPort(text.slice(body, i))) {
+                if (authorityKind(parsePrefix(i), text.slice(body, i)) === 'host-port') {
                     while (isInlineSpace(text[j])) {
                         j++;
                     }
@@ -1368,17 +1381,24 @@ const PASSWORD_HEAD = /^[^\s@]*@/;
 /** What {@link joinBoundary} appends to close an open userinfo, joined directly or after a display delimiter. */
 const USERINFO_TAIL = 'x@h';
 const DELIMITED_USERINFO_TAIL = ' (x@h)';
-/** The authority that ends the text, after its `//` (`https://host:8080` gives `host:8080`). */
-const LAST_AUTHORITY = /\/\/([^\s/]*)$/;
 /** Text that reads as one line of prose: no line end, and nothing that opens a structured field (quotes,
  *  brackets, `=` or `:`), past which R76 lets a split password's `@` sit. */
 const PLAIN_PROSE = /^[^\r\n\u2028\u2029"'`{}[\]<>=:]*$/;
 
-/** Whether the text ends with a URL authority that parses as a host and a port ({@link isHostPort}). */
+/** Whether the text ends with a URL authority that parses, under its own scheme, as a host and a port
+ *  ({@link authorityKind}): `https://host:8080`, `//alice:123`, `ssh://alice%20smith:123`. */
 function endsAtHostPort(text: string): boolean {
-    const authority = LAST_AUTHORITY.exec(text)?.[1];
-    return authority !== undefined && isHostPort(authority);
+    const at = text.lastIndexOf('//');
+    const authority = text.slice(at + 2);
+    if (at === -1 || WHITESPACE_OR_SLASH.test(authority)) {
+        return false;
+    }
+    const start = text[at - 1] === ':' ? schemeStart(text, at - 1) : undefined;
+    const scheme = start === undefined ? NETWORK_PATH_SCHEME : text.slice(start, at);
+    return authorityKind(parseAuthority(scheme, authority), authority) === 'host-port';
 }
+/** Whitespace or a `/`, which an authority cannot hold. */
+const WHITESPACE_OR_SLASH = /[\s/]/;
 
 /** How to show `left` joined to a `right` that is redacted on its own, when a credential may span them. It
  *  spans them when `left` ends where a credential's value starts (`Bearer`, `token=`), or ends inside a URL
@@ -1400,7 +1420,8 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     const schemeLeft = normalizeSpecialSchemes(`${normalizeForRedaction(left)}${USERINFO_TAIL}`).slice(0, -USERINFO_TAIL.length);
     const userinfoProbe = `${schemeLeft}${USERINFO_TAIL}`.replace(PARSER_IGNORED, '');
     const authority = userinfoProbe.slice(0, -USERINFO_TAIL.length);
-    const continuation = normalizeForRedaction(right).replace(PARSER_IGNORED, '');
+    const plainRight = normalizeForRedaction(right);
+    const continuation = plainRight.replace(PARSER_IGNORED, '');
     const opensUserinfo = (OPEN_USERINFO.test(authority) && PASSWORD_HEAD.test(continuation))
         || (OPEN_AUTHORITY.test(authority) && USERINFO_HEAD.test(continuation));
     if (opensUserinfo && consumesTail(authority, USERINFO_TAIL)) {
@@ -1417,7 +1438,7 @@ export function joinBoundary(left: string, right = ''): { left: string; maskRigh
     // the next word the join's below. Structured details keep the probe: a password's digits look like a port.
     const hostPort = endsAtHostPort(authority);
     const delimited = maskNormalized(`${schemeLeft}${DELIMITED_USERINFO_TAIL}`);
-    if (!(hostPort && PLAIN_PROSE.test(continuation)) && continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
+    if (!(hostPort && PLAIN_PROSE.test(plainRight)) && continuation.includes('@') && hidesMore(delimited, `${maskNormalized(schemeLeft)}${DELIMITED_USERINFO_TAIL}`)) {
         return { left: delimited.startsWith(`${schemeLeft} `) ? left : upToFirstMask(delimited), maskRight: true };
     }
     if (endsAtCredential(left)) {
