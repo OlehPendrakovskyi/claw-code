@@ -216,6 +216,9 @@ describe('redactTextReading', () => {
             // A literal `***` is no mask, in a URL's query either, where it turns into the internal sentinel as before.
             ['see *** here', 'see *** here', []],
             ['https://h.example/?q=***', 'https://h.example/?q=***', []],
+            // A credential holding a literal `***` that redactUrl masks, parsed and not: the URL's span, as built (S6).
+            ['https://h.example/?token?q=***PRIVATE', 'https://h.example/?token%3Fq=***', ['https://h.example/?token?q=***PRIVATE']],
+            ['https://[bad]/alice:***pw@host', 'https://***@host', ['https://[bad]/alice:***pw@host']],
         ];
         for (const [input, text, hidden] of cases) {
             const reading = redactTextReading(input);
