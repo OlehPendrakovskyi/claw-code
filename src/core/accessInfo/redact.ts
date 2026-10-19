@@ -1,10 +1,19 @@
-import { ReadingBuilder, readingOf, replaceInReading, type Reading } from './reading.js';
+import { ReadingBuilder, readingOf, replaceInReading, rewriteInReading, type Piece, type Reading } from './reading.js';
 
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
 const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|secret|credential|access_key|signature|authorization|cookie)/i;
 
 /** Redact userinfo and sensitive query params from an endpoint URL for display. */
 export function redactEndpoint(endpoint: string): string {
+    return endpointRedaction(endpoint).text;
+}
+
+/** A URL's redaction, and whether it masked anything (design S1): a re-serialised URL can differ with nothing
+ *  masked, and a credential that holds a literal `***` is masked with no new `***`, so neither is read off the text. */
+type UrlRedaction = { text: string; masked: boolean };
+
+/** {@link redactEndpoint}, with whether it masked a userinfo or a sensitive query value. */
+function endpointRedaction(endpoint: string): UrlRedaction {
     try {
         const url = new URL(endpoint);
         let redacted = false;
@@ -33,9 +42,9 @@ export function redactEndpoint(endpoint: string): string {
             url.search = query.toString();
             redacted = true;
         }
-        return redacted ? url.toString() : endpoint;
+        return redacted ? { text: url.toString(), masked: true } : { text: endpoint, masked: false };
     } catch {
-        return endpoint;
+        return { text: endpoint, masked: false };
     }
 }
 
@@ -123,6 +132,11 @@ function quoteEscapeRun(run: number): number {
 /** Text with every {@link MASK} shown as `***`. */
 function unmask(text: string): string {
     return text.replace(MASKS, '***');
+}
+
+/** {@link unmask} on a reading: each `***` stands for the value its mask hid. */
+function unmaskIn(reading: Reading): Reading {
+    return replaceInReading(reading, MASKS, () => '***');
 }
 
 /** How many backslashes escape the quote a value opens with, as inside a JSON string (`"password=\\"a b\\""`:
@@ -317,9 +331,11 @@ function isUrlHostPort(text: string, index: number): boolean {
  *  pass consumes just that quoted value rather than the text after it. An unquoted value may hold spaces
  *  ({@link unquotedSecretEnd}); a bare `***` left by an earlier pass is skipped. A pair with an ordinary key keeps
  *  its value, and scanning goes on inside it (`a=token=x` masks `token`'s value). Linear in the text's
- *  length. */
-function maskSensitivePairs(text: string, quotedOnly = false): string {
-    let out = '';
+ *  length.
+ *  On a reading: a key and its separator stay or become `=`, the value is a mask. */
+function maskSensitivePairs(reading: Reading, quotedOnly = false): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     const unclosed = new Map<string, number>();
     KEY_SEPARATOR.lastIndex = 0;
@@ -351,13 +367,29 @@ function maskSensitivePairs(text: string, quotedOnly = false): string {
             continue;
         }
         const opening = escaped ? text.slice(start, start + escapedQuoteRun(text, start) + 1) : text[start];
-        out += quotedOnly
-            ? `${text.slice(copied, start)}${opening}***${opening}`
-            : `${text.slice(copied, pair.index)}${pair[1]}=${MASK}`;
+        if (quotedOnly) {
+            // The quotes stay as they were; what lies between them is the mask. A value with no closing quote is
+            // masked to its end and closed with the opening's text.
+            const closed = end - opening.length >= start + opening.length && text.slice(end - opening.length, end) === opening;
+            const inner = closed ? end - opening.length : end;
+            out.copy(copied, start + opening.length);
+            out.mask('***', start + opening.length, inner);
+            if (closed) {
+                out.copy(inner, end);
+            } else {
+                out.put(opening, end, end);
+            }
+        } else {
+            const nameEnd = pair.index + pair[1].length;
+            out.copy(copied, nameEnd);
+            out.put('=', nameEnd, start);
+            out.mask(MASK, start, end);
+        }
         copied = end;
         KEY_SEPARATOR.lastIndex = end;
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** A terminal control sequence: any CSI form (ECMA-48), with parameter bytes `0-?` (digits, `;`, `:`, `?`, …),
@@ -614,9 +646,11 @@ const BEARER_TOKEN = /"(?:\\.|[^"\\\r\n])*"?|'(?:\\+[^\\\r\n]|\\+(?=[\r\n]|$)|[^
 /** Mask every Bearer token, of any length (a short one is still a credential), as `Bearer ***`. A token
  *  opened by an escaped quote, as in serialized error details (`"sent Bearer \\"a b\\""`), runs to its matching
  *  escaped quote, past escaped interior quotes, or without one to the end of the enclosing string or line.
- *  Linear: each pass consumes the token it measures. */
-function maskBearerTokens(text: string): string {
-    let out = '';
+ *  Linear: each pass consumes the token it measures.
+ *  On a reading: the word stays, the token is a mask. */
+function maskBearerTokens(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     const unclosed = new Map<string, number>();
     BEARER.lastIndex = 0;
@@ -636,11 +670,15 @@ function maskBearerTokens(text: string): string {
         if (end === start) {
             continue;
         }
-        out += `${text.slice(copied, match.index)}${match[1]} ***`;
+        const wordEnd = match.index + match[1].length;
+        out.copy(copied, wordEnd);
+        out.put(' ', wordEnd, start);
+        out.mask('***', start, end);
         copied = end;
         BEARER.lastIndex = end;
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** Redact plain-text credentials in free-form output (e.g. `token=abc`, `Authorization: Bearer ***`, `{"token":"abc"}`, `OPENAI_API_KEY=abc`) so non-URL secrets never reach a report verbatim. */
@@ -650,14 +688,37 @@ export function redactPlainSecrets(text: string): string {
 
 /** {@link redactPlainSecrets}, leaving each value it masks as {@link MASK}. */
 function maskPlainSecrets(text: string): string {
-    return maskBearerTokens(maskSensitivePairs(text).replace(CREDENTIAL_HEADER, '$1=***'))
-        // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
-        // base64 tests as a bare one below, to its closing quote or the end of its run.
-        // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
-        // tests as a bare one, to its closing quote or the end of its run.
-        .replace(QUOTED_BASIC, (match, word: string, _escape: string, _quote: string, value: string) =>
-            isBasicCredential(value) ? `${word} ***` : match)
-        .replace(BARE_BASIC, (match, word: string, value: string) => isBasicCredential(value) ? `${word} ***` : match);
+    return maskPlainSecretsIn(readingOf(text)).text;
+}
+
+/** {@link maskPlainSecrets} on a reading. A header's name stays and its value is a mask (`$1=***`); a Basic
+ *  credential's word stays and the rest of the match, its quotes included, is a mask. */
+function maskPlainSecretsIn(reading: Reading): Reading {
+    // The header's value is the last group and ends the match.
+    const headers = rewriteInReading(maskSensitivePairs(reading), CREDENTIAL_HEADER, match => {
+        const end = match.index + match[0].length;
+        const nameEnd = match.index + match[1].length;
+        const valueStart = end - match[2].length;
+        return [
+            { copy: true, start: match.index, end: nameEnd },
+            { put: '=', start: nameEnd, end: valueStart },
+            { mask: '***', start: valueStart, end },
+        ];
+    });
+    // A quoted or escaped-quoted value (`Basic "dXNlcjpwYXNz"`, `Basic \\"…\\"` in JSON) is held to the same
+    // tests as a bare one, to its closing quote or the end of its run.
+    const quoted = rewriteInReading(maskBearerTokens(headers), QUOTED_BASIC, match => basicPieces(match, match[4]));
+    return rewriteInReading(quoted, BARE_BASIC, match => basicPieces(match, match[2]));
+}
+
+/** The pieces a Basic credential's match becomes: its word copied, and the rest masked as ` ***`, when its value
+ *  passes {@link isBasicCredential}; otherwise none, so the match stays. */
+function basicPieces(match: RegExpExecArray, value: string): readonly Piece[] | undefined {
+    if (!isBasicCredential(value)) {
+        return undefined;
+    }
+    const wordEnd = match.index + match[1].length;
+    return [{ copy: true, start: match.index, end: wordEnd }, { mask: ' ***', start: wordEnd, end: match.index + match[0].length }];
 }
 
 /** Whether a value after `Basic` is a credential (see {@link BASE64_WHOLE}, {@link BASE64_ENCODED} and
@@ -723,9 +784,11 @@ const PORT_THEN_SPACE = /[^\s/@:"'`<>]*:\d+[ \t]+/y;
 /** Mask a network-path userinfo whose password holds both spaces and `/`
  *  (`//alice:pass word/x@host`), which {@link NETWORK_PATH_USERINFO} cannot delimit: from `//` to the last `@`
  *  before the end of the line ({@link LINE_END}, as for `https://`) or the next reference. It applies only where what follows `user:` cannot be a
- *  port. Linear: a scan stops where the next reference could start, and the search resumes there. */
-function maskAmbiguousNetworkUserinfo(text: string): string {
-    let out = '';
+ *  port. Linear: a scan stops where the next reference could start, and the search resumes there.
+ *  On a reading: the userinfo is a mask, the `@` is kept. */
+function maskAmbiguousNetworkUserinfo(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     let from = 0;
     for (let at = text.indexOf('//', from); at !== -1; at = text.indexOf('//', from)) {
@@ -759,7 +822,9 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
                 runAt = text[k] === '@' ? k : runAt;
             }
             if (runAt !== -1) {
-                out += `${text.slice(copied, at + 2)}***@`;
+                out.copy(copied, at + 2);
+                out.mask('***', at + 2, runAt);
+                out.copy(runAt, runAt + 1);
                 copied = runAt + 1;
             }
             from = Math.max(from, runAt !== -1 ? runAt + 1 : k);
@@ -773,12 +838,15 @@ function maskAmbiguousNetworkUserinfo(text: string): string {
             j++;
         }
         if (lastAt !== -1) {
-            out += `${text.slice(copied, at + 2)}***@`;
+            out.copy(copied, at + 2);
+            out.mask('***', at + 2, lastAt);
+            out.copy(lastAt, lastAt + 1);
             copied = lastAt + 1;
         }
         from = Math.max(from, lastAt !== -1 ? lastAt + 1 : j);
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 /** The `?name=` or `&name=` that opens a query pair anywhere in the text; {@link valueEnd} measures its value.
  *  A name may hold the tabs and line breaks a URL parser drops (`?to\nken=`). */
@@ -928,9 +996,11 @@ const SERIALISED_BREAK = /(?<!\\)\\+(?:[tnr]|u000[9aAdD])/g;
  *  whitespace; its userinfo runs to the last `@` there and is masked as `***@`, a username alone too: a token
  *  may sit there (`https://ghp_PREFIX\nSUFFIX@github.com`), so `https://example.com\nbob@example.org`, which a
  *  parser reads as one URL, is masked as one. Linear: a scan stops at the next `/`, and the search for the next
- *  `//` resumes there. */
-function maskBrokenUserinfo(text: string): string {
-    let out = '';
+ *  `//` resumes there.
+ *  On a reading: the userinfo is a mask, the `@` is kept. */
+function maskBrokenUserinfo(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     for (let at = text.indexOf('//'); at !== -1; at = text.indexOf('//', at + 2)) {
         const scheme = text[at - 1] === ':' && schemeStart(text, at - 1) !== undefined;
@@ -952,12 +1022,15 @@ function maskBrokenUserinfo(text: string): string {
             }
         }
         if (broken && lastAt !== -1 && body >= copied) {
-            out += `${text.slice(copied, body)}***@`;
+            out.copy(copied, body);
+            out.mask('***', body, lastAt);
+            out.copy(lastAt, lastAt + 1);
             copied = lastAt + 1;
         }
         at = Math.max(at, k - 2);
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** Mask every URL's userinfo before the query pass or URL splitting can cut it apart
@@ -970,9 +1043,11 @@ function maskBrokenUserinfo(text: string): string {
  *  so it runs to the last `@` before whitespace or a later `://`; once whitespace is in it too, to the last
  *  `@` on the line, a later `://` included. A `://` before any `/` can only sit inside a malformed
  *  authority, so the scan goes on past it instead of starting a new URL. Over-matching hides more, never
- *  less. Linear: each character is visited once. */
-function maskUserinfo(text: string): string {
-    let out = '';
+ *  less. Linear: each character is visited once.
+ *  On a reading: the userinfo is one mask, the `@` is kept. */
+function maskUserinfo(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     let line = { end: 0, lastAt: -1 };
     for (let at = text.indexOf('://'); at !== -1; at = text.indexOf('://', at + 3)) {
@@ -1115,13 +1190,16 @@ function maskUserinfo(text: string): string {
         // a URL that parses, else, for a malformed one, its last `@` (`user:password`) or the last before a `/`.
         const end = spacedAt !== -1 ? spacedAt : lineAt !== -1 ? lineAt : parsable ? atInAuthority : colonBeforeSlash ? lastAt : atBeforeSlash;
         if (start !== undefined && end !== -1 && body >= copied) {
-            const masked = parsable && text.slice(body, end).includes(':') ? '***:***@' : '***@';
-            out += text.slice(copied, body) + masked;
+            const masked = parsable && text.slice(body, end).includes(':') ? '***:***' : '***';
+            out.copy(copied, body);
+            out.mask(masked, body, end);
+            out.copy(end, end + 1);
             copied = end + 1;
         }
         at = i - 3;
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** The end of the line holding `i` (a {@link LINE_END} or the end of the text) and the last `@` from `i` to it. */
@@ -1190,9 +1268,11 @@ function isSensitiveQueryName(name: string): boolean {
 }
 
 /** Mask sensitive query values anywhere in the text, quoted ones included (`?to%6ben="secret"`, a
- *  backtick-quoted value), before URLs are found: a quote would otherwise end the URL before its value. */
-function maskQueryPairs(text: string): string {
-    let out = '';
+ *  backtick-quoted value), before URLs are found: a quote would otherwise end the URL before its value.
+ *  On a reading: `?name=` stays, the value is a mask. */
+function maskQueryPairs(reading: Reading): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
     let copied = 0;
     const unclosed = new Map<string, number>();
     // The quote that opens the token a query name sits in (`"https://host/?token=…"` in JSON), and whether the
@@ -1244,11 +1324,15 @@ function maskQueryPairs(text: string): string {
         const end = token === undefined ? valueEnd(text, start, NON_SPACE, unclosed)
             : token.opening !== undefined ? quotedUrlValueEnd(text, start, token.opening, closeRuns)
                 : token.inQuery ? sensitiveQueryValueEnd(text, start) : unquotedSecretEnd(text, start);
-        out += `${text.slice(copied, pair.index)}${pair[1]}${pair[2]}=${MASK}`;
+        const nameEnd = pair.index + pair[1].length + pair[2].length;
+        out.copy(copied, nameEnd);
+        out.put('=', nameEnd, start);
+        out.mask(MASK, start, end);
         copied = end;
         QUERY_NAME.lastIndex = end;
     }
-    return out + text.slice(copied);
+    out.copy(copied, text.length);
+    return out.build();
 }
 
 /** The quote that opens a quoted string, and the backslash run that escapes it (0 in plain JSON). */
@@ -1318,9 +1402,16 @@ function closeRunsOf(text: string): CloseRuns {
 }
 
 /** Mask sensitive query values in an unparsable URL. */
-function maskSensitiveQuery(url: string): string {
-    return url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) =>
-        isSensitiveQueryName(name) ? `${separator}${name}=***` : param);
+function maskSensitiveQuery(url: string): UrlRedaction {
+    let masked = false;
+    const text = url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) => {
+        if (!isSensitiveQueryName(name)) {
+            return param;
+        }
+        masked = true;
+        return `${separator}${name}=***`;
+    });
+    return { text, masked };
 }
 
 /** Redact a value that may be one whole endpoint (a label, a report's endpoint list), before and after the URL
@@ -1462,27 +1553,61 @@ function upToFirstMask(redacted: string): string {
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
 export function redactText(text: string): string {
+    return redactTextReading(text).text;
+}
+
+/** {@link redactText}'s output as a reading of `text`: each character with the input range it came from, and the
+ *  input ranges its masks hide (design S1, S2). */
+export function redactTextReading(text: string): Reading {
     // 0. Userinfo first, so no later pass can take its `@` (`https://alice:p&token="x@host`); then whole
     //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
-    return maskNormalized(normalizeForRedaction(text));
+    return maskNormalizedIn(readingForRedaction(text));
 }
 
 /** The masking passes of {@link redactText} over text already in its normalised form, normalising nothing
  *  again: two parts normalised on their own and then joined are masked as they are, so an escape or terminal
  *  code split across the join (`fail\\u00` + `65d`) is not decoded by the join. */
 function maskNormalized(plain: string): string {
-    const userinfoMasked = maskAmbiguousNetworkUserinfo(maskUserinfo(maskBrokenUserinfo(plain)).replace(NETWORK_PATH_USERINFO, '//***@'));
-    const prepared = maskQueryPairs(maskSensitivePairs(userinfoMasked, true));
-    let out = '';
+    return maskNormalizedIn(readingOf(plain)).text;
+}
+
+/** {@link maskNormalized} on a reading (design S5): each pass sees the same text as before, and the masks it
+ *  makes are recorded as hidden input ranges (S1). A URL that {@link redactUrl} re-serialises is one edit over the
+ *  URL's span; when it masks anything, that whole span is recorded as hidden for now (S6 asks for its userinfo and
+ *  sensitive query values alone, which a later step locates in the raw text). */
+function maskNormalizedIn(plain: Reading): Reading {
+    const networkPaths = rewriteInReading(maskUserinfo(maskBrokenUserinfo(plain)), NETWORK_PATH_USERINFO, match => {
+        const end = match.index + match[0].length;
+        return [
+            { copy: true, start: match.index, end: match.index + 2 },
+            { mask: '***', start: match.index + 2, end: end - 1 },
+            { copy: true, start: end - 1, end },
+        ];
+    });
+    const prepared = maskQueryPairs(maskSensitivePairs(maskAmbiguousNetworkUserinfo(networkPaths), true));
+    const out = new ReadingBuilder(prepared);
     let copied = 0;
-    for (const [start, end] of urlSpans(prepared)) {
-        out += prepared.slice(copied, start) + redactUrl(prepared.slice(start, end)).replace(MASKED_QUERY_VALUE, `$1${MASK}`);
+    for (const [start, end] of urlSpans(prepared.text)) {
+        const url = prepared.text.slice(start, end);
+        const { text: reserialised, masked } = redactUrl(url);
+        // As before, a masked query value turns back into `MASK` for the passes after this one, a literal `***` in
+        // the input included; whether `redactUrl` masked anything is what it reports, not read off its text.
+        const redacted = reserialised.replace(MASKED_QUERY_VALUE, `$1${MASK}`);
+        out.copy(copied, start);
+        if (redacted === url) {
+            out.copy(start, end);
+        } else if (masked) {
+            out.mask(redacted, start, end);
+        } else {
+            out.put(redacted, start, end);
+        }
         copied = end;
     }
-    return unmask(maskPlainSecrets(out + prepared.slice(copied)));
+    out.copy(copied, prepared.text.length);
+    return unmaskIn(maskPlainSecretsIn(out.build()));
 }
 
 /** Text as {@link redactText} reads it before masking anything. */
@@ -1661,21 +1786,25 @@ function maskSecretFragments(text: string, forms: string[]): string {
 const MASKED_QUERY_VALUE = /([?&][^=&#?\s]*=)\*\*\*(?=[&#]|$)/g;
 
 /** Redact one URL found in free-form text. */
-function redactUrl(match: string): string {
+function redactUrl(match: string): UrlRedaction {
     // 1. The whole match, so punctuation that belongs to a credential (`signature=!!!`) is masked with it.
-    const whole = redactEndpoint(match);
-    if (whole !== match) {
+    const whole = endpointRedaction(match);
+    if (whole.text !== match) {
         return whole;
     }
     // 2. Prose may end a URL with `]`, `)`, `.` and the like, which can make it unparsable:
     //    retry without them and put them back.
     const url = match.replace(TRAILING_DELIMITERS, '');
-    const trimmed = url === match ? match : redactEndpoint(url);
-    if (trimmed !== url) {
-        return trimmed + match.slice(url.length);
+    const trimmed = url === match ? { text: match, masked: false } : endpointRedaction(url);
+    if (trimmed.text !== url) {
+        return { text: trimmed.text + match.slice(url.length), masked: trimmed.masked };
     }
     // 3. A URL that parses and needed no change has nothing left to hide: its userinfo was masked up front
     //    (maskUserinfo). One that does not parse has `user:pass@` and sensitive query values masked
     //    without parsing, over the whole match, so this fails toward hiding.
-    return URL.canParse(url) ? match : maskSensitiveQuery(match.replace(UNPARSED_URL_USERINFO, '$1***@'));
+    if (URL.canParse(url)) {
+        return { text: match, masked: false };
+    }
+    const query = maskSensitiveQuery(match.replace(UNPARSED_URL_USERINFO, '$1***@'));
+    return { text: query.text, masked: query.masked || UNPARSED_URL_USERINFO.test(match) };
 }
