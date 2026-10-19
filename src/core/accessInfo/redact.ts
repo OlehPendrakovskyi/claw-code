@@ -1,4 +1,5 @@
 import { ReadingBuilder, readingOf, replaceInReading, rewriteInReading, type Piece, type Reading } from './reading.js';
+import { FINAL_BYTE_MARK } from './witness.js';
 
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
 const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|secret|credential|access_key|signature|authorization|cookie)/i;
@@ -529,11 +530,10 @@ function stripTerminalCodesIn(reading: Reading): Reading {
     return stripped.text.includes(FINAL_BYTE_MARK) ? keepLabelBytesIn(stripped) : stripped;
 }
 
-/** Marks a stripped sequence's final byte that is a name character, which {@link keepLabelBytes} keeps or drops
- *  once every other terminal code and control byte is gone (R79). A Unicode noncharacter, reserved for internal
- *  use: {@link stripTerminalCodes} removes it from its input first, so no input can pose as a mark. */
-const FINAL_BYTE_MARK = '﷐';
-const FINAL_BYTE_MARKS = /﷐/g;
+/** Every {@link FINAL_BYTE_MARK}, the mark before a stripped sequence's final byte that is a name character, which
+ *  {@link keepLabelBytes} keeps or drops once every other terminal code and control byte is gone (R79).
+ *  {@link stripTerminalCodes} removes marks from its input first, so no input can pose as one. */
+const FINAL_BYTE_MARKS = new RegExp(FINAL_BYTE_MARK, 'g');
 /** The longest credential label (`authorization`): a label that one final byte completes lies within this many
  *  name characters of it on either side, so the check per byte reads no further (R64). */
 const LABEL_WINDOW = 13;
