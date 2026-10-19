@@ -112,9 +112,10 @@ function urlCredentialRanges(raw: string, userinfo: boolean, keys: ReadonlySet<s
 const AUTHORITY_END = /[/?#\\]/g;
 
 /** A query name decoded by `URLSearchParams` itself, so it is the name {@link redactEndpoint} compared: `+` is a
- *  space, `%XX` a byte, and a malformed UTF-8 sequence U+FFFD, where `decodeURIComponent` would throw. */
+ *  space, `%XX` a byte, and a malformed UTF-8 sequence U+FFFD, where `decodeURIComponent` would throw. The
+ *  constructor drops one leading `?`, so one is put first and a name's own (`?token` in `??token=…`) stays. */
 function decodeQueryName(name: string): string {
-    return new URLSearchParams(`${name}=`).keys().next().value ?? '';
+    return new URLSearchParams(`?${name}=`).keys().next().value ?? '';
 }
 
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare

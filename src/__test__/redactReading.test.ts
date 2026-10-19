@@ -259,6 +259,10 @@ describe('redactTextReading', () => {
             // Names the parser decodes alike though one is malformed UTF-8 (U+FFFD), in either order: both recorded.
             ['https://h.example/?token%FF?q=PRIVATE&token%EF%BF%BD?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%EF%BF%BD?q=OTHER']],
             ['https://h.example/?token%EF%BF%BD?q=PRIVATE&token%FF?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%FF?q=OTHER']],
+            // A name that starts with its own `?`, alone and with an encoded duplicate in either order.
+            ['https://h.example/??token?q=PRIVATE', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE']],
+            ['https://h.example/??token?q=PRIVATE&%3Ftoken?q=OTHER', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE', '%3Ftoken?q=OTHER']],
+            ['https://h.example/?%3Ftoken?q=PRIVATE&?token?q=OTHER', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE', '?token?q=OTHER']],
             // A credential ending in a literal `***`: the replacement's `***@host` is no copy of the input's.
             ['https://[bad]/alice:PRIVATE***@host', 'https://***@host', ['[bad]/alice:PRIVATE***']],
         ];
