@@ -1,0 +1,7506 @@
+{
+ "generatedFrom": "9a1606d",
+ "note": "normalizeForRedaction and stripTerminalCodes before #82 S-a; do not regenerate from a later commit",
+ "cases": [
+  {
+   "input": "\\\\u001b[basic\\\\/%70\u001b]\\\"alice\t",
+   "normalized": "basic/%70",
+   "stripped": "basic/%70"
+  },
+  {
+   "input": "#0\\\"h\ttps:",
+   "normalized": "#0\\\"h\ttps:",
+   "stripped": "#0\\\"h\ttps:"
+  },
+  {
+   "input": "\\/:8080token/https://﷐\\\\u001b[\\u005ca﷐",
+   "normalized": "/:8080token/https://u005ca",
+   "stripped": "/:8080token/https://u005ca"
+  },
+  {
+   "input": "\u001b]  \u001b]host.example\\u00/\u0007\\u0070\\\\/ \t",
+   "normalized": "p/ \t",
+   "stripped": "p/ \t"
+  },
+  {
+   "input": "https:/",
+   "normalized": "https:/",
+   "stripped": "https:/"
+  },
+  {
+   "input": " \u001bPalice\u001b]\\\\u0022",
+   "normalized": " ",
+   "stripped": " "
+  },
+  {
+   "input": "#alice\\t\u0007 \\u0070\\u005c\t#",
+   "normalized": "#alice\\t p\\u005c\t#",
+   "stripped": "#alice\\t p\\u005c\t#"
+  },
+  {
+   "input": "\\\\u0022host.example\u001b(",
+   "normalized": "\\\\\\\"host.example(",
+   "stripped": "\\\\\\\"host.example("
+  },
+  {
+   "input": "\\bhttps://#h\ttps:\\\"\u001b(",
+   "normalized": "\\bhttps://#h\ttps:\\\"(",
+   "stripped": "\\bhttps://#h\ttps:\\\"("
+  },
+  {
+   "input": "\téwss:",
+   "normalized": "\t",
+   "stripped": "\t"
+  },
+  {
+   "input": "\\t'",
+   "normalized": "\\t'",
+   "stripped": "\\t'"
+  },
+  {
+   "input": "%70pass: \tftp:///",
+   "normalized": "%70pass: \tftp:///",
+   "stripped": "%70pass: \tftp:///"
+  },
+  {
+   "input": "ht\\ntp:",
+   "normalized": "ht\\ntp:",
+   "stripped": "ht\\ntp:"
+  },
+  {
+   "input": "\n",
+   "normalized": "\n",
+   "stripped": "\n"
+  },
+  {
+   "input": "//?\\/%70",
+   "normalized": "//?/%70",
+   "stripped": "//?/%70"
+  },
+  {
+   "input": "\\u001b[&ht\\ntp:",
+   "normalized": "ht\\ntp:",
+   "stripped": "ht\\ntp:"
+  },
+  {
+   "input": "\rwss:\\/a\"\u001bP\\n\\t\\\"basic",
+   "normalized": "\rwss:/a\"",
+   "stripped": "\rwss:/a\""
+  },
+  {
+   "input": ":\\\\u001b[\\u001b[a",
+   "normalized": ":[",
+   "stripped": ":["
+  },
+  {
+   "input": "a\\\\/basic\\u0070?\\\\\u001b]\u001bP\\/",
+   "normalized": "a/basicp?\\\\",
+   "stripped": "a/basicp?\\\\"
+  },
+  {
+   "input": "=\\\"https:////\\\\:8080",
+   "normalized": "=\\\"https:////",
+   "stripped": "=\\\"https:////"
+  },
+  {
+   "input": "\\x1b[\rcookie` host.example\\u001b]\\u0070\\n",
+   "normalized": "cookie` host.example\\n",
+   "stripped": "cookie` host.example\\n"
+  },
+  {
+   "input": "\\u001b(\\x1b[",
+   "normalized": "([",
+   "stripped": "(["
+  },
+  {
+   "input": "\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "basic\u001b]1@\\\\u001b[",
+   "normalized": "basic",
+   "stripped": "basic"
+  },
+  {
+   "input": "\\u001b[\r",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u001b] \u0000//",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\"\u0000\\u005cwss:basic\n//",
+   "normalized": "\"\\u005cwss:basic\n//",
+   "stripped": "\"\\u005cwss:basic\n//"
+  },
+  {
+   "input": "\\u001b(\\b \\\\/https:/\\x1b[:8080%70?",
+   "normalized": "(\\b /https:/70?",
+   "stripped": "(\\b /https:/70?"
+  },
+  {
+   "input": "\\u0022\r::﷐",
+   "normalized": "\\\"\r::",
+   "stripped": "\\\"\r::"
+  },
+  {
+   "input": "ht\\ntp:\\u001b(\\n\u0000\\\"",
+   "normalized": "ht\\ntp:(\\n\\\"",
+   "stripped": "ht\\ntp:(\\n\\\""
+  },
+  {
+   "input": "&\\\\u001b[\\x1b[wss:x'\\\\u001b[basic",
+   "normalized": "&s:x'basic",
+   "stripped": "&s:x'basic"
+  },
+  {
+   "input": "?key@\\u001b[\u001bP\t0",
+   "normalized": "?key@",
+   "stripped": "?key@"
+  },
+  {
+   "input": "x﷐`wss:token﷐﷐\\\\\\u001b[é\u001b(\\u00",
+   "normalized": "x`wss:tokenéu00",
+   "stripped": "x`wss:tokenéu00"
+  },
+  {
+   "input": "':8080\\u0022=",
+   "normalized": "':8080\\\"=",
+   "stripped": "':8080\\\"="
+  },
+  {
+   "input": "é\\x1b[\\u00tokenwss:ftp:/\u001bP0ht\\ntp:\\\\u0022\\\\u0022\\\\u0022",
+   "normalized": "éu00tokenwss:ftp:/",
+   "stripped": "éu00tokenwss:ftp:/"
+  },
+  {
+   "input": "\\\\/",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": ":8080\u00070",
+   "normalized": ":80800",
+   "stripped": ":80800"
+  },
+  {
+   "input": "\t😀\\\"#cookie%70https:/\\\\u0022\nhttps:/wss:",
+   "normalized": "\t😀\\\"#cookie%70https:/\\\\\\\"\nhttps:/wss:",
+   "stripped": "\t😀\\\"#cookie%70https:/\\\\\\\"\nhttps:/wss:"
+  },
+  {
+   "input": "\u0007http:\\\\pass\\\\/",
+   "normalized": "http:\\\\pass/",
+   "stripped": "http:\\\\pass/"
+  },
+  {
+   "input": "wss:token\\\\/0 http:\\\\ftp:/basich\ttps:\u001b(",
+   "normalized": "wss:token/0 http:\\\\ftp:/basich\ttps:(",
+   "stripped": "wss:token/0 http:\\\\ftp:/basich\ttps:("
+  },
+  {
+   "input": "\r\\\\u0022\\u0022",
+   "normalized": "\r\\\\\\\"\\\"",
+   "stripped": "\r\\\\\\\"\\\""
+  },
+  {
+   "input": "\r",
+   "normalized": "\r",
+   "stripped": "\r"
+  },
+  {
+   "input": "\\u0022\u001b\\https://@:8080\u001b(ftp:/ht\\ntp:\\x1b[\\u0070",
+   "normalized": "\\\"\\https://@:8080(tp:/ht\\ntp:",
+   "stripped": "\\\"\\https://@:8080(tp:/ht\\ntp:"
+  },
+  {
+   "input": "é\n\\u0022pass\\\\/@\u001b[keyftp:/=",
+   "normalized": "é\n\\\"pass/@keyftp:/=",
+   "stripped": "é\n\\\"pass/@keyftp:/="
+  },
+  {
+   "input": "\\u0022cookie\\n\u001b(=\\nwss:",
+   "normalized": "\\\"cookie\\n(=\\nwss:",
+   "stripped": "\\\"cookie\\n(=\\nwss:"
+  },
+  {
+   "input": "x%70﷐",
+   "normalized": "x%70",
+   "stripped": "x%70"
+  },
+  {
+   "input": "\\\\u001b[wss:\u001b[0\\nwss:\u001b[\u001b\\bearer",
+   "normalized": "ss:nwss:bearer",
+   "stripped": "ss:nwss:bearer"
+  },
+  {
+   "input": "pass\"basicftp:/cookie",
+   "normalized": "pass\"basicftp:/cookie",
+   "stripped": "pass\"basicftp:/cookie"
+  },
+  {
+   "input": ":\\\\: https:/pass",
+   "normalized": ":\\\\: https:/pass",
+   "stripped": ":\\\\: https:/pass"
+  },
+  {
+   "input": "x",
+   "normalized": "x",
+   "stripped": "x"
+  },
+  {
+   "input": "`\\u00220ftp:/\\u001b(\u001b\\\\u0022\u0000h\ttps:",
+   "normalized": "`\\\"0ftp:/(\\\\\\\"h\ttps:",
+   "stripped": "`\\\"0ftp:/(\\\\\\\"h\ttps:"
+  },
+  {
+   "input": "host.example\\n\u001bP\na",
+   "normalized": "host.example\\n\na",
+   "stripped": "host.example\\n\na"
+  },
+  {
+   "input": "passcookie\\\\u001b[",
+   "normalized": "passcookie[",
+   "stripped": "passcookie["
+  },
+  {
+   "input": "\\u001b[wss:\\u00\u001b[\\u001b[cookie",
+   "normalized": "ss:u00okie",
+   "stripped": "ss:u00okie"
+  },
+  {
+   "input": "alice ",
+   "normalized": "alice ",
+   "stripped": "alice "
+  },
+  {
+   "input": "key\\n\\\\\\n\u001b]'\\u00:8080a",
+   "normalized": "key\\n\\\\\\n",
+   "stripped": "key\\n\\\\\\n"
+  },
+  {
+   "input": "mm0h\ttps:\\u005c : \\\\u001b[':8080\\u0070\\/",
+   "normalized": "mm0h\ttps:\\u005c : :8080p/",
+   "stripped": "mm0h\ttps:\\u005c : :8080p/"
+  },
+  {
+   "input": "\u001b[x:\u001b[\\\\u001b[é`\\u0022",
+   "normalized": ":é`\\\"",
+   "stripped": ":é`\\\""
+  },
+  {
+   "input": "\n&\\tpass\\u001b]",
+   "normalized": "\n&\\tpass",
+   "stripped": "\n&\\tpass"
+  },
+  {
+   "input": "mpass\t1\\u001b(\\x1b[#xhttps://",
+   "normalized": "m",
+   "stripped": "m"
+  },
+  {
+   "input": "%70é😀https:/:",
+   "normalized": "%70é😀https:/:",
+   "stripped": "%70é😀https:/:"
+  },
+  {
+   "input": "cookie\\u001b[\\u001b]basic\\u0070",
+   "normalized": "cookieu001b]basic",
+   "stripped": "cookieu001b]basic"
+  },
+  {
+   "input": "\\\\u0022😀&\r\\u005c",
+   "normalized": "\\\\\\\"😀&\r\\u005c",
+   "stripped": "\\\\\\\"😀&\r\\u005c"
+  },
+  {
+   "input": "\t \u001b]//ah\ttps:\\u001b]\u001bP\\u0022",
+   "normalized": "\t ",
+   "stripped": "\t "
+  },
+  {
+   "input": "\\u001b(ht\\ntp:\n\n",
+   "normalized": "t\\ntp:\n\n",
+   "stripped": "t\\ntp:\n\n"
+  },
+  {
+   "input": "https:/`\\\"keyht\\ntp:﷐https:/bearer",
+   "normalized": "https:/`\\\"keyht\\ntp:https:/bearer",
+   "stripped": "https:/`\\\"keyht\\ntp:https:/bearer"
+  },
+  {
+   "input": "a\u0007http:\\\\",
+   "normalized": "ahttp:\\\\",
+   "stripped": "ahttp:\\\\"
+  },
+  {
+   "input": "\\b?",
+   "normalized": "\\b?",
+   "stripped": "\\b?"
+  },
+  {
+   "input": "h\ttps:'",
+   "normalized": "h\ttps:'",
+   "stripped": "h\ttps:'"
+  },
+  {
+   "input": "\\\\u001b[\npass'cookie\\/ftp:/ \"",
+   "normalized": "pass'cookie/ftp:/ \"",
+   "stripped": "pass'cookie/ftp:/ \""
+  },
+  {
+   "input": "1basic\\u001b[\\x1b[token",
+   "normalized": "1basicken",
+   "stripped": "1basicken"
+  },
+  {
+   "input": "\\\\/http:\\\\h\ttps:alice\\u0070\t\\b\r",
+   "normalized": "/http:\\\\h\ttps:alicep\t\\b\r",
+   "stripped": "/http:\\\\h\ttps:alicep\t\\b\r"
+  },
+  {
+   "input": "\u001bP\\n",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "//xhttps://\\n0\\u001b(bearer&http:\\\\`",
+   "normalized": "//https://\\n0earer&http:\\\\`",
+   "stripped": "//https://\\n0earer&http:\\\\`"
+  },
+  {
+   "input": "h\ttps:http:\\\\basic@'\u0007:8080﷐",
+   "normalized": "h\ttps:http://basic@':8080",
+   "stripped": "h\ttps:http:\\\\basic@':8080"
+  },
+  {
+   "input": "ht\\ntp:\u001b(bearer",
+   "normalized": "ht\\ntp:bearer",
+   "stripped": "ht\\ntp:bearer"
+  },
+  {
+   "input": "//\u001b[cookie\\u001b[ht\\ntp:\r ",
+   "normalized": "//cookiet\\ntp:\r ",
+   "stripped": "//cookiet\\ntp:\r "
+  },
+  {
+   "input": "😀pass",
+   "normalized": "😀pass",
+   "stripped": "😀pass"
+  },
+  {
+   "input": "\\u001b[host.example",
+   "normalized": "ost.example",
+   "stripped": "ost.example"
+  },
+  {
+   "input": "\u001b(",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "%70%70%70\u001b(\\u001b[\u0007\nhttp:\\\\a",
+   "normalized": "%70%70%70(\nhttp:\\\\a",
+   "stripped": "%70%70%70(\nhttp:\\\\a"
+  },
+  {
+   "input": "\\u005c1 \"\\u0070?&1mhttps://`",
+   "normalized": "\\u005c1 \"p?&1mhttps://`",
+   "stripped": "\\u005c1 \"p?&1mhttps://`"
+  },
+  {
+   "input": "http:\\\\",
+   "normalized": "http:\\\\",
+   "stripped": "http:\\\\"
+  },
+  {
+   "input": "0=ftp:/\\\"xhttps:/\\u005c\u0007alice",
+   "normalized": "0=ftp:/\\\"xhttps:/\\u005calice",
+   "stripped": "0=ftp:/\\\"xhttps:/\\u005calice"
+  },
+  {
+   "input": "\\b\u001b\\keybasic",
+   "normalized": "\\b\\keybasic",
+   "stripped": "\\b\\keybasic"
+  },
+  {
+   "input": "\u001b\\\u001b\\pass",
+   "normalized": "\\\\pass",
+   "stripped": "\\\\pass"
+  },
+  {
+   "input": "\\u001b]",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": " \\u001b(cookieh\ttps:\\\\\t?1\"token",
+   "normalized": " cookieh\ttps:\\\\\t?1\"token",
+   "stripped": " cookieh\ttps:\\\\\t?1\"token"
+  },
+  {
+   "input": "\\t\u001b]\u0007x\\\\https://basic0alice",
+   "normalized": "\\tx\\\\https://basic0lice",
+   "stripped": "\\tx\\\\https://basic0lice"
+  },
+  {
+   "input": "host.example/\u0000 xwss:%70&\\\\tokena",
+   "normalized": "host.example/ xwss:",
+   "stripped": "host.example/ xwss:"
+  },
+  {
+   "input": "basichttps:/\\u0070\\u001b(\\\\",
+   "normalized": "basichttps:/p(\\\\",
+   "stripped": "basichttps:/p(\\\\"
+  },
+  {
+   "input": "\\b",
+   "normalized": "\\b",
+   "stripped": "\\b"
+  },
+  {
+   "input": "a\\/\u001b(\u00070\\u0022ht\\ntp:😀﷐ \\\\u00220",
+   "normalized": "a/(0\\\"ht\\ntp:😀 \\\\\\\"0",
+   "stripped": "a/(0\\\"ht\\ntp:😀 \\\\\\\"0"
+  },
+  {
+   "input": "a\\\"\\\\https://\u001b\\'\\n\u001b]",
+   "normalized": "a\\\"\\\\https://\\'\\n",
+   "stripped": "a\\\"\\\\https://\\'\\n"
+  },
+  {
+   "input": "\u0000\\\\/\u001b]ht\\ntp:: :8080key",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "x&alice\\u001b(\u001b]\\\\u001b[ht\\ntp::\\\\",
+   "normalized": "x&alice(",
+   "stripped": "x&alice("
+  },
+  {
+   "input": "\u001b[\u001b\\=\u001b\\",
+   "normalized": "\\=\\",
+   "stripped": "\\=\\"
+  },
+  {
+   "input": "&\\/:8080\u0000\\u005c\\\\/\\u0070 \\x1b[\\u001b]\\\\ ",
+   "normalized": "&/:8080\\u005c/p u001b]\\\\ ",
+   "stripped": "&/:8080\\u005c/p u001b]\\\\ "
+  },
+  {
+   "input": "\\ttokenpass \\t",
+   "normalized": "\\ttokenpass \\t",
+   "stripped": "\\ttokenpass \\t"
+  },
+  {
+   "input": "\\u001b]\u00001 ",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "alice",
+   "normalized": "alice",
+   "stripped": "alice"
+  },
+  {
+   "input": "basic",
+   "normalized": "basic",
+   "stripped": "basic"
+  },
+  {
+   "input": "\u001b(https:/\\u0022\\u0070",
+   "normalized": "(ttps:/\\\"p",
+   "stripped": "(ttps:/\\\"p"
+  },
+  {
+   "input": "﷐1\u001bP",
+   "normalized": "1",
+   "stripped": "1"
+  },
+  {
+   "input": "\\\\u001b[ \\u001b[:0%70\u001bP",
+   "normalized": " 70",
+   "stripped": " 70"
+  },
+  {
+   "input": "\\\\u001b[\\b\\\"%70\u0007'https://cookie\u001b[: ",
+   "normalized": "b\\\"%70'https://cookie[: ",
+   "stripped": "b\\\"%70'https://cookie[: "
+  },
+  {
+   "input": "\\\\\\u001b[%70\\\\u0022cookie\n\\u001b]\u0007😀",
+   "normalized": "70\\\\\\\"cookie\n",
+   "stripped": "70\\\\\\\"cookie\n"
+  },
+  {
+   "input": "\u0000 http:\\\\\tbasic//\n=\\n",
+   "normalized": " http:\\\\\tbasic//\n=\\n",
+   "stripped": " http:\\\\\tbasic//\n=\\n"
+  },
+  {
+   "input": ":8080\u0007",
+   "normalized": ":8080",
+   "stripped": ":8080"
+  },
+  {
+   "input": "\\u001b]ht\\ntp:",
+   "normalized": "\\ntp:",
+   "stripped": "\\ntp:"
+  },
+  {
+   "input": ":8080\\u001b(\\\\u001b[\\\\/\n\\/",
+   "normalized": ":8080(/",
+   "stripped": ":8080(/"
+  },
+  {
+   "input": "\u001bP",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "//beareralice\\u0070\\u0070basic\u001b]",
+   "normalized": "//beareraliceppbasic",
+   "stripped": "//beareraliceppbasic"
+  },
+  {
+   "input": "?\rcookie\\\\u0022bearerhttps:/` \\\\/",
+   "normalized": "?\rcookie\\\\\\\"bearerhttps:/` /",
+   "stripped": "?\rcookie\\\\\\\"bearerhttps:/` /"
+  },
+  {
+   "input": "\\u001b[: wss:m\r﷐\\u001b]",
+   "normalized": "ss:m\r",
+   "stripped": "ss:m\r"
+  },
+  {
+   "input": "\\u001b[\\tma\u0007:\\u005c: \\bwss:1",
+   "normalized": "tma:\\u005c: \\bwss:1",
+   "stripped": "tma:\\u005c: \\bwss:1"
+  },
+  {
+   "input": "&\\u0070https://=bearer﷐&ftp:/basic",
+   "normalized": "&phttps://=bearer&ftp:/basic",
+   "stripped": "&phttps://=bearer&ftp:/basic"
+  },
+  {
+   "input": "\\u001b]\\\\\\x1b[&",
+   "normalized": "[&",
+   "stripped": "[&"
+  },
+  {
+   "input": "\\u00basic\u001b(https:/\t\\u001b]\u001b[",
+   "normalized": "\\u00basicttps:/\t",
+   "stripped": "\\u00basicttps:/\t"
+  },
+  {
+   "input": "\":\\u001b[\rtoken\u001b]x",
+   "normalized": "\":token",
+   "stripped": "\":token"
+  },
+  {
+   "input": "\\n",
+   "normalized": "\\n",
+   "stripped": "\\n"
+  },
+  {
+   "input": "\u0000?http:\\\\host.example\\u00",
+   "normalized": "?http:\\\\host.example\\u00",
+   "stripped": "?http:\\\\host.example\\u00"
+  },
+  {
+   "input": "ftp:/\t\\u001b[https:/ ",
+   "normalized": "ftp:/ttps:/ ",
+   "stripped": "ftp:/ttps:/ "
+  },
+  {
+   "input": "#1ht\\ntp:host.example'\\u005c\\x1b[\r﷐",
+   "normalized": "#1ht\\ntp:host.example'\\u005c",
+   "stripped": "#1ht\\ntp:host.example'\\u005c"
+  },
+  {
+   "input": "\n=",
+   "normalized": "\n=",
+   "stripped": "\n="
+  },
+  {
+   "input": "ht\\ntp::8080tokenatoken\\bx\té%70\n",
+   "normalized": "ht\\ntp::8080tokenatoken\\bx\té%70\n",
+   "stripped": "ht\\ntp::8080tokenatoken\\bx\té%70\n"
+  },
+  {
+   "input": "host.example\\\"\u001b\\x",
+   "normalized": "host.example\\\"\\x",
+   "stripped": "host.example\\\"\\x"
+  },
+  {
+   "input": "passpass  \r\u001b(\u001bP\t11",
+   "normalized": "passpass  \r(",
+   "stripped": "passpass  \r("
+  },
+  {
+   "input": "\\\"bearer\n%70",
+   "normalized": "\n%70",
+   "stripped": "\n%70"
+  },
+  {
+   "input": ":\u001b\\\\t1\u0000\\\\/\\u0070\\b",
+   "normalized": ":\\\\t1/p\\b",
+   "stripped": ":\\\\t1/p\\b"
+  },
+  {
+   "input": "x\\npass/http:\\\\:=\u0000",
+   "normalized": "x\\npass/http:\\\\:=",
+   "stripped": "x\\npass/http:\\\\:="
+  },
+  {
+   "input": "@\\n\\u0070\u001b[\\\\/ht\\ntp: \\u005c\u0007basic\\u005c",
+   "normalized": "@\\npt\\ntp: \\u005cbasicu005c",
+   "stripped": "@\\npt\\ntp: \\u005cbasicu005c"
+  },
+  {
+   "input": "\u001b[0:8080token\u001b]",
+   "normalized": "ken",
+   "stripped": "ken"
+  },
+  {
+   "input": "ftp:/\\\\/http:\\\\ftp:/'&﷐",
+   "normalized": "tp://http:\\\\ftp:/'",
+   "stripped": "tp://http:\\\\ftp:/'"
+  },
+  {
+   "input": "\t@//basic\\b\u0000/bearer",
+   "normalized": "\t@//basic\\b/bearer",
+   "stripped": "\t@//basic\\b/bearer"
+  },
+  {
+   "input": "x\u0007",
+   "normalized": "x",
+   "stripped": "x"
+  },
+  {
+   "input": "a@",
+   "normalized": "a@",
+   "stripped": "a@"
+  },
+  {
+   "input": "token\\/ \u0000\\u0070https://#\\\\/",
+   "normalized": "token/ phttps://#/",
+   "stripped": "token/ phttps://#/"
+  },
+  {
+   "input": "mtokenhttps:/\\u001b[:/'1\\x1b[﷐",
+   "normalized": "mtokenhttps:/1[",
+   "stripped": "mtokenhttps:/1["
+  },
+  {
+   "input": "\\u00\n\\\\u0022\\u0022cookie\\x1b[//a",
+   "normalized": "\\u00\n\\\\\\\"\\\"cookie",
+   "stripped": "\\u00\n\\\\\\\"\\\"cookie"
+  },
+  {
+   "input": "wss:https://\\n\\\\\\\"",
+   "normalized": "wss:https://\\n\\\\\\\"",
+   "stripped": "wss:https://\\n\\\\\\\""
+  },
+  {
+   "input": "`\u001bP:8080token\u001b\\\\\\u0022key\\n",
+   "normalized": "`\\\\\"key\\n",
+   "stripped": "`\\\\\"key\\n"
+  },
+  {
+   "input": ": h\ttps:\\\\ftp:///?é",
+   "normalized": ": h\ttps:\\\\ftp:///?é",
+   "stripped": ": h\ttps:\\\\ftp:///?é"
+  },
+  {
+   "input": "\u001b]",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": ":",
+   "normalized": ":",
+   "stripped": ":"
+  },
+  {
+   "input": "\u0007'\u0000\\\\",
+   "normalized": "'\\\\",
+   "stripped": "'\\\\"
+  },
+  {
+   "input": "host.example@﷐\n\t\\/bearer\u001b(: \\x1b[",
+   "normalized": "host.example@\n\t/bearer(: [",
+   "stripped": "host.example@\n\t/bearer(: ["
+  },
+  {
+   "input": "ht\\ntp:\\\"﷐ftp:/\\x1b[%70﷐",
+   "normalized": "ht\\ntp:\\\"",
+   "stripped": "ht\\ntp:\\\""
+  },
+  {
+   "input": " ",
+   "normalized": " ",
+   "stripped": " "
+  },
+  {
+   "input": ":8080\\u0070 @",
+   "normalized": ":8080p @",
+   "stripped": ":8080p @"
+  },
+  {
+   "input": ":8080//éhttps:/a\u001bP'token\\u0022",
+   "normalized": ":8080//éhttps:/a",
+   "stripped": ":8080//éhttps:/a"
+  },
+  {
+   "input": "\u001b\\\"a=\n/",
+   "normalized": "\\\"a=/",
+   "stripped": "\\\"a=/"
+  },
+  {
+   "input": "@:\\b",
+   "normalized": "@:\\b",
+   "stripped": "@:\\b"
+  },
+  {
+   "input": "﷐:8080",
+   "normalized": ":8080",
+   "stripped": ":8080"
+  },
+  {
+   "input": ":'\\u0070\\t\\t",
+   "normalized": ":'p\\t\\t",
+   "stripped": ":'p\\t\\t"
+  },
+  {
+   "input": "m\u001b[\u001b(😀\\u001b(token\\\\/",
+   "normalized": "(😀(token/",
+   "stripped": "(😀(token/"
+  },
+  {
+   "input": "😀pass\\n\\u0070",
+   "normalized": "😀pass\\np",
+   "stripped": "😀pass\\np"
+  },
+  {
+   "input": "\\u0022x\u001b(\u001bP#cookie\\u001b( ",
+   "normalized": "\\\"x(",
+   "stripped": "\\\"x("
+  },
+  {
+   "input": "token\\u001b[\\\"\u001b(\u001bP\\u001b(\\x1b[`﷐\\u001b]",
+   "normalized": "token\"(",
+   "stripped": "token\"("
+  },
+  {
+   "input": "﷐\\\"\u001b\\=ftp:/=",
+   "normalized": "\\\"\\=ftp:/=",
+   "stripped": "\\\"\\=ftp:/="
+  },
+  {
+   "input": "a",
+   "normalized": "a",
+   "stripped": "a"
+  },
+  {
+   "input": "cookie\\u001b[ //: ",
+   "normalized": "cookie //: ",
+   "stripped": "cookie //: "
+  },
+  {
+   "input": "m",
+   "normalized": "m",
+   "stripped": "m"
+  },
+  {
+   "input": "\\u005ch\ttps:\\bawss:'\\/ftp:/\r\" ﷐",
+   "normalized": "\\u005ch\ttps:\\bawss:'/ftp:/\r\" ",
+   "stripped": "\\u005ch\ttps:\\bawss:'/ftp:/\r\" "
+  },
+  {
+   "input": "\\u0070",
+   "normalized": "p",
+   "stripped": "p"
+  },
+  {
+   "input": "pass",
+   "normalized": "pass",
+   "stripped": "pass"
+  },
+  {
+   "input": "h\ttps:",
+   "normalized": "h\ttps:",
+   "stripped": "h\ttps:"
+  },
+  {
+   "input": "?\\u001b]",
+   "normalized": "?",
+   "stripped": "?"
+  },
+  {
+   "input": "`0\u0007h\ttps::80801&http:\\\\\\u005chttps:/: ",
+   "normalized": "`h\ttps::80801&http:\\\\\\u005chttps:/: ",
+   "stripped": "`h\ttps::80801&http:\\\\\\u005chttps:/: "
+  },
+  {
+   "input": "\\u001b]\\/ \\u0022&ftp:/\\x1b[wss:\\b\r\\\\u0022",
+   "normalized": "\\\"&ftp:/ss:\\b\r\\\\\\\"",
+   "stripped": "\\\"&ftp:/ss:\\b\r\\\\\\\""
+  },
+  {
+   "input": "\u001bP\\\\u001b[wss:\\\\/\u001bP&",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "`%70token=: alice\\\\/\\b",
+   "normalized": "%70token=: alice/\\b",
+   "stripped": "%70token=: alice/\\b"
+  },
+  {
+   "input": "basic#\\tx\\x1b[h\ttps:ftp:/\\\\u00220\\b",
+   "normalized": "basic#\\tx\ttps:ftp:/\\\\\\\"0\\b",
+   "stripped": "basic#\\tx\ttps:ftp:/\\\\\\\"0\\b"
+  },
+  {
+   "input": "\t\u0000\\u000\\u0070@\\\\u0022\\u0022\u0000\\bftp:/😀",
+   "normalized": "\t\\u000p@\\\\\\\"\\\"\\bftp:/😀",
+   "stripped": "\t\\u000p@\\\\\\\"\\\"\\bftp:/😀"
+  },
+  {
+   "input": "  \\/\\u005c\\u001b[\\b=😀\"/:﷐",
+   "normalized": "  /\\u005cb=😀\"/:",
+   "stripped": "  /\\u005cb=😀\"/:"
+  },
+  {
+   "input": "ht\\ntp:ékey\\u00éhttps://😀alicexbasich\ttps:",
+   "normalized": "ht\\ntp:ékey\\u00éhttps://😀alicexbasich\ttps:",
+   "stripped": "ht\\ntp:ékey\\u00éhttps://😀alicexbasich\ttps:"
+  },
+  {
+   "input": "\\\\u0022?\\u005c\u001b(1",
+   "normalized": "\\\\\\\"?\\u005c",
+   "stripped": "\\\\\\\"?\\u005c"
+  },
+  {
+   "input": "é'0https://keyhost.example",
+   "normalized": "é'0https://keyhost.example",
+   "stripped": "é'0https://keyhost.example"
+  },
+  {
+   "input": "https:/aftp:/😀h\ttps:",
+   "normalized": "https:/aftp:/😀h\ttps:",
+   "stripped": "https:/aftp:/😀h\ttps:"
+  },
+  {
+   "input": "https:/\u001bP\\n#\\\\u001b[https://\\u00\\\"",
+   "normalized": "https:/",
+   "stripped": "https:/"
+  },
+  {
+   "input": "\u001b\\﷐﷐alice",
+   "normalized": "\\alice",
+   "stripped": "\\alice"
+  },
+  {
+   "input": "\u001b[ht\\ntp:﷐",
+   "normalized": "t\\ntp:",
+   "stripped": "t\\ntp:"
+  },
+  {
+   "input": "::8080&token#host.example",
+   "normalized": "::8080",
+   "stripped": "::8080"
+  },
+  {
+   "input": "\\n:8080'passhost.example/\\u001b]\\\\/\\u0022\\\\",
+   "normalized": "\\n:8080'passhost.example/\\\"\\\\",
+   "stripped": "\\n:8080'passhost.example/\\\"\\\\"
+  },
+  {
+   "input": "\u001b(//\\u005chost.example\\u001b(#\ttoken",
+   "normalized": "u005chost.example(#\ttoken",
+   "stripped": "u005chost.example(#\ttoken"
+  },
+  {
+   "input": "\u001b\\\\bhttps:/'\\u00#\nkey//\\u0022",
+   "normalized": "\\\\bhttps:/'\\u00#\nkey//\\\"",
+   "stripped": "\\\\bhttps:/'\\u00#\nkey//\\\""
+  },
+  {
+   "input": "ht\\ntp::https://#",
+   "normalized": "ht\\ntp::https://#",
+   "stripped": "ht\\ntp::https://#"
+  },
+  {
+   "input": "@\\\\/https:/&\\bwss:\\\\😀1#m\r",
+   "normalized": "@/https:/&\\bwss:\\\\😀1#m\r",
+   "stripped": "@/https:/&\\bwss:\\\\😀1#m\r"
+  },
+  {
+   "input": "\\\\/\\\\/\\u0070#1/",
+   "normalized": "//p#1/",
+   "stripped": "//p#1/"
+  },
+  {
+   "input": " '\u001b\\\\x1b[h\ttps:",
+   "normalized": " '\ttps:",
+   "stripped": " '\ttps:"
+  },
+  {
+   "input": "@\\u001b]\\/\n\\\\u0022",
+   "normalized": "@\n\\\\\\\"",
+   "stripped": "@\n\\\\\\\""
+  },
+  {
+   "input": "\\//\"\\/\\x1b[wss:m",
+   "normalized": "//\"/ss:m",
+   "stripped": "//\"/ss:m"
+  },
+  {
+   "input": " \\\\",
+   "normalized": " \\\\",
+   "stripped": " \\\\"
+  },
+  {
+   "input": "\u001b(\"pass\\u001b[\\\\/",
+   "normalized": "pass[/",
+   "stripped": "pass[/"
+  },
+  {
+   "input": "\u001bP&:é\\\"",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": ":::https:/basic",
+   "normalized": ":::https:/basic",
+   "stripped": ":::https:/basic"
+  },
+  {
+   "input": "\\u001b]\\u005chttp:\\\\ftp:/&\\\"alice0x\\\"",
+   "normalized": "\\u005chttp:\\\\ftp:/&\\\"alice0x\\\"",
+   "stripped": "\\u005chttp:\\\\ftp:/&\\\"alice0x\\\""
+  },
+  {
+   "input": "&\\\\\\u001b]: m1\\btokenht\\ntp:",
+   "normalized": "&\\btokenht\\ntp:",
+   "stripped": "&\\btokenht\\ntp:"
+  },
+  {
+   "input": "é\\balice//&\\\"a",
+   "normalized": "é\\balice//&\\\"a",
+   "stripped": "é\\balice//&\\\"a"
+  },
+  {
+   "input": "\\u005c\u0007cookie:8080&",
+   "normalized": "\\u005ccookie:8080&",
+   "stripped": "\\u005ccookie:8080&"
+  },
+  {
+   "input": ":\\\"\\\\u0022host.examplealice",
+   "normalized": ":\\\"\\\\\\\"host.examplealice",
+   "stripped": ":\\\"\\\\\\\"host.examplealice"
+  },
+  {
+   "input": "\\\\/\n:8080&",
+   "normalized": "/\n:8080&",
+   "stripped": "/\n:8080&"
+  },
+  {
+   "input": "\u0000ht\\ntp:\\\\u0022😀#\\u001b[\\n\n?",
+   "normalized": "ht\\ntp:\\\\\\\"😀#\\n\n?",
+   "stripped": "ht\\ntp:\\\\\\\"😀#\\n\n?"
+  },
+  {
+   "input": "\u0000?\"\t\\b \\\"x\\u005c\u001bP\\t\\x1b[",
+   "normalized": "?\"\t\\b \\\"x\\u005c",
+   "stripped": "?\"\t\\b \\\"x\\u005c"
+  },
+  {
+   "input": "%70é?0%70?ht\\ntp:",
+   "normalized": "%70é70?ht\\ntp:",
+   "stripped": "%70é70?ht\\ntp:"
+  },
+  {
+   "input": "﷐/\\u0022\u001b]http:\\\\\\x1b[\\u0070`",
+   "normalized": "/\\\"",
+   "stripped": "/\\\""
+  },
+  {
+   "input": "\u001bP\n\\u0070",
+   "normalized": "\np",
+   "stripped": "\np"
+  },
+  {
+   "input": "basic\\\\/https://",
+   "normalized": "basic/https://",
+   "stripped": "basic/https://"
+  },
+  {
+   "input": "https://\\u00a:\\u001b]:8080ftp:/\\\\u0022ht\\ntp:'",
+   "normalized": "https://\\u00a:\\\\\\\"ht\\ntp:'",
+   "stripped": "https://\\u00a:\\\\\\\"ht\\ntp:'"
+  },
+  {
+   "input": "\\x1b[x😀aaakey",
+   "normalized": "😀aaakey",
+   "stripped": "😀aaakey"
+  },
+  {
+   "input": "//\u0007\u0000\u001b]",
+   "normalized": "//",
+   "stripped": "//"
+  },
+  {
+   "input": "pass﷐\\b0\\u001b( éaliceht\\ntp:",
+   "normalized": "pass\\b0( éaliceht\\ntp:",
+   "stripped": "pass\\b0( éaliceht\\ntp:"
+  },
+  {
+   "input": "/a\u001b]é\\u001b(x\\u001b[",
+   "normalized": "/a",
+   "stripped": "/a"
+  },
+  {
+   "input": "'pass\\b:8080",
+   "normalized": "'pass\\b:8080",
+   "stripped": "'pass\\b:8080"
+  },
+  {
+   "input": "\\b%70ht\\ntp:alice:8080:8080%70",
+   "normalized": "\\b%70ht\\ntp:",
+   "stripped": "\\b%70ht\\ntp:"
+  },
+  {
+   "input": "wss:\\/\\\\u0022 \\\"\rhost.example\\\\",
+   "normalized": "wss:/\\\\\\\" \\\"\rhost.example\\\\",
+   "stripped": "wss:/\\\\\\\" \\\"\rhost.example\\\\"
+  },
+  {
+   "input": "\\t1https:/m:80801\u0007\\x1b[\\u005cx\u001b(",
+   "normalized": "\\t1https:/m:80801u005cx(",
+   "stripped": "\\t1https:/m:80801u005cx("
+  },
+  {
+   "input": "token",
+   "normalized": "token",
+   "stripped": "token"
+  },
+  {
+   "input": "?\u0007basiccookie\u001b]x\u001b]=0\u0007ht\\ntp:",
+   "normalized": "?basiccookieht\\ntp:",
+   "stripped": "?basiccookieht\\ntp:"
+  },
+  {
+   "input": "",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "'",
+   "normalized": "'",
+   "stripped": "'"
+  },
+  {
+   "input": ":8080\\t\r/x1",
+   "normalized": ":8080\\t\rx1",
+   "stripped": ":8080\\t\rx1"
+  },
+  {
+   "input": "wss:\\\\u001b[%70",
+   "normalized": "wss:70",
+   "stripped": "wss:70"
+  },
+  {
+   "input": "\\\\u0022\\u001b(//:\\\\u001b[\u0007\\\\u001b[\\u0070ftp:/",
+   "normalized": "\\\\\\\"(//:ftp:/",
+   "stripped": "\\\\\\\"(//:ftp:/"
+  },
+  {
+   "input": "//01\\x1b[",
+   "normalized": "//01[",
+   "stripped": "//01["
+  },
+  {
+   "input": "token\"@https:/",
+   "normalized": "token\"@https:/",
+   "stripped": "token\"@https:/"
+  },
+  {
+   "input": "\\n:8080\u001b]\\\\pass\\x1b[",
+   "normalized": "\\n:8080",
+   "stripped": "\\n:8080"
+  },
+  {
+   "input": "token host.example:8080\\b",
+   "normalized": "token host.example:8080\\b",
+   "stripped": "token host.example:8080\\b"
+  },
+  {
+   "input": "\r\\t",
+   "normalized": "\r\\t",
+   "stripped": "\r\\t"
+  },
+  {
+   "input": "alice\\twss:\u0000\u0007﷐",
+   "normalized": "alice\\twss:",
+   "stripped": "alice\\twss:"
+  },
+  {
+   "input": "\\u00\\\\alice\u001bP\\\\u001b[bearer\u001b\\",
+   "normalized": "\\u00\\\\alice",
+   "stripped": "\\u00\\\\alice"
+  },
+  {
+   "input": ": basic\\t\u0007",
+   "normalized": ": basic\\t",
+   "stripped": ": basic\\t"
+  },
+  {
+   "input": "&=?\u001b\\\r1\\/&: 😀﷐",
+   "normalized": "&=?\\\r1/&: 😀",
+   "stripped": "&=?\\\r1/&: 😀"
+  },
+  {
+   "input": ":8080//",
+   "normalized": ":8080//",
+   "stripped": ":8080//"
+  },
+  {
+   "input": "%70host.examplehttp:\\\\x",
+   "normalized": "%70host.examplehttp:\\\\x",
+   "stripped": "%70host.examplehttp:\\\\x"
+  },
+  {
+   "input": ":8080\u001b\\=\\n﷐\\u005c😀﷐\\\\u0022",
+   "normalized": ":8080\\=\\n\\u005c😀\\\\\\\"",
+   "stripped": ":8080\\=\\n\\u005c😀\\\\\\\""
+  },
+  {
+   "input": "cookiexépass\\b\\u001b]bearer:8080ht\\ntp:\u0000",
+   "normalized": "cookiexépass\\b\\ntp:",
+   "stripped": "cookiexépass\\b\\ntp:"
+  },
+  {
+   "input": "mwss:=&https:/",
+   "normalized": "mwss:=&https:/",
+   "stripped": "mwss:=&https:/"
+  },
+  {
+   "input": "\u0007#`https://wss:a\u0000\\u0022﷐\u001b[\\\\u0022",
+   "normalized": "#`https://wss:a\\\"\\\\\"",
+   "stripped": "#`https://wss:a\\\"\\\\\""
+  },
+  {
+   "input": "cookie\u0007",
+   "normalized": "cookie",
+   "stripped": "cookie"
+  },
+  {
+   "input": "\u001b\\https:/?alice\\x1b[h\ttps:\\u00//\\u001b]`",
+   "normalized": "\\https:/?alice\ttps:\\u00//",
+   "stripped": "\\https:/?alice\ttps:\\u00//"
+  },
+  {
+   "input": "\u001b(\u001b(https://=10key\t\\\\/",
+   "normalized": "(ttps://=10key\t/",
+   "stripped": "(ttps://=10key\t/"
+  },
+  {
+   "input": "\\n`",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "cookiecookie",
+   "normalized": "cookiecookie",
+   "stripped": "cookiecookie"
+  },
+  {
+   "input": "https://0/0\u0007",
+   "normalized": "https://0/0",
+   "stripped": "https://0/0"
+  },
+  {
+   "input": "\u001b\\\\n \\n?😀😀host.example\u0007//https://",
+   "normalized": "\\\\n \\n?😀😀host.example//https://",
+   "stripped": "\\\\n \\n?😀😀host.example//https://"
+  },
+  {
+   "input": "0\\u001b[xbasic\\b\\\\u0022\\u001b[",
+   "normalized": "0basic\\b\\\\\\\"[",
+   "stripped": "0basic\\b\\\\\\\"["
+  },
+  {
+   "input": "0host.example\\u001b(\u001bPwss: ",
+   "normalized": "0host.example(",
+   "stripped": "0host.example("
+  },
+  {
+   "input": "\\x1b[\u001b\\\u001bP: =\u0007https://",
+   "normalized": "\\https://",
+   "stripped": "\\https://"
+  },
+  {
+   "input": "=",
+   "normalized": "=",
+   "stripped": "="
+  },
+  {
+   "input": "\\t\u001b(cookie\\u001b(\u001b(é",
+   "normalized": "\\tcookie((é",
+   "stripped": "\\tcookie((é"
+  },
+  {
+   "input": "\u001b[\\u00\n\\\\u001b[https:/%70\u0007\u001b\\",
+   "normalized": "00\nttps:/%70\\",
+   "stripped": "00\nttps:/%70\\"
+  },
+  {
+   "input": "\\\\/wss:\r",
+   "normalized": "/\r",
+   "stripped": "/\r"
+  },
+  {
+   "input": "\u001bP\u0000host.exampletokenxm\\\"\\u005c\\\\﷐:\t",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\n\\u0070a#https://",
+   "normalized": "\\npa#https://",
+   "stripped": "\\npa#https://"
+  },
+  {
+   "input": "m\\u005c&token\u001b\\https://host.example` \r",
+   "normalized": "m\\u005c&token\\https://host.example` \r",
+   "stripped": "m\\u005c&token\\https://host.example` \r"
+  },
+  {
+   "input": "\t\\n\u0000?\\t",
+   "normalized": "\t\\n?\\t",
+   "stripped": "\t\\n?\\t"
+  },
+  {
+   "input": "\\\\/ cookie\\x1b[:1'\\\\u0022\\u001b]",
+   "normalized": "/ cookie\\\\\"",
+   "stripped": "/ cookie\\\\\""
+  },
+  {
+   "input": "ht\\ntp:\\\\u001b[bearer``\\u0070﷐'",
+   "normalized": "ht\\ntp:arer``",
+   "stripped": "ht\\ntp:arer``"
+  },
+  {
+   "input": ": passalice\\\\u0022\u001b]\\b@",
+   "normalized": ": passalice\\\\\\\"",
+   "stripped": ": passalice\\\\\\\""
+  },
+  {
+   "input": "@\\\\u0022\\u00\\\\u001b[?token&\\u001b]https://#",
+   "normalized": "@\\\\\\\"\\u00token&",
+   "stripped": "@\\\\\\\"\\u00token&"
+  },
+  {
+   "input": " #😀https://0\u001b(`\\u001b]\u0007",
+   "normalized": " #😀https://0",
+   "stripped": " #😀https://0"
+  },
+  {
+   "input": "\\u005cht\\ntp:\tcookie\u001b[",
+   "normalized": "\\u005cht\\ntp:\tcookie[",
+   "stripped": "\\u005cht\\ntp:\tcookie["
+  },
+  {
+   "input": "pass\\/é\\u001b(﷐\"",
+   "normalized": "pass/é(\"",
+   "stripped": "pass/é(\""
+  },
+  {
+   "input": "a\\\\/\\u0022alice\u001bPmhttps://`=",
+   "normalized": "a/\\\"alice",
+   "stripped": "a/\\\"alice"
+  },
+  {
+   "input": "host.example\n",
+   "normalized": "host.example\n",
+   "stripped": "host.example\n"
+  },
+  {
+   "input": "\u0007\t😀😀 ",
+   "normalized": "\t😀😀 ",
+   "stripped": "\t😀😀 "
+  },
+  {
+   "input": "0\\u001b[ht\\ntp:ht\\ntp:\\/\u001bP\\\"\\\"",
+   "normalized": "0t\\ntp:ht\\ntp:/",
+   "stripped": "0t\\ntp:ht\\ntp:/"
+  },
+  {
+   "input": "bearer\u0007http:\\\\\\\\\u001bP:\n",
+   "normalized": "bearerhttp:\\\\\\\\\n",
+   "stripped": "bearerhttp:\\\\\\\\\n"
+  },
+  {
+   "input": "\u0007token",
+   "normalized": "token",
+   "stripped": "token"
+  },
+  {
+   "input": "\\b\\u0070\u001b('bearer",
+   "normalized": "\\bpearer",
+   "stripped": "\\bpearer"
+  },
+  {
+   "input": "?\\nhost.example\\u001b[\\b\\t",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "ftp:/ht\\ntp:\\\\/\rx\\\\u001b[\\btoken\\u001b[`",
+   "normalized": "ftp:/ht\\ntp:/\rxbtoken",
+   "stripped": "ftp:/ht\\ntp:/\rxbtoken"
+  },
+  {
+   "input": "ht\\ntp:\"",
+   "normalized": "ht\\ntp:\"",
+   "stripped": "ht\\ntp:\""
+  },
+  {
+   "input": "https://: \\/\\u00h\ttps:\\u001b(aftp:/\\u00\\u001b[",
+   "normalized": "https://: /\\u00h\ttps:ftp:/\\u00[",
+   "stripped": "https://: /\\u00h\ttps:ftp:/\\u00["
+  },
+  {
+   "input": "\\u00\\\\`",
+   "normalized": "\\u00\\\\`",
+   "stripped": "\\u00\\\\`"
+  },
+  {
+   "input": "ftp:/::8080pass\t basic",
+   "normalized": "ftp:/::8080pass\t basic",
+   "stripped": "ftp:/::8080pass\t basic"
+  },
+  {
+   "input": "@\\\\u0022\u001b(`\\u001b[\u0007",
+   "normalized": "@\\\\\\\"",
+   "stripped": "@\\\\\\\""
+  },
+  {
+   "input": "m1%70ftp:/﷐m\\t\u001b(alice",
+   "normalized": "m1%70ftp:/m\\tlice",
+   "stripped": "m1%70ftp:/m\\tlice"
+  },
+  {
+   "input": "\\u0022\t\\u0022basic",
+   "normalized": "\\\"\t\\\"basic",
+   "stripped": "\\\"\t\\\"basic"
+  },
+  {
+   "input": "//",
+   "normalized": "//",
+   "stripped": "//"
+  },
+  {
+   "input": "\\u0070\\\\\u001b]😀1keycookie: m: \u0000",
+   "normalized": "p\\\\",
+   "stripped": "p\\\\"
+  },
+  {
+   "input": "&alice\\\\/`\ntoken:mht\\ntp:",
+   "normalized": "&alice/`\ntoken:mht\\ntp:",
+   "stripped": "&alice/`\ntoken:mht\\ntp:"
+  },
+  {
+   "input": "0\u0007wss:`😀",
+   "normalized": "0wss:`😀",
+   "stripped": "0wss:`😀"
+  },
+  {
+   "input": "ht\\ntp:/\\u001b(\r%70:a:\u001b(",
+   "normalized": "ht\\ntp:/(\r%70:a:(",
+   "stripped": "ht\\ntp:/(\r%70:a:("
+  },
+  {
+   "input": "http:\\\\m//%70\\u001b]host.example1bearer\\\\u0022",
+   "normalized": "http:\\\\m70\\\\\\\"",
+   "stripped": "http:\\\\m70\\\\\\\""
+  },
+  {
+   "input": "\\\\",
+   "normalized": "\\\\",
+   "stripped": "\\\\"
+  },
+  {
+   "input": "1h\ttps:\\\\u0022\u001bP\\u001b(\u001b[\\\\u0022\rkeyftp:/#",
+   "normalized": "1h\ttps:\\\\\\\"\rkeyftp:/#",
+   "stripped": "1h\ttps:\\\\\\\"\rkeyftp:/#"
+  },
+  {
+   "input": ":alice\\x1b[\u001bPé\\u005c\\u00\nftp:/",
+   "normalized": ":alice\ntp:/",
+   "stripped": ":alice\ntp:/"
+  },
+  {
+   "input": "😀\u001b]1key\\\\/\\u0070\\/basic",
+   "normalized": "😀",
+   "stripped": "😀"
+  },
+  {
+   "input": "\\u0022\\\\\\thost.example\\\"1:8080\\u001b]cookie",
+   "normalized": "\\\"",
+   "stripped": "\\\""
+  },
+  {
+   "input": "\t0 \u00001😀'",
+   "normalized": "\t0 1😀'",
+   "stripped": "\t0 1😀'"
+  },
+  {
+   "input": "\\u005c\u001bP\u0007😀wss:",
+   "normalized": "\\u005c😀wss:",
+   "stripped": "\\u005c😀wss:"
+  },
+  {
+   "input": "tokenh\ttps:@@/é\u0007cookie@\\\\",
+   "normalized": "tokenh\ttps:@@/écookie@\\\\",
+   "stripped": "tokenh\ttps:@@/écookie@\\\\"
+  },
+  {
+   "input": "':8080keyftp:/",
+   "normalized": "':8080",
+   "stripped": "':8080"
+  },
+  {
+   "input": "#",
+   "normalized": "#",
+   "stripped": "#"
+  },
+  {
+   "input": "\\u00basic\\\\u0022ht\\ntp:?tokencookieftp:/@",
+   "normalized": "\\u00basic\\\\\\\"http://?tokencookieftp:/@",
+   "stripped": "\\u00basic\\\\\\\"ht\\ntp:?tokencookieftp:/@"
+  },
+  {
+   "input": "\\\\u001b[\r\\n\\\\u0022\\\\/h\ttps::\u0007\"\\tht\\ntp:",
+   "normalized": "\\n\\\\\\\"/h\ttps::\"\\tht\\ntp:",
+   "stripped": "\\n\\\\\\\"/h\ttps::\"\\tht\\ntp:"
+  },
+  {
+   "input": "x\\b:",
+   "normalized": "x\\b:",
+   "stripped": "x\\b:"
+  },
+  {
+   "input": ":\\/\u001b(http:\\\\éht\\ntp:",
+   "normalized": ":/ttp:\\\\éht\\ntp:",
+   "stripped": ":/ttp:\\\\éht\\ntp:"
+  },
+  {
+   "input": "https://\r\\u001b(\n\\u001b[",
+   "normalized": "https://\r(\n[",
+   "stripped": "https://\r(\n["
+  },
+  {
+   "input": "%70cookie",
+   "normalized": "%70cookie",
+   "stripped": "%70cookie"
+  },
+  {
+   "input": " 😀\\n",
+   "normalized": " 😀\\n",
+   "stripped": " 😀\\n"
+  },
+  {
+   "input": "ht\\ntp:😀",
+   "normalized": "ht\\ntp:😀",
+   "stripped": "ht\\ntp:😀"
+  },
+  {
+   "input": "\\bétoken\\b\"\u001b[http:\\\\?😀",
+   "normalized": "\\bétoken\\btp:\\\\?😀",
+   "stripped": "\\bétoken\\btp:\\\\?😀"
+  },
+  {
+   "input": "key \\u001b[h\ttps:?\u001bPbasica\\t\\\"",
+   "normalized": "key ",
+   "stripped": "key "
+  },
+  {
+   "input": "\u001b]ftp:/=:\\\\u0022m`@\\/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u0070\\u001b[=token",
+   "normalized": "ptoken",
+   "stripped": "ptoken"
+  },
+  {
+   "input": "ftp:/token 😀# /\u001b( \u001b]",
+   "normalized": "ftp:/token 😀# /( ",
+   "stripped": "ftp:/token 😀# /( "
+  },
+  {
+   "input": "0\u0007\\u00\\u0022#?\\u001b(#host.example/\r",
+   "normalized": "0\\u00\\\"#?ost.example/\r",
+   "stripped": "0\\u00\\\"#?ost.example/\r"
+  },
+  {
+   "input": "pass\\\\u001b[\\u001b(\\u0070\\u001b]0x\"\\t",
+   "normalized": "passu001b(\"\\t",
+   "stripped": "passu001b(\"\\t"
+  },
+  {
+   "input": "\\u0070: \u001b[\nhost.example",
+   "normalized": ": host.example",
+   "stripped": ": host.example"
+  },
+  {
+   "input": "\\u005c@@\\u001b]\\\\ \\u00\r\\n",
+   "normalized": "\\u005c@@\\\\ \\u00\r\\n",
+   "stripped": "\\u005c@@\\\\ \\u00\r\\n"
+  },
+  {
+   "input": "@ \u001b] \\n:: \\u0022\\u0070",
+   "normalized": "@ ",
+   "stripped": "@ "
+  },
+  {
+   "input": ": \\t\u0000\u001bP%70::\\x1b[",
+   "normalized": ": \\t",
+   "stripped": ": \\t"
+  },
+  {
+   "input": "\\u00701ftp:/\\x1b[",
+   "normalized": "p1ftp:/[",
+   "stripped": "p1ftp:/["
+  },
+  {
+   "input": "%70http:\\\\\\\\u001b[\\u0022\\x1b[\\\\u001b[//",
+   "normalized": "%70http:\"[//",
+   "stripped": "%70http:\"[//"
+  },
+  {
+   "input": "alice\u001b[\t\\x1b['https:/keyhost.example",
+   "normalized": "alicettps:/keyhost.example",
+   "stripped": "alicettps:/keyhost.example"
+  },
+  {
+   "input": "\"\\\\&\\\\/host.example\\n\talice\u001b[\n",
+   "normalized": "\"\\\\&/host.example\\n\talice",
+   "stripped": "\"\\\\&/host.example\\n\talice"
+  },
+  {
+   "input": "\\ncookieéhttps:/\\u001b(alice\u001b]m",
+   "normalized": "\\ncookieéhttps:/lice",
+   "stripped": "\\ncookieéhttps:/lice"
+  },
+  {
+   "input": "cookie##ahttps:/ ﷐\"\\t&",
+   "normalized": "cookie##ahttps:/ \"\\t&",
+   "stripped": "cookie##ahttps:/ \"\\t&"
+  },
+  {
+   "input": "\u001b[\\u001b(\\\\\\u0022\u001b\\\\b﷐\\b%70",
+   "normalized": "\\b\\b70",
+   "stripped": "\\b\\b70"
+  },
+  {
+   "input": "\t\\\\/x\\u001b]host.example\r=0https://x\\u0070",
+   "normalized": "\t/x\r=0https://xp",
+   "stripped": "\t/x\r=0https://xp"
+  },
+  {
+   "input": "token%70\\u00",
+   "normalized": "token%70\\u00",
+   "stripped": "token%70\\u00"
+  },
+  {
+   "input": "https://h\ttps:bearer\u001b[\u001b(",
+   "normalized": "https://h\ttps:bearer(",
+   "stripped": "https://h\ttps:bearer("
+  },
+  {
+   "input": "bearer\u001b(`key///\u0000//`\u001bPpass",
+   "normalized": "bearerkey/////`",
+   "stripped": "bearerkey/////`"
+  },
+  {
+   "input": "\t\u001b[key:8080\\t&\\u0070\\u0070😀",
+   "normalized": "\tkey:8080\\t&pp😀",
+   "stripped": "\tkey:8080\\t&pp😀"
+  },
+  {
+   "input": "\\\\u0022😀basic\u0000=",
+   "normalized": "\\\\\"😀basic=",
+   "stripped": "\\\\\"😀basic="
+  },
+  {
+   "input": "&\\\"token:8080",
+   "normalized": "&\\\"",
+   "stripped": "&\\\""
+  },
+  {
+   "input": "//tokenhost.example\u001b\\\u001b[%70bearer\\u005c\\u0022bearer\u001b]http:\\\\",
+   "normalized": "//tokenhost.example\\70bearer\\u005c\\\"bearer",
+   "stripped": "//tokenhost.example\\70bearer\\u005c\\\"bearer"
+  },
+  {
+   "input": ":\\u001b(a",
+   "normalized": ":",
+   "stripped": ":"
+  },
+  {
+   "input": "//wss:host.example",
+   "normalized": "//wss:host.example",
+   "stripped": "//wss:host.example"
+  },
+  {
+   "input": "?0@",
+   "normalized": "?0@",
+   "stripped": "?0@"
+  },
+  {
+   "input": "é\\\\\\x1b[\\t\\u001b[ \u001b(\\u0022\\\\",
+   "normalized": "ét\"\\\\",
+   "stripped": "ét\"\\\\"
+  },
+  {
+   "input": "ht\\ntp:key\\u00ftp:/",
+   "normalized": "ht\\ntp:key\\u00ftp:/",
+   "stripped": "ht\\ntp:key\\u00ftp:/"
+  },
+  {
+   "input": "=&é",
+   "normalized": "=&é",
+   "stripped": "=&é"
+  },
+  {
+   "input": "\n#\\\\",
+   "normalized": "\n#\\\\",
+   "stripped": "\n#\\\\"
+  },
+  {
+   "input": ":8080﷐\\x1b[pass@\\u001b(",
+   "normalized": ":8080ss@(",
+   "stripped": ":8080ss@("
+  },
+  {
+   "input": "alice:ftp:/:\\u001b[wss:h\ttps:",
+   "normalized": "alice:ftp:/:ss:h\ttps:",
+   "stripped": "alice:ftp:/:ss:h\ttps:"
+  },
+  {
+   "input": "\\t😀wss:\u001b]\\u0022\\\\pass\\\"",
+   "normalized": "\\t😀wss:",
+   "stripped": "\\t😀wss:"
+  },
+  {
+   "input": "😀cookieh\ttps:",
+   "normalized": "😀cookieh\ttps:",
+   "stripped": "😀cookieh\ttps:"
+  },
+  {
+   "input": "\u001b[\\u001b(\u001b]alice`é=ht\\ntp:1\\\\u001b[",
+   "normalized": "u001b(",
+   "stripped": "u001b("
+  },
+  {
+   "input": "//a﷐\nkey: 1\n\\u001b]//https://",
+   "normalized": "//akey: 1\n",
+   "stripped": "//akey: 1\n"
+  },
+  {
+   "input": "alice:ht\\ntp:http:\\\\\\x1b[\\u001b]",
+   "normalized": "alice:ht\\ntp:http:u001b]",
+   "stripped": "alice:ht\\ntp:http:u001b]"
+  },
+  {
+   "input": "\u001b[token\"\\\\u001b[\u001bP\\\\é\\u005chttps://",
+   "normalized": "token\"",
+   "stripped": "token\""
+  },
+  {
+   "input": "a\\u001b]http:\\\\\\u005c\\u005c?\\u005c\\u0022",
+   "normalized": "a\\\\\\u005c\\u005c?\\u005c\\\"",
+   "stripped": "a\\\\\\u005c\\u005c?\\u005c\\\""
+  },
+  {
+   "input": "&\\\"\\u0070😀host.example=mm//\\\\/\\\\",
+   "normalized": "&\\\"p😀host.example=mm///\\\\",
+   "stripped": "&\\\"p😀host.example=mm///\\\\"
+  },
+  {
+   "input": ":8080",
+   "normalized": ":8080",
+   "stripped": ":8080"
+  },
+  {
+   "input": "`\u0007http:\\\\x\n",
+   "normalized": "`http:\\\\x\n",
+   "stripped": "`http:\\\\x\n"
+  },
+  {
+   "input": "%70\\u0070\\u005c",
+   "normalized": "%70p\\u005c",
+   "stripped": "%70p\\u005c"
+  },
+  {
+   "input": "`\\\\u00221%70http:\\\\x\\\\u0022\\u0070\u0007@",
+   "normalized": "`\\\\\\\"1%70http:\\\\x\\\\\\\"p",
+   "stripped": "`\\\\\\\"1%70http:\\\\x\\\\\\\"p"
+  },
+  {
+   "input": "\\u001b[éftp:/\\u001b]h\ttps:: \\\"",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "`\\u00m\r",
+   "normalized": "`\\u00m\r",
+   "stripped": "`\\u00m\r"
+  },
+  {
+   "input": "@\\bht\\ntp:\\\\u001b[m\\\\u001b[token%70\nx\u0007'",
+   "normalized": "@\\bht\\ntp:token%70\nx'",
+   "stripped": "@\\bht\\ntp:token%70\nx'"
+  },
+  {
+   "input": ": \u001b]😀\u001b(\\\\wss:\\u0070\"token\\u0070",
+   "normalized": ": \\wss:p\"tokenp",
+   "stripped": ": \\wss:p\"tokenp"
+  },
+  {
+   "input": "/\u001b(😀\\u001b(https:/",
+   "normalized": "/(😀ttps:/",
+   "stripped": "/(😀ttps:/"
+  },
+  {
+   "input": "\"\\u000\\\\/https:/\\\"https:/\\b",
+   "normalized": "\"\\u000/https:/\\\"ttps:/\\b",
+   "stripped": "\"\\u000/https:/\\\"ttps:/\\b"
+  },
+  {
+   "input": "\u001b\\\\\\/\u001b[@'wss:\\t\r",
+   "normalized": "ss:\\t\r",
+   "stripped": "ss:\\t\r"
+  },
+  {
+   "input": "\\\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "\\u005c&# ",
+   "normalized": "\\u005c&# ",
+   "stripped": "\\u005c&# "
+  },
+  {
+   "input": "\\/https://\u001bP#0\\\"",
+   "normalized": "/https://",
+   "stripped": "/https://"
+  },
+  {
+   "input": "bearer#alicehttp:\\\\\\u00\\u0070cookiehttp:\\\\: http:\\\\\\\\/",
+   "normalized": "bearer#alicehttp:\\\\",
+   "stripped": "bearer#alicehttp:\\\\"
+  },
+  {
+   "input": "\\u0022:8080host.examplea\\u001b[",
+   "normalized": "\\\":8080host.examplea[",
+   "stripped": "\\\":8080host.examplea["
+  },
+  {
+   "input": "https://\u001b\\\u001b(:8080&a﷐\\u001b(",
+   "normalized": "https://\\(:8080&a(",
+   "stripped": "https://\\(:8080&a("
+  },
+  {
+   "input": "=https:/\\n\\u005c\\x1b[\\u005c﷐\\u00",
+   "normalized": "=https:/\\n\\u005c005c\\u00",
+   "stripped": "=https:/\\n\\u005c005c\\u00"
+  },
+  {
+   "input": "basic\\u0022\\\\/a:8080",
+   "normalized": "basic\\\"/a:8080",
+   "stripped": "basic\\\"/a:8080"
+  },
+  {
+   "input": "host.example﷐\\\\/\\u00\\u001b]ftp:/=\\\\ht\\ntp:\\u001b[alice",
+   "normalized": "host.example/\\u00\\\\ht\\ntp:lice",
+   "stripped": "host.example/\\u00\\\\ht\\ntp:lice"
+  },
+  {
+   "input": "https://'\\u001b(bearera1:https:/key",
+   "normalized": "https://'earera1:https:/key",
+   "stripped": "https://'earera1:https:/key"
+  },
+  {
+   "input": "﷐?\\u0070wss:",
+   "normalized": "wss:",
+   "stripped": "wss:"
+  },
+  {
+   "input": "cookie\\u0070cookie😀https://https:/00\ta",
+   "normalized": "cookiepcookie😀https://https:/0",
+   "stripped": "cookiepcookie😀https://https:/0"
+  },
+  {
+   "input": "%70http:\\\\\\\\/\\\\///\u0000\u0007\\t\\u001b[",
+   "normalized": "%70http:////\\t[",
+   "stripped": "%70http:////\\t["
+  },
+  {
+   "input": "\"mhost.examplealice\u0007\\\":\u001b] ",
+   "normalized": "\"mhost.examplealice\\\":",
+   "stripped": "\"mhost.examplealice\\\":"
+  },
+  {
+   "input": "https:/&\\u001b]﷐😀&0",
+   "normalized": "https:/&",
+   "stripped": "https:/&"
+  },
+  {
+   "input": "\\\\u0022\u001b]wss:\\\\bearer /﷐\\b😀 \\\"",
+   "normalized": "\\\\\\\"",
+   "stripped": "\\\\\\\""
+  },
+  {
+   "input": "cookie1",
+   "normalized": "cookie1",
+   "stripped": "cookie1"
+  },
+  {
+   "input": "a@cookie\u001b]&",
+   "normalized": "a@",
+   "stripped": "a@"
+  },
+  {
+   "input": "",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\x1b[\"wss://wss:",
+   "normalized": "ss://wss:",
+   "stripped": "ss://wss:"
+  },
+  {
+   "input": "#\\n﷐😀\\/éht\\ntp:",
+   "normalized": "#\\n😀/éht\\ntp:",
+   "stripped": "#\\n😀/éht\\ntp:"
+  },
+  {
+   "input": "\t:8080:8080é`\\t:8080\\\"\\u001b(",
+   "normalized": "\t:8080:8080é`\\t:8080\\\"",
+   "stripped": "\t:8080:8080é`\\t:8080\\\""
+  },
+  {
+   "input": "﷐é\u0000\\t\\\\/",
+   "normalized": "é\\t/",
+   "stripped": "é\\t/"
+  },
+  {
+   "input": "\\talicewss:\\\\/\u001b\\keyhttps:/ ",
+   "normalized": "\\talicewss:/\\keyhttps:/ ",
+   "stripped": "\\talicewss:/\\keyhttps:/ "
+  },
+  {
+   "input": "\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "\\x1b[=m\u001bPhttp:\\\\",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "=\t\t\\x1b[",
+   "normalized": "=\t\t[",
+   "stripped": "=\t\t["
+  },
+  {
+   "input": "#/\u001b[https://\u001b(=\u001b(",
+   "normalized": "#/ttps://(=(",
+   "stripped": "#/ttps://(=("
+  },
+  {
+   "input": "\\/",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "\\/\\\\\u001bP\\\"#m#\\/\\x1b[",
+   "normalized": "/\\\\",
+   "stripped": "/\\\\"
+  },
+  {
+   "input": "﷐basic\\\\u001b[",
+   "normalized": "basic[",
+   "stripped": "basic["
+  },
+  {
+   "input": "ftp:/m",
+   "normalized": "ftp:/m",
+   "stripped": "ftp:/m"
+  },
+  {
+   "input": "&",
+   "normalized": "&",
+   "stripped": "&"
+  },
+  {
+   "input": "\\\\/:h\ttps:alicea: :8080",
+   "normalized": "/:h\ttps:alicea: :8080",
+   "stripped": "/:h\ttps:alicea: :8080"
+  },
+  {
+   "input": "alice\\\\/%70\\\\/basic#\\u0022\"\\u00ftp:/",
+   "normalized": "alice/%70/basic#\\\"\"\\u00ftp:/",
+   "stripped": "alice/%70/basic#\\\"\"\\u00ftp:/"
+  },
+  {
+   "input": "\\u0070?\u001bP",
+   "normalized": "p?",
+   "stripped": "p?"
+  },
+  {
+   "input": "\\nht\\ntp:basic",
+   "normalized": "\\nht\\ntp:basic",
+   "stripped": "\\nht\\ntp:basic"
+  },
+  {
+   "input": "=cookie\\\\u0022beareré",
+   "normalized": "=cookie\\\\\\\"beareré",
+   "stripped": "=cookie\\\\\\\"beareré"
+  },
+  {
+   "input": "alice\\t﷐\\u005c\\u001b[host.example\\u001b]%70",
+   "normalized": "alice",
+   "stripped": "alice"
+  },
+  {
+   "input": "\\\\u0022😀\\\\\t",
+   "normalized": "\\\\\\\"😀\\\\\t",
+   "stripped": "\\\\\\\"😀\\\\\t"
+  },
+  {
+   "input": "host.examplecookie#\\b\\u005chost.example\u001bP\u001b(ftp:/\u0000 ?",
+   "normalized": "host.examplecookie#\\b\\u005chost.exampletp:/ ?",
+   "stripped": "host.examplecookie#\\b\\u005chost.exampletp:/ ?"
+  },
+  {
+   "input": "a\u001b]`host.examplewss: ",
+   "normalized": "a",
+   "stripped": "a"
+  },
+  {
+   "input": " \\x1b[ht\\ntp:=token",
+   "normalized": " t\\ntp:=token",
+   "stripped": " t\\ntp:=token"
+  },
+  {
+   "input": "0cookie:basic ",
+   "normalized": "0cookie:basic ",
+   "stripped": "0cookie:basic "
+  },
+  {
+   "input": "x\u001b]\\u00221\\u001b[\\bh\ttps:https://\u0000",
+   "normalized": "x",
+   "stripped": "x"
+  },
+  {
+   "input": "https:/alice/` \\\\u0022:8080:﷐\u001b[",
+   "normalized": "https:/alice/ \\\\\\\":8080:[",
+   "stripped": "https:/alice/ \\\\\\\":8080:["
+  },
+  {
+   "input": "\"",
+   "normalized": "\"",
+   "stripped": "\""
+  },
+  {
+   "input": "?",
+   "normalized": "?",
+   "stripped": "?"
+  },
+  {
+   "input": "ht\\ntp:?  :8080ht\\ntp:\tbearer\\/",
+   "normalized": "ht\\ntp:  :8080ht\\ntp:\t",
+   "stripped": "ht\\ntp:  :8080ht\\ntp:\t"
+  },
+  {
+   "input": "\\\\alice/// \\\\u0022//'\\\\u001b[",
+   "normalized": "\\\\alice/// \\\\\\\"//'[",
+   "stripped": "\\\\alice/// \\\\\\\"//'["
+  },
+  {
+   "input": "bearer?\\u001b(token\\\\\\u001b[0?https:/'\\u001b]",
+   "normalized": "bearer?tokenttps:/'",
+   "stripped": "bearer?tokenttps:/'"
+  },
+  {
+   "input": "\\t\u0000pass:8080\\u001b(\\n",
+   "normalized": "\\tpass:8080(\\n",
+   "stripped": "\\tpass:8080(\\n"
+  },
+  {
+   "input": "\u001b\\\\bhttp:\\\\0%70 ",
+   "normalized": "\\\\bhttp:\\\\0%70 ",
+   "stripped": "\\\\bhttp:\\\\0%70 "
+  },
+  {
+   "input": ":8080tokenmkey'bearer: token\\\"",
+   "normalized": ":8080tokenmkey'bearer: token\\\"",
+   "stripped": ":8080tokenmkey'bearer: token\\\""
+  },
+  {
+   "input": "cookie\\\"\\\\u001b[`\t\\t",
+   "normalized": "cookie\\\"\t\\t",
+   "stripped": "cookie\\\"\t\\t"
+  },
+  {
+   "input": "\\\\u001b[\\u005c\\u00\"\\u001b(\\u001b[é\\b:8080",
+   "normalized": "u005c\\u00\"(é\\b:8080",
+   "stripped": "u005c\\u00\"(é\\b:8080"
+  },
+  {
+   "input": "\\u0070\\\\//\u001b(wss:\\t%70\\\\pass\\u001b[`",
+   "normalized": "p//ss:\\t%70\\\\pass",
+   "stripped": "p//ss:\\t%70\\\\pass"
+  },
+  {
+   "input": "\\\"",
+   "normalized": "\\\"",
+   "stripped": "\\\""
+  },
+  {
+   "input": "https://aliceht\\ntp:\u001b(\u001b(ftp:/",
+   "normalized": "https://(tp:/",
+   "stripped": "https://(tp:/"
+  },
+  {
+   "input": "1\\u00\\u001b[😀\u001b\\m':https://",
+   "normalized": "1\\u00😀\\m':https://",
+   "stripped": "1\\u00😀\\m':https://"
+  },
+  {
+   "input": "a#https://alice",
+   "normalized": "a#https://alice",
+   "stripped": "a#https://alice"
+  },
+  {
+   "input": "wss:",
+   "normalized": "wss:",
+   "stripped": "wss:"
+  },
+  {
+   "input": "%70\\u005c\u001b]é:8080",
+   "normalized": "%70\\u005c",
+   "stripped": "%70\\u005c"
+  },
+  {
+   "input": "﷐\t\u001b]:8080",
+   "normalized": "\t",
+   "stripped": "\t"
+  },
+  {
+   "input": " :8080@\\\\/xtokenwss:\\/\\u001b(",
+   "normalized": " :8080@/xtokenwss:/(",
+   "stripped": " :8080@/xtokenwss:/("
+  },
+  {
+   "input": "&:8080\u001b]\\u00m%70a\u0007key",
+   "normalized": "&:8080key",
+   "stripped": "&:8080key"
+  },
+  {
+   "input": "é: \\x1b[//\\\\/\\b \u0007token",
+   "normalized": "é: b token",
+   "stripped": "é: b token"
+  },
+  {
+   "input": "host.example\\u00\n\r\u001b]",
+   "normalized": "host.example\\u00\n\r",
+   "stripped": "host.example\\u00\n\r"
+  },
+  {
+   "input": "&\\u001b]token",
+   "normalized": "&",
+   "stripped": "&"
+  },
+  {
+   "input": "a\\\\u001b[😀tokenh\ttps:\\x1b[",
+   "normalized": "a😀tokenh\ttps:[",
+   "stripped": "a😀tokenh\ttps:["
+  },
+  {
+   "input": "?key\r\\u0070ht\\ntp:\u001b\\\u001b(basic\\u001b[",
+   "normalized": "?key\rpht\\ntp:\\basic[",
+   "stripped": "?key\rpht\\ntp:\\basic["
+  },
+  {
+   "input": "m:8080",
+   "normalized": "m:8080",
+   "stripped": "m:8080"
+  },
+  {
+   "input": "\" ",
+   "normalized": "\" ",
+   "stripped": "\" "
+  },
+  {
+   "input": "\\x1b[\"\u001b\\\\bbasic",
+   "normalized": "\\\\bbasic",
+   "stripped": "\\\\bbasic"
+  },
+  {
+   "input": "0écookie`\\\\\\\\u0022\\bm\u001b\\",
+   "normalized": "0écookie`\\\\\\\\\\\\\\\"\\bm\\",
+   "stripped": "0écookie`\\\\\\\\\\\\\\\"\\bm\\"
+  },
+  {
+   "input": "host.example=\\\\u001b[&ftp:/\\/ftp:/ftp:/",
+   "normalized": "host.example=tp://ftp:/ftp:/",
+   "stripped": "host.example=tp://ftp:/ftp:/"
+  },
+  {
+   "input": "\\n#\\u001b[\u001bP\\\\u001b[https:/\\\\u001b[1\\\\",
+   "normalized": "\\n#",
+   "stripped": "\\n#"
+  },
+  {
+   "input": " pass?: @x`\\/",
+   "normalized": " pass?: ",
+   "stripped": " pass?: "
+  },
+  {
+   "input": "https://http:\\\\",
+   "normalized": "https://http:\\\\",
+   "stripped": "https://http:\\\\"
+  },
+  {
+   "input": "\r#\t?:8080/\\u001b(é?",
+   "normalized": "\r#\t?:8080/(é?",
+   "stripped": "\r#\t?:8080/(é?"
+  },
+  {
+   "input": ": keyé\u0007",
+   "normalized": ": keyé",
+   "stripped": ": keyé"
+  },
+  {
+   "input": "x@'\\b😀\\n\u001b(",
+   "normalized": "x@'b😀\\n(",
+   "stripped": "x@'b😀\\n("
+  },
+  {
+   "input": "host.example\\u001b[ftp:/0:8080",
+   "normalized": "host.exampletp:/0:8080",
+   "stripped": "host.exampletp:/0:8080"
+  },
+  {
+   "input": "\n\u001b]'h\ttps:\u001b\\\r\u0007\u001b[",
+   "normalized": "\n\r[",
+   "stripped": "\n\r["
+  },
+  {
+   "input": "\u001b\\\\u001b[\"\\\\/\u001b\\`http:\\\\",
+   "normalized": "\\`http:\\\\",
+   "stripped": "\\`http:\\\\"
+  },
+  {
+   "input": "\u001b(\\u005c\\\\u001b[ \\x1b[\\x1b[http:\\\\",
+   "normalized": "u005cp:\\\\",
+   "stripped": "u005cp:\\\\"
+  },
+  {
+   "input": "host.example\u001b[\u0007\u001b\\\\u0070\\\"\u0000\\bbasic\\t\n",
+   "normalized": "host.example\n",
+   "stripped": "host.example\n"
+  },
+  {
+   "input": "key\u001bP\\x1b[https:/\\\\/#alicetoken\u001b(",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "\"\\x1b[wss:passh\ttps:`",
+   "normalized": "\"ss:pass\ttps:`",
+   "stripped": "\"ss:pass\ttps:`"
+  },
+  {
+   "input": "passpass'alice",
+   "normalized": "passpass'alice",
+   "stripped": "passpass'alice"
+  },
+  {
+   "input": "\\u001b]\n\u001b[",
+   "normalized": "\n[",
+   "stripped": "\n["
+  },
+  {
+   "input": " é\\\\u0022\"\\u001b[token\\u00wss:key\\u0022",
+   "normalized": " é\\\\\\\"\"token\\u00wss:key\\\"",
+   "stripped": " é\\\\\\\"\"token\\u00wss:key\\\""
+  },
+  {
+   "input": "\\n😀\\t\\\\\\b\\\\u001b[\\bwss:\\u005c﷐",
+   "normalized": "\\n😀\\t\\\\\\bbwss:\\u005c",
+   "stripped": "\\n😀\\t\\\\\\bbwss:\\u005c"
+  },
+  {
+   "input": "\\\\/\\/",
+   "normalized": "//",
+   "stripped": "//"
+  },
+  {
+   "input": " \\t\\t1\\\"",
+   "normalized": " \\t\\t1\\\"",
+   "stripped": " \\t\\t1\\\""
+  },
+  {
+   "input": "cookie:8080#https://a\\u0070m\u0007%70:8080",
+   "normalized": "cookie:8080#https://pm%70:8080",
+   "stripped": "cookie:8080#https://pm%70:8080"
+  },
+  {
+   "input": "https://\\u00",
+   "normalized": "https://\\u00",
+   "stripped": "https://\\u00"
+  },
+  {
+   "input": "\\t\"https:/\u0007\\u0022é",
+   "normalized": "\\t\"https:/\\\"é",
+   "stripped": "\\t\"https:/\\\"é"
+  },
+  {
+   "input": "http:\\\\?#http:\\\\\\u0070#",
+   "normalized": "http:\\\\?#http:p#",
+   "stripped": "http:\\\\?#http:p#"
+  },
+  {
+   "input": "h\ttps:\\u001b]\r'",
+   "normalized": "h\ttps:\r'",
+   "stripped": "h\ttps:\r'"
+  },
+  {
+   "input": "\\\\u001b[\u001b\\0\u001bPh\ttps:\\\\",
+   "normalized": "\\0",
+   "stripped": "\\0"
+  },
+  {
+   "input": "basic/@",
+   "normalized": "basic/@",
+   "stripped": "basic/@"
+  },
+  {
+   "input": "\\u005c",
+   "normalized": "\\u005c",
+   "stripped": "\\u005c"
+  },
+  {
+   "input": "\\/\u001b[\\tftp:/1﷐`",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "\\t\\bpass\\talice",
+   "normalized": "\\t\\bpass\\talice",
+   "stripped": "\\t\\bpass\\talice"
+  },
+  {
+   "input": "@\\\\u0022\\u001b[%70\\u00ftp:/",
+   "normalized": "@\\\\\\\"70\\u00ftp:/",
+   "stripped": "@\\\\\\\"70\\u00ftp:/"
+  },
+  {
+   "input": "token\\\\/&http:\\\\\\u005c\u001b(\\\\u0022\\\\﷐",
+   "normalized": "token/ttp:\\\\\\u005c\\\\\"\\\\",
+   "stripped": "token/ttp:\\\\\\u005c\\\\\"\\\\"
+  },
+  {
+   "input": "alicealice:8080\u0000\\t=x\\bhost.example\\\\/",
+   "normalized": "alicealice:8080\\t=x\\bhost.example/",
+   "stripped": "alicealice:8080\\t=x\\bhost.example/"
+  },
+  {
+   "input": "host.examplehost.examplewss:\u001b]token",
+   "normalized": "host.examplehost.examplewss:",
+   "stripped": "host.examplehost.examplewss:"
+  },
+  {
+   "input": "ftp:/é\\u005c",
+   "normalized": "ftp:/é\\u005c",
+   "stripped": "ftp:/é\\u005c"
+  },
+  {
+   "input": "keycookie\\b@: é\\nalice\u001b[https://",
+   "normalized": "keycookie\\b@: é\\nalicettps://",
+   "stripped": "keycookie\\b@: é\\nalicettps://"
+  },
+  {
+   "input": "ftp:/",
+   "normalized": "ftp:/",
+   "stripped": "ftp:/"
+  },
+  {
+   "input": "1:cookie%70 \\u0070cookie \u001bP",
+   "normalized": "1:cookie%70 pcookie ",
+   "stripped": "1:cookie%70 pcookie "
+  },
+  {
+   "input": "basic😀bearerhost.examplex\\x1b[",
+   "normalized": "basic😀bearerhost.examplex[",
+   "stripped": "basic😀bearerhost.examplex["
+  },
+  {
+   "input": "https://1#\\t\\\\\\\\u0022#https:/\rcookie",
+   "normalized": "https://1#\\t\\\\\\\\\\\\\\\"#https:/\rcookie",
+   "stripped": "https://1#\\t\\\\\\\\\\\\\\\"#https:/\rcookie"
+  },
+  {
+   "input": "\\\":8080\u001b[\u001b[",
+   "normalized": "\\\":8080[[",
+   "stripped": "\\\":8080[["
+  },
+  {
+   "input": "\\\\/#\u0000\\u0022\\u00`pass\u0000﷐",
+   "normalized": "/#\\\"\\u00`pass",
+   "stripped": "/#\\\"\\u00`pass"
+  },
+  {
+   "input": "`tokené\\\"",
+   "normalized": "`tokené\\\"",
+   "stripped": "`tokené\\\""
+  },
+  {
+   "input": "%70ftp:/",
+   "normalized": "%70ftp:/",
+   "stripped": "%70ftp:/"
+  },
+  {
+   "input": "\\x1b[\\n",
+   "normalized": "n",
+   "stripped": "n"
+  },
+  {
+   "input": "basic\\u0070bearer@\\x1b['﷐\u001b[\u001b[\\\"",
+   "normalized": "basicpbearer@['[\"",
+   "stripped": "basicpbearer@['[\""
+  },
+  {
+   "input": "\r\\b﷐\\u001b[\u0007\u0000\\u001b]'",
+   "normalized": "\r\\b",
+   "stripped": "\r\\b"
+  },
+  {
+   "input": "😀\\\"//host.exampleht\\ntp:\\nhost.example",
+   "normalized": "😀\\\"//host.exampleht\\ntp:\\nhost.example",
+   "stripped": "😀\\\"//host.exampleht\\ntp:\\nhost.example"
+  },
+  {
+   "input": "\"",
+   "normalized": "\"",
+   "stripped": "\""
+  },
+  {
+   "input": "alice#é&",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "é﷐:ht\\ntp:",
+   "normalized": "é:ht\\ntp:",
+   "stripped": "é:ht\\ntp:"
+  },
+  {
+   "input": "#1%701'\\\\\u001b\\:\\n﷐\\x1b[",
+   "normalized": "#1%701'\\\\\\:\\n[",
+   "stripped": "#1%701'\\\\\\:\\n["
+  },
+  {
+   "input": "m\\tbearerakey'wss:& https://",
+   "normalized": "m\\t",
+   "stripped": "m\\t"
+  },
+  {
+   "input": "\u0000http:\\\\'tokenpassxém?",
+   "normalized": "http:\\\\'tokenpassxém?",
+   "stripped": "http:\\\\'tokenpassxém?"
+  },
+  {
+   "input": ": cookiema\\u00wss:\u001b(key",
+   "normalized": ": cookiema\\u00wss:key",
+   "stripped": ": cookiema\\u00wss:key"
+  },
+  {
+   "input": "\u001b(﷐",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "\\u00\\x1b[\\u001b(\\u001b[é",
+   "normalized": "\\u00u001b(é",
+   "stripped": "\\u00u001b(é"
+  },
+  {
+   "input": "https://\\u001b[&\\\\u0022",
+   "normalized": "https://\\\\\"",
+   "stripped": "https://\\\\\""
+  },
+  {
+   "input": "@`m\"",
+   "normalized": "@`m\"",
+   "stripped": "@`m\""
+  },
+  {
+   "input": "\\\\u001b[\u001b\\\u001b\\: ",
+   "normalized": "\\\\: ",
+   "stripped": "\\\\: "
+  },
+  {
+   "input": "%70\\u001b(\" basictoken%70m",
+   "normalized": "%70(\" basictoken%70m",
+   "stripped": "%70(\" basictoken%70m"
+  },
+  {
+   "input": "\\\"\\u001b]`?\\\\u001b[\\u005c",
+   "normalized": "\\\"",
+   "stripped": "\\\""
+  },
+  {
+   "input": "\\u001b(\\u001b[token&1\\t//😀",
+   "normalized": "(token&1\\t//😀",
+   "stripped": "(token&1\\t//😀"
+  },
+  {
+   "input": "http:\\\\﷐'#\\///",
+   "normalized": "http:\\\\",
+   "stripped": "http:\\\\"
+  },
+  {
+   "input": " \"a'm\\\\u001b[ key\u0007é\\t",
+   "normalized": " \"a'm keyé\\t",
+   "stripped": " \"a'm keyé\\t"
+  },
+  {
+   "input": "@alice/%70\\\\\r1%70pass",
+   "normalized": "@alice/%70\\\\\r1%70pass",
+   "stripped": "@alice/%70\\\\\r1%70pass"
+  },
+  {
+   "input": "\\u001b[basic\u001b]'",
+   "normalized": "basic",
+   "stripped": "basic"
+  },
+  {
+   "input": "token%70token\\u00",
+   "normalized": "token%70token\\u00",
+   "stripped": "token%70token\\u00"
+  },
+  {
+   "input": "\u0000%70host.example",
+   "normalized": "%70host.example",
+   "stripped": "%70host.example"
+  },
+  {
+   "input": "\\\"/\\\\u001b[tokenbearerkey",
+   "normalized": "\\\"/okenbearerkey",
+   "stripped": "\\\"/okenbearerkey"
+  },
+  {
+   "input": "host.examplehttps://?\\\\u0022%70",
+   "normalized": "host.examplehttps://?\\\\\\\"%70",
+   "stripped": "host.examplehttps://?\\\\\\\"%70"
+  },
+  {
+   "input": "https:/\t\u001b\\?=m@\u0007https:/",
+   "normalized": "https://?=m@https:/",
+   "stripped": "https:/\t\\?=m@https:/"
+  },
+  {
+   "input": "\\u001b]h\ttps:",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "bearerhttps://alice&\\u005c\\u005c\\\\u001b[\\u001b(\\u005c",
+   "normalized": "bearerhttps://alice&\\u005c\\u005cu001b(\\u005c",
+   "stripped": "bearerhttps://alice&\\u005c\\u005cu001b(\\u005c"
+  },
+  {
+   "input": "\\\\u001b[ cookie﷐bearer\\\"host.example",
+   "normalized": "cookiebearer\\\"host.example",
+   "stripped": "cookiebearer\\\"host.example"
+  },
+  {
+   "input": "wss:\\u001b[",
+   "normalized": "wss:[",
+   "stripped": "wss:["
+  },
+  {
+   "input": "\\/\r\\u001b(: \u001b]\\n",
+   "normalized": "/\r(: ",
+   "stripped": "/\r(: "
+  },
+  {
+   "input": "'\\t\néftp:/\\ncookiewss:h\ttps:",
+   "normalized": "'\\t\néftp:/\\ncookiewss:h\ttps:",
+   "stripped": "'\\t\néftp:/\\ncookiewss:h\ttps:"
+  },
+  {
+   "input": "ftp:/😀é\\\\/",
+   "normalized": "ftp:/😀é/",
+   "stripped": "ftp:/😀é/"
+  },
+  {
+   "input": "1basic\\u001b( //",
+   "normalized": "1basic( //",
+   "stripped": "1basic( //"
+  },
+  {
+   "input": "\u0000",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b]\\u001b(@1/\u001b\\😀\\\\",
+   "normalized": "😀\\\\",
+   "stripped": "😀\\\\"
+  },
+  {
+   "input": "\\u001b[\u0007\\b\\n: \\\\0",
+   "normalized": "\\b\\n: \\\\0",
+   "stripped": "\\b\\n: \\\\0"
+  },
+  {
+   "input": "https://\nhttp:\\\\https://",
+   "normalized": "https://\nhttp:\\\\https://",
+   "stripped": "https://\nhttp:\\\\https://"
+  },
+  {
+   "input": "xbearer#@key\\t#\\/bearer",
+   "normalized": "xbearer#@key\\t#/bearer",
+   "stripped": "xbearer#@key\\t#/bearer"
+  },
+  {
+   "input": "`",
+   "normalized": "`",
+   "stripped": "`"
+  },
+  {
+   "input": "%70\u001b(?:8080bearer",
+   "normalized": "%70(?:8080bearer",
+   "stripped": "%70(?:8080bearer"
+  },
+  {
+   "input": "\n\u0000h\ttps:#",
+   "normalized": "\nh\ttps:#",
+   "stripped": "\nh\ttps:#"
+  },
+  {
+   "input": "\u001b]: \u001b\\ht\\ntp:&\\/#",
+   "normalized": "ht\\ntp:&/#",
+   "stripped": "ht\\ntp:&/#"
+  },
+  {
+   "input": "//\u0007\u0007http:\\\\\\\\alice\\\"http:\\\\\u001b[1",
+   "normalized": "//http:\\\\\\\\alice\\\"http:\\\\[1",
+   "stripped": "//http:\\\\\\\\alice\\\"http:\\\\[1"
+  },
+  {
+   "input": "\u0007h\ttps: 1@",
+   "normalized": "h\ttps: 1@",
+   "stripped": "h\ttps: 1@"
+  },
+  {
+   "input": "\n\\u0022`wss:\\u001b]\u001bP\\t",
+   "normalized": "\n\\\"`wss:\\t",
+   "stripped": "\n\\\"`wss:\\t"
+  },
+  {
+   "input": "\u0000\r//basicbearer",
+   "normalized": "\r//basicbearer",
+   "stripped": "\r//basicbearer"
+  },
+  {
+   "input": ": \n:\u001b]",
+   "normalized": ": \n:",
+   "stripped": ": \n:"
+  },
+  {
+   "input": "\u001b[alice1﷐http:\\\\key",
+   "normalized": "lice1http:\\\\",
+   "stripped": "lice1http:\\\\"
+  },
+  {
+   "input": "host.examplecookie?\\\\\t\\\"\n`",
+   "normalized": "host.examplecookie?\\\\\t\\\"\n`",
+   "stripped": "host.examplecookie?\\\\\t\\\"\n`"
+  },
+  {
+   "input": " token\u001b\\=cookie\\u0070%70\u001b]\n\\\\u0022",
+   "normalized": " token\\=cookiep%70\n\\\\\\\"",
+   "stripped": " token\\=cookiep%70\n\\\\\\\""
+  },
+  {
+   "input": "\u001b\\///a\\nbearer\u001bP\\u001b] 0\\u001b]",
+   "normalized": "\\nbearer",
+   "stripped": "\\nbearer"
+  },
+  {
+   "input": "\\u0070\u001b\\",
+   "normalized": "p\\",
+   "stripped": "p\\"
+  },
+  {
+   "input": ":8080token\\/\\\\u0022cookieht\\ntp:ht\\ntp:\\u00\\\\",
+   "normalized": ":8080token/\\\\\\\"cookieht\\ntp:ht\\ntp:\\u00\\\\",
+   "stripped": ":8080token/\\\\\\\"cookieht\\ntp:ht\\ntp:\\u00\\\\"
+  },
+  {
+   "input": "\"ftp:/%70\\b\\x1b[cookie\\u001b]\\\\#",
+   "normalized": "\"ftp:/%70\\bcookie\\\\#",
+   "stripped": "\"ftp:/%70\\bcookie\\\\#"
+  },
+  {
+   "input": "//h\ttps:\\u001b(bearer=",
+   "normalized": "//h\ttps:bearer=",
+   "stripped": "//h\ttps:bearer="
+  },
+  {
+   "input": "/https:/\u0007\\u001b[0@\t\u001bP\\\\/#",
+   "normalized": "/https:/\t",
+   "stripped": "/https:/\t"
+  },
+  {
+   "input": "\\\\u001b[\\x1b[:8080\\\\u0022\\t0\u001b[é\u0000\\u00",
+   "normalized": "\\\"t0é\\u00",
+   "stripped": "\\\"t0é\\u00"
+  },
+  {
+   "input": "key",
+   "normalized": "key",
+   "stripped": "key"
+  },
+  {
+   "input": "﷐",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "/\u001b]\\n\\x1b[bearer`\\\"\t//",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "\u001b\\",
+   "normalized": "\\",
+   "stripped": "\\"
+  },
+  {
+   "input": "bearer",
+   "normalized": "bearer",
+   "stripped": "bearer"
+  },
+  {
+   "input": "a\u001b(?basic0=﷐cookieftp:/=",
+   "normalized": "a(?basic0=cookieftp:/=",
+   "stripped": "a(?basic0=cookieftp:/="
+  },
+  {
+   "input": "\\nwss:",
+   "normalized": "\\nwss:",
+   "stripped": "\\nwss:"
+  },
+  {
+   "input": "https://",
+   "normalized": "https://",
+   "stripped": "https://"
+  },
+  {
+   "input": "\t1\\u005calice&ht\\ntp:http:\\\\ébasicxhttps://\\\\u001b[",
+   "normalized": "\t1\\u005calice&ht\\ntp:http:\\\\ébasicxhttps://[",
+   "stripped": "\t1\\u005calice&ht\\ntp:http:\\\\ébasicxhttps://["
+  },
+  {
+   "input": "\\u00basichost.example",
+   "normalized": "\\u00basichost.example",
+   "stripped": "\\u00basichost.example"
+  },
+  {
+   "input": "%70alice`\t@",
+   "normalized": "%70alice`\t@",
+   "stripped": "%70alice`\t@"
+  },
+  {
+   "input": "\u001b\\1😀\u001b(\\\\/\\\\'0",
+   "normalized": "\\1😀\\'0",
+   "stripped": "\\1😀\\'0"
+  },
+  {
+   "input": "@\t\u0007a:alicealicea\\u00\\n",
+   "normalized": "@\ta:alicealicea\\u00\\n",
+   "stripped": "@\ta:alicealicea\\u00\\n"
+  },
+  {
+   "input": "é:host.example\rhttp:\\\\/h\ttps:\"1",
+   "normalized": "é:host.example\rhttp:/h\ttps:\"1",
+   "stripped": "é:host.example\rhttp:/h\ttps:\"1"
+  },
+  {
+   "input": "cookie=\\u001b]\\u0022`\\\"\\u005c:`\\\\u0022=\u001b(",
+   "normalized": "cookie=\\\"`\\\"\\u005c:`\\\\\\\"=(",
+   "stripped": "cookie=\\\"`\\\"\\u005c:`\\\\\\\"=("
+  },
+  {
+   "input": "\u001b\\key\":x\u001b(",
+   "normalized": "\\key\":x(",
+   "stripped": "\\key\":x("
+  },
+  {
+   "input": "\\u005c\t/https://@\\/\u001b\\\u001b\\\\u0070",
+   "normalized": "\\u005c\t/https://@/\\",
+   "stripped": "\\u005c\t/https://@/\\"
+  },
+  {
+   "input": " \u0007\"\\\\/@ bearer`\\u001b]",
+   "normalized": " \"/@ bearer`",
+   "stripped": " \"/@ bearer`"
+  },
+  {
+   "input": "https://\n: :8080\\t/\\\\u0022\\\\host.examplehttp:\\\\",
+   "normalized": "https://\n: :8080\\t/\\\\\\\"\\\\host.examplehttp:\\\\",
+   "stripped": "https://\n: :8080\\t/\\\\\\\"\\\\host.examplehttp:\\\\"
+  },
+  {
+   "input": "`\\u001b[http:\\\\",
+   "normalized": "`ttp:\\\\",
+   "stripped": "`ttp:\\\\"
+  },
+  {
+   "input": "\\/basic",
+   "normalized": "/basic",
+   "stripped": "/basic"
+  },
+  {
+   "input": "\u001b\\ 1\n@':  ",
+   "normalized": "\\ 1\n@':  ",
+   "stripped": "\\ 1\n@':  "
+  },
+  {
+   "input": "\nbearer\r\\n\\u005cé\\\"a",
+   "normalized": "bearer\r\\n\\u005cé\\\"a",
+   "stripped": "bearer\r\\n\\u005cé\\\"a"
+  },
+  {
+   "input": "\\\\/0\\bftp:/\u001b]😀",
+   "normalized": "0\\bftp:/",
+   "stripped": "0\\bftp:/"
+  },
+  {
+   "input": "\\u00",
+   "normalized": "\\u00",
+   "stripped": "\\u00"
+  },
+  {
+   "input": "\t\\\\/https:/",
+   "normalized": "\t/https:/",
+   "stripped": "\t/https:/"
+  },
+  {
+   "input": " \\u001b(ftp:/\u001b[ \\n😀\\\\/\\\\/&",
+   "normalized": " tp:/ \\n😀//&",
+   "stripped": " tp:/ \\n😀//&"
+  },
+  {
+   "input": "\u001b[0\\u001b[\"",
+   "normalized": "u001b[\"",
+   "stripped": "u001b[\""
+  },
+  {
+   "input": "😀#ht\\ntp:﷐",
+   "normalized": "😀#ht\\ntp:",
+   "stripped": "😀#ht\\ntp:"
+  },
+  {
+   "input": " host.example//",
+   "normalized": " host.example//",
+   "stripped": " host.example//"
+  },
+  {
+   "input": "token\"alicexx",
+   "normalized": "token\"alicexx",
+   "stripped": "token\"alicexx"
+  },
+  {
+   "input": "token\\u0070//ht\\ntp:",
+   "normalized": "tokenp//ht\\ntp:",
+   "stripped": "tokenp//ht\\ntp:"
+  },
+  {
+   "input": "\\u0022alice",
+   "normalized": "\\\"alice",
+   "stripped": "\\\"alice"
+  },
+  {
+   "input": "é",
+   "normalized": "é",
+   "stripped": "é"
+  },
+  {
+   "input": "\\x1b[basicxmmht\\ntp:\\x1b['",
+   "normalized": "asicxmmht\\ntp:['",
+   "stripped": "asicxmmht\\ntp:['"
+  },
+  {
+   "input": "\u0000\\u00basic#https:/\\u00\u001bP",
+   "normalized": "\\u00basic#https:/\\u00",
+   "stripped": "\\u00basic#https:/\\u00"
+  },
+  {
+   "input": "\\b﷐",
+   "normalized": "\\b",
+   "stripped": "\\b"
+  },
+  {
+   "input": "/a1",
+   "normalized": "/a1",
+   "stripped": "/a1"
+  },
+  {
+   "input": "\\/\u0007",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "?key",
+   "normalized": "?key",
+   "stripped": "?key"
+  },
+  {
+   "input": "/http:\\\\\\\\/\\u001b]\\n:https://cookie\\\\/",
+   "normalized": "/http:/\\n:https://cookie/",
+   "stripped": "/http:/\\n:https://cookie/"
+  },
+  {
+   "input": "\u0000\u001b]",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b(\\u001b[:\\u0070\\\\/\"\u001bP\n",
+   "normalized": "(\n",
+   "stripped": "(\n"
+  },
+  {
+   "input": "0x//",
+   "normalized": "0x//",
+   "stripped": "0x//"
+  },
+  {
+   "input": "\u0000:\u001b]",
+   "normalized": ":",
+   "stripped": ":"
+  },
+  {
+   "input": "=basica\u0000\ttoken\\\\/",
+   "normalized": "=basica\ttoken/",
+   "stripped": "=basica\ttoken/"
+  },
+  {
+   "input": "cookieh\ttps:\u001b\\\u001b\\",
+   "normalized": "cookieh\ttps:\\\\",
+   "stripped": "cookieh\ttps:\\\\"
+  },
+  {
+   "input": "\\\\/\\u005c?x",
+   "normalized": "/\\u005c?x",
+   "stripped": "/\\u005c?x"
+  },
+  {
+   "input": "\\x1b[\\t'é\\u001b[",
+   "normalized": "t'é[",
+   "stripped": "t'é["
+  },
+  {
+   "input": "😀\\/\\\\u0022cookie",
+   "normalized": "😀/\\\\\\\"cookie",
+   "stripped": "😀/\\\\\\\"cookie"
+  },
+  {
+   "input": "xftp:/ht\\ntp:alice\\\\/",
+   "normalized": "xftp:/ht\\ntp:alice/",
+   "stripped": "xftp:/ht\\ntp:alice/"
+  },
+  {
+   "input": "https://bearerh\ttps:",
+   "normalized": "https://bearerh\ttps:",
+   "stripped": "https://bearerh\ttps:"
+  },
+  {
+   "input": "\u001b]\\u0070host.examplem",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u0007\\b#%70alice",
+   "normalized": "\\b70alice",
+   "stripped": "\\b70alice"
+  },
+  {
+   "input": "token=\\\\#\u0000",
+   "normalized": "token=\\\\#",
+   "stripped": "token=\\\\#"
+  },
+  {
+   "input": "alicehttp:\\\\key",
+   "normalized": "alicehttp:\\\\key",
+   "stripped": "alicehttp:\\\\key"
+  },
+  {
+   "input": ": \u001b[\r\\t ",
+   "normalized": ": \\t ",
+   "stripped": ": \\t "
+  },
+  {
+   "input": "pass#cookie \\u0022\\t",
+   "normalized": "pass#cookie \\\"\\t",
+   "stripped": "pass#cookie \\\"\\t"
+  },
+  {
+   "input": "\\twss:/\\b: ",
+   "normalized": "\\twss:/\\b: ",
+   "stripped": "\\twss:/\\b: "
+  },
+  {
+   "input": "host.example\u001bP",
+   "normalized": "host.example",
+   "stripped": "host.example"
+  },
+  {
+   "input": "https://\\u001b]&﷐https:/éhttps://\u001b]wss:",
+   "normalized": "https://",
+   "stripped": "https://"
+  },
+  {
+   "input": "=https:/\\b=\\\\bearer \u001b]",
+   "normalized": "=https:/\\b=\\\\bearer ",
+   "stripped": "=https:/\\b=\\\\bearer "
+  },
+  {
+   "input": "m%70\u001bP&\\u001b(ht\\ntp:",
+   "normalized": "m%70",
+   "stripped": "m%70"
+  },
+  {
+   "input": "\\\"host.example\u001b(x\u0000 host.example=:",
+   "normalized": "\\\"host.example host.example=:",
+   "stripped": "\\\"host.example host.example=:"
+  },
+  {
+   "input": ":\\u005ch\ttps:\\nhttps:/&%70",
+   "normalized": ":\\u005ch\ttps:\\nhttps:/&%70",
+   "stripped": ":\\u005ch\ttps:\\nhttps:/&%70"
+  },
+  {
+   "input": "\" a",
+   "normalized": "\" a",
+   "stripped": "\" a"
+  },
+  {
+   "input": "#\\\\u001b[",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u00\\u005c\\u001b]",
+   "normalized": "\\u00\\u005c",
+   "stripped": "\\u00\\u005c"
+  },
+  {
+   "input": "\\u005chttps://",
+   "normalized": "\\u005chttps://",
+   "stripped": "\\u005chttps://"
+  },
+  {
+   "input": "1",
+   "normalized": "1",
+   "stripped": "1"
+  },
+  {
+   "input": "`\\x1b[\u001b( \u00070key\\u005ckey\u001bP@",
+   "normalized": "`( 0",
+   "stripped": "`( 0"
+  },
+  {
+   "input": "pass\\t\\\"",
+   "normalized": "pass\\t\\\"",
+   "stripped": "pass\\t\\\""
+  },
+  {
+   "input": "😀:",
+   "normalized": "😀:",
+   "stripped": "😀:"
+  },
+  {
+   "input": "cookie \n?%70:8080\\n'é",
+   "normalized": "cookie \n?%70:8080\\n'é",
+   "stripped": "cookie \n?%70:8080\\n'é"
+  },
+  {
+   "input": "\t",
+   "normalized": "\t",
+   "stripped": "\t"
+  },
+  {
+   "input": "token﷐cookie:\u001bP",
+   "normalized": "tokencookie:",
+   "stripped": "tokencookie:"
+  },
+  {
+   "input": "\\u001b[: \\\\\\u0070'",
+   "normalized": "'",
+   "stripped": "'"
+  },
+  {
+   "input": "https:/xbearerhttps:/",
+   "normalized": "https:/xbearerhttps:/",
+   "stripped": "https:/xbearerhttps:/"
+  },
+  {
+   "input": "0😀token@key:`",
+   "normalized": "0😀token@key",
+   "stripped": "0😀token@key"
+  },
+  {
+   "input": "0https://\\\\/\\/\u001b]\\/",
+   "normalized": "0https:////",
+   "stripped": "0https:////"
+  },
+  {
+   "input": "pass\\u001b[\u0000",
+   "normalized": "pass",
+   "stripped": "pass"
+  },
+  {
+   "input": "/http:\\\\bearer wss:\\\"\\u0022\\n/`\\t",
+   "normalized": "/http:\\\\bearer wss:\\\"\\\"\\n",
+   "stripped": "/http:\\\\bearer wss:\\\"\\\"\\n"
+  },
+  {
+   "input": "\\x1b[😀﷐ftp:/\\t\u001b(=\\u001b]bearer",
+   "normalized": "😀ftp:/\\t(=",
+   "stripped": "😀ftp:/\\t(="
+  },
+  {
+   "input": "\u0000mtoken",
+   "normalized": "mtoken",
+   "stripped": "mtoken"
+  },
+  {
+   "input": "'\n\\u0022",
+   "normalized": "'\n\\\"",
+   "stripped": "'\n\\\""
+  },
+  {
+   "input": "\\u001b[https://\\u0070\\u001b(\\/",
+   "normalized": "ttps://p(/",
+   "stripped": "ttps://p(/"
+  },
+  {
+   "input": "\\\\u001b[/\\\\u001b[\\t\u0000alice\u0000\\x1b[",
+   "normalized": "alice[",
+   "stripped": "alice["
+  },
+  {
+   "input": "\u001b\\\u0000",
+   "normalized": "\\",
+   "stripped": "\\"
+  },
+  {
+   "input": "wss:\u001b\\xm0\u001b(",
+   "normalized": "wss:\\xm0(",
+   "stripped": "wss:\\xm0("
+  },
+  {
+   "input": "0\\u0022token\\u005c",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "﷐\\u00: m\\x1b[😀\\u00?\"",
+   "normalized": "\\u00: m😀\\u00?\"",
+   "stripped": "\\u00: m😀\\u00?\""
+  },
+  {
+   "input": "//wss: cookiewss: ",
+   "normalized": "//wss:",
+   "stripped": "//wss:"
+  },
+  {
+   "input": "\u0007pass\\u001b[\n=?\\/",
+   "normalized": "pass=?/",
+   "stripped": "pass=?/"
+  },
+  {
+   "input": "ftp:/\\\\u0022😀\u001b(\\t\u001b(http:\\\\\\\\u001b[key//\u0000",
+   "normalized": "ftp:/\\\\\\\"😀tttp:key//",
+   "stripped": "ftp:/\\\\\\\"😀tttp:key//"
+  },
+  {
+   "input": "\\u00//mm\u0007cookiehost.example",
+   "normalized": "\\u00//mmcookiehost.example",
+   "stripped": "\\u00//mmcookiehost.example"
+  },
+  {
+   "input": "\u0000 ftp:/\u001bP\\x1b[basic\\u0070",
+   "normalized": " ftp:/",
+   "stripped": " ftp:/"
+  },
+  {
+   "input": "alicebasic",
+   "normalized": "alicebasic",
+   "stripped": "alicebasic"
+  },
+  {
+   "input": "wss:\t\\x1b[\\u0070\r",
+   "normalized": "wss:\t\r",
+   "stripped": "wss:\t\r"
+  },
+  {
+   "input": "ht\\ntp:\u001b(\\u001b[//\\bbasic\nmwss:\u001bP",
+   "normalized": "ht\\ntp:basic\nmwss:",
+   "stripped": "ht\\ntp:basic\nmwss:"
+  },
+  {
+   "input": "\u00070pass'bearer`1\\u001b[",
+   "normalized": "0pass'bearer`1[",
+   "stripped": "0pass'bearer`1["
+  },
+  {
+   "input": "0\\u0022",
+   "normalized": "0\\\"",
+   "stripped": "0\\\""
+  },
+  {
+   "input": "\\\\/😀",
+   "normalized": "/😀",
+   "stripped": "/😀"
+  },
+  {
+   "input": "\u0007",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u0022\\u00\u001b\\host.examplex\u001bP'ht\\ntp:\\t",
+   "normalized": "\\\"\\u00\\host.examplex",
+   "stripped": "\\\"\\u00\\host.examplex"
+  },
+  {
+   "input": "key&basicwss:bearer",
+   "normalized": "key&basicwss:bearer",
+   "stripped": "key&basicwss:bearer"
+  },
+  {
+   "input": "ftp:/wss:1ht\\ntp:ahost.example\\u001b(&",
+   "normalized": "ftp:/wss:1ht\\ntp:ahost.example(&",
+   "stripped": "ftp:/wss:1ht\\ntp:ahost.example(&"
+  },
+  {
+   "input": "wss:alice",
+   "normalized": "wss:alice",
+   "stripped": "wss:alice"
+  },
+  {
+   "input": "\u001b]@\\\\https:/\\u00cookie\u0007\u001bP\\\\u0022cookie",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "key ",
+   "normalized": "key ",
+   "stripped": "key "
+  },
+  {
+   "input": "token`xftp:/",
+   "normalized": "token`xftp:/",
+   "stripped": "token`xftp:/"
+  },
+  {
+   "input": "pass@\\u001b[\u001b]\\x1b[\\/0=\u0007%70",
+   "normalized": "pass@%70",
+   "stripped": "pass@%70"
+  },
+  {
+   "input": "/cookie@token0\\u00\\u001b(key\\u00",
+   "normalized": "/cookie@token0\\u00key\\u00",
+   "stripped": "/cookie@token0\\u00key\\u00"
+  },
+  {
+   "input": "https://https://",
+   "normalized": "https://https://",
+   "stripped": "https://https://"
+  },
+  {
+   "input": "\u001bPpass\\u001b(é\u001bP`\\u0022\"@",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "'\\\\\\\"\\u005chttp:\\\\\u0000",
+   "normalized": "'\\\\\\\"\\u005chttp:\\\\",
+   "stripped": "'\\\\\\\"\\u005chttp:\\\\"
+  },
+  {
+   "input": "\\b\\/cookie: 1\u001b]alice\u001bP\\\"wss:\\t",
+   "normalized": "\\b/cookie: 1",
+   "stripped": "\\b/cookie: 1"
+  },
+  {
+   "input": "\u001bPhttps:/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "m&&key\u0007",
+   "normalized": "m&&key",
+   "stripped": "m&&key"
+  },
+  {
+   "input": "\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "ax\\u0022\\\\u0022\u001b(",
+   "normalized": "ax\\\"\\\\\\\"(",
+   "stripped": "ax\\\"\\\\\\\"("
+  },
+  {
+   "input": "\u001b(\\u005c\t\u001b(/\\\\u0022",
+   "normalized": "u005c\t\\\\\"",
+   "stripped": "u005c\t\\\\\""
+  },
+  {
+   "input": "\u0007passhost.example\\n\\u001b[key//\\\\h\ttps:",
+   "normalized": "passhost.example\\nkey//\\\\h\ttps:",
+   "stripped": "passhost.example\\nkey//\\\\h\ttps:"
+  },
+  {
+   "input": "\\n\\u001b(\\u0022xhttps://=\u0007\\u005c= ",
+   "normalized": "\\n(\\\"xhttps://=\\u005c= ",
+   "stripped": "\\n(\\\"xhttps://=\\u005c= "
+  },
+  {
+   "input": "/\\u005ca: ",
+   "normalized": "/\\u005ca: ",
+   "stripped": "/\\u005ca: "
+  },
+  {
+   "input": "\\u005c1/\\\\u001b[\u001bP\u001b\\",
+   "normalized": "\\u005c1/",
+   "stripped": "\\u005c1/"
+  },
+  {
+   "input": "basiccookie\u0000\u0000&\\u00@\\\"\\u001b]/",
+   "normalized": "basicookie&\\u00@\\\"",
+   "stripped": "basicookie&\\u00@\\\""
+  },
+  {
+   "input": "bearer\"\u0000 tokentokenalice\\b?\\\"a",
+   "normalized": "bearer\" tokentokenalice\\b?\\\"",
+   "stripped": "bearer\" tokentokenalice\\b?\\\""
+  },
+  {
+   "input": "\u001b]key\\x1b[\ralice\\\\wss:\\b",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "﷐x'\\n@",
+   "normalized": "x'\\n@",
+   "stripped": "x'\\n@"
+  },
+  {
+   "input": "https://`\"0éhttps:// ?",
+   "normalized": "https://`\"0éhttps:// ?",
+   "stripped": "https://`\"0éhttps:// ?"
+  },
+  {
+   "input": "\u001b\\=\\x1b[#m'",
+   "normalized": "\\",
+   "stripped": "\\"
+  },
+  {
+   "input": ":8080'%70basic\u001bP\\u001b(1",
+   "normalized": ":8080'%70basic",
+   "stripped": ":8080'%70basic"
+  },
+  {
+   "input": "%70https://=",
+   "normalized": "%70https://=",
+   "stripped": "%70https://="
+  },
+  {
+   "input": "\"\u001b(",
+   "normalized": "\"(",
+   "stripped": "\"("
+  },
+  {
+   "input": "//\n",
+   "normalized": "//\n",
+   "stripped": "//\n"
+  },
+  {
+   "input": "\\\\/﷐\u001b[&\t\\u00\t😀`\\u001b(ht\\ntp:",
+   "normalized": "/\\u00\t😀`t\\ntp:",
+   "stripped": "/\\u00\t😀`t\\ntp:"
+  },
+  {
+   "input": "\\t\\u001b]\u0007 0é\\bbearer\\u001b(",
+   "normalized": "\\t\\bbearer(",
+   "stripped": "\\t\\bbearer("
+  },
+  {
+   "input": ": ",
+   "normalized": ": ",
+   "stripped": ": "
+  },
+  {
+   "input": "\\n1#ht\\ntp:https://\\\\/\\\\",
+   "normalized": "\\n1#ht\\ntp:",
+   "stripped": "\\n1#ht\\ntp:"
+  },
+  {
+   "input": "h\ttps:h\ttps:",
+   "normalized": "h\ttps:h\ttps:",
+   "stripped": "h\ttps:h\ttps:"
+  },
+  {
+   "input": "\t#token",
+   "normalized": "\t",
+   "stripped": "\t"
+  },
+  {
+   "input": "?\\u0022=:8080: \\u001b[😀",
+   "normalized": "?\\\"=:8080: 😀",
+   "stripped": "?\\\"=:8080: 😀"
+  },
+  {
+   "input": "\u001bP\\u001b]\\u0022:8080\\u0022\\\\\\n﷐\n\r﷐",
+   "normalized": "\n\r",
+   "stripped": "\n\r"
+  },
+  {
+   "input": ":\\u0070:8080\\u005c\\u0022key\u0000key",
+   "normalized": ":p:8080\\u005c\\\"keykey",
+   "stripped": ":p:8080\\u005c\\\"keykey"
+  },
+  {
+   "input": "https://&http:\\\\1?m\\u00\\\\u0022:",
+   "normalized": "https://&http:\\\\1?m",
+   "stripped": "https://&http:\\\\1?m"
+  },
+  {
+   "input": " \u001b[http:\\\\=\u0000key\\\\u0022 \\\\/ \n",
+   "normalized": " ttp:\\\\=key\\\\\\\" / \n",
+   "stripped": " ttp:\\\\=key\\\\\\\" / \n"
+  },
+  {
+   "input": "https:/0",
+   "normalized": "https:/0",
+   "stripped": "https:/0"
+  },
+  {
+   "input": ": //alice\u001b\\\u001b(\\/?#\\\"",
+   "normalized": ": //alice\\(/?#\\\"",
+   "stripped": ": //alice\\(/?#\\\""
+  },
+  {
+   "input": "passm cookie\n",
+   "normalized": "passm\n",
+   "stripped": "passm\n"
+  },
+  {
+   "input": "?=ftp:/\nhttps://ftp:/host.example\u001b]a",
+   "normalized": "?=ftp:/\nhttps://ftp:/host.example",
+   "stripped": "?=ftp:/\nhttps://ftp:/host.example"
+  },
+  {
+   "input": "x`",
+   "normalized": "x`",
+   "stripped": "x`"
+  },
+  {
+   "input": " ftp:/\u001bPhost.example",
+   "normalized": " ftp:/",
+   "stripped": " ftp:/"
+  },
+  {
+   "input": "\\u005c1\\\\u0022: \u001b]\r@cookie: 😀a",
+   "normalized": "\\u005c1\\\\\\\": \r@cookie: 😀a",
+   "stripped": "\\u005c1\\\\\\\": \r@cookie: 😀a"
+  },
+  {
+   "input": "&\\\\u0022ftp:/\\u001b]&key\\u00",
+   "normalized": "&\\\\\\\"ftp:/\\u00",
+   "stripped": "&\\\\\\\"ftp:/\\u00"
+  },
+  {
+   "input": "'\\\\u0022/: \n\u001b[\u001b(\r\\u005c`",
+   "normalized": "'\\\\\\\"/: \n(\r\\u005c`",
+   "stripped": "'\\\\\\\"/: \n(\r\\u005c`"
+  },
+  {
+   "input": "key ",
+   "normalized": "key ",
+   "stripped": "key "
+  },
+  {
+   "input": "\u001bPwss:",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b(h\ttps:\u001b[///`",
+   "normalized": "\ttps:",
+   "stripped": "\ttps:"
+  },
+  {
+   "input": "https://mwss:%70",
+   "normalized": "https://mwss:%70",
+   "stripped": "https://mwss:%70"
+  },
+  {
+   "input": "\\b#=x#\\b\u001bP\\x1b[\\x1b[",
+   "normalized": "\\b#=x#\\b",
+   "stripped": "\\b#=x#\\b"
+  },
+  {
+   "input": "bearer\\u005c\\n&x\\\\u001b[",
+   "normalized": "bearer\\u005c\\n&x[",
+   "stripped": "bearer\\u005c\\n&x["
+  },
+  {
+   "input": "😀%70\thost.example\\u0022\\u005c\rftp:/cookie ",
+   "normalized": "😀%70\thost.example\\\"\\u005c\rftp:/cookie ",
+   "stripped": "😀%70\thost.example\\\"\\u005c\rftp:/cookie "
+  },
+  {
+   "input": " ",
+   "normalized": " ",
+   "stripped": " "
+  },
+  {
+   "input": "\u001b[//\"alice",
+   "normalized": "lice",
+   "stripped": "lice"
+  },
+  {
+   "input": "//ftp:/ \u001b\\&",
+   "normalized": "//ftp:/ \\&",
+   "stripped": "//ftp:/ \\&"
+  },
+  {
+   "input": "\r: 'h\ttps:\u001b]token\\\\u001b[@",
+   "normalized": "\r: 'h\ttps:",
+   "stripped": "\r: 'h\ttps:"
+  },
+  {
+   "input": "\\u0070\\t:8080alicealiceht\\ntp:\\\\/﷐a",
+   "normalized": "p\\t:8080alicealiceht\\ntp:/a",
+   "stripped": "p\\t:8080alicealiceht\\ntp:/a"
+  },
+  {
+   "input": "😀 \\u001b[ftp:/wss:\\u001b[@\\u001b]",
+   "normalized": "😀 ",
+   "stripped": "😀 "
+  },
+  {
+   "input": "host.examplebearer0﷐\\u0022: \r\u001b]\\b\\nkey",
+   "normalized": "host.examplebearer0\\\": \r",
+   "stripped": "host.examplebearer0\\\": \r"
+  },
+  {
+   "input": "\n\\u001b(\u001b[\\té\\x1b[token\u001b\\\\x1b[\\u001b(x",
+   "normalized": "\nétokenu001b(x",
+   "stripped": "\nétokenu001b(x"
+  },
+  {
+   "input": "keyhttps:/",
+   "normalized": "keyhttps:/",
+   "stripped": "keyhttps:/"
+  },
+  {
+   "input": "ht\\ntp:basic",
+   "normalized": "ht\\ntp:basic",
+   "stripped": "ht\\ntp:basic"
+  },
+  {
+   "input": "\\u00https://\\n\\u00h\ttps:",
+   "normalized": "\\u00https://\\n\\u00h\ttps:",
+   "stripped": "\\u00https://\\n\\u00h\ttps:"
+  },
+  {
+   "input": "https://\u001b] @0",
+   "normalized": "https://",
+   "stripped": "https://"
+  },
+  {
+   "input": "0\u001b[ passxhttp:\\\\//",
+   "normalized": "0pass",
+   "stripped": "0pass"
+  },
+  {
+   "input": " \\u001b[\t\\/\r/https:/\u001b[\\/https:/\r",
+   "normalized": " /\r/https:/ttps:/\r",
+   "stripped": " /\r/https:/ttps:/\r"
+  },
+  {
+   "input": "1\\\"`/ ",
+   "normalized": "1\\\"`/ ",
+   "stripped": "1\\\"`/ "
+  },
+  {
+   "input": "wss:cookietoken\u001bP\u001b(",
+   "normalized": "wss:cookietoken(",
+   "stripped": "wss:cookietoken("
+  },
+  {
+   "input": "=\\tkeypass\\u00\"\\u0070x",
+   "normalized": "=\\tkeypass\\u00\"px",
+   "stripped": "=\\tkeypass\\u00\"px"
+  },
+  {
+   "input": "token\\u001b(\u001b[https:/\\//wss:wss:\u0000\\\\u001b[\\u001b[",
+   "normalized": "token(ttps:///wss:wss:u001b[",
+   "stripped": "token(ttps:///wss:wss:u001b["
+  },
+  {
+   "input": "\\//\\u005ckeyftp:/",
+   "normalized": "//\\u005ckeyftp:/",
+   "stripped": "//\\u005ckeyftp:/"
+  },
+  {
+   "input": "\u001b(\u001b[",
+   "normalized": "([",
+   "stripped": "(["
+  },
+  {
+   "input": "\"host.examplewss:bearer/\u001b[",
+   "normalized": "\"host.examplewss:bearer/[",
+   "stripped": "\"host.examplewss:bearer/["
+  },
+  {
+   "input": "\u0007",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u001b[alicecookie\\\"passm",
+   "normalized": "licecookie\\\"passm",
+   "stripped": "licecookie\\\"passm"
+  },
+  {
+   "input": "\\u00\\\"xht\\ntp:\u001b]",
+   "normalized": "\\u00\\\"xht\\ntp:",
+   "stripped": "\\u00\\\"xht\\ntp:"
+  },
+  {
+   "input": "host.examplebearer\u001b(\\\\u001b[",
+   "normalized": "host.examplebearer[",
+   "stripped": "host.examplebearer["
+  },
+  {
+   "input": "x\\\\\u001bP1\\/0\\tbasic",
+   "normalized": "x\\\\",
+   "stripped": "x\\\\"
+  },
+  {
+   "input": "bearer \\u005chttps:/\\b bearer",
+   "normalized": "bearer \\u005chttps:/\\b bearer",
+   "stripped": "bearer \\u005chttps:/\\b bearer"
+  },
+  {
+   "input": "`\\\\u0022bearer😀﷐`﷐",
+   "normalized": "`\\\\\\\"bearer😀`",
+   "stripped": "`\\\\\\\"bearer😀`"
+  },
+  {
+   "input": "ht\\ntp:\\u001b]`\u0007//\r\u001b]#=//\"",
+   "normalized": "ht\\ntp:\r",
+   "stripped": "ht\\ntp:\r"
+  },
+  {
+   "input": "%70 \\\\u001b[\u001b\\",
+   "normalized": "%70 \\",
+   "stripped": "%70 \\"
+  },
+  {
+   "input": "x&﷐ pass`\\\\u0022m",
+   "normalized": "x& pass`\\\\\\\"m",
+   "stripped": "x& pass`\\\\\\\"m"
+  },
+  {
+   "input": "\\\\u0022&",
+   "normalized": "\\\\\\\"&",
+   "stripped": "\\\\\\\"&"
+  },
+  {
+   "input": " \"\\\\u0022\\u001b(\nm\\u00token&",
+   "normalized": " \"\\\\\\\"(\nm\\u00token&",
+   "stripped": " \"\\\\\\\"(\nm\\u00token&"
+  },
+  {
+   "input": "basic\\\\u001b[\\tkey\\x1b[https:/\\\\u001b[a\\x1b[\\t ",
+   "normalized": "basictkeyttps:/t ",
+   "stripped": "basictkeyttps:/t "
+  },
+  {
+   "input": "\\///cookieh\ttps:\\u001b(wss:\\u0070ftp:/",
+   "normalized": "///cookie",
+   "stripped": "///cookie"
+  },
+  {
+   "input": "`:8080",
+   "normalized": "`:8080",
+   "stripped": "`:8080"
+  },
+  {
+   "input": "1\\\\u0022\\\\/token",
+   "normalized": "1\\\\\\\"",
+   "stripped": "1\\\\\\\""
+  },
+  {
+   "input": "\\u0022 alice'wss:==key\r'",
+   "normalized": "\\\" alice'wss:==key\r'",
+   "stripped": "\\\" alice'wss:==key\r'"
+  },
+  {
+   "input": "\\x1b[\\\\u0022\\\\/",
+   "normalized": "\\\\\"/",
+   "stripped": "\\\\\"/"
+  },
+  {
+   "input": "http:\\\\1aliceht\\ntp:\u001b]",
+   "normalized": "http:\\\\1aliceht\\ntp:",
+   "stripped": "http:\\\\1aliceht\\ntp:"
+  },
+  {
+   "input": "http:\\\\\\u00:\\n=ftp:/\\u00é:8080m😀\u001b(",
+   "normalized": "http:\\\\\\u00:\\n=ftp:/\\u00é:8080m😀(",
+   "stripped": "http:\\\\\\u00:\\n=ftp:/\\u00é:8080m😀("
+  },
+  {
+   "input": "ht\\ntp:%70\\nhttp:\\\\\\\\u0022\\u005c\u001b]\\u005c@ht\\ntp:\\u00\n",
+   "normalized": "ht\\ntp:%70\\nhttp:\\\\\\\\\\\\\\\"\\u005c\n",
+   "stripped": "ht\\ntp:%70\\nhttp:\\\\\\\\\\\\\\\"\\u005c\n"
+  },
+  {
+   "input": "=ht\\ntp:\u001b\\http:\\\\\t",
+   "normalized": "=ht\\ntp:\\http:\\\\\t",
+   "stripped": "=ht\\ntp:\\http:\\\\\t"
+  },
+  {
+   "input": "=",
+   "normalized": "=",
+   "stripped": "="
+  },
+  {
+   "input": "h\ttps:é'",
+   "normalized": "h\ttps:é'",
+   "stripped": "h\ttps:é'"
+  },
+  {
+   "input": "\\t﷐ftp:/https://\u001b\\\\u001b('\\u00/https://:",
+   "normalized": "\\tftp:/https://('\\u00/https://:",
+   "stripped": "\\tftp:/https://('\\u00/https://:"
+  },
+  {
+   "input": "\\\\u0022//é#?token\\t\u001bP?",
+   "normalized": "\\\\\\\"//é#?token\\t",
+   "stripped": "\\\\\\\"//é#?token\\t"
+  },
+  {
+   "input": "\\u001b(\\u0070",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "😀\t",
+   "normalized": "😀\t",
+   "stripped": "😀\t"
+  },
+  {
+   "input": "\rftp:/",
+   "normalized": "\rftp:/",
+   "stripped": "\rftp:/"
+  },
+  {
+   "input": "wss:wss:\u001b\\ftp:/: :",
+   "normalized": "wss:wss:\\ftp:/: :",
+   "stripped": "wss:wss:\\ftp:/: :"
+  },
+  {
+   "input": "\\t\\x1b[",
+   "normalized": "\\t[",
+   "stripped": "\\t["
+  },
+  {
+   "input": "bearer:8080\\u0070&\rhttps://`\\t: \u0007😀",
+   "normalized": "bearer:8080p&\rhttps://`\\t: 😀",
+   "stripped": "bearer:8080p&\rhttps://`\\t: 😀"
+  },
+  {
+   "input": "/: \\u0070h\ttps:\\\\/: :8080",
+   "normalized": "/: ph\ttps:/: :8080",
+   "stripped": "/: ph\ttps:/: :8080"
+  },
+  {
+   "input": "\\\\`': key",
+   "normalized": "\\\\`': key",
+   "stripped": "\\\\`': key"
+  },
+  {
+   "input": "m\u0000\u0007%70",
+   "normalized": "m%70",
+   "stripped": "m%70"
+  },
+  {
+   "input": "https:/\\u001b[\\u001b(",
+   "normalized": "https:/u001b(",
+   "stripped": "https:/u001b("
+  },
+  {
+   "input": "h\ttps:\\\\/:8080",
+   "normalized": "h\ttps:/:8080",
+   "stripped": "h\ttps:/:8080"
+  },
+  {
+   "input": "//\\u0070\r",
+   "normalized": "//p\r",
+   "stripped": "//p\r"
+  },
+  {
+   "input": "bearerwss:&basic\\b",
+   "normalized": "bearerwss:&basic\\b",
+   "stripped": "bearerwss:&basic\\b"
+  },
+  {
+   "input": " é\\\\u001b[\u0000%70\\u00\\u0070\u001b\\",
+   "normalized": " é%70\\u00p\\",
+   "stripped": " é%70\\u00p\\"
+  },
+  {
+   "input": "😀\t\rkey'\\x1b[xtoken",
+   "normalized": "😀\t\rkey'token",
+   "stripped": "😀\t\rkey'token"
+  },
+  {
+   "input": "wss:#\\u001b[\\u001b] a\u0000 \\b",
+   "normalized": "wss:#u001b] a ",
+   "stripped": "wss:#u001b] a "
+  },
+  {
+   "input": "token\\u001b[@\\\\pass\u001b[",
+   "normalized": "token\\\\pass[",
+   "stripped": "token\\\\pass["
+  },
+  {
+   "input": "?😀﷐\\b",
+   "normalized": "?😀\\b",
+   "stripped": "?😀\\b"
+  },
+  {
+   "input": "https://alicewss:",
+   "normalized": "https://alicewss:",
+   "stripped": "https://alicewss:"
+  },
+  {
+   "input": "\u001bP\\\\u0022\u0000é\\u00\\/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u0070\\t\\\\u0022m\\u0022",
+   "normalized": "p\\t\\\\\\\"m\\\"",
+   "stripped": "p\\t\\\\\\\"m\\\""
+  },
+  {
+   "input": "`: \u0000\\u001b[\u001b(",
+   "normalized": "`: (",
+   "stripped": "`: ("
+  },
+  {
+   "input": "passalice\\b﷐x:8080x",
+   "normalized": "passalice\\bx:8080x",
+   "stripped": "passalice\\bx:8080x"
+  },
+  {
+   "input": " \\u0022ahost.example\\x1b[ftp:/https://",
+   "normalized": " \\\"ahost.exampletp:/https://",
+   "stripped": " \\\"ahost.exampletp:/https://"
+  },
+  {
+   "input": "\\\\/bearer\nalice\\nkey",
+   "normalized": "/bearer\nalice\\nkey",
+   "stripped": "/bearer\nalice\\nkey"
+  },
+  {
+   "input": "é&\u001bP\\u005c http:\\\\`\u001bP0:%70",
+   "normalized": "é&",
+   "stripped": "é&"
+  },
+  {
+   "input": "basicx?\t",
+   "normalized": "basicx?\t",
+   "stripped": "basicx?\t"
+  },
+  {
+   "input": " cookie?:\\u00token%70\\\\/﷐x\\\"",
+   "normalized": " cookie?:\\u00token%70/x\\\"",
+   "stripped": " cookie?:\\u00token%70/x\\\""
+  },
+  {
+   "input": "\r#?wss:\u001b]\\/ht\\ntp:\"https://\\\\/@",
+   "normalized": "\r#?wss:",
+   "stripped": "\r#?wss:"
+  },
+  {
+   "input": "=pass\\\\",
+   "normalized": "=pass\\\\",
+   "stripped": "=pass\\\\"
+  },
+  {
+   "input": "\\\\pass\\\\:8080\u001b[bearer\u001bP\\u0070&=\u001b(\\u005c",
+   "normalized": "\\\\pass\\\\:8080eareru005c",
+   "stripped": "\\\\pass\\\\:8080eareru005c"
+  },
+  {
+   "input": "\\x1b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "wss:: \\u001b[ ht\\ntp:",
+   "normalized": "wss:: t\\ntp:",
+   "stripped": "wss:: t\\ntp:"
+  },
+  {
+   "input": "\\t\u0000x\t@\u001b]m`",
+   "normalized": "\\tx\t@",
+   "stripped": "\\tx\t@"
+  },
+  {
+   "input": "&\\bwss:\u001b(https:/\\\\/\t\"/",
+   "normalized": "&\\bwss:ttps://\t\"/",
+   "stripped": "&\\bwss:ttps://\t\"/"
+  },
+  {
+   "input": "1'\n\\\"\\\\u0022\u001bPx\t",
+   "normalized": "1'\n\\\"\\\\\\\"",
+   "stripped": "1'\n\\\"\\\\\\\""
+  },
+  {
+   "input": "bearerhttps://\u0000",
+   "normalized": "bearerhttps://",
+   "stripped": "bearerhttps://"
+  },
+  {
+   "input": "bearerhttps://\r\\n\"\\u005c01http:\\\\//:",
+   "normalized": "bearerhttps://\r\\n\"\\u005c01http://:",
+   "stripped": "bearerhttps://\r\\n\"\\u005c01http://:"
+  },
+  {
+   "input": "`:\\u001b(éhost.example\r",
+   "normalized": "`u001b(éhost.example\r",
+   "stripped": "`u001b(éhost.example\r"
+  },
+  {
+   "input": "//wss:h\ttps:\u001b[: host.examplebearer&",
+   "normalized": "//wss:h\ttps:ost.exampleearer&",
+   "stripped": "//wss:h\ttps:ost.exampleearer&"
+  },
+  {
+   "input": "\r\\\\u0022a\\\\",
+   "normalized": "\r\\\\\\\"a\\\\",
+   "stripped": "\r\\\\\\\"a\\\\"
+  },
+  {
+   "input": "/\u001b\\@\\u001b(h\ttps:﷐",
+   "normalized": "/\\@\ttps:",
+   "stripped": "/\\@\ttps:"
+  },
+  {
+   "input": "\u0000\\\\u0022",
+   "normalized": "\\\\\\\"",
+   "stripped": "\\\\\\\""
+  },
+  {
+   "input": "host.example`\u001b[`\u0007\\x1b[\u001b(😀",
+   "normalized": "host.example``(😀",
+   "stripped": "host.example``(😀"
+  },
+  {
+   "input": "http:\\\\\\u0022@",
+   "normalized": "http://\"@",
+   "stripped": "http:\\\\\\\"@"
+  },
+  {
+   "input": "\\t",
+   "normalized": "\\t",
+   "stripped": "\\t"
+  },
+  {
+   "input": "ftp:/host.example&\u001b[",
+   "normalized": "ftp:/host.example&[",
+   "stripped": "ftp:/host.example&["
+  },
+  {
+   "input": "?/:'https://: \\u00😀",
+   "normalized": "?/:'https://",
+   "stripped": "?/:'https://"
+  },
+  {
+   "input": "\\u001b(",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "wss:token\\/basic",
+   "normalized": "wss:token/basic",
+   "stripped": "wss:token/basic"
+  },
+  {
+   "input": "\\b\u001b\\\rh\ttps::8080: \\/\tkey= ",
+   "normalized": "\\b\\\rh\ttps::8080: /\tkey= ",
+   "stripped": "\\b\\\rh\ttps::8080: /\tkey= "
+  },
+  {
+   "input": ":8080\n",
+   "normalized": ":8080\n",
+   "stripped": ":8080\n"
+  },
+  {
+   "input": "alice?bearer\\\\u0022//token",
+   "normalized": "alice?bearer\\\\\\\"//token",
+   "stripped": "alice?bearer\\\\\\\"//token"
+  },
+  {
+   "input": "😀\\u001b]:8080: \\x1b[ \\\\",
+   "normalized": "😀\\",
+   "stripped": "😀\\"
+  },
+  {
+   "input": "\nwss:a",
+   "normalized": "\nwss:a",
+   "stripped": "\nwss:a"
+  },
+  {
+   "input": "#host.examplea:8080ht\\ntp:ahttps://",
+   "normalized": "#host.examplea:8080ht\\ntp:ahttps://",
+   "stripped": "#host.examplea:8080ht\\ntp:ahttps://"
+  },
+  {
+   "input": "﷐``wss:\\u00\"\\\\\u001b]ht\\ntp:https:/",
+   "normalized": "``wss:\\u00\"\\\\",
+   "stripped": "``wss:\\u00\"\\\\"
+  },
+  {
+   "input": "é&:8080\\\\\\\\u001b[\\u001b[cookie\\u001b]basic",
+   "normalized": "é&:8080",
+   "stripped": "é&:8080"
+  },
+  {
+   "input": ": wss:key&\u001b]\u0007:8080\\t\tkey",
+   "normalized": ": wss:key&:8080\\t\tkey",
+   "stripped": ": wss:key&:8080\\t\tkey"
+  },
+  {
+   "input": "https://\u001bP",
+   "normalized": "https://",
+   "stripped": "https://"
+  },
+  {
+   "input": "h\ttps:\\u005c\\u0022host.examplealice`: \\u0022cookie:8080h\ttps:\r",
+   "normalized": "h\ttps:\\u005c\\\"host.examplealice`: \\\"cookie:8080h\ttps:\r",
+   "stripped": "h\ttps:\\u005c\\\"host.examplealice`: \\\"cookie:8080h\ttps:\r"
+  },
+  {
+   "input": "=﷐%70\\u00https://",
+   "normalized": "=%70\\u00https://",
+   "stripped": "=%70\\u00https://"
+  },
+  {
+   "input": "h\ttps:\\\"a:8080alice\\\"@",
+   "normalized": "h\ttps:\\\":8080alice\\\"@",
+   "stripped": "h\ttps:\\\":8080alice\\\"@"
+  },
+  {
+   "input": "\\u001b]1#",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\b\\x1b[bearerbasic😀h\ttps:",
+   "normalized": "\\bearerbasic😀h\ttps:",
+   "stripped": "\\bearerbasic😀h\ttps:"
+  },
+  {
+   "input": "\u001b\\https://\\u001b]\\\\/1pass\u001b]😀\\t? ",
+   "normalized": "\\https://\\t? ",
+   "stripped": "\\https://\\t? "
+  },
+  {
+   "input": "\\u001b[\\u001b(\\t\\bht\\ntp:é\"#m",
+   "normalized": "u001b(\\t\\bht\\ntp:é\"#m",
+   "stripped": "u001b(\\t\\bht\\ntp:é\"#m"
+  },
+  {
+   "input": "https:/10passpass\tkey\\u005c",
+   "normalized": "https:/10passpass\tkey\\u005c",
+   "stripped": "https:/10passpass\tkey\\u005c"
+  },
+  {
+   "input": "\u0007@&cookie\\\\/ #\u001b(\\u001b[",
+   "normalized": "@&cookie/ #u001b[",
+   "stripped": "@&cookie/ #u001b["
+  },
+  {
+   "input": "wss:\u001b]\\\\\\u005c",
+   "normalized": "wss:",
+   "stripped": "wss:"
+  },
+  {
+   "input": " é\\u001b]ht\\ntp:",
+   "normalized": " é\\ntp:",
+   "stripped": " é\\ntp:"
+  },
+  {
+   "input": "ftp:/\u001bPbearer\\t﷐\u0007%70#\\u001b]",
+   "normalized": "ftp:/%70#",
+   "stripped": "ftp:/%70#"
+  },
+  {
+   "input": "cookie\t: http:\\\\﷐",
+   "normalized": "cookie\t: http:\\\\",
+   "stripped": "cookie\t: http:\\\\"
+  },
+  {
+   "input": "\\u001b( \"h\ttps:h\ttps:\\/\\u0022\\x1b[\\/x#",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "'?éalice\\u001b(\\/=",
+   "normalized": "'?éalice(/=",
+   "stripped": "'?éalice(/="
+  },
+  {
+   "input": "\\u0070//\\b\u001bP\u0000",
+   "normalized": "p//\\b",
+   "stripped": "p//\\b"
+  },
+  {
+   "input": "xpass:8080",
+   "normalized": "xpass:8080",
+   "stripped": "xpass:8080"
+  },
+  {
+   "input": "ftp:/\\\\\ra\\u00bearer?\\u0070bearer\\u005cm",
+   "normalized": "ftp:/\\\\\ra\\u00bearer?pbearer\\u005cm",
+   "stripped": "ftp:/\\\\\ra\\u00bearer?pbearer\\u005cm"
+  },
+  {
+   "input": "//\\/",
+   "normalized": "///",
+   "stripped": "///"
+  },
+  {
+   "input": "\\u0022alice0#basic0ftp:/x",
+   "normalized": "\\\"alice0#basic0ftp:/x",
+   "stripped": "\\\"alice0#basic0ftp:/x"
+  },
+  {
+   "input": "\\\\/`:8080\\u001b]bearer?http:\\\\ftp:/https://épass",
+   "normalized": "/`:8080\\\\ftp:/https://épass",
+   "stripped": "/`:8080\\\\ftp:/https://épass"
+  },
+  {
+   "input": "wss:`\\nhost.examplehttp:\\\\",
+   "normalized": "wss:`",
+   "stripped": "wss:`"
+  },
+  {
+   "input": "\\/\r\u001b]\\x1b[`: //host.example\r",
+   "normalized": "/\r\r",
+   "stripped": "/\r\r"
+  },
+  {
+   "input": "bearer\\u0070\r%70\u0007",
+   "normalized": "bearerp\r%70",
+   "stripped": "bearerp\r%70"
+  },
+  {
+   "input": "basicht\\ntp:\\u0070://:😀",
+   "normalized": "basicht\\ntp:p://:😀",
+   "stripped": "basicht\\ntp:p://:😀"
+  },
+  {
+   "input": "tokenhttps:/basic`\"\\\"//https://\\\\\u001b(",
+   "normalized": "tokenhttps:/basic`\"\\\"//https://\\\\(",
+   "stripped": "tokenhttps:/basic`\"\\\"//https://\\\\("
+  },
+  {
+   "input": "\\x1b[//\u0007\\\\/passkey\\u001b]\\u005cwss:",
+   "normalized": "/passkey\\u005cwss:",
+   "stripped": "/passkey\\u005cwss:"
+  },
+  {
+   "input": "\\u0070\\x1b[\u001b(=%701",
+   "normalized": "p(=%701",
+   "stripped": "p(=%701"
+  },
+  {
+   "input": "\\u0070=ftp:/pass%701h\ttps:\n",
+   "normalized": "\n",
+   "stripped": "\n"
+  },
+  {
+   "input": "é\n",
+   "normalized": "é\n",
+   "stripped": "é\n"
+  },
+  {
+   "input": "key\\n\\u001b[\t\u0007\\u005c",
+   "normalized": "key\\n\\u005c",
+   "stripped": "key\\n\\u005c"
+  },
+  {
+   "input": " x\\\\\u001b[\u001b[",
+   "normalized": " x\\\\[[",
+   "stripped": " x\\\\[["
+  },
+  {
+   "input": "host.example\r\\\\/ ",
+   "normalized": "host.example\r/ ",
+   "stripped": "host.example\r/ "
+  },
+  {
+   "input": "\\thttp:\\\\?http:\\\\keyht\\ntp:\u001bPht\\ntp:h\ttps:\\x1b[\u001b(",
+   "normalized": "\\thttp:\\\\?http:\\\\keyht\\ntp:(",
+   "stripped": "\\thttp:\\\\?http:\\\\keyht\\ntp:("
+  },
+  {
+   "input": "http:\\\\\\\\&\\\\u0022",
+   "normalized": "http:\\\\\\\\&\\\\\\\"",
+   "stripped": "http:\\\\\\\\&\\\\\\\""
+  },
+  {
+   "input": "h\ttps:\\u0022\\/\\b\\\"\\\\/",
+   "normalized": "h\ttps:\\\"/\\b\\\"/",
+   "stripped": "h\ttps:\\\"/\\b\\\"/"
+  },
+  {
+   "input": "\u001b(\u001b]x%70\\u0022",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "\u001b[\\\\: a😀a1",
+   "normalized": "\\: a😀a1",
+   "stripped": "\\: a😀a1"
+  },
+  {
+   "input": "😀# alice\\\\: ",
+   "normalized": "😀# alice\\\\: ",
+   "stripped": "😀# alice\\\\: "
+  },
+  {
+   "input": "\u00000#\\u001b[\\u0070😀éhttp:\\\\",
+   "normalized": "0#😀éhttp:\\\\",
+   "stripped": "0#😀éhttp:\\\\"
+  },
+  {
+   "input": " \\n\\\":ftp:/\\x1b[:8080\\u001b]x=\u001bP",
+   "normalized": " \\n\\\":ftp:/u001b]x=",
+   "stripped": " \\n\\\":ftp:/u001b]x="
+  },
+  {
+   "input": "host.example",
+   "normalized": "host.example",
+   "stripped": "host.example"
+  },
+  {
+   "input": "\\\\u0022%70`\\x1b[﷐",
+   "normalized": "\\\\\\\"%70`[",
+   "stripped": "\\\\\\\"%70`["
+  },
+  {
+   "input": "\u001b[//\\\\u001b[https://",
+   "normalized": "tps://",
+   "stripped": "tps://"
+  },
+  {
+   "input": "\\n/﷐http:\\\\#`\\b",
+   "normalized": "\\n/http:\\\\#`\\b",
+   "stripped": "\\n/http:\\\\#`\\b"
+  },
+  {
+   "input": "key\"pass\\\\/mht\\ntp:#ftp:/key\\b😀\n",
+   "normalized": "key\"pass/mht\\ntp:#ftp:/key\\b😀\n",
+   "stripped": "key\"pass/mht\\ntp:#ftp:/key\\b😀\n"
+  },
+  {
+   "input": "keyhttps://1host.examplehttps:/\"",
+   "normalized": "keyhttps://1host.examplehttps:/\"",
+   "stripped": "keyhttps://1host.examplehttps:/\""
+  },
+  {
+   "input": "\u001b[tokencookie\\\"\\u005c'\\u00?basic\\\\/ftp:/\\\\",
+   "normalized": "okencookie\\\"\\u005c'\\u00?basic/ftp:/\\\\",
+   "stripped": "okencookie\\\"\\u005c'\\u00?basic/ftp:/\\\\"
+  },
+  {
+   "input": "'\u001b[\\nalice\\u0022ht\\ntp:",
+   "normalized": "'nalice\\\"ht\\ntp:",
+   "stripped": "'nalice\\\"ht\\ntp:"
+  },
+  {
+   "input": "\t\\u00cookie",
+   "normalized": "\t\\u00cookie",
+   "stripped": "\t\\u00cookie"
+  },
+  {
+   "input": "://",
+   "normalized": "://",
+   "stripped": "://"
+  },
+  {
+   "input": "\u001b(basic\\u005c%70@",
+   "normalized": "basic\\u005c%70@",
+   "stripped": "basic\\u005c%70@"
+  },
+  {
+   "input": "https://1\\\\u001b[/",
+   "normalized": "https://1[/",
+   "stripped": "https://1[/"
+  },
+  {
+   "input": "%70//host.example@\u0007",
+   "normalized": "%70//host.example@",
+   "stripped": "%70//host.example@"
+  },
+  {
+   "input": "1 \u001bP0",
+   "normalized": "1 ",
+   "stripped": "1 "
+  },
+  {
+   "input": "\thttps:/key\u0007 \\tpass&\t",
+   "normalized": "\thttps:/key \\tpass&\t",
+   "stripped": "\thttps:/key \\tpass&\t"
+  },
+  {
+   "input": "ht\\ntp:\\\\h\ttps:am#",
+   "normalized": "ht\\ntp:\\\\h\ttps:am#",
+   "stripped": "ht\\ntp:\\\\h\ttps:am#"
+  },
+  {
+   "input": "\u001b\\\"mpass\\u001b]",
+   "normalized": "\\\"mpass",
+   "stripped": "\\\"mpass"
+  },
+  {
+   "input": "\\u00\\u001b]\\u0070#\\\\xhttp:\\\\ 😀ftp:/bearer",
+   "normalized": "\\u00\\\\xhttp:\\\\ 😀ftp:/bearer",
+   "stripped": "\\u00\\\\xhttp:\\\\ 😀ftp:/bearer"
+  },
+  {
+   "input": "\\\\u001b[é: \\\\u0022",
+   "normalized": "é: \\\\\\\"",
+   "stripped": "é: \\\\\\\""
+  },
+  {
+   "input": "\t\u0007host.example\\\\u001b[\"\\\\// h\ttps:\\u00",
+   "normalized": "\thost.example// h\ttps:\\u00",
+   "stripped": "\thost.example// h\ttps:\\u00"
+  },
+  {
+   "input": "\\ttoken\n",
+   "normalized": "\\ttoken\n",
+   "stripped": "\\ttoken\n"
+  },
+  {
+   "input": ":\\u001b[\u001b(\u001b]\\u001b]https:/bearer\\u005calicehttps:/",
+   "normalized": ":(",
+   "stripped": ":("
+  },
+  {
+   "input": "\\\"\\\\/cookie",
+   "normalized": "\\\"/cookie",
+   "stripped": "\\\"/cookie"
+  },
+  {
+   "input": "wss: \rht\\ntp:\\u005c\\\\/\u001b[",
+   "normalized": "wss: \rht\\ntp:\\u005c/[",
+   "stripped": "wss: \rht\\ntp:\\u005c/["
+  },
+  {
+   "input": "@",
+   "normalized": "@",
+   "stripped": "@"
+  },
+  {
+   "input": "\\/\u0000﷐https://?",
+   "normalized": "/https://?",
+   "stripped": "/https://?"
+  },
+  {
+   "input": "\u001bPaftp:/: \u001b(: &\\\\u001b[x",
+   "normalized": "(: &",
+   "stripped": "(: &"
+  },
+  {
+   "input": "//\"\rbasicm\\n\u0007",
+   "normalized": "//\"\rbasicm\\n",
+   "stripped": "//\"\rbasicm\\n"
+  },
+  {
+   "input": "=wss:",
+   "normalized": "=wss:",
+   "stripped": "=wss:"
+  },
+  {
+   "input": "%70?",
+   "normalized": "%70?",
+   "stripped": "%70?"
+  },
+  {
+   "input": ":8080http:\\\\épass#\\u0070",
+   "normalized": ":8080http:\\\\épass#p",
+   "stripped": ":8080http:\\\\épass#p"
+  },
+  {
+   "input": "cookie",
+   "normalized": "cookie",
+   "stripped": "cookie"
+  },
+  {
+   "input": "\n\\u0070ftp:/",
+   "normalized": "\npftp:/",
+   "stripped": "\npftp:/"
+  },
+  {
+   "input": "\\u001b]﷐",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u001b(\\\\u001b[",
+   "normalized": "([",
+   "stripped": "(["
+  },
+  {
+   "input": "\\u005c\\b`",
+   "normalized": "\\u005c\\b`",
+   "stripped": "\\u005c\\b`"
+  },
+  {
+   "input": "x\\u005c//\u0007alice bearer",
+   "normalized": "x\\u005c//alice bearer",
+   "stripped": "x\\u005c//alice bearer"
+  },
+  {
+   "input": "=\u0000\\b\nhost.example\\u005c\\n\\\\u001b[bearer",
+   "normalized": "=\\b\nhost.example\\u005c\\nearer",
+   "stripped": "=\\b\nhost.example\\u005c\\nearer"
+  },
+  {
+   "input": "http:\\\\keyh\ttps:basic",
+   "normalized": "http:\\\\keyh\ttps:basic",
+   "stripped": "http:\\\\keyh\ttps:basic"
+  },
+  {
+   "input": "\\u0022😀pass\\u0070﷐/alice",
+   "normalized": "\\\"😀passp/alice",
+   "stripped": "\\\"😀passp/alice"
+  },
+  {
+   "input": "cookie?ht\\ntp:`",
+   "normalized": "cookie\\ntp:`",
+   "stripped": "cookie\\ntp:`"
+  },
+  {
+   "input": "\"m\\u0022\u001b(http:\\\\",
+   "normalized": "\"m\\\"ttp:\\\\",
+   "stripped": "\"m\\\"ttp:\\\\"
+  },
+  {
+   "input": "passé\\u001b(",
+   "normalized": "passé(",
+   "stripped": "passé("
+  },
+  {
+   "input": "/\u001bP1",
+   "normalized": "/",
+   "stripped": "/"
+  },
+  {
+   "input": "\\t\\u0022\u001b[\\bx//",
+   "normalized": "\\t\\\"bx//",
+   "stripped": "\\t\\\"bx//"
+  },
+  {
+   "input": "/\\u001b]host.example\\n😀\r",
+   "normalized": "/\\n😀\r",
+   "stripped": "/\\n😀\r"
+  },
+  {
+   "input": "\u001b]0%70:",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "token😀😀\t\\u001b[\\\\u0022host.example\\n\\u001b]\u001b(h\ttps:",
+   "normalized": "token😀😀\t\\\\\"host.example\\n",
+   "stripped": "token😀😀\t\\\\\"host.example\\n"
+  },
+  {
+   "input": "ftp:/https://\u001b(\\u001b[\\/\\u005ctoken\u001b]http:\\\\: \u001b] ",
+   "normalized": "ftp:/https://005ctoken",
+   "stripped": "ftp:/https://005ctoken"
+  },
+  {
+   "input": "\\u005ch\ttps:/#?\\u001b]\\\"a\\u0022??",
+   "normalized": "\\u005ch\ttps:/#?\\\"a\\\"??",
+   "stripped": "\\u005ch\ttps:/#?\\\"a\\\"??"
+  },
+  {
+   "input": "ht\\ntp:\\b😀%70ftp:/",
+   "normalized": "ht\\ntp:\\b😀%70ftp:/",
+   "stripped": "ht\\ntp:\\b😀%70ftp:/"
+  },
+  {
+   "input": "\\\\/\\u001b(https://tokenpass",
+   "normalized": "/ttps://tokenpass",
+   "stripped": "/ttps://tokenpass"
+  },
+  {
+   "input": "\\u0022\u001b[@😀wss:\\u001b(",
+   "normalized": "\\\"😀wss:(",
+   "stripped": "\\\"😀wss:("
+  },
+  {
+   "input": "keymbearer\\u001b(",
+   "normalized": "keymbearer(",
+   "stripped": "keymbearer("
+  },
+  {
+   "input": "bearertokenm#1:8080https://bearer",
+   "normalized": "bearertokenm#1:8080https://bearer",
+   "stripped": "bearertokenm#1:8080https://bearer"
+  },
+  {
+   "input": "éhost.example\\u0022ht\\ntp:",
+   "normalized": "éhost.example\\\"ht\\ntp:",
+   "stripped": "éhost.example\\\"ht\\ntp:"
+  },
+  {
+   "input": "@basicbearer\\u005c\u001b]\\\\alice\u001b[",
+   "normalized": "@basic[",
+   "stripped": "@basic["
+  },
+  {
+   "input": "\u0000bearer&\\t\\u005c\\n",
+   "normalized": "bearer&\\t\\u005c\\n",
+   "stripped": "bearer&\\t\\u005c\\n"
+  },
+  {
+   "input": "\thost.example\\u001b]\r\\t 😀http:\\\\: \\\\/",
+   "normalized": "\thost.example\r\\t😀http:\\\\: /",
+   "stripped": "\thost.example\r\\t😀http:\\\\: /"
+  },
+  {
+   "input": "&",
+   "normalized": "&",
+   "stripped": "&"
+  },
+  {
+   "input": "\\\\u001b[\u0007😀:8080",
+   "normalized": "😀:8080",
+   "stripped": "😀:8080"
+  },
+  {
+   "input": "/host.exampleh\ttps:&ftp:/ `host.example\\n\t",
+   "normalized": "/host.exampleh\ttps:&ftp:/ `host.example\\n\t",
+   "stripped": "/host.exampleh\ttps:&ftp:/ `host.example\\n\t"
+  },
+  {
+   "input": "%70😀\\u00token\\bhttps:/\u001b(:8080",
+   "normalized": "%70😀\\u00token\\bhttps:/(:8080",
+   "stripped": "%70😀\\u00token\\bhttps:/(:8080"
+  },
+  {
+   "input": "\\/\\u0070\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "\\/h\ttps:1bearerpass\\x1b[",
+   "normalized": "/h\ttps:1bearerpassx1b[",
+   "stripped": "/h\ttps:1bearerpassx1b["
+  },
+  {
+   "input": "1ftp:/bearer@\\u001b[﷐\"\\n\\\\",
+   "normalized": "1ftp:/bearer@n\\\\",
+   "stripped": "1ftp:/bearer@n\\\\"
+  },
+  {
+   "input": "\u001b\\0https://m ",
+   "normalized": "\\0https://m ",
+   "stripped": "\\0https://m "
+  },
+  {
+   "input": "\\x1b[: \\u001b(\u001bP=\\/\"h\ttps:\t",
+   "normalized": "u001b(",
+   "stripped": "u001b("
+  },
+  {
+   "input": "xm\\u001b[",
+   "normalized": "xm[",
+   "stripped": "xm["
+  },
+  {
+   "input": "'pass%70cookiehttps://",
+   "normalized": "'pass%70cookiehttps://",
+   "stripped": "'pass%70cookiehttps://"
+  },
+  {
+   "input": "\\\\u001b[\\\\\u001b[\u001b]a%70\u0007http:\\\\",
+   "normalized": "\\http:\\\\",
+   "stripped": "\\http:\\\\"
+  },
+  {
+   "input": "ht\\ntp:\u0000\u001b[ \u001b\\:8080\\\\/?\u0007",
+   "normalized": "ht\\ntp:\\:8080/?",
+   "stripped": "ht\\ntp:\\:8080/?"
+  },
+  {
+   "input": "////\u0007\\t\r\\\"",
+   "normalized": "////\\t\r\\\"",
+   "stripped": "////\\t\r\\\""
+  },
+  {
+   "input": "\\\\u0022\\u005c\\u005cwss:?basictoken\\\\",
+   "normalized": "\\\\\\\"\\u005c\\u005cwss:?basictoken\\\\",
+   "stripped": "\\\\\\\"\\u005c\\u005cwss:?basictoken\\\\"
+  },
+  {
+   "input": "\\x1b[\\u001b]\u0000",
+   "normalized": "u001b]",
+   "stripped": "u001b]"
+  },
+  {
+   "input": "\\u00\\u0022m'\\\\u001b[bearer'",
+   "normalized": "\\u00\\\"m'bearer'",
+   "stripped": "\\u00\\\"m'bearer'"
+  },
+  {
+   "input": "&\"\\x1b[😀ftp:/\t",
+   "normalized": "&\"😀ftp:/\t",
+   "stripped": "&\"😀ftp:/\t"
+  },
+  {
+   "input": "\"\\u001b[&?:",
+   "normalized": "\"?:",
+   "stripped": "\"?:"
+  },
+  {
+   "input": "aht\\ntp:bearer",
+   "normalized": "aht\\ntp:bearer",
+   "stripped": "aht\\ntp:bearer"
+  },
+  {
+   "input": "alice\\u00alice\\u0070",
+   "normalized": "alice\\u00alicep",
+   "stripped": "alice\\u00alicep"
+  },
+  {
+   "input": "wss:cookie\u001b]",
+   "normalized": "wss:cookie",
+   "stripped": "wss:cookie"
+  },
+  {
+   "input": "cookiehttp:\\\\wss:\\u0022:\u001bP",
+   "normalized": "cookiehttp:\\\\wss:\\\":",
+   "stripped": "cookiehttp:\\\\wss:\\\":"
+  },
+  {
+   "input": "x host.example",
+   "normalized": "x host.example",
+   "stripped": "x host.example"
+  },
+  {
+   "input": "\\x1b[\\u000",
+   "normalized": "u000",
+   "stripped": "u000"
+  },
+  {
+   "input": "key\"%70\u001bP\\\\u0022\u001b[:8080😀=\t\\n",
+   "normalized": "key\"%70",
+   "stripped": "key\"%70"
+  },
+  {
+   "input": "é\\\\u0022\u001b(\\x1b[\\u001b[",
+   "normalized": "é\\\\\\\"x1b[[",
+   "stripped": "é\\\\\\\"x1b[["
+  },
+  {
+   "input": "//=\\\\/\u0000'http:\\\\https://:wss:ftp:/xtoken",
+   "normalized": "//=/'http:\\\\https://:wss:ftp:/xtoken",
+   "stripped": "//=/'http:\\\\https://:wss:ftp:/xtoken"
+  },
+  {
+   "input": "&&bearer\\u005c\n\u001b\\?alice\\u001b]",
+   "normalized": "&&bearer\\u005c\n\\?alice",
+   "stripped": "&&bearer\\u005c\n\\?alice"
+  },
+  {
+   "input": "\u001b(basic'\\u001b[\nwss:\t\u001b\\\u001bP\\\\/\\\\/",
+   "normalized": "basic'\nwss:\t\\",
+   "stripped": "basic'\nwss:\t\\"
+  },
+  {
+   "input": "\\t:8080\\u005c\r\\x1b[",
+   "normalized": "\\t:8080\\u005c\r[",
+   "stripped": "\\t:8080\\u005c\r["
+  },
+  {
+   "input": "h\ttps:﷐/ht\\ntp:\u001b[:8080 ",
+   "normalized": "h\ttps:/ht\\ntp:[:8080 ",
+   "stripped": "h\ttps:/ht\\ntp:[:8080 "
+  },
+  {
+   "input": "1//﷐\\u001b[\\\\\\u001b(%70\u001b('\\u0070basicht\\ntp:",
+   "normalized": "1//0basicht\\ntp:",
+   "stripped": "1//0basicht\\ntp:"
+  },
+  {
+   "input": "\\\\u001b[\\n",
+   "normalized": "n",
+   "stripped": "n"
+  },
+  {
+   "input": "token\\n:8080\ncookie\\u001b(?😀\\b\t",
+   "normalized": "token\\n:8080\ncookie(?😀\\b\t",
+   "stripped": "token\\n:8080\ncookie(?😀\\b\t"
+  },
+  {
+   "input": "0\\\\u0022key",
+   "normalized": "0\\\\\\\"key",
+   "stripped": "0\\\\\\\"key"
+  },
+  {
+   "input": "\u001b(: ",
+   "normalized": "(: ",
+   "stripped": "(: "
+  },
+  {
+   "input": "pass\u001b[\u001b]wss:\\\\/tokenm \\\\u0022",
+   "normalized": "pass",
+   "stripped": "pass"
+  },
+  {
+   "input": "&http:\\\\\u001b\\\u001b\\//\\\\/\\u0070",
+   "normalized": "&http:\\\\\\",
+   "stripped": "&http:\\\\\\"
+  },
+  {
+   "input": ":8080\\b\u001bPé\\x1b[😀@host.example﷐",
+   "normalized": ":8080\\b",
+   "stripped": ":8080\\b"
+  },
+  {
+   "input": "\u001b(ma\u001bPh\ttps:",
+   "normalized": "a",
+   "stripped": "a"
+  },
+  {
+   "input": "h\ttps:é \\/\t/1host.example&wss:\\u001b[",
+   "normalized": "h\ttps:é /\t/1host.example&ss:[",
+   "stripped": "h\ttps:é /\t/1host.example&ss:["
+  },
+  {
+   "input": "'\\u0070 https:/&https://passht\\ntp:\\u00\\u0070wss:",
+   "normalized": "'p https:/&https://passht\\ntp:\\u00pwss:",
+   "stripped": "'p https:/&https://passht\\ntp:\\u00pwss:"
+  },
+  {
+   "input": "x\\u0070#",
+   "normalized": "xp#",
+   "stripped": "xp#"
+  },
+  {
+   "input": "https:/é",
+   "normalized": "https:/é",
+   "stripped": "https:/é"
+  },
+  {
+   "input": "#\\u0022`http:\\\\\\u001b( #\\\"",
+   "normalized": "#",
+   "stripped": "#"
+  },
+  {
+   "input": "keycookiealice%70ht\\ntp::8080basic\u001bP`%70",
+   "normalized": "keycookiealice%70ht\\ntp::8080basic",
+   "stripped": "keycookiealice%70ht\\ntp::8080basic"
+  },
+  {
+   "input": "alicebasic\\\\u001b[\u0000//",
+   "normalized": "alicebasic//",
+   "stripped": "alicebasic//"
+  },
+  {
+   "input": "\u001b]alice0'bearerhost.example:8080\\nma",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b[%70@\\\\/😀token\"`pass\\\\u0022",
+   "normalized": "70@/😀token\"`pass\\\\\\\"",
+   "stripped": "70@/😀token\"`pass\\\\\\\""
+  },
+  {
+   "input": "?=: https:// ::\\\\u0022",
+   "normalized": "?=: https:// ::\\\\\\\"",
+   "stripped": "?=: https:// ::\\\\\\\""
+  },
+  {
+   "input": "xa=wss:: \u001b[\\\\u0022",
+   "normalized": "xa=wss:: \\\"",
+   "stripped": "xa=wss:: \\\""
+  },
+  {
+   "input": "//\\u001b(ht\\ntp:\\u0070\\\"\\/\u0000",
+   "normalized": "//t\\ntp:p\\\"/",
+   "stripped": "//t\\ntp:p\\\"/"
+  },
+  {
+   "input": "😀",
+   "normalized": "😀",
+   "stripped": "😀"
+  },
+  {
+   "input": "/&\u001b(😀\u0000\\\\\u0007\\/https:/",
+   "normalized": "/&(😀/https:/",
+   "stripped": "/&(😀\\\\/https:/"
+  },
+  {
+   "input": "\\x1b[cookie\\u00😀",
+   "normalized": "cookie\\u00😀",
+   "stripped": "cookie\\u00😀"
+  },
+  {
+   "input": "\\n\\\"\\\\\\t\\u001b]\u001b\\'pass0?",
+   "normalized": "\\n\\\"\\\\\\t\\'pass0?",
+   "stripped": "\\n\\\"\\\\\\t\\'pass0?"
+  },
+  {
+   "input": "#\n",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "cookie\\\\u0022\\u001b(\\b\\nht\\ntp:#\u0007",
+   "normalized": "cookie\\\\\\\"(\\b\\nht\\ntp:#",
+   "stripped": "cookie\\\\\\\"(\\b\\nht\\ntp:#"
+  },
+  {
+   "input": "\\ncookie\\x1b[",
+   "normalized": "\\ncookie[",
+   "stripped": "\\ncookie["
+  },
+  {
+   "input": "\\\\h\ttps: \\/&\\bm\\\\//",
+   "normalized": "\\\\h\ttps: /&bm//",
+   "stripped": "\\\\h\ttps: /&bm//"
+  },
+  {
+   "input": "ftp:/https://x: \\\\",
+   "normalized": "ftp:/https://x: \\\\",
+   "stripped": "ftp:/https://x: \\\\"
+  },
+  {
+   "input": "\\\\u001b[=\\u001b( %70a#\u0007\\u005c\r",
+   "normalized": "u001b( %70a#\\u005c\r",
+   "stripped": "u001b( %70a#\\u005c\r"
+  },
+  {
+   "input": "\u001bP \\\"ftp://\\u005chttps:/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "wss:\\u001b(?basic%70\u001bP\u001b[ 1bearer%70pass",
+   "normalized": "wss:(?basic%70",
+   "stripped": "wss:(?basic%70"
+  },
+  {
+   "input": "\"\u001bPx: \u001bPwss:\\u00\u001b[ftp:/\\\\h\ttps:",
+   "normalized": "\"",
+   "stripped": "\""
+  },
+  {
+   "input": "\n😀https:/=ht\\ntp:",
+   "normalized": "\n😀https:/=ht\\ntp:",
+   "stripped": "\n😀https:/=ht\\ntp:"
+  },
+  {
+   "input": "`ht\\ntp:ftp:/ \\\\///m&😀\\\\u0022﷐﷐",
+   "normalized": "`ht\\ntp:ftp:/ ///m&😀\\\\\\\"",
+   "stripped": "`ht\\ntp:ftp:/ ///m&😀\\\\\\\""
+  },
+  {
+   "input": "\u0000h\ttps:\\\\\n/0",
+   "normalized": "\n/0",
+   "stripped": "\n/0"
+  },
+  {
+   "input": "/http:\\\\http:\\\\:\\\\a",
+   "normalized": "/http:\\\\http:\\\\:\\\\a",
+   "stripped": "/http:\\\\http:\\\\:\\\\a"
+  },
+  {
+   "input": "😀\\u001b(ftp:/basic\rkeyx\u001bP:8080\u001bP",
+   "normalized": "😀tp:/basic\rkey",
+   "stripped": "😀tp:/basic\rkey"
+  },
+  {
+   "input": "alice\u0007\u001b(/\u0007\\u0070basic",
+   "normalized": "alice(/pbasic",
+   "stripped": "alice(/pbasic"
+  },
+  {
+   "input": "\\\\/1&\\u0070\u0000https://",
+   "normalized": "/1&phttps://",
+   "stripped": "/1&phttps://"
+  },
+  {
+   "input": ":8080aalice//\n",
+   "normalized": ":8080aalice//\n",
+   "stripped": ":8080aalice//\n"
+  },
+  {
+   "input": "\\u001b[\\\\u001b[\u001b[",
+   "normalized": "[[",
+   "stripped": "[["
+  },
+  {
+   "input": "pass\u00000",
+   "normalized": "pass0",
+   "stripped": "pass0"
+  },
+  {
+   "input": "\u001b\\﷐",
+   "normalized": "\\",
+   "stripped": "\\"
+  },
+  {
+   "input": "0\u0007\u0007",
+   "normalized": "0",
+   "stripped": "0"
+  },
+  {
+   "input": "\u001bP@https://\n?\u0007",
+   "normalized": "\n?",
+   "stripped": "\n?"
+  },
+  {
+   "input": "\\\\`m\\/%70\\u00host.example#",
+   "normalized": "\\\\`m/%70\\u00host.example#",
+   "stripped": "\\\\`m/%70\\u00host.example#"
+  },
+  {
+   "input": "\\u0070a:8080\u0000\\u005cx\\\\u001b[m%700\u0000 ",
+   "normalized": "pa:8080\\u005cx%700 ",
+   "stripped": "pa:8080\\u005cx%700 "
+  },
+  {
+   "input": "\r\\x1b[\u0007m\\b\u001b]\u0000\\t",
+   "normalized": "\rm\\b",
+   "stripped": "\rm\\b"
+  },
+  {
+   "input": "\\bftp:/:\\u00http:\\\\\\t\\u005cbearer\\\\u001b[",
+   "normalized": "\\bftp:/:\\u00http:\\\\\\t\\u005cbearer[",
+   "stripped": "\\bftp:/:\\u00http:\\\\\\t\\u005cbearer["
+  },
+  {
+   "input": "\\u0022\\u001b[\u001bP0\n\u0007\\btokenmpass\\\\",
+   "normalized": "\\\"\n\\btokenmpass\\\\",
+   "stripped": "\\\"\n\\btokenmpass\\\\"
+  },
+  {
+   "input": "\\b\u0007",
+   "normalized": "\\b",
+   "stripped": "\\b"
+  },
+  {
+   "input": "/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\\\u001b[\\tht\\ntp:\\/\\\\u0022https://\"\u001bP1wss:",
+   "normalized": "tht\\ntp:/\\\\\\\"https://\"",
+   "stripped": "tht\\ntp:/\\\\\\\"https://\""
+  },
+  {
+   "input": "\\\\u0022a\\u0022",
+   "normalized": "\\\\\\\"a\\\"",
+   "stripped": "\\\\\\\"a\\\""
+  },
+  {
+   "input": "\\u001b[cookie",
+   "normalized": "cookie",
+   "stripped": "cookie"
+  },
+  {
+   "input": "\t\\btoken&bearerhttp:\\\\",
+   "normalized": "\t\\btoken&bearerhttp:\\\\",
+   "stripped": "\t\\btoken&bearerhttp:\\\\"
+  },
+  {
+   "input": "/\u001b(key\\\\u0022wss:éhttps://\u001b\\cookie\u001b\\",
+   "normalized": "/key\\\\\\\"wss:éhttps://\\cookie\\",
+   "stripped": "/key\\\\\\\"wss:éhttps://\\cookie\\"
+  },
+  {
+   "input": "\\n\\/\\\\u0022\u001b]\u0007\\\\\\n&bearer",
+   "normalized": "\\n/\\\\\\\"\\\\\\n&bearer",
+   "stripped": "\\n/\\\\\\\"\\\\\\n&bearer"
+  },
+  {
+   "input": "\t:8080bearer",
+   "normalized": "\t:8080bearer",
+   "stripped": "\t:8080bearer"
+  },
+  {
+   "input": "x%70\\b:'/\\\"\\u005chttps:/\r﷐",
+   "normalized": "x%70\\b:'/\\\"\\u005chttps:/\r",
+   "stripped": "x%70\\b:'/\\\"\\u005chttps:/\r"
+  },
+  {
+   "input": "\\\\u001b[\u001b]\\\\u001b[\\/\u001b(ht\\ntp:0\\/\u001b]",
+   "normalized": "t\\ntp:0/",
+   "stripped": "t\\ntp:0/"
+  },
+  {
+   "input": "\\\\u0022﷐cookie\\u001b]'ht\\ntp:",
+   "normalized": "\\\\\\\"cookie\\ntp:",
+   "stripped": "\\\\\\\"cookie\\ntp:"
+  },
+  {
+   "input": "\\x1b[\u001b(\\u001b[bearer\\u005c😀///http:\\\\`",
+   "normalized": "(bearer\\u005c😀///http:\\\\`",
+   "stripped": "(bearer\\u005c😀///http:\\\\`"
+  },
+  {
+   "input": "épassx\\u005c\u0007basic\\nht\\ntp:pass=",
+   "normalized": "épassx\\u005cbasic\\nt\\ntp:pass=",
+   "stripped": "épassx\\u005cbasic\\nt\\ntp:pass="
+  },
+  {
+   "input": "ftp:/\r\u001b(\\u00",
+   "normalized": "ftp:/\ru00",
+   "stripped": "ftp:/\ru00"
+  },
+  {
+   "input": "\\n\n`\\\\ht\\ntp:x/\u001bP: `//",
+   "normalized": "\\n\n`\\\\ht\\ntp:x/",
+   "stripped": "\\n\n`\\\\ht\\ntp:x/"
+  },
+  {
+   "input": "\\u001b[\"'%70﷐`\u0007\\\\/\\b&\\\"%70",
+   "normalized": "70`/\\b&\\\"%70",
+   "stripped": "70`/\\b&\\\"%70"
+  },
+  {
+   "input": "1\\\\u001b[\\\\/\\u001b(\nx",
+   "normalized": "1u001b(\nx",
+   "stripped": "1u001b(\nx"
+  },
+  {
+   "input": "\\bbearer#﷐",
+   "normalized": "\\bbearer#",
+   "stripped": "\\bbearer#"
+  },
+  {
+   "input": "\u001bP\\\\alice\\u0070\t",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\t\"\u001b\\alice\thttp:\\\\#\u001b]",
+   "normalized": "\t\"\\alice\thttp:\\\\#",
+   "stripped": "\t\"\\alice\thttp:\\\\#"
+  },
+  {
+   "input": "ht\\ntp:&`﷐",
+   "normalized": "ht\\ntp:&`",
+   "stripped": "ht\\ntp:&`"
+  },
+  {
+   "input": "\n\\\\u001b[0\\\"\\u00h\ttps:\u001b\\\u0007https:/?alice\u001b\\",
+   "normalized": "\n\"\\u00h\ttps:\\https:/?alice\\",
+   "stripped": "\n\"\\u00h\ttps:\\https:/?alice\\"
+  },
+  {
+   "input": "1: ",
+   "normalized": "1: ",
+   "stripped": "1: "
+  },
+  {
+   "input": "\\x1b[ \t\\n\\u001b(\u001b(key=alice&",
+   "normalized": "\\n((",
+   "stripped": "\\n(("
+  },
+  {
+   "input": "#\\\\/host.examplehttp:\\\\\"&ht\\ntp:\\/pass: ",
+   "normalized": "#/host.examplehttp:\\\\\"&ht\\ntp:/pass: ",
+   "stripped": "#/host.examplehttp:\\\\\"&ht\\ntp:/pass: "
+  },
+  {
+   "input": "@?\\n@\\/cookie",
+   "normalized": "@?\\n",
+   "stripped": "@?\\n"
+  },
+  {
+   "input": "basic\\u001b]\\\\/%70x",
+   "normalized": "basic",
+   "stripped": "basic"
+  },
+  {
+   "input": "basic=\\t: cookie",
+   "normalized": "basic=\\t: cookie",
+   "stripped": "basic=\\t: cookie"
+  },
+  {
+   "input": "aht\\ntp:\\u001b(",
+   "normalized": "aht\\ntp:u001b(",
+   "stripped": "aht\\ntp:u001b("
+  },
+  {
+   "input": "\\u001b[a\\bm\n1é\\\\u0022",
+   "normalized": "\\bm\n1é\\\\\\\"",
+   "stripped": "\\bm\n1é\\\\\\\""
+  },
+  {
+   "input": "\u001b(\\u0070alice'@token\\\\/\\u005c\\u005c/http:\\\\",
+   "normalized": "alice'@token/\\u005c\\u005c/http:\\\\",
+   "stripped": "alice'@token/\\u005c\\u005c/http:\\\\"
+  },
+  {
+   "input": "##\u001b]%70",
+   "normalized": "##",
+   "stripped": "##"
+  },
+  {
+   "input": ": \\u001b]\" : \\u001b[h\ttps:\\u0070bearerhost.examplebearer",
+   "normalized": ": \" : \ttps:pbearerhost.examplebearer",
+   "stripped": ": \" : \ttps:pbearerhost.examplebearer"
+  },
+  {
+   "input": "ftp:/ \u0007\\\\/\\/@éaht\\ntp:bearer\"",
+   "normalized": "ftp:/ //@éaht\\ntp:bearer\"",
+   "stripped": "ftp:/ //@éaht\\ntp:bearer\""
+  },
+  {
+   "input": "x\u0007 ",
+   "normalized": "x ",
+   "stripped": "x "
+  },
+  {
+   "input": "\\u0022: pass",
+   "normalized": "\\\": pass",
+   "stripped": "\\\": pass"
+  },
+  {
+   "input": "\\/key:\u0007﷐=a=\u001b\\",
+   "normalized": "/key:=\\",
+   "stripped": "/key:=\\"
+  },
+  {
+   "input": "\\u001b[\\u0022https://",
+   "normalized": "\"https://",
+   "stripped": "\"https://"
+  },
+  {
+   "input": "?/\\/https:/m\\\\/cookieht\\ntp:\r@",
+   "normalized": "?//https:/m/cookieht\\ntp:\r@",
+   "stripped": "?//https:/m/cookieht\\ntp:\r@"
+  },
+  {
+   "input": "=basic\\t\u001b]\"basicalice:: mcookie",
+   "normalized": "=basic\\t",
+   "stripped": "=basic\\t"
+  },
+  {
+   "input": "0\\u001b[\u001b\\?é",
+   "normalized": "0\\?é",
+   "stripped": "0\\?é"
+  },
+  {
+   "input": "wss:host.example%70xcookie?m:",
+   "normalized": "wss:host.example%70xcookie?m:",
+   "stripped": "wss:host.example%70xcookie?m:"
+  },
+  {
+   "input": "%70&\\x1b[basicm\\u005cbearer\\u0022\tpass",
+   "normalized": "70&asicm\\u005cearer\\\"\tpass",
+   "stripped": "70&asicm\\u005cearer\\\"\tpass"
+  },
+  {
+   "input": "﷐",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b\\'",
+   "normalized": "\\'",
+   "stripped": "\\'"
+  },
+  {
+   "input": "1ftp:/pass\\/h\ttps:'h\ttps:\\u0070%70",
+   "normalized": "1ftp:/pass/h\ttps:'h\ttps:p%70",
+   "stripped": "1ftp:/pass/h\ttps:'h\ttps:p%70"
+  },
+  {
+   "input": "#`\\\\u0022//\\\\/passcookie",
+   "normalized": "#`\\\\\\\"///passcookie",
+   "stripped": "#`\\\\\\\"///passcookie"
+  },
+  {
+   "input": "\u0007\u0007\\\\/m\u0007\u001b(",
+   "normalized": "/m(",
+   "stripped": "/m("
+  },
+  {
+   "input": ":\u0007\u001b\\?%70bearer\\\"%70:m﷐",
+   "normalized": ":\\?%70bearer\\\"%70:m",
+   "stripped": ":\\?%70bearer\\\"%70:m"
+  },
+  {
+   "input": "\\b\\x1b[keybasic\\u001b[",
+   "normalized": "\\bkeybasic[",
+   "stripped": "\\bkeybasic["
+  },
+  {
+   "input": "x\u001b]\u001b\\ht\\ntp:token\u001b(/0\u001b\\\\u00ah\ttps:",
+   "normalized": "xht\\ntp:token\\\\u00ah\ttps:",
+   "stripped": "xht\\ntp:token\\\\u00ah\ttps:"
+  },
+  {
+   "input": "h\ttps:\u0007\u001bP\\b@:8080h\ttps:\\\\u0022host.example",
+   "normalized": "h\ttps:",
+   "stripped": "h\ttps:"
+  },
+  {
+   "input": " http:\\\\\\\\u0022",
+   "normalized": " ttp:\\\\\\\\\\\\\\\"",
+   "stripped": " ttp:\\\\\\\\\\\\\\\""
+  },
+  {
+   "input": "basichttps://'\u0007",
+   "normalized": "basichttps://'",
+   "stripped": "basichttps://'"
+  },
+  {
+   "input": ": %70\\u0070%70\\\"?\u001b(//\\x1b[",
+   "normalized": ": %70p%70\\\"?x1b[",
+   "stripped": ": %70p%70\\\"?x1b["
+  },
+  {
+   "input": "\u001b(\u0007http:\\\\ ?\\\\u001b[host.examplecookiehttp:\\\\:",
+   "normalized": "(http:\\\\",
+   "stripped": "(http:\\\\"
+  },
+  {
+   "input": "é=h\ttps:token\r&\\\\u0022alice\u001b[//\\u001b[",
+   "normalized": "é=h\ttps:token\r&\\\\\\\"aliceu001b[",
+   "stripped": "é=h\ttps:token\r&\\\\\\\"aliceu001b["
+  },
+  {
+   "input": "x﷐",
+   "normalized": "x",
+   "stripped": "x"
+  },
+  {
+   "input": "\u001b[\\b\\tém\u001b[:8080\\u00",
+   "normalized": "b\\tém",
+   "stripped": "b\\tém"
+  },
+  {
+   "input": "\\u001b]\u001b(\n\u001b\\\\n\\/ht\\ntp:\"//",
+   "normalized": "\n\\\\n/ht\\ntp:\"//",
+   "stripped": "\n\\\\n/ht\\ntp:\"//"
+  },
+  {
+   "input": "\\\\/ \\u001b[\\x1b[cookie",
+   "normalized": "/ cookie",
+   "stripped": "/ cookie"
+  },
+  {
+   "input": "😀https:/ http:\\\\token",
+   "normalized": "😀https:/ http:\\\\token",
+   "stripped": "😀https:/ http:\\\\token"
+  },
+  {
+   "input": "\twss:?\u001b]//http:\\\\ @ftp:/: =",
+   "normalized": "\twss:?",
+   "stripped": "\twss:?"
+  },
+  {
+   "input": "\u001b[\\u001b(\\n\u001b[https:/\u001b[1\"😀",
+   "normalized": "u001b(\\nttps:/😀",
+   "stripped": "u001b(\\nttps:/😀"
+  },
+  {
+   "input": "wss:\\//",
+   "normalized": "wss://",
+   "stripped": "wss://"
+  },
+  {
+   "input": "mpass/",
+   "normalized": "mpass/",
+   "stripped": "mpass/"
+  },
+  {
+   "input": ":\u001b[﷐😀\\tkeyhttp:\\\\//",
+   "normalized": ":😀\\tkeyhttp://",
+   "stripped": ":😀\\tkeyhttp://"
+  },
+  {
+   "input": "\\\\/alicewss:\\u001b]",
+   "normalized": "/alicewss:",
+   "stripped": "/alicewss:"
+  },
+  {
+   "input": "mpassbearer\\\"a=key\\\"",
+   "normalized": "mpassbearer\\\"a=key\\\"",
+   "stripped": "mpassbearer\\\"a=key\\\""
+  },
+  {
+   "input": "\\\"host.example0\\\\/a",
+   "normalized": "\\\"host.example0/a",
+   "stripped": "\\\"host.example0/a"
+  },
+  {
+   "input": "\\n \\\\u0022😀cookie",
+   "normalized": "\\n \\\\\\\"😀cookie",
+   "stripped": "\\n \\\\\\\"😀cookie"
+  },
+  {
+   "input": "wss:\"é",
+   "normalized": "wss:\"é",
+   "stripped": "wss:\"é"
+  },
+  {
+   "input": "\\n//\u001b[",
+   "normalized": "\\n//[",
+   "stripped": "\\n//["
+  },
+  {
+   "input": "\u001b(",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "\\/https://https://",
+   "normalized": "/https://https://",
+   "stripped": "/https://https://"
+  },
+  {
+   "input": "\u001b(`a\\\\u0022\\u0022\"",
+   "normalized": "a\\\\\\\"\\\"\"",
+   "stripped": "a\\\\\\\"\\\"\""
+  },
+  {
+   "input": "\\n'/ftp:/:8080\r",
+   "normalized": "\\n'/ftp:/:8080\r",
+   "stripped": "\\n'/ftp:/:8080\r"
+  },
+  {
+   "input": "\u001bP\\u0022",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u001b]\u001b]\\b\\\\\\\\pass\u001b(\\n:ht\\ntp:",
+   "normalized": "\\b\\\\\\\\passn:ht\\ntp:",
+   "stripped": "\\b\\\\\\\\passn:ht\\ntp:"
+  },
+  {
+   "input": "host.exampleé\t\u001bP\u0007cookie\\x1b[",
+   "normalized": "host.exampleé\tcookie[",
+   "stripped": "host.exampleé\tcookie["
+  },
+  {
+   "input": "bearer\\u0070\\\\m=",
+   "normalized": "bearer\\\\m=",
+   "stripped": "bearer\\\\m="
+  },
+  {
+   "input": "1aliceht\\ntp:%70\\/",
+   "normalized": "1aliceht\\ntp:%70/",
+   "stripped": "1aliceht\\ntp:%70/"
+  },
+  {
+   "input": "\\/\\x1b[\\u001b(alice\\x1b[wss:a\u001b(\\u00host.examplex",
+   "normalized": "/u001b(u00host.examplex",
+   "stripped": "/u001b(u00host.examplex"
+  },
+  {
+   "input": "&0/\"\u001b[",
+   "normalized": "&0/\"[",
+   "stripped": "&0/\"["
+  },
+  {
+   "input": "\\t﷐\"&\u001bP",
+   "normalized": "\\t\"&",
+   "stripped": "\\t\"&"
+  },
+  {
+   "input": "\ta\\x1b[\u001bP#bearerpass@`\\u0022//",
+   "normalized": "\ta",
+   "stripped": "\ta"
+  },
+  {
+   "input": "\\nbasic\\b:😀\\u001b]basic\\\\u001b[\\u0070",
+   "normalized": "\\nbasic\\b:😀",
+   "stripped": "\\nbasic\\b:😀"
+  },
+  {
+   "input": "\\\\u0022wss:\u001b\\\r1\\u005c\\b😀=:8080\u001b\\",
+   "normalized": "\\\\\\\"wss:\\\r1\\u005c\\b😀=:8080\\",
+   "stripped": "\\\\\\\"wss:\\\r1\\u005c\\b😀=:8080\\"
+  },
+  {
+   "input": "`\\u0070\\u0022\\u00",
+   "normalized": "`p",
+   "stripped": "`p"
+  },
+  {
+   "input": "/`#",
+   "normalized": "/`#",
+   "stripped": "/`#"
+  },
+  {
+   "input": "\"alice",
+   "normalized": "\"alice",
+   "stripped": "\"alice"
+  },
+  {
+   "input": "passwss:é0\\nhttp:\\\\@h\ttps:0\u001b\\﷐:",
+   "normalized": "passwss:é0\\nhttp:\\\\@h\ttps:0\\:",
+   "stripped": "passwss:é0\\nhttp:\\\\@h\ttps:0\\:"
+  },
+  {
+   "input": "ftp:/@http:\\\\%70\r",
+   "normalized": "ftp://@http:\\\\%70\r",
+   "stripped": "ftp:/@http:\\\\%70\r"
+  },
+  {
+   "input": "1\tftp:/1\\u00//😀wss:http:\\\\https:/&",
+   "normalized": "1\tftp:/1\\u00//😀wss:http:\\\\https:/&",
+   "stripped": "1\tftp:/1\\u00//😀wss:http:\\\\https:/&"
+  },
+  {
+   "input": "tokenhttps://\\\\/\\\"&`\\u001b[\\u001b]\u001bP%70?",
+   "normalized": "tokenhttps:///\\\"&`u001b]",
+   "stripped": "tokenhttps:///\\\"&`u001b]"
+  },
+  {
+   "input": "alice\n:8080ftp:/",
+   "normalized": "alice\n:8080ftp:/",
+   "stripped": "alice\n:8080ftp:/"
+  },
+  {
+   "input": "\\u001b(\\\\/' \"basic\\\\bearer&@",
+   "normalized": "(/' \"basic\\\\bearer&@",
+   "stripped": "(/' \"basic\\\\bearer&@"
+  },
+  {
+   "input": "?:'?\"\u0000éa",
+   "normalized": "?:'?",
+   "stripped": "?:'?"
+  },
+  {
+   "input": "pass`\\\\u0022token'\u001b\\token",
+   "normalized": "pass`\\\\\\\"token\\token",
+   "stripped": "pass`\\\\\\\"token\\token"
+  },
+  {
+   "input": "ftp:/\u001b[basic\u0000@\\nkeybasic http:\\\\wss:",
+   "normalized": "ftp://basic@\\nkeybasic http:\\\\wss:",
+   "stripped": "ftp:/basic@\\nkeybasic http:\\\\wss:"
+  },
+  {
+   "input": "\r\\u001b(cookie//",
+   "normalized": "\rcookie//",
+   "stripped": "\rcookie//"
+  },
+  {
+   "input": "0\\n/\u001bP\\\\u001b[0\\u001b(http:\\\\\u001b[",
+   "normalized": "0\\n/[",
+   "stripped": "0\\n/["
+  },
+  {
+   "input": "\\\"😀@=:\\u0070@alicealice:8080\\u0070\t",
+   "normalized": "\\\"😀@=:p@alicealice:8080p\t",
+   "stripped": "\\\"😀@=:p@alicealice:8080p\t"
+  },
+  {
+   "input": "\u001b[\\u001b(basic#1h\ttps:=\\\\u0022",
+   "normalized": "u001b(basic#1h\ttps:=\\\\\\\"",
+   "stripped": "u001b(basic#1h\ttps:=\\\\\\\""
+  },
+  {
+   "input": "ht\\ntp:\u0007\u001b]\\u0070@\t\\/\\u0070https:/http:\\\\😀",
+   "normalized": "ht\\ntp:",
+   "stripped": "ht\\ntp:"
+  },
+  {
+   "input": "\\té\\\\/\u001b(: \u001b(\\bx@\\u001b( \"",
+   "normalized": "\\té/(: bx@( \"",
+   "stripped": "\\té/(: bx@( \""
+  },
+  {
+   "input": "ht\\ntp:\u001b[0",
+   "normalized": "ht\\ntp:[0",
+   "stripped": "ht\\ntp:[0"
+  },
+  {
+   "input": "\u001bPhttps://\r",
+   "normalized": "\r",
+   "stripped": "\r"
+  },
+  {
+   "input": "ftp:/é\\u001b[0\\n\"\\u001b[\u0007m",
+   "normalized": "ftp:/énm",
+   "stripped": "ftp:/énm"
+  },
+  {
+   "input": "\u001bP\\\\u0022/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\r\\t\\u001b[\u001b(\\\\u0022\\t",
+   "normalized": "\rt\\\\\"\\t",
+   "stripped": "\rt\\\\\"\\t"
+  },
+  {
+   "input": "\\u0022:8080\u0007\\u001b]=1\\t",
+   "normalized": "\\\":8080\\t",
+   "stripped": "\\\":8080\\t"
+  },
+  {
+   "input": " alice\u001b(\\x1b[ftp:/`\\\\/a\\\\/host.example",
+   "normalized": " alice(tp:/`/a/host.example",
+   "stripped": " alice(tp:/`/a/host.example"
+  },
+  {
+   "input": "\\n\\u005c@😀token\\u001b[key /",
+   "normalized": "\\n\\u005c@😀tokeney /",
+   "stripped": "\\n\\u005c@😀tokeney /"
+  },
+  {
+   "input": "?\u001bP\\u001b[😀\\u0022\\n\\u001b(",
+   "normalized": "?",
+   "stripped": "?"
+  },
+  {
+   "input": " https:/'\\b😀\u001b\\",
+   "normalized": " https:/'\\b😀\\",
+   "stripped": " https:/'\\b😀\\"
+  },
+  {
+   "input": "m﷐\\/`basic",
+   "normalized": "m/`basic",
+   "stripped": "m/`basic"
+  },
+  {
+   "input": "\\u0022bearer\u0007 https://",
+   "normalized": "\\\"bearer https://",
+   "stripped": "\\\"bearer https://"
+  },
+  {
+   "input": "http:\\\\host.example😀cookie\u001b(https:/\u001b[",
+   "normalized": "http:\\\\host.example😀cookiettps:/[",
+   "stripped": "http:\\\\host.example😀cookiettps:/["
+  },
+  {
+   "input": "https://é\\u0022basic\u0007\\u001b(\u0007\u001b]%70",
+   "normalized": "https://é\\\"basic(",
+   "stripped": "https://é\\\"basic("
+  },
+  {
+   "input": "aliceftp:/1`",
+   "normalized": "aliceftp:/1`",
+   "stripped": "aliceftp:/1`"
+  },
+  {
+   "input": "\thost.example\\u005c\\u001b(http:\\\\\u0007/%70&\\\\/😀\u001b(",
+   "normalized": "\thost.example\\u005cttp:/%70&/😀(",
+   "stripped": "\thost.example\\u005cttp:\\\\/%70&/😀("
+  },
+  {
+   "input": "wss:host.example//\"\rhost.example\u0007basicftp:/bearer=",
+   "normalized": "wss:host.example//\"\rhost.examplebasicftp:/bearer=",
+   "stripped": "wss:host.example//\"\rhost.examplebasicftp:/bearer="
+  },
+  {
+   "input": "h\ttps:\\\\u0022' https:/\\u001b]",
+   "normalized": "h\ttps:\\\\\\\"' https:/",
+   "stripped": "h\ttps:\\\\\\\"' https:/"
+  },
+  {
+   "input": "``\\t/",
+   "normalized": "``\\t/",
+   "stripped": "``\\t/"
+  },
+  {
+   "input": "\u0007pass\u0000\u001b(?😀\u00001\ralice%70",
+   "normalized": "pass(\ralice%70",
+   "stripped": "pass(\ralice%70"
+  },
+  {
+   "input": "https:/é\ré// http:\\\\@\r# ",
+   "normalized": "https:/é\ré// http://@\r# ",
+   "stripped": "https:/é\ré// http:\\\\@\r# "
+  },
+  {
+   "input": " ht\\ntp:\" \\\\",
+   "normalized": " ht\\ntp:\" \\\\",
+   "stripped": " ht\\ntp:\" \\\\"
+  },
+  {
+   "input": "\n:8080\nbearerh\ttps:ftp:/\\\"\"\\u00",
+   "normalized": "\n:8080\nbearerh\ttps:ftp:/\\\"\"\\u00",
+   "stripped": "\n:8080\nbearerh\ttps:ftp:/\\\"\"\\u00"
+  },
+  {
+   "input": "\\u0070#\\u001b[x",
+   "normalized": "p#",
+   "stripped": "p#"
+  },
+  {
+   "input": "1http:\\\\&:",
+   "normalized": "1http:\\\\&:",
+   "stripped": "1http:\\\\&:"
+  },
+  {
+   "input": "\\u00\\x1b[:#\\x1b[\\u00\\\\/cookie",
+   "normalized": "\\u0000/cookie",
+   "stripped": "\\u0000/cookie"
+  },
+  {
+   "input": "ht\\ntp:pass\\/\\u005c:\\u005c &\u001bP",
+   "normalized": "ht\\ntp:pass/\\u005c:\\u005c &",
+   "stripped": "ht\\ntp:pass/\\u005c:\\u005c &"
+  },
+  {
+   "input": "\n0\u0007cookie",
+   "normalized": "\n0cookie",
+   "stripped": "\n0cookie"
+  },
+  {
+   "input": "\\u005ca&\\u001b(\\u001b]1﷐ahttps:/",
+   "normalized": "\\u005ca&(",
+   "stripped": "\\u005ca&("
+  },
+  {
+   "input": "x\\\\u0022﷐basic\\u00//\\x1b[",
+   "normalized": "x\\\\\"basic\\u00//[",
+   "stripped": "x\\\\\"basic\\u00//["
+  },
+  {
+   "input": "\u0000\\u001b[\\\\\u0000\\u0070https:/",
+   "normalized": "\\",
+   "stripped": "\\"
+  },
+  {
+   "input": "\\u00\\u00\\t\u001b[\n:8080&\u001b[😀",
+   "normalized": "\\u00\\u00\\t\n:8080&😀",
+   "stripped": "\\u00\\u00\\t\n:8080&😀"
+  },
+  {
+   "input": ":8080pass\u001b[\\\\u0022\\u001b[/\\n:8080pass\\té",
+   "normalized": ":8080pass\\\\\"n:8080pass\\té",
+   "stripped": ":8080pass\\\\\"n:8080pass\\té"
+  },
+  {
+   "input": "aftp:/\\\\/\\u0070﷐",
+   "normalized": "aftp://p",
+   "stripped": "aftp://p"
+  },
+  {
+   "input": "m' \u001b]\\u001b(ftp:/",
+   "normalized": "m' ",
+   "stripped": "m' "
+  },
+  {
+   "input": "\\b",
+   "normalized": "\\b",
+   "stripped": "\\b"
+  },
+  {
+   "input": "\r\\u0022basiccookie",
+   "normalized": "\r\\\"asiccookie",
+   "stripped": "\r\\\"asiccookie"
+  },
+  {
+   "input": "//\\\"\\b\\\" m:8080\u001b\\@\\t`\\u001b[",
+   "normalized": "//\\\"\\b\\\" m:8080\\@\\t`[",
+   "stripped": "//\\\"\\b\\\" m:8080\\@\\t`["
+  },
+  {
+   "input": "\u001b]é\\nbasic\\\\u001b[",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "h\ttps:bearer\u0000m\u001b\\",
+   "normalized": "h\ttps:bearerm\\",
+   "stripped": "h\ttps:bearerm\\"
+  },
+  {
+   "input": "x&key\\\\u001b[\\u00",
+   "normalized": "x&keyu00",
+   "stripped": "x&keyu00"
+  },
+  {
+   "input": "\u001bPalicehost.example\u001b\\\r😀\\u001b[=\u0000",
+   "normalized": "\r😀",
+   "stripped": "\r😀"
+  },
+  {
+   "input": "\\/éxbasic﷐: \\\\u0022https:/\u001b\\",
+   "normalized": "/éxbasic: \\\\\\\"https:/\\",
+   "stripped": "/éxbasic: \\\\\\\"https:/\\"
+  },
+  {
+   "input": "ht\\ntp:#key",
+   "normalized": "ht\\ntp:#key",
+   "stripped": "ht\\ntp:#key"
+  },
+  {
+   "input": ": x passwss:`token\\u001b(0",
+   "normalized": ": x passss:`token",
+   "stripped": ": x passss:`token"
+  },
+  {
+   "input": "\\\"https://host.examplehost.examplewss:\\/",
+   "normalized": "\\\"https://host.examplehost.examplewss:/",
+   "stripped": "\\\"https://host.examplehost.examplewss:/"
+  },
+  {
+   "input": " #0\\b﷐:\\u001b]\\bbearerbasic ",
+   "normalized": " #b:\\bbearerbasic ",
+   "stripped": " #b:\\bbearerbasic "
+  },
+  {
+   "input": "https://\\t:8080\\u005c\\balice",
+   "normalized": "https://\\t:8080\\u005c\\balice",
+   "stripped": "https://\\t:8080\\u005c\\balice"
+  },
+  {
+   "input": "\\t\\u001b[\u001bPhost.examplemhttp:\\\\\\u001b[\\u005cpasscookie\\b",
+   "normalized": "\\t",
+   "stripped": "\\t"
+  },
+  {
+   "input": "`\u001b\\? host.example\"&\\\\",
+   "normalized": "`\\? host.example\"&\\\\",
+   "stripped": "`\\? host.example\"&\\\\"
+  },
+  {
+   "input": "cookie?//\\n\t\\\\\u001b]:ht\\ntp:",
+   "normalized": "cookie?//\\n\t\\\\",
+   "stripped": "cookie?//\\n\t\\\\"
+  },
+  {
+   "input": "keyalice",
+   "normalized": "keylice",
+   "stripped": "keylice"
+  },
+  {
+   "input": "bearerht\\ntp:wss:01\u0007/",
+   "normalized": "bearerht\\ntp:wss:01/",
+   "stripped": "bearerht\\ntp:wss:01/"
+  },
+  {
+   "input": "\u001b\\\nbearer\u0007\\u001b]`http:\\\\",
+   "normalized": "\\\nbearer\\\\",
+   "stripped": "\\\nbearer\\\\"
+  },
+  {
+   "input": ":8080\\u001b[\\\\/token",
+   "normalized": ":8080token",
+   "stripped": ":8080token"
+  },
+  {
+   "input": "%70\\t?",
+   "normalized": "%70\\t?",
+   "stripped": "%70\\t?"
+  },
+  {
+   "input": ": \u001bP\\\\u0022",
+   "normalized": ": ",
+   "stripped": ": "
+  },
+  {
+   "input": "\\/xkey\\u001b]\u001b\\",
+   "normalized": "/xkey\\",
+   "stripped": "/xkey\\"
+  },
+  {
+   "input": "\u001bP'\\u0022=\u001b[\u001b(",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "&@'http:\\\\%70&http:\\\\\\u0070\u001b\\\u001b\\",
+   "normalized": "&@'http:\\\\%70&ttp:p\\\\",
+   "stripped": "&@'http:\\\\%70&ttp:p\\\\"
+  },
+  {
+   "input": "%70",
+   "normalized": "%70",
+   "stripped": "%70"
+  },
+  {
+   "input": "\u001b[?https://http:\\\\\\\"\\u00\\\"pass\\u001b]",
+   "normalized": "ttps://http:\\\\\\\"\\u00\\\"pass",
+   "stripped": "ttps://http:\\\\\\\"\\u00\\\"pass"
+  },
+  {
+   "input": "cookiealice ht\\ntp: @é:  : ",
+   "normalized": "cookiealice ht\\ntp: @é:  : ",
+   "stripped": "cookiealice ht\\ntp: @é:  : "
+  },
+  {
+   "input": "\\\\/=bearer ",
+   "normalized": "/=bearer ",
+   "stripped": "/=bearer "
+  },
+  {
+   "input": "\\\\u0022\\ncookiepass\\t& :8080\\\"\u0000\\\\u0022",
+   "normalized": "\\\\\\\"\\ncookiepass\\t& :8080\\\"\\\\\\\"",
+   "stripped": "\\\\\\\"\\ncookiepass\\t& :8080\\\"\\\\\\\""
+  },
+  {
+   "input": "https://\\t😀\\t",
+   "normalized": "https://\\t😀\\t",
+   "stripped": "https://\\t😀\\t"
+  },
+  {
+   "input": "cookiekey@",
+   "normalized": "cookiekey@",
+   "stripped": "cookiekey@"
+  },
+  {
+   "input": "m: x\u001b[@\\u0022=&\\u0022 \\t",
+   "normalized": "m: x\\\"=&\\\" \\t",
+   "stripped": "m: x\\\"=&\\\" \\t"
+  },
+  {
+   "input": ":8080\\\\u001b[bearer",
+   "normalized": ":8080earer",
+   "stripped": ":8080earer"
+  },
+  {
+   "input": "`\" ",
+   "normalized": "`\" ",
+   "stripped": "`\" "
+  },
+  {
+   "input": "\\t\\u00m",
+   "normalized": "\\t\\u00m",
+   "stripped": "\\t\\u00m"
+  },
+  {
+   "input": "https:/\\u001b[\\t\\\"\u001b\\host.example?",
+   "normalized": "https:/t\\\"\\host.example?",
+   "stripped": "https:/t\\\"\\host.example?"
+  },
+  {
+   "input": "%70'key\\u0070",
+   "normalized": "%70'keyp",
+   "stripped": "%70'keyp"
+  },
+  {
+   "input": ":8080\n\u001bP:xhttps:/alice`\\/",
+   "normalized": ":8080\n",
+   "stripped": ":8080\n"
+  },
+  {
+   "input": ":8080?a😀m\\\\/cookiehttps://@\\n\\u001b]pass",
+   "normalized": ":8080?a😀m/cookiehttps://@\\n",
+   "stripped": ":8080?a😀m/cookiehttps://@\\n"
+  },
+  {
+   "input": "# \u001b]\u001b[http:\\\\",
+   "normalized": "# ",
+   "stripped": "# "
+  },
+  {
+   "input": "\"a\u001b(=//\r a\\\\host.example",
+   "normalized": "\"a(=//\r \\\\host.example",
+   "stripped": "\"a(=//\r \\\\host.example"
+  },
+  {
+   "input": "\\x1b[?\\\\u0022\\th\ttps: \u001b[/\\\\u0022",
+   "normalized": "\\\\\"\\th\ttps: \\\\\"",
+   "stripped": "\\\\\"\\th\ttps: \\\\\""
+  },
+  {
+   "input": "0http:\\\\\\\\/\\\\/\"wss:\\t\\\\/\\\"",
+   "normalized": "0http://\"wss:\\t/\\\"",
+   "stripped": "0http://\"wss:\\t/\\\""
+  },
+  {
+   "input": ":\\\\u001b[\u001b(\\bhost.example ",
+   "normalized": "bhost.example ",
+   "stripped": "bhost.example "
+  },
+  {
+   "input": "a\u001bPhttps://",
+   "normalized": "a",
+   "stripped": "a"
+  },
+  {
+   "input": "é\u001b]\u001b\\'\\t\\u00key",
+   "normalized": "é'\\t\\u00key",
+   "stripped": "é'\\t\\u00key"
+  },
+  {
+   "input": "&mx﷐\u001b\\",
+   "normalized": "&mx\\",
+   "stripped": "&mx\\"
+  },
+  {
+   "input": "/\\\\https://\\u0070m\\b/\u001b['`",
+   "normalized": "/\\\\https://pm\\b/",
+   "stripped": "/\\\\https://pm\\b/"
+  },
+  {
+   "input": "host.example:%70?=: \u001b\\\r\u001b\\ ",
+   "normalized": "host.example:%70?=: \\\r\\ ",
+   "stripped": "host.example:%70?=: \\\r\\ "
+  },
+  {
+   "input": "'https://\t\\u001b]1\talice\\u001b[﷐@\\\\/",
+   "normalized": "'https://\t",
+   "stripped": "'https://\t"
+  },
+  {
+   "input": " x&\\u001b(",
+   "normalized": " x&(",
+   "stripped": " x&("
+  },
+  {
+   "input": "ht\\ntp:a\\\\#\u001b[\\u0070//\\\\/: m",
+   "normalized": "t\\ntp:a\\\\",
+   "stripped": "t\\ntp:a\\\\"
+  },
+  {
+   "input": ": \\\\/\\\\/bearer\u0000\\\"﷐",
+   "normalized": ": //bearer\\\"",
+   "stripped": ": //bearer\\\""
+  },
+  {
+   "input": "host.example0\u001b[",
+   "normalized": "host.example0[",
+   "stripped": "host.example0["
+  },
+  {
+   "input": "basicbearer\\u00\"bearer: \\\\/\\u001b[a",
+   "normalized": "basicbearer\\u00\"bearer: /",
+   "stripped": "basicbearer\\u00\"bearer: /"
+  },
+  {
+   "input": "\\u00\\\\/\u00071\u001b(alice\n\\\\\\/",
+   "normalized": "\\u00/lice\n/",
+   "stripped": "\\u00/lice\n/"
+  },
+  {
+   "input": "\r1:\\\"@",
+   "normalized": "\r1:\\\"@",
+   "stripped": "\r1:\\\"@"
+  },
+  {
+   "input": "\\\\u0022https://\u001b(",
+   "normalized": "\\\\\\\"https://(",
+   "stripped": "\\\\\\\"https://("
+  },
+  {
+   "input": "\u001b[\\/\u0000\\\\u001b[: \\u0022\\x1b[",
+   "normalized": "\"[",
+   "stripped": "\"["
+  },
+  {
+   "input": "ht\\ntp:\\\\u001b[\\u0022 keyalice&\u0007﷐m",
+   "normalized": "ht\\ntp:\" keyalice&m",
+   "stripped": "ht\\ntp:\" keyalice&m"
+  },
+  {
+   "input": "cookieftp:/ht\\ntp:host.examplehttps:/=\u0000token#http:\\\\",
+   "normalized": "cookieftp:/ht\\ntp:host.examplehttps:/=token#http:\\\\",
+   "stripped": "cookieftp:/ht\\ntp:host.examplehttps:/=token#http:\\\\"
+  },
+  {
+   "input": "\u001b[: \r1https:/m\u001b(",
+   "normalized": "1https:/m(",
+   "stripped": "1https:/m("
+  },
+  {
+   "input": "\u001bP\\u00\\\\u0022\\u0070",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u001b]alice\\\\/\\u005c😀/\\t\\\\u0022\\u001b]\\\"1",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "`'😀xhttps:/\\u005caliceé\\\"",
+   "normalized": "`'😀xhttps:/\\u005caliceé\\\"",
+   "stripped": "`'😀xhttps:/\\u005caliceé\\\""
+  },
+  {
+   "input": "\\\\\"cookieht\\ntp:\u001b]bearer##\u0000",
+   "normalized": "\\\\\"cookieht\\ntp:",
+   "stripped": "\\\\\"cookieht\\ntp:"
+  },
+  {
+   "input": "😀/key:8080https://",
+   "normalized": "😀/key:8080https://",
+   "stripped": "😀/key:8080https://"
+  },
+  {
+   "input": "\\u0070keyé0",
+   "normalized": "pkeyé0",
+   "stripped": "pkeyé0"
+  },
+  {
+   "input": "cookie\\\\u00221",
+   "normalized": "cookie\\\\\\\"1",
+   "stripped": "cookie\\\\\\\"1"
+  },
+  {
+   "input": "😀\\\\u001b[h\ttps:",
+   "normalized": "😀\ttps:",
+   "stripped": "😀\ttps:"
+  },
+  {
+   "input": "\\\"token1'\u001bP:8080",
+   "normalized": "\\\"token1'",
+   "stripped": "\\\"token1'"
+  },
+  {
+   "input": "0basic\t?\"/1\u001b]",
+   "normalized": "0basic\t",
+   "stripped": "0basic\t"
+  },
+  {
+   "input": "\\\\u0022",
+   "normalized": "\\\\\\\"",
+   "stripped": "\\\\\\\""
+  },
+  {
+   "input": "#\u001bPkey",
+   "normalized": "#",
+   "stripped": "#"
+  },
+  {
+   "input": " \u0000\\n\t\\/",
+   "normalized": " \\n\t/",
+   "stripped": " \\n\t/"
+  },
+  {
+   "input": "\\x1b[bearer\\\\u0022wss:",
+   "normalized": "bearer\\\\\\\"ss:",
+   "stripped": "bearer\\\\\\\"ss:"
+  },
+  {
+   "input": "\u001b(\\nhost.example\\u001b]#\\\\u0022",
+   "normalized": "nhost.example\\\\\\\"",
+   "stripped": "nhost.example\\\\\\\""
+  },
+  {
+   "input": "\t\\b'm\u001b\\alice\\u005ca\\b\\b\\u0022%70",
+   "normalized": "\t\\b'm\\alice\\u005ca\\b\\b\\\"%70",
+   "stripped": "\t\\b'm\\alice\\u005ca\\b\\b\\\"%70"
+  },
+  {
+   "input": "\\\\u001b['",
+   "normalized": "['",
+   "stripped": "['"
+  },
+  {
+   "input": "\tcookie&\\n\\tm?h\ttps:=",
+   "normalized": "\tcookie&\\n\\tm",
+   "stripped": "\tcookie&\\n\\tm"
+  },
+  {
+   "input": "cookie ?: \\\"\u001b]\"key@ token",
+   "normalized": "cookie ?: \\\"",
+   "stripped": "cookie ?: \\\""
+  },
+  {
+   "input": "\\u001b]\t\\\\\\x1b[a\"",
+   "normalized": "\"",
+   "stripped": "\""
+  },
+  {
+   "input": "m\\\\/﷐\\tkey",
+   "normalized": "m/\\tkey",
+   "stripped": "m/\\tkey"
+  },
+  {
+   "input": "\u0000\\\\u0022pass\\u001b(\\u001b('=wss:",
+   "normalized": "\\\\\\\"pass(('=wss:",
+   "stripped": "\\\\\\\"pass(('=wss:"
+  },
+  {
+   "input": "\\\\u001b[\thttp:\\\\passhttps://&",
+   "normalized": "http:\\\\",
+   "stripped": "http:\\\\"
+  },
+  {
+   "input": ":8080aliceéalice/\u001b]1\u001b\\:",
+   "normalized": ":8080aliceéalice/:",
+   "stripped": ":8080aliceéalice/:"
+  },
+  {
+   "input": "\\\\/\\u0022key%70:8080basic ",
+   "normalized": "/\\\"key%70:8080basic ",
+   "stripped": "/\\\"key%70:8080basic "
+  },
+  {
+   "input": "😀\u0000ht\\ntp: ",
+   "normalized": "😀",
+   "stripped": "😀"
+  },
+  {
+   "input": "\\x1b[&\\x1b[é\u001b\\#\u001b]\\n",
+   "normalized": "é\\#",
+   "stripped": "é\\#"
+  },
+  {
+   "input": "0\\t",
+   "normalized": "0\\t",
+   "stripped": "0\\t"
+  },
+  {
+   "input": "basic: ",
+   "normalized": "basic: ",
+   "stripped": "basic: "
+  },
+  {
+   "input": "\t1\\\" \u0000`\\u00\\u0070m",
+   "normalized": "\t1\\\" `\\u00pm",
+   "stripped": "\t1\\\" `\\u00pm"
+  },
+  {
+   "input": "='/ahost.example\t%70//bearer",
+   "normalized": "='/ahost.example\t%70//bearer",
+   "stripped": "='/ahost.example\t%70//bearer"
+  },
+  {
+   "input": "\\/basic=",
+   "normalized": "/basic=",
+   "stripped": "/basic="
+  },
+  {
+   "input": "\\t:8080?token\u0000\\u0022\\u001b]0é",
+   "normalized": "\\t:8080?token\\\"",
+   "stripped": "\\t:8080?token\\\""
+  },
+  {
+   "input": "@éaa",
+   "normalized": "@éaa",
+   "stripped": "@éaa"
+  },
+  {
+   "input": "\\b\r",
+   "normalized": "\\b\r",
+   "stripped": "\\b\r"
+  },
+  {
+   "input": "basic\\u0070",
+   "normalized": "basicp",
+   "stripped": "basicp"
+  },
+  {
+   "input": "ht\\ntp:`",
+   "normalized": "ht\\ntp:`",
+   "stripped": "ht\\ntp:`"
+  },
+  {
+   "input": "=\\\\u001b[=\"\\x1b[\\\\u0022\r",
+   "normalized": "=\\\"\r",
+   "stripped": "=\\\"\r"
+  },
+  {
+   "input": "\"1keyhttps://\\t",
+   "normalized": "\"1",
+   "stripped": "\"1"
+  },
+  {
+   "input": "\u001b(ah\ttps:\\\\u001b[//a\\u0022\u0007\\u0022",
+   "normalized": "h\ttps:\"\\\"",
+   "stripped": "h\ttps:\"\\\""
+  },
+  {
+   "input": "\n\\u0022token\\\\http:\\\\\\x1b[#\\\\wss:",
+   "normalized": "\n\\\"token\\\\http:\\wss:",
+   "stripped": "\n\\\"token\\\\http:\\wss:"
+  },
+  {
+   "input": "wss:\\\\/bearer\u0007https:/\n\\/key",
+   "normalized": "wss:/bearerhttps:/\n/key",
+   "stripped": "wss:/bearerhttps:/\n/key"
+  },
+  {
+   "input": "\\\"\\\\u0022\\/\u001b]\\u00&'\u001b]",
+   "normalized": "\\\"\\\\\\\"/",
+   "stripped": "\\\"\\\\\\\"/"
+  },
+  {
+   "input": "basichttps://\\/\n//\u0007é",
+   "normalized": "basichttps:///\n//é",
+   "stripped": "basichttps:///\n//é"
+  },
+  {
+   "input": ": host.example\u001b\\passéhttps://x\u001b\\\\u001b[",
+   "normalized": ": host.example\\passéhttps://x[",
+   "stripped": ": host.example\\passéhttps://x["
+  },
+  {
+   "input": "a\\\"http:\\\\\\\":8080http:\\\\http:\\\\`: ",
+   "normalized": "a\\\"http:\\\\\\\":8080http:\\\\http:\\\\`: ",
+   "stripped": "a\\\"http:\\\\\\\":8080http:\\\\http:\\\\`: "
+  },
+  {
+   "input": "\r\u0000#\\bh\ttps:\u001b[\n\n\\bwss:😀",
+   "normalized": "\r#\\bh\ttps:\\bwss:😀",
+   "stripped": "\r#\\bh\ttps:\\bwss:😀"
+  },
+  {
+   "input": "\\u005ch\ttps:",
+   "normalized": "\\u005ch\ttps:",
+   "stripped": "\\u005ch\ttps:"
+  },
+  {
+   "input": "\u001b[😀1http:\\\\h\ttps:\t",
+   "normalized": "😀1http:\\\\h\ttps:\t",
+   "stripped": "😀1http:\\\\h\ttps:\t"
+  },
+  {
+   "input": "\\t//:\\x1b[\u0000",
+   "normalized": "\\t//:",
+   "stripped": "\\t//:"
+  },
+  {
+   "input": "\u001b[\"/",
+   "normalized": "[\"/",
+   "stripped": "[\"/"
+  },
+  {
+   "input": "`\u001b]😀'ftp:/cookie\\u001b[cookie\u001b[x",
+   "normalized": "`",
+   "stripped": "`"
+  },
+  {
+   "input": "cookie\\\\u0022key\\\\\u001b[\\\\u0022\\//%70https:/ht\\ntp:",
+   "normalized": "cookie\\\\\\\"key\\\\\\\\\"//%70https:/ht\\ntp:",
+   "stripped": "cookie\\\\\\\"key\\\\\\\\\"//%70https:/ht\\ntp:"
+  },
+  {
+   "input": "\u0000\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "\u001b\\`\t\\u001b[",
+   "normalized": "\\`\t[",
+   "stripped": "\\`\t["
+  },
+  {
+   "input": "\u001b(#mwss:",
+   "normalized": "wss:",
+   "stripped": "wss:"
+  },
+  {
+   "input": ":8080﷐mm\\\\/?\"",
+   "normalized": ":8080mm/?\"",
+   "stripped": ":8080mm/?\""
+  },
+  {
+   "input": "%70\"h\ttps:\\/alice'",
+   "normalized": "%70\"h\ttps:/alice'",
+   "stripped": "%70\"h\ttps:/alice'"
+  },
+  {
+   "input": "/ht\\ntp:wss:pass\\\\u0022\n\u001bP@https:/http:\\\\ %70",
+   "normalized": "/ht\\ntp:wss:pass\\\\\\\"\n",
+   "stripped": "/ht\\ntp:wss:pass\\\\\\\"\n"
+  },
+  {
+   "input": "h\ttps:a`\r\\\\u001b[\\\\u001b[?: \\u0022ftp:/\\x1b[",
+   "normalized": "h\ttps:a`\rtp:/[",
+   "stripped": "h\ttps:a`\rtp:/["
+  },
+  {
+   "input": "0@key&",
+   "normalized": "0@key",
+   "stripped": "0@key"
+  },
+  {
+   "input": "\\u001b]alice=:8080\nht\\ntp:",
+   "normalized": "\nht\\ntp:",
+   "stripped": "\nht\\ntp:"
+  },
+  {
+   "input": "=token%70\u001b[\u001bP#ht\\ntp:\\u005ckeyhost.examplecookie\\t",
+   "normalized": "=token%70",
+   "stripped": "=token%70"
+  },
+  {
+   "input": "wss:\r`\\\"\\u001b(:",
+   "normalized": "wss:\r`\\\"(:",
+   "stripped": "wss:\r`\\\"(:"
+  },
+  {
+   "input": "\u001b]\u001b]cookie//?\\bm😀#\t",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\\"\\u005c?%70",
+   "normalized": "\\\"\\u005c?%70",
+   "stripped": "\\\"\\u005c?%70"
+  },
+  {
+   "input": "\\u0070\u001b]\u0007&",
+   "normalized": "p&",
+   "stripped": "p&"
+  },
+  {
+   "input": "x#keyh\ttps:: \u001bP\u001b(\u001b]xhost.example",
+   "normalized": "x#keyh\ttps:: (",
+   "stripped": "x#keyh\ttps:: ("
+  },
+  {
+   "input": ":8080:8080http:\\\\https://wss:`0mwss: http:\\\\",
+   "normalized": ":8080:8080http:\\\\https://wss:`0mwss: http:\\\\",
+   "stripped": ":8080:8080http:\\\\https://wss:`0mwss: http:\\\\"
+  },
+  {
+   "input": "\u0007\u001b(\u0000\\u005c\\n\nhttps:/\\\"bearer\\u00",
+   "normalized": "(\\u005c\\n\nhttps:/\\\"bearer\\u00",
+   "stripped": "(\\u005c\\n\nhttps:/\\\"bearer\\u00"
+  },
+  {
+   "input": "https:/😀'",
+   "normalized": "https:/😀'",
+   "stripped": "https:/😀'"
+  },
+  {
+   "input": "\\u0070\\t?ftp:/\\u005c:8080\\n ",
+   "normalized": "pt?ftp:/\\u005c:8080\\n ",
+   "stripped": "pt?ftp:/\\u005c:8080\\n "
+  },
+  {
+   "input": "&:8080#",
+   "normalized": "&:8080#",
+   "stripped": "&:8080#"
+  },
+  {
+   "input": "\"@ftp:/&host.example\\u005c\u001b\\\\n/éhttp:\\\\",
+   "normalized": "\"@ftp:/&host.example\\u005c\\\\n/éhttp:\\\\",
+   "stripped": "\"@ftp:/&host.example\\u005c\\\\n/éhttp:\\\\"
+  },
+  {
+   "input": "😀\u001bP",
+   "normalized": "😀",
+   "stripped": "😀"
+  },
+  {
+   "input": "\\\\\u001b[=%70\\\\/\\\\u001b[key\\u0022\\x1b[",
+   "normalized": "\\\\70/key\\\"[",
+   "stripped": "\\\\70/key\\\"["
+  },
+  {
+   "input": "\\\\\u001bPtokenhttps:/\t\\u001b[cookie\\u0022:8080\\u005c",
+   "normalized": "\\\\",
+   "stripped": "\\\\"
+  },
+  {
+   "input": "a\\n\\u0022\\u001b(token\\\\\t",
+   "normalized": "a\\n\\\"token",
+   "stripped": "a\\n\\\"token"
+  },
+  {
+   "input": "& \u001bP\"\\u0070@%70\\\\",
+   "normalized": "& ",
+   "stripped": "& "
+  },
+  {
+   "input": "\\u001b]",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\u0000\\\\u001b[x\\\\/ht\\ntp:",
+   "normalized": "/ht\\ntp:",
+   "stripped": "/ht\\ntp:"
+  },
+  {
+   "input": "%70\\u001b(",
+   "normalized": "%70(",
+   "stripped": "%70("
+  },
+  {
+   "input": "\\x1b[\u001b]: \\u00\\u0070\\/https://",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "00\\b\\/\\u001b[https:/\\u005c\\u001b]",
+   "normalized": "00\\b/ttps:/\\u005c",
+   "stripped": "00\\b/ttps:/\\u005c"
+  },
+  {
+   "input": ": host.examplehttp:\\\\",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "https://\\u001b]\u001bPpass@#",
+   "normalized": "https://",
+   "stripped": "https://"
+  },
+  {
+   "input": "bearer1host.example\\u00host.example//\u0000host.exampletoken%70\\\\/",
+   "normalized": "bearer1host.example\\u00host.example//host.exampletoken%70/",
+   "stripped": "bearer1host.example\\u00host.example//host.exampletoken%70/"
+  },
+  {
+   "input": "\rftp:/1",
+   "normalized": "\rftp:/1",
+   "stripped": "\rftp:/1"
+  },
+  {
+   "input": "host.examplewss:basic",
+   "normalized": "host.examplewss:basic",
+   "stripped": "host.examplewss:basic"
+  },
+  {
+   "input": "\\u001b(\\u0070\\\\/\\u001b]\u001b\\:8080https:/https:/wss:\\/",
+   "normalized": "/\\:8080https:/https:/wss:/",
+   "stripped": "/\\:8080https:/https:/wss:/"
+  },
+  {
+   "input": "\\\\/'\\\\",
+   "normalized": "/'\\\\",
+   "stripped": "/'\\\\"
+  },
+  {
+   "input": "\\u001b[\\u001b(\u001bP\u001b(\\n\\u005c 😀\u0007",
+   "normalized": "u001b(n\\u005c 😀",
+   "stripped": "u001b(n\\u005c 😀"
+  },
+  {
+   "input": "\\bbearer`key\\u00\u001b\\\\\\u001b[alice",
+   "normalized": "\\bbearer`key\\u00lice",
+   "stripped": "\\bbearer`key\\u00lice"
+  },
+  {
+   "input": ": \u001b\\&\u001bP﷐\\\\u001b[\u001b(x'",
+   "normalized": "&",
+   "stripped": "&"
+  },
+  {
+   "input": " \\b\u001b]\\u0070\\\"??\\u00pass",
+   "normalized": " \\b",
+   "stripped": " \\b"
+  },
+  {
+   "input": "http:\\\\//wss:",
+   "normalized": "http://wss:",
+   "stripped": "http://wss:"
+  },
+  {
+   "input": "////\nalice",
+   "normalized": "////\nalice",
+   "stripped": "////\nalice"
+  },
+  {
+   "input": "\u00070﷐\u001b]\\\\u0022https://\\\\\\\\/",
+   "normalized": "0",
+   "stripped": "0"
+  },
+  {
+   "input": " \\u001b]token\r=:8080\u0000",
+   "normalized": " \r=:8080",
+   "stripped": " \r=:8080"
+  },
+  {
+   "input": "\"\u0000\\\\u0022",
+   "normalized": "\"\\\\\\\"",
+   "stripped": "\"\\\\\\\""
+  },
+  {
+   "input": ":8080 \\\\u0022",
+   "normalized": ":8080 \\\\\\\"",
+   "stripped": ":8080 \\\\\\\""
+  },
+  {
+   "input": "\\b=#@&\\u005c%70basic%70\r",
+   "normalized": "\\b=#@&\\u005c%70basic%70\r",
+   "stripped": "\\b=#@&\\u005c%70basic%70\r"
+  },
+  {
+   "input": "\u0007\\u001b]\\\"\\/",
+   "normalized": "\\\"/",
+   "stripped": "\\\"/"
+  },
+  {
+   "input": "\\th\ttps:",
+   "normalized": "\\th\ttps:",
+   "stripped": "\\th\ttps:"
+  },
+  {
+   "input": "http:\\\\alice1",
+   "normalized": "http:\\\\alice1",
+   "stripped": "http:\\\\alice1"
+  },
+  {
+   "input": ":\\nwss::8080\u0000😀\\\\u0022:",
+   "normalized": ":\\nwss::8080😀\\\\\\\":",
+   "stripped": ":\\nwss::8080😀\\\\\\\":"
+  },
+  {
+   "input": "\\u005cé",
+   "normalized": "\\u005cé",
+   "stripped": "\\u005cé"
+  },
+  {
+   "input": "\\\\u0022x\\\\u0022\\//=%70",
+   "normalized": "\\\\\\\"x\\\\\\\"//=%70",
+   "stripped": "\\\\\\\"x\\\\\\\"//=%70"
+  },
+  {
+   "input": "\\\\/: : \\\"bearerhost.example@x\u0007\r",
+   "normalized": "/: : \\\"bearerhost.example@x\r",
+   "stripped": "/: : \\\"bearerhost.example@x\r"
+  },
+  {
+   "input": "\u001b\\\u001b(ht\\ntp:'%70ftp:/\u001b]é: \u001bPhttps://",
+   "normalized": "\\t\\ntp:'%70ftp:/",
+   "stripped": "\\t\\ntp:'%70ftp:/"
+  },
+  {
+   "input": "\\n\\\\/",
+   "normalized": "\\n/",
+   "stripped": "\\n/"
+  },
+  {
+   "input": "alicecookiecookie#\"\\\\",
+   "normalized": "alicecookiecookie#\"\\\\",
+   "stripped": "alicecookiecookie#\"\\\\"
+  },
+  {
+   "input": ":8080﷐cookie\u001b[\nwss:\u001b]basic%70\\u0070\u0007",
+   "normalized": ":8080cookiewss:",
+   "stripped": ":8080cookiewss:"
+  },
+  {
+   "input": "https:/wss:host.example\\u001b(%70",
+   "normalized": "https:/wss:host.example0",
+   "stripped": "https:/wss:host.example0"
+  },
+  {
+   "input": "\n/\\u0022\u0007@😀host.examplealice\u001bP\\n\\u005c",
+   "normalized": "\n/\\\"@😀host.examplealice",
+   "stripped": "\n/\\\"@😀host.examplealice"
+  },
+  {
+   "input": "wss:\\u00=: :8080http:\\\\\u0007host.example",
+   "normalized": "wss:\\u00=: ttp:\\\\host.example",
+   "stripped": "wss:\\u00=: ttp:\\\\host.example"
+  },
+  {
+   "input": "basicaht\\ntp: : \u001bP",
+   "normalized": "basicaht\\ntp: : ",
+   "stripped": "basicaht\\ntp: : "
+  },
+  {
+   "input": "\\u001b[ht\\ntp:https://😀",
+   "normalized": "t\\ntp:https://😀",
+   "stripped": "t\\ntp:https://😀"
+  },
+  {
+   "input": "\n\\u001b]'cookie\u001b(",
+   "normalized": "\n",
+   "stripped": "\n"
+  },
+  {
+   "input": "\\u001b(\\t\t",
+   "normalized": "(\\t\t",
+   "stripped": "(\\t\t"
+  },
+  {
+   "input": "\\u005c&\\t",
+   "normalized": "\\u005c&\\t",
+   "stripped": "\\u005c&\\t"
+  },
+  {
+   "input": "\n\u001b[éht\\ntp:#😀\\u0070\\u001b[\rwss:\u0007",
+   "normalized": "\néht\\ntp:#😀pwss:",
+   "stripped": "\néht\\ntp:#😀pwss:"
+  },
+  {
+   "input": "\n\\/key\u001b\\\t\\t\u001b]",
+   "normalized": "\n/key\\\t\\t",
+   "stripped": "\n/key\\\t\\t"
+  },
+  {
+   "input": " ht\\ntp:host.examplehttps://ftp:/😀:cookiehttps:/\\b",
+   "normalized": " ht\\ntp:",
+   "stripped": " ht\\ntp:"
+  },
+  {
+   "input": ": 0`==",
+   "normalized": ": 0`==",
+   "stripped": ": 0`=="
+  },
+  {
+   "input": "\\u0070ftp:/=https://\rmhost.example\u001b( cookie\u0007?",
+   "normalized": "pftp:/=https://\rmhost.example( cookie?",
+   "stripped": "pftp:/=https://\rmhost.example( cookie?"
+  },
+  {
+   "input": "=wss:\\\\u0022:%70: %70:8080",
+   "normalized": "=wss:\\\\\\\":%70: %70:8080",
+   "stripped": "=wss:\\\\\\\":%70: %70:8080"
+  },
+  {
+   "input": "https://&\u001bP: é\t\\\\u001b[\n?",
+   "normalized": "https://&",
+   "stripped": "https://&"
+  },
+  {
+   "input": "http:\\\\\u001bP\\\\u0022\u001bP\\\\a",
+   "normalized": "http:\\\\",
+   "stripped": "http:\\\\"
+  },
+  {
+   "input": "\u001bPa\\\\u0022",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "﷐basic\\u00key\u001b(pass\u001b[&alicewss:",
+   "normalized": "basic\\u00keyass",
+   "stripped": "basic\\u00keyass"
+  },
+  {
+   "input": "https:// \\u001b(",
+   "normalized": "https:// (",
+   "stripped": "https:// ("
+  },
+  {
+   "input": "\\u001b(pass\u001b\\\\u0022",
+   "normalized": "pass\\\\\\\"",
+   "stripped": "pass\\\\\\\""
+  },
+  {
+   "input": "wss:http:\\\\\u001b\\cookie:\\x1b[?",
+   "normalized": "wss:http:\\\\\\cookie:",
+   "stripped": "wss:http:\\\\\\cookie:"
+  },
+  {
+   "input": "\u001b]https:/",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\u00\u001b]#x\\u001b]https:/\\\\u001b[\\/\\x1b[ftp:/h\ttps:",
+   "normalized": "\\u00",
+   "stripped": "\\u00"
+  },
+  {
+   "input": "m\\u0022",
+   "normalized": "m\\\"",
+   "stripped": "m\\\""
+  },
+  {
+   "input": "\\u001b(`",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "basiccookie",
+   "normalized": "basiccookie",
+   "stripped": "basiccookie"
+  },
+  {
+   "input": ":😀wss:\\u001b(token\u001b[\\x1b[?",
+   "normalized": ":😀wss:token",
+   "stripped": ":😀wss:token"
+  },
+  {
+   "input": "\tftp:/\\u001b]\\bhttps:/\\n:key",
+   "normalized": "\tftp:/\\bhttps:/\\n:key",
+   "stripped": "\tftp:/\\bhttps:/\\n:key"
+  },
+  {
+   "input": "%70\\/basic",
+   "normalized": "%70/basic",
+   "stripped": "%70/basic"
+  },
+  {
+   "input": " alice\\nalice\\\"cookie",
+   "normalized": " alice\\nalice\\\"cookie",
+   "stripped": " alice\\nalice\\\"cookie"
+  },
+  {
+   "input": "m\\x1b[0`\\x1b[:%70a\\\"\u0000\u001b[:8080",
+   "normalized": "m70a\\\"[:8080",
+   "stripped": "m70a\\\"[:8080"
+  },
+  {
+   "input": "http:\\\\ftp:/ht\\ntp:",
+   "normalized": "http:\\\\ftp:/ht\\ntp:",
+   "stripped": "http:\\\\ftp:/ht\\ntp:"
+  },
+  {
+   "input": "\\u00\"\\\\\\\\/m\\n",
+   "normalized": "\\u00\"/m\\n",
+   "stripped": "\\u00\"/m\\n"
+  },
+  {
+   "input": "\\u0070\\u001b[https:/host.example\\u001b(key\\\\u001b[",
+   "normalized": "pttps:/host.examplekey[",
+   "stripped": "pttps:/host.examplekey["
+  },
+  {
+   "input": "\u001b]:\u001b]ftp:/\u0007host.example",
+   "normalized": "host.example",
+   "stripped": "host.example"
+  },
+  {
+   "input": "😀\\u0070 =",
+   "normalized": "😀p =",
+   "stripped": "😀p ="
+  },
+  {
+   "input": "0http:\\\\\\u005c﷐a\\n\\u001b[h\ttps: ",
+   "normalized": "0http:\\\\\\u005ca\\n\ttps: ",
+   "stripped": "0http:\\\\\\u005ca\\n\ttps: "
+  },
+  {
+   "input": "\\\"\\u005chttp:\\\\\\\"1ftp:/ftp:/",
+   "normalized": "\\\"\\u005chttp:\\\\\\\"1ftp:/ftp:/",
+   "stripped": "\\\"\\u005chttp:\\\\\\\"1ftp:/ftp:/"
+  },
+  {
+   "input": " 0m\"@",
+   "normalized": " 0m\"@",
+   "stripped": " 0m\"@"
+  },
+  {
+   "input": "\\t=\\n\\u00?\\u0070pass/host.example",
+   "normalized": "\\t=\\n\\u00?ppass/host.example",
+   "stripped": "\\t=\\n\\u00?ppass/host.example"
+  },
+  {
+   "input": "//http:\\\\\\u001b(0\n",
+   "normalized": "//http:\n",
+   "stripped": "//http:\n"
+  },
+  {
+   "input": "\n \t\\u00\\\\@basiccookie\\u0022",
+   "normalized": "\n \t\\u00\\\\@basiccookie\\\"",
+   "stripped": "\n \t\\u00\\\\@basiccookie\\\""
+  },
+  {
+   "input": "ftp:/\t0",
+   "normalized": "ftp:/\t0",
+   "stripped": "ftp:/\t0"
+  },
+  {
+   "input": "keycookie\\b\\u0022%70/%70😀:%70\"",
+   "normalized": "keycookie\\b\\\"%70/%70😀:%70\"",
+   "stripped": "keycookie\\b\\\"%70/%70😀:%70\""
+  },
+  {
+   "input": "\\\\u0022?cookie\\u005c﷐",
+   "normalized": "\\\\\\\"?cookie\\u005c",
+   "stripped": "\\\\\\\"?cookie\\u005c"
+  },
+  {
+   "input": "\u001b[cookiehttps:/",
+   "normalized": "cookiehttps:/",
+   "stripped": "cookiehttps:/"
+  },
+  {
+   "input": "?\\u001b(:8080%70\u001b\\\r: ht\\ntp:\u001b]",
+   "normalized": "?(:8080%70\\\r: ht\\ntp:",
+   "stripped": "?(:8080%70\\\r: ht\\ntp:"
+  },
+  {
+   "input": "\u001b(token/:8080 basic",
+   "normalized": "token/:8080 basic",
+   "stripped": "token/:8080 basic"
+  },
+  {
+   "input": " 0\\\\u0022\\/",
+   "normalized": " 0\\\\\\\"/",
+   "stripped": " 0\\\\\\\"/"
+  },
+  {
+   "input": "keycookie\\u00 xkeya\u001b\\\u0007\u001b\\",
+   "normalized": "keycookie\\u00 xkeya\\\\",
+   "stripped": "keycookie\\u00 xkeya\\\\"
+  },
+  {
+   "input": "\\u000é\u001b\\\u001b\\",
+   "normalized": "\\u000é\\\\",
+   "stripped": "\\u000é\\\\"
+  },
+  {
+   "input": "\\u001b[\\\\u0022\u0000",
+   "normalized": "\\\\\"",
+   "stripped": "\\\\\""
+  },
+  {
+   "input": "\\u001b]\u001b(",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "key'",
+   "normalized": "key'",
+   "stripped": "key'"
+  },
+  {
+   "input": "=wss:\u0007\\u001b[basicbearerhttps://pass:8080",
+   "normalized": "=wss:asicbearerhttps://pass:8080",
+   "stripped": "=wss:asicbearerhttps://pass:8080"
+  },
+  {
+   "input": "\rhost.examplex//\u001b]\\u005c\\\\alice\u001b(basiccookie",
+   "normalized": "\rhost.examplex//asiccookie",
+   "stripped": "\rhost.examplex//asiccookie"
+  },
+  {
+   "input": "\\u001b(é\\u001b]%70%70\\u005ckey",
+   "normalized": "(é\\u005ckey",
+   "stripped": "(é\\u005ckey"
+  },
+  {
+   "input": "\\t\"\t\u001b\\ht\\ntp:wss:😀http:\\\\'\\u001b[\\\"",
+   "normalized": "\\t\"\t\\ht\\ntp:wss:😀http:\\\\'\"",
+   "stripped": "\\t\"\t\\ht\\ntp:wss:😀http:\\\\'\""
+  },
+  {
+   "input": "pass/ftp:/:8080\u001bP\\n\\u001b(\u0000wss:#\u0007",
+   "normalized": "pass/ftp:/:8080",
+   "stripped": "pass/ftp:/:8080"
+  },
+  {
+   "input": "#\"\\/0 ",
+   "normalized": "#\"/0 ",
+   "stripped": "#\"/0 "
+  },
+  {
+   "input": ":http:\\\\0\\x1b[\\\"\u001b\\\\u001b]\\/\\u001b(",
+   "normalized": ":http:\\\\0\"(",
+   "stripped": ":http:\\\\0\"("
+  },
+  {
+   "input": "\"\\u0070h\ttps:https:/\u001b]\\u0022`:8080\\u005c\\\\u001b[\\\"\\u001b]",
+   "normalized": "\"ph\ttps:https:/",
+   "stripped": "\"ph\ttps:https:/"
+  },
+  {
+   "input": "https://host.example\\\\key\\t/: \"'https://\\u00",
+   "normalized": "https://host.example\\\\key\\t/: \"'https://\\u00",
+   "stripped": "https://host.example\\\\key\\t/: \"'https://\\u00"
+  },
+  {
+   "input": "x\\/",
+   "normalized": "x/",
+   "stripped": "x/"
+  },
+  {
+   "input": "\r\\x1b[",
+   "normalized": "\r[",
+   "stripped": "\r["
+  },
+  {
+   "input": "@basictoken\\\"`\\t \\\\/xbearer",
+   "normalized": "@basictoken\\\"`\\t /xbearer",
+   "stripped": "@basictoken\\\"`\\t /xbearer"
+  },
+  {
+   "input": "\\\\/host.example\\\\token: \\x1b[\\u001b[\u001b[",
+   "normalized": "/host.example\\\\token: u001b[[",
+   "stripped": "/host.example\\\\token: u001b[["
+  },
+  {
+   "input": "\\t: ht\\ntp:\\/",
+   "normalized": "\\t: ht\\ntp:/",
+   "stripped": "\\t: ht\\ntp:/"
+  },
+  {
+   "input": " alice\u001bP`",
+   "normalized": " alice",
+   "stripped": " alice"
+  },
+  {
+   "input": "h\ttps:ht\\ntp:\rhost.example\\u001b]\\u001b]https://é\\x1b[\t\\n",
+   "normalized": "h\ttps:ht\\ntp:\rhost.example\\n",
+   "stripped": "h\ttps:ht\\ntp:\rhost.example\\n"
+  },
+  {
+   "input": "\\u0070:\\nmhost.examplekey/https:/\u001b]: ",
+   "normalized": "p:\\nmhost.examplekey/https:/",
+   "stripped": "p:\\nmhost.examplekey/https:/"
+  },
+  {
+   "input": "%700keypass😀@ahttp:\\\\token",
+   "normalized": "%700keypass😀@ahttp:\\\\token",
+   "stripped": "%700keypass😀@ahttp:\\\\token"
+  },
+  {
+   "input": "﷐﷐\\\\wss:\\t\\u0022&",
+   "normalized": "\\\\wss:\\t\\\"&",
+   "stripped": "\\\\wss:\\t\\\"&"
+  },
+  {
+   "input": "m\\/\nhttp:\\\\😀:8080\t1",
+   "normalized": "m/\nhttp:\\\\😀:8080\t1",
+   "stripped": "m/\nhttp:\\\\😀:8080\t1"
+  },
+  {
+   "input": "\\/\\\\host.example 😀alicekey\\u001b(",
+   "normalized": "/\\\\host.example 😀alicekey(",
+   "stripped": "/\\\\host.example 😀alicekey("
+  },
+  {
+   "input": "\\u005chost.example\\\\u0022",
+   "normalized": "\\u005chost.example\\\\\\\"",
+   "stripped": "\\u005chost.example\\\\\\\""
+  },
+  {
+   "input": "x \\\\u0022\\u0070\\\\/",
+   "normalized": "x \\\\\\\"p/",
+   "stripped": "x \\\\\\\"p/"
+  },
+  {
+   "input": "/pass\\u0022\u0000ftp:/\u001b\\h\ttps:",
+   "normalized": "/h\ttps:",
+   "stripped": "/h\ttps:"
+  },
+  {
+   "input": "key&ht\\ntp:`\u001b\\#':passa\r",
+   "normalized": "key&ht\\ntp:`\\#':passa\r",
+   "stripped": "key&ht\\ntp:`\\#':passa\r"
+  },
+  {
+   "input": "\\u00\\u0022\u001b[\\t?",
+   "normalized": "\\u00\\\"t?",
+   "stripped": "\\u00\\\"t?"
+  },
+  {
+   "input": "bearer\\u001b]cookie\\/﷐",
+   "normalized": "bearer",
+   "stripped": "bearer"
+  },
+  {
+   "input": "pass\\u005c'",
+   "normalized": "pass\\u005c'",
+   "stripped": "pass\\u005c'"
+  },
+  {
+   "input": "﷐\r\\u005c\u001b]=@?wss:\\\\",
+   "normalized": "\r\\u005c",
+   "stripped": "\r\\u005c"
+  },
+  {
+   "input": "x::0\u001b(\u0007\u0007",
+   "normalized": "x::0(",
+   "stripped": "x::0("
+  },
+  {
+   "input": "\\u001b[\r1pass\u001b]wss:wss:\u001b\\ébasic",
+   "normalized": "1passébasic",
+   "stripped": "1passébasic"
+  },
+  {
+   "input": "\\u00\\t: https://\u001b[\\u00\\b\u001b]\u0007\\u001b[h\ttps: ",
+   "normalized": "\\u00\\t: https://u00\\b\ttps: ",
+   "stripped": "\\u00\\t: https://u00\\b\ttps: "
+  },
+  {
+   "input": "\n\\\\\\t\\u001b]:8080\\\\/\\x1b[",
+   "normalized": "\n\\\\\\t[",
+   "stripped": "\n\\\\\\t["
+  },
+  {
+   "input": "\\u001b]\t\racookie\\t\"",
+   "normalized": "\racookie\\t\"",
+   "stripped": "\racookie\\t\""
+  },
+  {
+   "input": "\u001bP\\u001b(\\u001b(\u001bP`http:\\\\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "%70\\u0070bearer\t",
+   "normalized": "%70p",
+   "stripped": "%70p"
+  },
+  {
+   "input": "\\\\/token\"1/key \\u001b(",
+   "normalized": "/token\"1/key (",
+   "stripped": "/token\"1/key ("
+  },
+  {
+   "input": "%70h\ttps:",
+   "normalized": "%70h\ttps:",
+   "stripped": "%70h\ttps:"
+  },
+  {
+   "input": "\\u002211éhost.example\u001bP\u0007\n\\n",
+   "normalized": "\\\"11éhost.example\n\\n",
+   "stripped": "\\\"11éhost.example\n\\n"
+  },
+  {
+   "input": "\\u0022aht\\ntp:\\b",
+   "normalized": "\\\"aht\\ntp:\\b",
+   "stripped": "\\\"aht\\ntp:\\b"
+  },
+  {
+   "input": "alicehttp:\\\\\\u001b]%70\\\\u001b[",
+   "normalized": "alicehttp:[",
+   "stripped": "alicehttp:["
+  },
+  {
+   "input": "﷐pass//\r",
+   "normalized": "pass//\r",
+   "stripped": "pass//\r"
+  },
+  {
+   "input": "&\\x1b[\\u005c",
+   "normalized": "&u005c",
+   "stripped": "&u005c"
+  },
+  {
+   "input": " \r\\\\/",
+   "normalized": " \r/",
+   "stripped": " \r/"
+  },
+  {
+   "input": "mh\ttps:\\u0070",
+   "normalized": "mh\ttps:p",
+   "stripped": "mh\ttps:p"
+  },
+  {
+   "input": "'/\\u001b[cookie/\\t",
+   "normalized": "'/cookie/\\t",
+   "stripped": "'/cookie/\\t"
+  },
+  {
+   "input": "@cookiehttps://alice:\\u0070é\u001b\\`=&",
+   "normalized": "@cookiehttps://alice:pé\\`=&",
+   "stripped": "@cookiehttps://alice:pé\\`=&"
+  },
+  {
+   "input": "",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "x\u001bP#\\\\u001b[ftp:/",
+   "normalized": "x",
+   "stripped": "x"
+  },
+  {
+   "input": "http:\\\\basic::&",
+   "normalized": "http:\\\\basic::&",
+   "stripped": "http:\\\\basic::&"
+  },
+  {
+   "input": "1%70\t: ",
+   "normalized": "1%70: ",
+   "stripped": "1%70: "
+  },
+  {
+   "input": "0%70\u0007",
+   "normalized": "0%70",
+   "stripped": "0%70"
+  },
+  {
+   "input": "#ht\\ntp:passhttp:\\\\token\u001bP",
+   "normalized": "#ht\\ntp:passhttp:\\\\token",
+   "stripped": "#ht\\ntp:passhttp:\\\\token"
+  },
+  {
+   "input": "\u001b[@basic1\u001bP\\u001b( ?\\u005c\t",
+   "normalized": "basic1",
+   "stripped": "basic1"
+  },
+  {
+   "input": "\rh\ttps: wss:\\b\\t\r\\/\\u0070/\u001bPpass",
+   "normalized": "\rh\ttps: wss:\\b\\t\r/p/",
+   "stripped": "\rh\ttps: wss:\\b\\t\r/p/"
+  },
+  {
+   "input": "http:\\\\\\x1b[@@ ",
+   "normalized": "http://@ ",
+   "stripped": "http:\\\\@ "
+  },
+  {
+   "input": "\\u001b]\\/\\\\\\x1b[\\\\u001b[",
+   "normalized": "[",
+   "stripped": "["
+  },
+  {
+   "input": "\th\ttps:\u001b[\\n\\t \\ntoken\\\\u0022ht\\ntp:=",
+   "normalized": "\th\ttps:n\\t \\ntoken\\\\\\\"",
+   "stripped": "\th\ttps:n\\t \\ntoken\\\\\\\""
+  },
+  {
+   "input": ": \u0000`xhttp:\\\\https://😀\u001b\\\\u001b(%70",
+   "normalized": ": `xhttp:\\\\https://😀0",
+   "stripped": ": `xhttp:\\\\https://😀0"
+  },
+  {
+   "input": "tokenh\ttps:ht\\ntp:https://\\u00\\\\/\\u00700//wss:wss:",
+   "normalized": "tokenh\ttps:ht\\ntp:https://\\u00/p0//wss:wss:",
+   "stripped": "tokenh\ttps:ht\\ntp:https://\\u00/p0//wss:wss:"
+  },
+  {
+   "input": "//0é\\u001b(\\\\u0022﷐",
+   "normalized": "//0é(\\\\\\\"",
+   "stripped": "//0é(\\\\\\\""
+  },
+  {
+   "input": "0",
+   "normalized": "0",
+   "stripped": "0"
+  },
+  {
+   "input": "\t\"\\\"\\\\u0022cookie",
+   "normalized": "\t\"\\\"\\\\\\\"cookie",
+   "stripped": "\t\"\\\"\\\\\\\"cookie"
+  },
+  {
+   "input": "\u001b(\\\\/&a\"\nhttps://: \u001b\\m\\u001b(",
+   "normalized": "\"\nhttps://: \\m(",
+   "stripped": "\"\nhttps://: \\m("
+  },
+  {
+   "input": "é%70\u001b]",
+   "normalized": "é%70",
+   "stripped": "é%70"
+  },
+  {
+   "input": "\\u00é'\r\"",
+   "normalized": "\\u00é'\r\"",
+   "stripped": "\\u00é'\r\""
+  },
+  {
+   "input": "=\\u0022\\u005c'/ 0\\u0070bearer",
+   "normalized": "=\\\"u005c'/ 0pbearer",
+   "stripped": "=\\\"u005c'/ 0pbearer"
+  },
+  {
+   "input": "é :8080\\/1\tcookie\\u005c\\t@\r﷐",
+   "normalized": "é :8080/1\tcookie\\u005c\\t@\r",
+   "stripped": "é :8080/1\tcookie\\u005c\\t@\r"
+  },
+  {
+   "input": "/\u001b(m\u001bP\\\\pass\u001b]\u001bP\u001b(",
+   "normalized": "/(",
+   "stripped": "/("
+  },
+  {
+   "input": "\\x1b[\\\\/\u001b]token&'host.examplebasic\\\\u001b[0//",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\n\u001b]\\b:8080?",
+   "normalized": "\n",
+   "stripped": "\n"
+  },
+  {
+   "input": "﷐\\\\u0022\n=bearer",
+   "normalized": "\\\\\\\"\n=bearer",
+   "stripped": "\\\\\\\"\n=bearer"
+  },
+  {
+   "input": "mcookieé",
+   "normalized": "mcookieé",
+   "stripped": "mcookieé"
+  },
+  {
+   "input": "\r😀\\\\u001b[: \t\\t",
+   "normalized": "\r😀\\t",
+   "stripped": "\r😀\\t"
+  },
+  {
+   "input": "",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "keykey\u001b\\\\/",
+   "normalized": "keykey/",
+   "stripped": "keykey/"
+  },
+  {
+   "input": "\\u005c\\u005chttps:/ bearer0😀\r",
+   "normalized": "\\u005c\\u005chttps:/ bearer0😀\r",
+   "stripped": "\\u005c\\u005chttps:/ bearer0😀\r"
+  },
+  {
+   "input": "\u001b\\\\bhost.examplea\\x1b[",
+   "normalized": "\\\\bhost.examplea[",
+   "stripped": "\\\\bhost.examplea["
+  },
+  {
+   "input": " ht\\ntp:ftp:/\u001b]\\u0070",
+   "normalized": " ht\\ntp:ftp:/",
+   "stripped": " ht\\ntp:ftp:/"
+  },
+  {
+   "input": "//\\t\\\"\u001b\\: \\u0022\\x1b[",
+   "normalized": ": \\\"[",
+   "stripped": ": \\\"["
+  },
+  {
+   "input": "\\t😀\\b'm",
+   "normalized": "\\t😀\\b'm",
+   "stripped": "\\t😀\\b'm"
+  },
+  {
+   "input": "mhttps:/\u001b(h\ttps:\\b\\/https:/\\\"",
+   "normalized": "mhttps:/\ttps:\\b/https:/\\\"",
+   "stripped": "mhttps:/\ttps:\\b/https:/\\\""
+  },
+  {
+   "input": "\u001b[h\ttps:",
+   "normalized": "\ttps:",
+   "stripped": "\ttps:"
+  },
+  {
+   "input": "x@%70\\u00`",
+   "normalized": "x@%70\\u00`",
+   "stripped": "x@%70\\u00`"
+  },
+  {
+   "input": "\\\\/1https://\"\\\"x",
+   "normalized": "/1https://\"\\\"x",
+   "stripped": "/1https://\"\\\"x"
+  },
+  {
+   "input": "m\\t\u001b\\\u001bPhttp:\\\\:\n\u0007basic ",
+   "normalized": "m\\t\\basic ",
+   "stripped": "m\\t\\basic "
+  },
+  {
+   "input": "@tokenht\\ntp:pass//😀\\\\\u0007",
+   "normalized": "@tokenht\\ntp:pass//😀\\\\",
+   "stripped": "@tokenht\\ntp:pass//😀\\\\"
+  },
+  {
+   "input": "\u001b]%70#`http:\\\\\u001b(😀é?https://",
+   "normalized": "(😀é?https://",
+   "stripped": "(😀é?https://"
+  },
+  {
+   "input": "\\u00cookie\\u001b[\r:\u0007http:\\\\\\x1b[\\u0022token\\u00",
+   "normalized": "\\u00cookie:http:\"token\\u00",
+   "stripped": "\\u00cookie:http:\"token\\u00"
+  },
+  {
+   "input": "\u001b[\u0007?token#\\t\r",
+   "normalized": "?token#\\t\r",
+   "stripped": "?token#\\t\r"
+  },
+  {
+   "input": "aé\\u005cbasicpasskey",
+   "normalized": "aé\\u005cbasicpasskey",
+   "stripped": "aé\\u005cbasicpasskey"
+  },
+  {
+   "input": "é%70\u001bPcookie\u001b[",
+   "normalized": "é%70[",
+   "stripped": "é%70["
+  },
+  {
+   "input": "//key\n?",
+   "normalized": "//key\n?",
+   "stripped": "//key\n?"
+  },
+  {
+   "input": "&: ftp:/\u001b(\u0000:8080\\\\/",
+   "normalized": "&: ftp:/(:8080/",
+   "stripped": "&: ftp:/(:8080/"
+  },
+  {
+   "input": "\u001bPh\ttps:",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "\\\"key1http:\\\\ \\t\\t?key",
+   "normalized": "\\\"key1http:\\\\ \\t\\t?key",
+   "stripped": "\\\"key1http:\\\\ \\t\\t?key"
+  },
+  {
+   "input": "\u001bPftp:/ht\\ntp:'\\u001b[\\x1b[?@",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "ééaht\\ntp:\\t\\u0070:ahttps:/",
+   "normalized": "ééa",
+   "stripped": "ééa"
+  },
+  {
+   "input": "http:\\\\h\ttps:\\nm﷐\u001b(\\b",
+   "normalized": "http:\\\\h\ttps:\\nmb",
+   "stripped": "http:\\\\h\ttps:\\nmb"
+  },
+  {
+   "input": "#/\\bht\\ntp:\"\\u001b[http:\\\\é'0",
+   "normalized": "#/bht\\ntp:\"ttp:\\\\é'0",
+   "stripped": "#/bht\\ntp:\"ttp:\\\\é'0"
+  },
+  {
+   "input": "aht\\ntp:#😀1:8080m//: cookie",
+   "normalized": "aht\\ntp:#😀1:8080m//: cookie",
+   "stripped": "aht\\ntp:#😀1:8080m//: cookie"
+  },
+  {
+   "input": "\\nkey\u001b\\\\\\u0022\\\\/\r\":https:/ht\\ntp:alice&",
+   "normalized": "\\nkey\\\\\\\"/\r\":https:/ht\\ntp:alice&",
+   "stripped": "\\nkey\\\\\\\"/\r\":https:/ht\\ntp:alice&"
+  },
+  {
+   "input": "\n`\\u00\\u001b[:8080\u0007#",
+   "normalized": "`\\u00#",
+   "stripped": "`\\u00#"
+  },
+  {
+   "input": "=m\t😀host.examplekey\tkey\\x1b[:\\\\u0022",
+   "normalized": "=m\t😀host.examplekey\tkey\\\\\"",
+   "stripped": "=m\t😀host.examplekey\tkey\\\\\""
+  },
+  {
+   "input": "alice\\\\\\u001b[bearerbasic\\\\/",
+   "normalized": "aliceearerbasic/",
+   "stripped": "aliceearerbasic/"
+  },
+  {
+   "input": "😀host.example%70#\\/",
+   "normalized": "😀host.example%70#/",
+   "stripped": "😀host.example%70#/"
+  },
+  {
+   "input": "cookieftp:///@//",
+   "normalized": "cookieftp:///@//",
+   "stripped": "cookieftp:///@//"
+  },
+  {
+   "input": "\\u0070\\\\bearer",
+   "normalized": "\\\\bearer",
+   "stripped": "\\\\bearer"
+  },
+  {
+   "input": "\u0000a\\\\\u0007wss:\\u001b(\\\\u0022",
+   "normalized": "a\\\\wss:(\\\\\\\"",
+   "stripped": "a\\\\wss:(\\\\\\\""
+  },
+  {
+   "input": "1%70wss:\u001b['",
+   "normalized": "1%70wss:['",
+   "stripped": "1%70wss:['"
+  },
+  {
+   "input": "\u001bP// passht\\ntp:",
+   "normalized": "",
+   "stripped": ""
+  },
+  {
+   "input": "éhttp:\\\\%70: m\u001b\\0&token\u001bP?@",
+   "normalized": "éhttp:\\\\%70: m\\0&token",
+   "stripped": "éhttp:\\\\%70: m\\0&token"
+  },
+  {
+   "input": "\\\\u0022&ftp:/@\u001b\\",
+   "normalized": "\\\\\\\"&ftp://@\\",
+   "stripped": "\\\\\\\"&ftp:/@\\"
+  },
+  {
+   "input": "#cookie\\u001b(\\\\u0022host.example\\u001b]?\\u005ccookie",
+   "normalized": "#cookie(\\\\\\\"host.example\\u005ccookie",
+   "stripped": "#cookie(\\\\\\\"host.example\\u005ccookie"
+  },
+  {
+   "input": "ftp:/\\u001b[\u0000 ",
+   "normalized": "ftp:/ ",
+   "stripped": "ftp:/ "
+  },
+  {
+   "input": "/\n\\u001b]",
+   "normalized": "/\n",
+   "stripped": "/\n"
+  },
+  {
+   "input": "alicehttp:\\\\ \u001b\\pass",
+   "normalized": "alicehttp:\\\\ \\pass",
+   "stripped": "alicehttp:\\\\ \\pass"
+  },
+  {
+   "input": "pass\\u001b[alice?#\\u00: ",
+   "normalized": "passlice?#\\u00: ",
+   "stripped": "passlice?#\\u00: "
+  },
+  {
+   "input": "bearer\\u0022//",
+   "normalized": "bearer\\\"//",
+   "stripped": "bearer\\\"//"
+  },
+  {
+   "input": "\"\u001b\\\\u001b(",
+   "normalized": "\"(",
+   "stripped": "\"("
+  },
+  {
+   "input": " //h\ttps:\\\\bearer",
+   "normalized": " //h\ttps:\\\\bearer",
+   "stripped": " //h\ttps:\\\\bearer"
+  },
+  {
+   "input": "\\/:8080token1 alice\\u005cbasic\u001b]\u001b[#",
+   "normalized": "/:8080token1 alice\\u005cbasic[#",
+   "stripped": "/:8080token1 alice\\u005cbasic[#"
+  },
+  {
+   "input": "`\\\\u001b[\u001b]wss:cookie\u001b\\\\\": x\\\\u0022basic",
+   "normalized": "`\\\": x\\\\\\\"basic",
+   "stripped": "`\\\": x\\\\\\\"basic"
+  },
+  {
+   "input": "é\\u001b]éh\ttps:\\\"\t",
+   "normalized": "é\\\"\t",
+   "stripped": "é\\\"\t"
+  },
+  {
+   "input": "ftp:/\n\\\\u0022xaliceftp:/token😀",
+   "normalized": "ftp:/\n\\\\\\\"xaliceftp:/token😀",
+   "stripped": "ftp:/\n\\\\\\\"xaliceftp:/token😀"
+  },
+  {
+   "input": "cookie\\n",
+   "normalized": "cookie\\n",
+   "stripped": "cookie\\n"
+  },
+  {
+   "input": "ftp:/&a\u001b(\"\\\\u001b[host.example\\u001b]",
+   "normalized": "ftp:/&(\"ost.example",
+   "stripped": "ftp:/&(\"ost.example"
+  },
+  {
+   "input": "cookie\\\\u0022",
+   "normalized": "cookie\\\\\\\"",
+   "stripped": "cookie\\\\\\\""
+  },
+  {
+   "input": "`\u001b\\h\ttps: \r😀",
+   "normalized": "`\\h\ttps: \r😀",
+   "stripped": "`\\h\ttps: \r😀"
+  },
+  {
+   "input": "#\\u001b(basichttps:/",
+   "normalized": "#asichttps:/",
+   "stripped": "#asichttps:/"
+  },
+  {
+   "input": "ht\\ntp:=\\u005c\\u005c",
+   "normalized": "ht\\ntp:=\\u005c\\u005c",
+   "stripped": "ht\\ntp:=\\u005c\\u005c"
+  },
+  {
+   "input": "/ \\t\\t m\r\u001b]",
+   "normalized": "/ \\t\\t m\r",
+   "stripped": "/ \\t\\t m\r"
+  },
+  {
+   "input": "\\\\u001b[\\u0022",
+   "normalized": "\"",
+   "stripped": "\""
+  },
+  {
+   "input": "\u001b(\\\"ht\\ntp:\\x1b[?host.example%70",
+   "normalized": "(",
+   "stripped": "("
+  },
+  {
+   "input": "passbasic\\u00\u001bP\"﷐x",
+   "normalized": "passbasic\\u00",
+   "stripped": "passbasic\\u00"
+  },
+  {
+   "input": "1\\u001b[\\\\/h\ttps:\\\\/",
+   "normalized": "1tps:/",
+   "stripped": "1tps:/"
+  },
+  {
+   "input": ": `\\u001b(\\u00",
+   "normalized": ": `(\\u00",
+   "stripped": ": `(\\u00"
+  },
+  {
+   "input": "\\u001b(\talice\\b",
+   "normalized": "(\talice\\b",
+   "stripped": "(\talice\\b"
+  }
+ ]
+}

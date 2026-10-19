@@ -1001,6 +1001,82 @@ describe('redactText', () => {
         expect(redactText('\u001b(Bname=value')).toBe('name=value');
     });
 
+    it('keeps masking every final-byte shape reviewed for issue #63 cases 8 and 10', () => {
+        // Cases 8 and 10 stay open (design open question 3): a rule that picks one reading of a run's final bytes broke
+        // other passes in six review rounds of #81. These shapes each leaked under one of those rules, and `main` masks
+        // them; any later rule must keep doing so.
+        expect(redactText('by\u001b(pass=1')).toBe('byass=1');
+        expect(redactText('pa\u001b(s\u001b(sx=1')).toBe('pax=1');
+        for (const text of [
+            'by\u001b(_pass=PRIVATE',
+            'pass\u001b(_x=PRIVATE',
+            '"\u001b(p\u001b(a\u001b(s\u001b(s\u001b(0\\nx\\":PRIVATE',
+            'x-\u001b(p\u001b(a\u001b(s\u001b(s\\t=PRIVATE',
+            '?a&\u001b(p\u001b(ass\\":PRIVATE',
+            'https://h.example/?to\u001b(ken+x=PRIVATE',
+            'https://h.example/?toke\u001b(n\tx=PRIVATE',
+            'https://h.example/?toke\u001b(n\\tx=PRIVATE',
+            'toke\u001b(n\\bx=PRIVATE',
+        ]) {
+            expect(redactText(text)).not.toContain('PRIVATE');
+        }
+        expect(redactText('toke\u001b(n-bearer PRIVATE')).toBe('toke-bearer ***');
+        expect(redactText('\u001b[0mtoken=PRIVATE')).toBe('token=***');
+        expect(redactText('\u001b(to\u001b(ken more')).toBe('token more');
+    });
+
+    it('masks every label spelling a masking pass reads with any of its letters as a final byte (issue #63 case 8)', () => {
+        const spellings = ['token', 'api_key', 'api-key', 'apikey', 'key', 'secret', 'password', 'passwd', 'passphrase', 'pass',
+            'credential', 'access_key', 'access-key', 'signature', 'authorization', 'cookie', 'set-cookie'];
+        for (const word of spellings) {
+            for (let at = 0; at < word.length; at++) {
+                if (!/[A-Za-z0-9_]/.test(word[at])) {
+                    continue;
+                }
+                const split = `${word.slice(0, at)}\u001b(${word[at]}${word.slice(at + 1)}`;
+                expect(redactText(`${split}=PRIVATE`)).not.toContain('PRIVATE');
+            }
+        }
+        for (const word of ['bearer', 'basic']) {
+            for (let at = 0; at < word.length; at++) {
+                expect(redactText(`${word.slice(0, at)}\u001b(${word[at]}${word.slice(at + 1)} dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
+            }
+        }
+    });
+
+    it('masks a value after a run whose final bytes spell both a key and a word (issue #63 case 10)', () => {
+        const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
+        // A key name runs on through a serialised control to the `=`, however far it lies, so the value is hidden; a
+        // rule that chose the word here, or looked only a bounded way ahead, let it through in #81.
+        for (const word of ['tokenbasic', 'tokenbearer']) {
+            expect(redactText(`${coded(word)}\\tx=PRIVATE`)).not.toContain('PRIVATE');
+        }
+        for (const tail of ['\\'.repeat(512) + 'tx=PRIVATE', `\\t${'x'.repeat(20)}=PRIVATE`, `\\t${'x'.repeat(300)}=PRIVATE`]) {
+            expect(redactText(`${coded('tokenbearer')}${tail}`)).not.toContain('PRIVATE');
+        }
+    });
+
+    it('masks a header, a Basic credential and a two-label run whose final bytes are stripped (issue #63 cases 8 and 10)', () => {
+        const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
+        // Each leaked under a rule tried in #81 that kept only the bytes one label needs.
+        // A credential header needs its whole name, not just a key inside it.
+        expect(redactText('toke\u001b(n-cooki\u001b(e: "public"; session=PRIVATE')).not.toContain('PRIVATE');
+        // A Basic credential keeps the characters that make it one.
+        expect(redactText(`Basic ${coded('tokenxyz')}privatevalue`)).toBe('Basic ***');
+        expect(redactText(`Basic "${coded('tokenxyz')}privatevalue"`)).not.toContain('privatevalue');
+        // Including where no stripped byte is kept, a `pass` a tab may carry on, `=` padding, or a `:` after the value.
+        expect(redactText(`Basic ${coded('toxken')}privatevalue`)).toBe('Basic ***');
+        expect(redactText(`Basic "${coded('toxken')}privatevalue"`)).not.toContain('privatevalue');
+        expect(redactText(`Basic ${coded('token')}pass\tok`)).toBe('Basic ***\tok');
+        expect(redactText(`Basic ${coded('token')}pass\\tok`)).toBe('Basic ***\\tok');
+        expect(redactText(`Basic ${coded('toxken')}private=`)).toBe('Basic ***');
+        expect(redactText(`Basic "${coded('toxken')}private="`)).not.toContain('private');
+        expect(redactText(`Basic ${coded('toxken')}privatevalue:public`)).toBe('Basic ***:public');
+        // A reading that holds both a key and a word stays whole.
+        expect(redactText(`${coded('key')}.${coded('token')}bearer PRIVATE`)).not.toContain('PRIVATE');
+        expect(redactText(`${coded('key')}.${coded('token')}basic dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');
+    });
+
     it('redacts URL userinfo inside free-form text', () => {
         expect(redactText('failed: https://alice:secret@host.example/repo.git (exit 1)')).toBe(
             'failed: https://***:***@host.example/repo.git (exit 1)'
@@ -1875,6 +1951,13 @@ describe('redactText', () => {
             '\\'.repeat(size) + '"',
             'token=\\\\\\"'.repeat(size / 10),
             '\\\\\\"token\\\\\\":'.repeat(size / 14),
+            // Runs of stripped final bytes, and separators after them, as tried in #81 (issue #63 cases 8 and 10).
+            '\u001b(p'.repeat(size / 3) + '=x',
+            'pa\u001b(s'.repeat(size / 4) + '=x',
+            '\u001b(t\u001b(o\u001b(k\u001b(e'.repeat(size / 12) + ' x',
+            'au' + '\u001b(t'.repeat(size / 3) + 'horization=x',
+            'tokenbearer'.split('').map(char => `\u001b(${char}`).join('').concat(' x ').repeat(size / 36),
+            '\u001b(p '.repeat(size / 4) + '=x',
             // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
             // `user:` authority per reference (issue #63 case 5).
             '//[:['.repeat(size / 5) + '/@',
