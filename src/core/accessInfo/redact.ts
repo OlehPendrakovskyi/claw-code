@@ -88,10 +88,13 @@ function urlCredentialRanges(raw: string, userinfo: boolean, keys: ReadonlySet<s
     for (let start = question + 1; start <= queryEnd; ) {
         const ampersand = raw.indexOf('&', start);
         const end = ampersand === -1 || ampersand > queryEnd ? queryEnd : ampersand;
-        const equals = raw.indexOf('=', start);
-        const nameEnd = equals === -1 || equals > end ? end : equals;
+        // The `=` is looked for within this parameter only, so each one is read once (R64).
+        let nameEnd = start;
+        while (nameEnd < end && raw[nameEnd] !== '=') {
+            nameEnd++;
+        }
         const name = decodeQueryName(raw.slice(start, nameEnd));
-        if (name !== undefined && keys.has(name)) {
+        if (keys.has(name)) {
             if (seen.has(name)) {
                 // A later entry of a sensitive name is dropped from the output: all of it is hidden.
                 ranges.push([start, end]);
@@ -108,14 +111,10 @@ function urlCredentialRanges(raw: string, userinfo: boolean, keys: ReadonlySet<s
 /** Where an authority ends after `://`: a path, query or fragment, or a backslash a special scheme reads as `/`. */
 const AUTHORITY_END = /[/?#\\]/g;
 
-/** A query name decoded as `URLSearchParams` decodes it (`+` is a space, `%XX` a byte), or undefined when it does
- *  not decode. */
-function decodeQueryName(name: string): string | undefined {
-    try {
-        return decodeURIComponent(name.replace(/\+/g, ' '));
-    } catch {
-        return undefined;
-    }
+/** A query name decoded by `URLSearchParams` itself, so it is the name {@link redactEndpoint} compared: `+` is a
+ *  space, `%XX` a byte, and a malformed UTF-8 sequence U+FFFD, where `decodeURIComponent` would throw. */
+function decodeQueryName(name: string): string {
+    return new URLSearchParams(`${name}=`).keys().next().value ?? '';
 }
 
 /** Words that make a key's value a secret: `token`, `OPENAI_API_KEY`, `"password"`, `pass`, `db_pass`, … A bare
@@ -1666,12 +1665,22 @@ function maskNormalizedIn(plain: Reading): Reading {
             // Re-serialising changes a URL locally (an encoded name decoded, a default port dropped): what it leaves
             // as it was at either end is copied, so those characters, and a later pass's mask over them, keep
             // their own input ranges. Only the middle that changed stands for its whole stretch.
+            // Neither end reaches into a range redactUrl hides: matching text there is a replacement that happens to
+            // spell what it replaced (`alice:PRIVATE***@` became `***@`), not the input's own characters.
+            let firstHidden = url.length;
+            let lastHidden = 0;
+            for (const [from, to] of hidden) {
+                if (to > from) {
+                    firstHidden = Math.min(firstHidden, from);
+                    lastHidden = Math.max(lastHidden, to);
+                }
+            }
             let prefix = 0;
-            while (prefix < redacted.length && prefix < url.length && redacted[prefix] === url[prefix]) {
+            while (prefix < redacted.length && prefix < firstHidden && redacted[prefix] === url[prefix]) {
                 prefix++;
             }
             let suffix = 0;
-            while (suffix < redacted.length - prefix && suffix < url.length - prefix
+            while (suffix < redacted.length - prefix && suffix < url.length - Math.max(prefix, lastHidden)
                 && redacted[redacted.length - 1 - suffix] === url[url.length - 1 - suffix]) {
                 suffix++;
             }

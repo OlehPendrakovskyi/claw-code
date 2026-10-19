@@ -256,6 +256,11 @@ describe('redactTextReading', () => {
             ['https://[bad]/alice:***pw@host', 'https://***@host', ['[bad]/alice:***pw']],
             ['https://h.example/?a=1&to%6Ben=PRIVATE&to%6Ben=OTHER', 'https://h.example/?a=1&token=***', ['PRIVATE', 'OTHER', 'PRIVATE', 'to%6Ben=OTHER']],
             ['https://h.example/?Token=PRIVATE#frag', 'https://h.example/?Token=***', ['PRIVATE', 'PRIVATE#frag']],
+            // Names the parser decodes alike though one is malformed UTF-8 (U+FFFD), in either order: both recorded.
+            ['https://h.example/?token%FF?q=PRIVATE&token%EF%BF%BD?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%EF%BF%BD?q=OTHER']],
+            ['https://h.example/?token%EF%BF%BD?q=PRIVATE&token%FF?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%FF?q=OTHER']],
+            // A credential ending in a literal `***`: the replacement's `***@host` is no copy of the input's.
+            ['https://[bad]/alice:PRIVATE***@host', 'https://***@host', ['[bad]/alice:PRIVATE***']],
         ];
         for (const [input, text, hidden] of cases) {
             const reading = redactTextReading(input);
