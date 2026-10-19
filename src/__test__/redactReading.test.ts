@@ -199,6 +199,40 @@ const outputs: { cases: Array<{ input: string; redactText: string }> } = (() => 
 })();
 
 describe('redactTextReading', () => {
+    it('records every secret the URL redaction removes, with its exact range (S6)', () => {
+        // URLs built from parts that redactUrl, the userinfo passes and the query pass mask: encoded and duplicated
+        // names, credentials holding `***`, unparsable hosts, trailing prose. Whenever the output no longer shows
+        // `PRIVATE`, each of its characters lies in a recorded hidden range.
+        let seed = 3;
+        const next = (n: number): number => ((seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff) >>> 8) % n;
+        const pick = (options: readonly string[]): string => options[next(options.length)];
+        const names = ['token', 'to%6Ben', 'Token', 'api_key', 'q', 'pass', 'token?q', 'to+ken', 'signature', '%E0'];
+        const values = ['PRIVATE', '***PRIVATE', 'PRI%20VATE', '!!PRIVATE!!', '', 'v'];
+        let covered = 0;
+        for (let round = 0; round < 1500; round++) {
+            let query = '';
+            for (let k = next(4); k > 0; k--) {
+                query += `${query === '' ? '?' : '&'}${pick(names)}${next(5) === 0 ? '' : `=${pick(values)}`}`;
+            }
+            const input = pick(['', 'see ', '"', '(']) + pick(['https://', 'wss://', 'ssh://', 'https:/', '//', 'https://[bad]/'])
+                + pick(['', 'alice:PRIVATE@', 'PRIVATE@', 'alice:***PRIVATE@']) + pick(['h.example', 'h.example:443', '[::1]:8080'])
+                + pick(['', '/', '/x']) + query + pick(['', ' ', ')', '#frag', ' and token=PRIVATE']);
+            const reading = redactTextReading(input);
+            if (!input.includes('PRIVATE') || reading.text.includes('PRIVATE')) {
+                continue;
+            }
+            const hidden = new Uint8Array(input.length);
+            for (const [from, to] of reading.hidden ?? []) {
+                hidden.fill(1, from, to);
+            }
+            for (let at = input.indexOf('PRIVATE'); at !== -1; at = input.indexOf('PRIVATE', at + 1)) {
+                expect([...hidden.subarray(at, at + 'PRIVATE'.length)]).toEqual(new Array<number>('PRIVATE'.length).fill(1));
+            }
+            covered++;
+        }
+        expect(covered).toBeGreaterThan(500);
+    });
+
     it('records the input range of every value a pass masks, whatever text replaced it (S1)', () => {
         const cases: Array<[string, string, string[]]> = [
             ['token=PRIVATE', 'token=***', ['PRIVATE']],
@@ -216,9 +250,21 @@ describe('redactTextReading', () => {
             // A literal `***` is no mask, in a URL's query either, where it turns into the internal sentinel as before.
             ['see *** here', 'see *** here', []],
             ['https://h.example/?q=***', 'https://h.example/?q=***', []],
-            // A credential holding a literal `***` that redactUrl masks, parsed and not: the URL's span, as built (S6).
-            ['https://h.example/?token?q=***PRIVATE', 'https://h.example/?token%3Fq=***', ['https://h.example/?token?q=***PRIVATE']],
-            ['https://[bad]/alice:***pw@host', 'https://***@host', ['https://[bad]/alice:***pw@host']],
+            // What redactUrl masks itself, found in the raw text (S6): a query value whose name the parser decodes, a
+            // credential holding a literal `***`, an unparsed userinfo, and a later entry of a name it drops whole.
+            ['https://h.example/?token?q=***PRIVATE', 'https://h.example/?token%3Fq=***', ['***PRIVATE']],
+            ['https://[bad]/alice:***pw@host', 'https://***@host', ['[bad]/alice:***pw']],
+            ['https://h.example/?a=1&to%6Ben=PRIVATE&to%6Ben=OTHER', 'https://h.example/?a=1&token=***', ['PRIVATE', 'OTHER', 'PRIVATE', 'to%6Ben=OTHER']],
+            ['https://h.example/?Token=PRIVATE#frag', 'https://h.example/?Token=***', ['PRIVATE', 'PRIVATE#frag']],
+            // Names the parser decodes alike though one is malformed UTF-8 (U+FFFD), in either order: both recorded.
+            ['https://h.example/?token%FF?q=PRIVATE&token%EF%BF%BD?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%EF%BF%BD?q=OTHER']],
+            ['https://h.example/?token%EF%BF%BD?q=PRIVATE&token%FF?q=OTHER', 'https://h.example/?token%EF%BF%BD%3Fq=***', ['PRIVATE', 'token%FF?q=OTHER']],
+            // A name that starts with its own `?`, alone and with an encoded duplicate in either order.
+            ['https://h.example/??token?q=PRIVATE', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE']],
+            ['https://h.example/??token?q=PRIVATE&%3Ftoken?q=OTHER', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE', '%3Ftoken?q=OTHER']],
+            ['https://h.example/?%3Ftoken?q=PRIVATE&?token?q=OTHER', 'https://h.example/?%3Ftoken%3Fq=***', ['PRIVATE', '?token?q=OTHER']],
+            // A credential ending in a literal `***`: the replacement's `***@host` is no copy of the input's.
+            ['https://[bad]/alice:PRIVATE***@host', 'https://***@host', ['[bad]/alice:PRIVATE***']],
         ];
         for (const [input, text, hidden] of cases) {
             const reading = redactTextReading(input);
@@ -241,6 +287,14 @@ describe('redactTextReading', () => {
             for (let i = 0; i < reading.text.length; i++) {
                 if (reading.to[i] - reading.from[i] === 1 && reading.text[i] === input[reading.from[i]]) {
                     expect(hidden[reading.from[i]]).toBe(0);
+                }
+            }
+            // And a secret the output no longer shows lies wholly in what is recorded as hidden (S1): none is masked
+            // without its range, as a URL edit could if its masks were read off its re-serialised text.
+            const secrets = input.split('PRIVATE').length - 1;
+            if (secrets > 0 && reading.text.split('PRIVATE').length - 1 === 0) {
+                for (let at = input.indexOf('PRIVATE'); at !== -1; at = input.indexOf('PRIVATE', at + 1)) {
+                    expect([...hidden.subarray(at, at + 'PRIVATE'.length)]).toEqual(new Array<number>('PRIVATE'.length).fill(1));
                 }
             }
         }

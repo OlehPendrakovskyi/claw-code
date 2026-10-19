@@ -1958,6 +1958,8 @@ describe('redactText', () => {
             'au' + '\u001b(t'.repeat(size / 3) + 'horization=x',
             'tokenbearer'.split('').map(char => `\u001b(${char}`).join('').concat(' x ').repeat(size / 36),
             '\u001b(p '.repeat(size / 4) + '=x',
+            // Bare query parameters before a sensitive one that only redactUrl masks (#82, S6).
+            'https://h.example/?' + 'a&'.repeat(size / 2) + 'token?q=PRIVATE',
             // Network-path authorities: a bracket that never closes, and one host-and-port or unparsable
             // `user:` authority per reference (issue #63 case 5).
             '//[:['.repeat(size / 5) + '/@',
