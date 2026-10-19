@@ -86,6 +86,15 @@ export class ReadingBuilder {
         this.put(text, start, end);
     }
 
+    /** Records `source.text` from `start` to `end` as hidden, with no text: for an edit put in with {@link put}
+     *  whose text hides only parts of what it replaces, such as a re-serialised URL. */
+    hide(start: number, end: number): void {
+        this.materialize();
+        if (end > start) {
+            this.masked.push([this.source.from[start], this.source.to[end - 1]]);
+        }
+    }
+
     /** The number of characters appended so far. */
     get size(): number {
         return this.length;

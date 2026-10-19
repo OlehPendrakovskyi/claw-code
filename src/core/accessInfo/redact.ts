@@ -8,15 +8,18 @@ export function redactEndpoint(endpoint: string): string {
     return endpointRedaction(endpoint).text;
 }
 
-/** A URL's redaction, and whether it masked anything (design S1): a re-serialised URL can differ with nothing
- *  masked, and a credential that holds a literal `***` is masked with no new `***`, so neither is read off the text. */
-type UrlRedaction = { text: string; masked: boolean };
+/** A URL's redaction, and the ranges of the URL it hides (design S1, S6), as offsets into the URL: its userinfo
+ *  and the values of its sensitive query parameters, found in the raw text. They are not read off the redacted
+ *  text, which a re-serialised URL spells differently and in which a credential holding a literal `***` leaves no
+ *  new `***`. When the raw text cannot account for everything the parser masked, the whole URL is hidden. */
+type UrlRedaction = { text: string; hidden: ReadonlyArray<readonly [number, number]> };
 
-/** {@link redactEndpoint}, with whether it masked a userinfo or a sensitive query value. */
+/** {@link redactEndpoint}, with the ranges of `endpoint` it hides ({@link UrlRedaction}). */
 function endpointRedaction(endpoint: string): UrlRedaction {
     try {
         const url = new URL(endpoint);
         let redacted = false;
+        const userinfo = url.username !== '' || url.password !== '';
         if (url.username) {
             url.username = '***';
             redacted = true;
@@ -42,9 +45,76 @@ function endpointRedaction(endpoint: string): UrlRedaction {
             url.search = query.toString();
             redacted = true;
         }
-        return redacted ? { text: url.toString(), masked: true } : { text: endpoint, masked: false };
+        if (!redacted) {
+            return { text: endpoint, hidden: [] };
+        }
+        return { text: url.toString(), hidden: urlCredentialRanges(endpoint, userinfo, masked) ?? [[0, endpoint.length]] };
     } catch {
-        return { text: endpoint, masked: false };
+        return { text: endpoint, hidden: [] };
+    }
+}
+
+/** Where, in the raw text of a URL that parses, lie its userinfo (when `userinfo`) and the values of the query
+ *  parameters named in `keys` (decoded, as `URLSearchParams` names them): the first of each name's value, and every
+ *  later one whole, since {@link redactEndpoint} drops those. Undefined when the raw text cannot account for all of
+ *  them: a userinfo with no `@` before its authority ends, or a name that only decodes to a key after the parser
+ *  drops a tab or line break in it. The caller then hides the whole URL. */
+function urlCredentialRanges(raw: string, userinfo: boolean, keys: ReadonlySet<string>): Array<[number, number]> | undefined {
+    const ranges: Array<[number, number]> = [];
+    const scheme = raw.indexOf('://');
+    if (scheme === -1) {
+        return undefined;
+    }
+    const body = scheme + 3;
+    AUTHORITY_END.lastIndex = body;
+    const authorityEnd = AUTHORITY_END.exec(raw)?.index ?? raw.length;
+    if (userinfo) {
+        const at = raw.lastIndexOf('@', authorityEnd - 1);
+        if (at < body) {
+            return undefined;
+        }
+        ranges.push([body, at]);
+    }
+    if (keys.size === 0) {
+        return ranges;
+    }
+    const hash = raw.indexOf('#', authorityEnd);
+    const question = raw.indexOf('?', authorityEnd);
+    if (question === -1 || (hash !== -1 && hash < question)) {
+        return undefined;
+    }
+    const queryEnd = hash === -1 ? raw.length : hash;
+    const seen = new Set<string>();
+    for (let start = question + 1; start <= queryEnd; ) {
+        const ampersand = raw.indexOf('&', start);
+        const end = ampersand === -1 || ampersand > queryEnd ? queryEnd : ampersand;
+        const equals = raw.indexOf('=', start);
+        const nameEnd = equals === -1 || equals > end ? end : equals;
+        const name = decodeQueryName(raw.slice(start, nameEnd));
+        if (name !== undefined && keys.has(name)) {
+            if (seen.has(name)) {
+                // A later entry of a sensitive name is dropped from the output: all of it is hidden.
+                ranges.push([start, end]);
+            } else if (nameEnd < end) {
+                ranges.push([nameEnd + 1, end]);
+            }
+            seen.add(name);
+        }
+        start = end + 1;
+    }
+    return seen.size === keys.size ? ranges : undefined;
+}
+
+/** Where an authority ends after `://`: a path, query or fragment, or a backslash a special scheme reads as `/`. */
+const AUTHORITY_END = /[/?#\\]/g;
+
+/** A query name decoded as `URLSearchParams` decodes it (`+` is a space, `%XX` a byte), or undefined when it does
+ *  not decode. */
+function decodeQueryName(name: string): string | undefined {
+    try {
+        return decodeURIComponent(name.replace(/\+/g, ' '));
+    } catch {
+        return undefined;
     }
 }
 
@@ -1402,16 +1472,9 @@ function closeRunsOf(text: string): CloseRuns {
 }
 
 /** Mask sensitive query values in an unparsable URL. */
-function maskSensitiveQuery(url: string): UrlRedaction {
-    let masked = false;
-    const text = url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) => {
-        if (!isSensitiveQueryName(name)) {
-            return param;
-        }
-        masked = true;
-        return `${separator}${name}=***`;
-    });
-    return { text, masked };
+function maskSensitiveQuery(url: string): string {
+    return url.replace(URL_QUERY_PARAM, (param, separator: string, name: string) =>
+        isSensitiveQueryName(name) ? `${separator}${name}=***` : param);
 }
 
 /** Redact a value that may be one whole endpoint (a label, a report's endpoint list), before and after the URL
@@ -1576,8 +1639,8 @@ function maskNormalized(plain: string): string {
 
 /** {@link maskNormalized} on a reading (design S5): each pass sees the same text as before, and the masks it
  *  makes are recorded as hidden input ranges (S1). A URL that {@link redactUrl} re-serialises is one edit over the
- *  URL's span; when it masks anything, that whole span is recorded as hidden for now (S6 asks for its userinfo and
- *  sensitive query values alone, which a later step locates in the raw text). */
+ *  URL's span, with the userinfo and sensitive query values it masks recorded as hidden where they lie in the raw
+ *  text (S6). */
 function maskNormalizedIn(plain: Reading): Reading {
     const networkPaths = rewriteInReading(maskUserinfo(maskBrokenUserinfo(plain)), NETWORK_PATH_USERINFO, match => {
         const end = match.index + match[0].length;
@@ -1592,17 +1655,32 @@ function maskNormalizedIn(plain: Reading): Reading {
     let copied = 0;
     for (const [start, end] of urlSpans(prepared.text)) {
         const url = prepared.text.slice(start, end);
-        const { text: reserialised, masked } = redactUrl(url);
+        const { text: reserialised, hidden } = redactUrl(url);
         // As before, a masked query value turns back into `MASK` for the passes after this one, a literal `***` in
-        // the input included; whether `redactUrl` masked anything is what it reports, not read off its text.
+        // the input included; what `redactUrl` hides is what it reports, found in the raw text (S6).
         const redacted = reserialised.replace(MASKED_QUERY_VALUE, `$1${MASK}`);
         out.copy(copied, start);
         if (redacted === url) {
             out.copy(start, end);
-        } else if (masked) {
-            out.mask(redacted, start, end);
         } else {
-            out.put(redacted, start, end);
+            // Re-serialising changes a URL locally (an encoded name decoded, a default port dropped): what it leaves
+            // as it was at either end is copied, so those characters, and a later pass's mask over them, keep
+            // their own input ranges. Only the middle that changed stands for its whole stretch.
+            let prefix = 0;
+            while (prefix < redacted.length && prefix < url.length && redacted[prefix] === url[prefix]) {
+                prefix++;
+            }
+            let suffix = 0;
+            while (suffix < redacted.length - prefix && suffix < url.length - prefix
+                && redacted[redacted.length - 1 - suffix] === url[url.length - 1 - suffix]) {
+                suffix++;
+            }
+            out.copy(start, start + prefix);
+            out.put(redacted.slice(prefix, redacted.length - suffix), start + prefix, end - suffix);
+            out.copy(end - suffix, end);
+            for (const [from, to] of hidden) {
+                out.hide(start + from, start + to);
+            }
         }
         copied = end;
     }
@@ -1795,16 +1873,29 @@ function redactUrl(match: string): UrlRedaction {
     // 2. Prose may end a URL with `]`, `)`, `.` and the like, which can make it unparsable:
     //    retry without them and put them back.
     const url = match.replace(TRAILING_DELIMITERS, '');
-    const trimmed = url === match ? { text: match, masked: false } : endpointRedaction(url);
+    const trimmed: UrlRedaction = url === match ? { text: match, hidden: [] } : endpointRedaction(url);
     if (trimmed.text !== url) {
-        return { text: trimmed.text + match.slice(url.length), masked: trimmed.masked };
+        return { text: trimmed.text + match.slice(url.length), hidden: trimmed.hidden };
     }
     // 3. A URL that parses and needed no change has nothing left to hide: its userinfo was masked up front
     //    (maskUserinfo). One that does not parse has `user:pass@` and sensitive query values masked
     //    without parsing, over the whole match, so this fails toward hiding.
     if (URL.canParse(url)) {
-        return { text: match, masked: false };
+        return { text: match, hidden: [] };
     }
-    const query = maskSensitiveQuery(match.replace(UNPARSED_URL_USERINFO, '$1***@'));
-    return { text: query.text, masked: query.masked || UNPARSED_URL_USERINFO.test(match) };
+    // The userinfo goes up to its last `@`. The query parameters after it are the ones maskSensitiveQuery masks in
+    // the text with the userinfo replaced: the prefix it leaves, `scheme://***@`, holds no `?` or `&` to start one.
+    const hidden: Array<[number, number]> = [];
+    const userinfo = UNPARSED_URL_USERINFO.exec(match);
+    if (userinfo !== null) {
+        hidden.push([userinfo[1].length, userinfo[0].length - 1]);
+    }
+    URL_QUERY_PARAM.lastIndex = userinfo === null ? 0 : userinfo[0].length;
+    for (let param = URL_QUERY_PARAM.exec(match); param !== null; param = URL_QUERY_PARAM.exec(match)) {
+        const valueStart = param.index + param[1].length + param[2].length + 1;
+        if (isSensitiveQueryName(param[2]) && valueStart < URL_QUERY_PARAM.lastIndex) {
+            hidden.push([valueStart, URL_QUERY_PARAM.lastIndex]);
+        }
+    }
+    return { text: maskSensitiveQuery(match.replace(UNPARSED_URL_USERINFO, '$1***@')), hidden };
 }
