@@ -924,6 +924,16 @@ describe('ChatService.sendMessage', () => {
             expect((events[0] as { message: string }).message).toBe(`${REDACT_WITHHELD}: ***`);
         });
 
+        it('withholds details by their raw size, before stripping their terminal codes could shrink them (#89 review)', () => {
+            const reason = `ok\u001b]0;${'a'.repeat(REDACT_MAX_CHARS)}\u0007`;
+            for (const details of [reason, { reason }]) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe(`${REDACT_WITHHELD}: ***`);
+            }
+        });
+
         it('redacts the whole detail before bounding it, so a credential whose @ falls past the limit is masked', () => {
             const { child, events } = start();
             const details = `https://alice:PRIVATE_PASSWORD${'p'.repeat(2000)}@host.example/x`;

@@ -1484,6 +1484,10 @@ function maskSensitiveQuery(url: string): string {
 export function redactEndpointText(value: string): string {
     // redactText runs on the raw text first too: the parser percent-encodes what marks a credential (the quotes
     // of `?config={"token":"PRIVATE"}` become `%22`), so its output alone would hide the credential from it.
+    // The limit is judged on the raw value, before stripping could shrink it under the limit (R64).
+    if (value.length > REDACT_MAX_CHARS) {
+        return REDACT_WITHHELD;
+    }
     return redactText(redactEndpoint(redactText(stripTerminalCodes(value))));
 }
 

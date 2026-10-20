@@ -31,6 +31,12 @@ describe('redaction size limit (R64)', () => {
         expect(redactTextAndSecret(`PRIVATE ${'a'.repeat(REDACT_MAX_CHARS)}`, 'PRIVATE')).toBe(REDACT_WITHHELD);
     });
 
+    it('withholds by the raw size, before stripping terminal codes could shrink the text (#89 review)', () => {
+        const coded = `ok\u001b]0;${'a'.repeat(REDACT_MAX_CHARS)}\u0007`;
+        expect(redactEndpointText(coded)).toBe(REDACT_WITHHELD);
+        expect(redactText(coded)).toBe(REDACT_WITHHELD);
+    });
+
     it('shows the placeholder unchanged when it is redacted again', () => {
         expect(redactText(REDACT_WITHHELD)).toBe(REDACT_WITHHELD);
         expect(redactEndpointText(REDACT_WITHHELD)).toBe(REDACT_WITHHELD);
