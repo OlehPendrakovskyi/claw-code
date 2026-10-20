@@ -49,36 +49,75 @@ const ESC_STATES = Esc.U00High + 6;
 const Pct = { None: 0, Percent: 1, High: 2 } as const;
 /** One past the largest percent state: `High` takes sixteen values. */
 const PCT_STATES = Pct.High + 16;
-/** How a reading decodes `%XX`: not decided while no `%` was read, which text and a query name read alike; as
- *  text, which leaves it; or as a query name, which decodes it. */
-const Mode = { Either: 0, Text: 1, Query: 2 } as const;
-/** For each label, the marked bytes to keep, by their index in `text` (the byte after its mark), so that each
- *  segment that some reading of its bytes lets form the label forms it. A segment is a maximal stretch of name
- *  characters, marked bytes, backslash runs and `%` that holds at least one mark; a label no segment can form is
- *  absent. A segment is read as text and as a query name: a decoded `\u0070` joins the run as the character it
- *  decodes to, as `decodeNameEscapes` reads it, and a query name then decodes `%70` too, from what that gave
- *  (`\u002570` is `%70`, then `p`), as `URLSearchParams` reads it; text leaves `%XX` as it is. A character that is
- *  no name character, decoded or not, breaks the run. Linear: each label reads each segment once forward, with a
- *  bounded number of states per unit, and its match once back (R64). */
-export function labelWitnesses(text: string): Map<string, ReadonlySet<number>> {
-    const witnesses = new Map<string, Set<number>>();
+/** How a reading decodes `%XX`: as text, which leaves it, or as a query name, which decodes it. Each is read on
+ *  its own, so a label only one of them forms never stands in for one the other needs. */
+const Mode = { Text: 0, Query: 1 } as const;
+type Mode = typeof Mode[keyof typeof Mode];
+/** For each label, whether to keep each marked byte of a segment that some reading of its bytes lets form the
+ *  label, by the byte's index in `text` (the byte after its mark), so that each such segment forms it, as text when
+ *  a reading does, else as a query name; a byte of any other segment is absent, for a reading to decide. See
+ *  {@link segmentWitnesses} for what a segment is and how it is read. */
+export function labelWitnesses(text: string): Map<string, ReadonlyMap<number, boolean>> {
+    const witnesses = new Map<string, Map<number, boolean>>();
+    for (const { marks, labels } of witnessesBySegment(text)) {
+        for (const [word, kept] of labels) {
+            const decided = witnesses.get(word) ?? new Map<number, boolean>();
+            for (const index of marks) {
+                decided.set(index, kept.has(index));
+            }
+            witnesses.set(word, decided);
+        }
+    }
+    return witnesses;
+}
+
+/** A segment's marked bytes, by their index in the text (the byte after its mark), and the bytes each witness of a
+ *  label keeps there: one read as text, one as a query name, each where it forms the label. */
+export interface SegmentWitnesses {
+    readonly marks: readonly number[];
+    readonly witnesses: ReadonlyArray<ReadonlySet<number>>;
+}
+
+/** Every segment of `text` that holds a marked byte, with its witnesses. A segment is a maximal stretch of name
+ *  characters, marked bytes, backslash runs and `%`. It is read as text and as a query name, each on its own: a
+ *  decoded `\u0070` joins the run as the character it decodes to, as `decodeNameEscapes` reads it, and a query name
+ *  then decodes `%70` too, from what that gave (`\u002570` is `%70`, then `p`), as `URLSearchParams` reads it; text
+ *  leaves `%XX` as it is. A character that is no name character, decoded or not, breaks the run. Linear: each label
+ *  reads each segment at most twice forward, with a bounded number of states per unit, and its match once back
+ *  (R64). */
+export function segmentWitnesses(text: string): SegmentWitnesses[] {
+    return witnessesBySegment(text).map(({ marks, labels }) => ({
+        marks,
+        witnesses: labels.flatMap(([, kept, queryKept]) => (queryKept === undefined ? [kept] : [kept, queryKept])),
+    }));
+}
+
+/** Each segment's marked bytes, and for each label some reading forms there, the bytes its witness keeps: as text
+ *  when a reading does, else as a query name, and then the query name's own when it differs. */
+function witnessesBySegment(text: string): Array<{ marks: number[]; labels: Array<[string, ReadonlySet<number>, ReadonlySet<number>?]> }> {
+    const found: Array<{ marks: number[]; labels: Array<[string, ReadonlySet<number>, ReadonlySet<number>?]> }> = [];
     for (const units of segments(text)) {
-        // With no escape, a segment can only form a word whose letters it holds: the others are not read.
+        // With no escape, a segment can only form a word whose letters it holds: the others are not read. Nor does
+        // it read differently as a query name.
         const escapes = units.some(unit => unit.kind !== 'name');
         const letters = new Set(units.map(unit => (unit.kind === 'name' ? unit.char.toLowerCase() : '')));
+        const marks = units.flatMap(unit => (unit.kind === 'name' && unit.optional ? [unit.index] : []));
+        const labels: Array<[string, ReadonlySet<number>, ReadonlySet<number>?]> = [];
         for (const label of LABELS) {
             if (!escapes && !label.word.split('').every(letter => letters.has(letter))) {
                 continue;
             }
-            const kept = segmentWitness(units, label.word, label.kind);
-            if (kept !== undefined) {
-                const all = witnesses.get(label.word) ?? new Set<number>();
-                kept.forEach(index => all.add(index));
-                witnesses.set(label.word, all);
+            const asText = segmentWitness(units, label.word, label.kind, Mode.Text);
+            const asQuery = escapes ? segmentWitness(units, label.word, label.kind, Mode.Query) : undefined;
+            if (asText !== undefined) {
+                labels.push([label.word, asText, asQuery]);
+            } else if (asQuery !== undefined) {
+                labels.push([label.word, asQuery]);
             }
         }
+        found.push({ marks, labels });
     }
-    return witnesses;
+    return found;
 }
 
 /** The segments of `text` that hold a marked byte, as units. */
@@ -149,35 +188,24 @@ function decodedPercent(high: number, low: string): string {
 /** The bit that marks a state as reached, apart from the matched-prefix bits below it. */
 const PRESENT = 1 << 15;
 
-/** A matcher state: how it decodes `%XX`, the `\u00XX` and `%XX` escapes being read, the class of the last kept
- *  character, the prefix bits of the word matched so far, and whether the word is done and waits for the boundary
- *  its kind needs. */
-type State = {
-    readonly mode: number;
-    readonly esc: number;
-    readonly pct: number;
-    readonly prev: Prev;
-    readonly bits: number;
-    readonly done: boolean;
-};
-/** A state as a number, for a map key: done, mode, escapes and class (prefix bits are kept apart). */
-const keyOf = ({ mode, esc, pct, prev, done }: State): number =>
-    ((((done ? 3 : 0) + mode) * PCT_STATES + pct) * ESC_STATES + esc) * 3 + prev;
+/** A matcher state: the `\u00XX` and `%XX` escapes being read, the class of the last kept character, the prefix
+ *  bits of the word matched so far, and whether the word is done and waits for the boundary its kind needs. */
+type State = { readonly esc: number; readonly pct: number; readonly prev: Prev; readonly bits: number; readonly done: boolean };
+/** A state as a number, for a map key: done, escapes and class (prefix bits are kept apart). */
+const keyOf = ({ esc, pct, prev, done }: State): number => (((done ? PCT_STATES : 0) + pct) * ESC_STATES + esc) * 3 + prev;
 const stateOf = (key: number, bits: number): State => {
     const escapes = Math.floor(key / 3);
     const pcts = Math.floor(escapes / ESC_STATES);
-    const modes = Math.floor(pcts / PCT_STATES);
     return {
-        mode: modes % 3,
         esc: escapes % ESC_STATES,
         pct: pcts % PCT_STATES,
         prev: PREVS[key % 3] ?? Prev.Boundary,
         bits,
-        done: modes >= 3,
+        done: pcts >= PCT_STATES,
     };
 };
-/** Every state key: done, three modes, the percent and `\u00XX` escapes, and three classes. */
-const KEY_SPACE = 2 * 3 * PCT_STATES * ESC_STATES * 3;
+/** Every state key: done, the percent and `\u00XX` escapes, and three classes. */
+const KEY_SPACE = 2 * PCT_STATES * ESC_STATES * 3;
 /** The forward pass's dedupe: a key whose stamp is the unit being read has its entry at its slot. Shared and
  *  stamped rather than one map per unit, which the pass cannot afford on every unit of every label (R64). */
 const slots = new Int32Array(KEY_SPACE);
@@ -211,12 +239,12 @@ function then(steps: readonly Step[], read: (state: State) => Step[]): Step[] {
     return out;
 }
 
-/** The marked bytes of one segment's first reading that forms `word`, as text or as a query name, or undefined when
- *  none does. A bounded word is
+/** The marked bytes of one segment's first reading that forms `word`, read as `mode` says, or undefined when none
+ *  does. A bounded word is
  *  accepted only once the reading shows the boundary its kind needs after it: a character that is no letter (`pass`)
  *  or no name character (`bearer`, `basic`), a break, or the segment's end. Bytes dropped after a word can make an
  *  escape of fixed digits (`\u007` then `2`), so the boundary is read, not assumed. */
-function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): ReadonlySet<number> | undefined {
+function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind, mode: Mode): ReadonlySet<number> | undefined {
     // The prefix bits each ASCII character advances, by its code in either case.
     const positions = new Int32Array(128);
     word.split('').forEach((letter, j) => {
@@ -234,7 +262,7 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
             return bounded ? ['accept'] : [];
         }
         if (!isName(char)) {
-            return [{ mode: state.mode, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false }];
+            return [{ esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false }];
         }
         const start = kind === 'anywhere' || (kind === 'letters-apart' ? state.prev !== Prev.Letter : state.prev === Prev.Boundary);
         const advanced = ((state.bits | (start ? 1 : 0)) & (positions[char.charCodeAt(0)] ?? 0)) << 1;
@@ -253,14 +281,7 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
         const { pct } = state;
         if (pct === Pct.None) {
             // An escape may decode to a character of the word: what was matched waits for it.
-            if (char !== '%' || state.mode === Mode.Text) {
-                return readChar(state, char);
-            }
-            // The first `%` parts the readings: text leaves it, a query name may decode it.
-            const query: State = { ...state, mode: Mode.Query, pct: Pct.Percent };
-            const steps = readChar({ ...state, mode: Mode.Text }, char);
-            steps.push(query);
-            return state.mode === Mode.Query ? [query] : steps;
+            return char !== '%' || mode === Mode.Text ? readChar(state, char) : [{ ...state, pct: Pct.Percent }];
         }
         const idle: State = { ...state, pct: Pct.None };
         if (HEX.test(char)) {
@@ -321,7 +342,7 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
 
     // The states after each unit, sparse: from `offsets[k]` in `keys` and `masks`. The initial state comes first.
     const offsets = new Int32Array(units.length + 1);
-    const initial: State = { mode: Mode.Either, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false };
+    const initial: State = { esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false };
     const keys: number[] = [keyOf(initial)];
     const masks: number[] = [PRESENT];
     const add = (state: State): void => {

@@ -1,5 +1,5 @@
-import { ReadingBuilder, readingOf, replaceInReading, rewriteInReading, type Piece, type Reading } from './reading.js';
-import { FINAL_BYTE_MARK } from './witness.js';
+import { maskHiddenIn, ReadingBuilder, readingOf, replaceInReading, rewriteInReading, type Piece, type Reading } from './reading.js';
+import { FINAL_BYTE_MARK, segmentWitnesses } from './witness.js';
 
 /** Query-parameter names whose values are secrets; shared by the parsed and the unparsed path. */
 const SENSITIVE_PARAM = /(api_?key|api-key|key|token|password|passwd|passphrase|(?<![a-z])pass(?![a-z])|secret|credential|access_key|signature|authorization|cookie)/i;
@@ -523,11 +523,21 @@ function markFinalBytes(reading: Reading): Reading {
 
 /** {@link stripTerminalCodes} on a reading. */
 function stripTerminalCodesIn(reading: Reading): Reading {
+    const stripped = markedStripIn(reading);
+    if (!stripped.text.includes(FINAL_BYTE_MARK)) {
+        return stripped;
+    }
+    const kept = keptLabelBytes(stripped.text);
+    return resolveMarksIn(stripped, index => kept.has(index));
+}
+
+/** `reading` with every terminal code and control byte gone, and each stripped sequence's final byte that is a name
+ *  character left after a {@link FINAL_BYTE_MARK}, for a reading to keep or drop (R79, design S3). */
+function markedStripIn(reading: Reading): Reading {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
     const csiStripped = stripCsiSequencesIn(decodeNameEscapesIn(replaceInReading(reading, FINAL_BYTE_MARKS, () => '')));
-    const stripped = replaceInReading(markFinalBytes(csiStripped), CONTROL_BYTE, () => '');
-    return stripped.text.includes(FINAL_BYTE_MARK) ? keepLabelBytesIn(stripped) : stripped;
+    return replaceInReading(markFinalBytes(csiStripped), CONTROL_BYTE, () => '');
 }
 
 /** Every {@link FINAL_BYTE_MARK}, the mark before a stripped sequence's final byte that is a name character, which
@@ -552,13 +562,12 @@ function markedFinalByte(final: string): string {
     return final !== '' && NAME_CHAR.test(final) ? FINAL_BYTE_MARK + final : '';
 }
 
-/** Stripped text with each marked final byte kept or dropped (R79), decided on the final text, so a byte that
- *  another code or a control byte stood next to is judged with the name around it (`ESC(t NUL oken`). Each run
- *  of name characters holding marked bytes is read once. Linear: a run is tested whole a constant number of
- *  times, and each marked byte within {@link LABEL_WINDOW}. */
-function keepLabelBytesIn(reading: Reading): Reading {
-    const text = reading.text;
-    const out = new ReadingBuilder(reading);
+/** The marked final bytes of stripped `text` that R79 keeps, by their index in `text` (the byte after its mark),
+ *  decided on the final text, so a byte that another code or a control byte stood next to is judged with the name
+ *  around it (`ESC(t NUL oken`). Each run of name characters holding marked bytes is read once. Linear: a run is
+ *  tested whole a constant number of times, and each marked byte within {@link LABEL_WINDOW}. */
+function keptLabelBytes(text: string): Set<number> {
+    const kept = new Set<number>();
     let i = 0;
     while (i < text.length) {
         let end = i;
@@ -574,25 +583,48 @@ function keepLabelBytesIn(reading: Reading): Reading {
             }
         }
         if (end === i) {
-            if (text[i] !== FINAL_BYTE_MARK) {
-                out.copy(i, i + 1);
-            }
             i++;
             continue;
         }
-        if (!marked) {
-            out.copy(i, end);
-        } else {
+        if (marked) {
             const keep = keepRunLabelBytes(text.slice(i, end));
             for (let k = 0; k < keep.length; k++) {
-                if (keep[k]) {
-                    out.copy(i + k, i + k + 1);
+                if (keep[k] && text[i + k - 1] === FINAL_BYTE_MARK) {
+                    kept.add(i + k);
                 }
             }
         }
         i = end;
     }
+    return kept;
+}
+
+/** Stripped `reading` with its marks gone and each marked final byte kept when `keep` holds for its index in the
+ *  text (the byte after its mark), dropped otherwise. */
+function resolveMarksIn(reading: Reading, keep: (index: number) => boolean): Reading {
+    const text = reading.text;
+    const out = new ReadingBuilder(reading);
+    let copied = 0;
+    for (let i = text.indexOf(FINAL_BYTE_MARK); i !== -1; i = text.indexOf(FINAL_BYTE_MARK, i + 1)) {
+        out.copy(copied, i);
+        copied = i + 1;
+        if (NAME_CHAR.test(text[i + 1] ?? '') && !keep(i + 1)) {
+            copied = i + 2;
+        }
+    }
+    out.copy(copied, text.length);
     return out.build();
+}
+
+/** The index of each marked final byte in stripped `text`: the byte after its mark. */
+function markedBytes(text: string): number[] {
+    const indices: number[] = [];
+    for (let i = text.indexOf(FINAL_BYTE_MARK); i !== -1; i = text.indexOf(FINAL_BYTE_MARK, i + 1)) {
+        if (NAME_CHAR.test(text[i + 1] ?? '')) {
+            indices.push(i + 1);
+        }
+    }
+    return indices;
 }
 
 /** A run of name characters with its marked final bytes resolved. With none kept, a run that is already a label
@@ -1484,11 +1516,11 @@ function maskSensitiveQuery(url: string): string {
 export function redactEndpointText(value: string): string {
     // redactText runs on the raw text first too: the parser percent-encodes what marks a credential (the quotes
     // of `?config={"token":"PRIVATE"}` become `%22`), so its output alone would hide the credential from it.
-    // The limit is judged on the raw value, before stripping could shrink it under the limit (R64).
+    // The limit is judged on the raw value, before anything scans it (R64).
     if (value.length > REDACT_MAX_CHARS) {
         return REDACT_WITHHELD;
     }
-    return redactText(redactEndpoint(redactText(stripTerminalCodes(value))));
+    return redactText(redactEndpoint(redactText(value)));
 }
 
 /** Whether a value written right after `label` would be masked as a credential: the label ends where one
@@ -1647,7 +1679,9 @@ export function redactText(text: string): string {
 }
 
 /** {@link redactText}'s output as a reading of `text`: each character with the input range it came from, and the
- *  input ranges its masks hide (design S1, S2). */
+ *  input ranges its masks hide (design S1, S2). Text whose stripped terminal codes leave final bytes to keep or drop
+ *  is masked on each reading of them (design S3, S4): the base reading's output, with what any other reading
+ *  hides masked too. */
 export function redactTextReading(text: string): Reading {
     // 0. Userinfo first, so no later pass can take its `@` (`https://alice:p&token="x@host`); then whole
     //    quoted credentials (`{"password":"a?token=b\"tail"}`), so the query pass cannot eat an escape inside
@@ -1657,7 +1691,63 @@ export function redactTextReading(text: string): Reading {
     if (text.length > REDACT_MAX_CHARS) {
         return withheldReading(text.length);
     }
-    return maskNormalizedIn(readingForRedaction(text));
+    const stripped = markedStripIn(readingOf(text));
+    const marked = markedBytes(stripped.text);
+    if (marked.length === 0) {
+        return maskNormalizedIn(normalizedIn(stripped));
+    }
+    const base = keptLabelBytes(stripped.text);
+    // Each segment's choices of which of its bytes to keep, its base bytes first (S3). Reading j keeps each
+    // segment's choice j, or its base bytes when it has fewer, so the readings number the most choices one segment
+    // has, not their sum (S7), and every choice of every segment is read.
+    const choicesOf = new Map<number, ReadonlyArray<ReadonlySet<number>>>();
+    let readings = 1;
+    for (const { marks, witnesses } of segmentWitnesses(stripped.text)) {
+        const choices = segmentChoices(marks, witnesses, base);
+        readings = Math.max(readings, choices.length);
+        for (const index of marks) {
+            choicesOf.set(index, choices);
+        }
+    }
+    const hidden: Array<readonly [number, number]> = [];
+    for (let j = 1; j < readings; j++) {
+        const keep = (index: number): boolean => {
+            const choices = choicesOf.get(index);
+            return choices !== undefined && j < choices.length ? choices[j].has(index) : base.has(index);
+        };
+        // A loop, not a spread: a long text holds more ranges than a call takes arguments.
+        for (const range of maskNormalizedIn(normalizedIn(resolveMarksIn(stripped, keep))).hidden ?? []) {
+            hidden.push(range);
+        }
+    }
+    return maskHiddenIn(maskNormalizedIn(normalizedIn(resolveMarksIn(stripped, index => base.has(index)))), hidden, text.length, '***');
+}
+
+/** The most marked bytes a segment has for every subset of them to be read (2^4 readings at most). */
+const SUBSET_MARKS = 4;
+
+/** The choices of which of a segment's marked bytes `marks` to keep, each distinct, the base reading's first (S3).
+ *  A segment with at most {@link SUBSET_MARKS} bytes has every subset, so what masking needs beyond a label (a
+ *  separator an escape spells, a Basic payload's length) is read too; a longer one has none, all, and each
+ *  label's witness. */
+function segmentChoices(marks: readonly number[], witnesses: ReadonlyArray<ReadonlySet<number>>, base: ReadonlySet<number>): Array<ReadonlySet<number>> {
+    const candidates: Array<ReadonlySet<number>> = [new Set(marks.filter(index => base.has(index)))];
+    if (marks.length <= SUBSET_MARKS) {
+        for (let subset = 0; subset < 1 << marks.length; subset++) {
+            candidates.push(new Set(marks.filter((_, k) => ((subset >> k) & 1) === 1)));
+        }
+    } else {
+        candidates.push(new Set(), new Set(marks), ...witnesses);
+    }
+    const seen = new Set<string>();
+    return candidates.filter(choice => {
+        const signature = marks.map(index => (choice.has(index) ? '1' : '0')).join('');
+        if (seen.has(signature)) {
+            return false;
+        }
+        seen.add(signature);
+        return true;
+    });
 }
 
 /** The masking passes of {@link redactText} over text already in its normalised form, normalising nothing
@@ -1736,7 +1826,13 @@ function normalizeForRedaction(text: string): string {
 /** The base reading of `text` (design S2, S3): what {@link redactText} masks, with the input range each of its
  *  characters came from. */
 export function readingForRedaction(text: string): Reading {
-    return normalizeSpecialSchemesIn(decodeNameEscapesIn(stripTerminalCodesIn(readingOf(text))));
+    return normalizedIn(stripTerminalCodesIn(readingOf(text)));
+}
+
+/** A stripped reading normalised as {@link redactText} masks it: name escapes decoded and special schemes given
+ *  `://`. */
+function normalizedIn(stripped: Reading): Reading {
+    return normalizeSpecialSchemesIn(decodeNameEscapesIn(stripped));
 }
 
 /** {@link redactText}, with a known `secret` masked in every form it can take. The text is redacted as it is,

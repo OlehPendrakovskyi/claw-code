@@ -274,7 +274,22 @@ describe('redactTextReading', () => {
     });
 
     it('has redactText\'s output as its text, and shows nothing it records as hidden (S5)', () => {
-        for (const { input, redactText: expected } of outputs.cases) {
+        // The outputs S-d changes on purpose: another reading of the stripped final bytes hides part of a base edit,
+        // which is then masked whole (design S4). Keeping the `m`s parses one URL, whose whole span is hidden (S6);
+        // keeping the `a` reads `a b,` as the value, and the base reading's `=` stands for that space; keeping the
+        // first `m` reads `m\n` as the value, and the `=` stands for it.
+        const changedByReadings = new Map([
+            ['Authorizationhttp://\\t@\u001b[0m"***password\u001b[0m', '***'],
+            ['sessiontoken=\u001b(a b,', 'sessiontoken***'],
+            ['  secret`,?token=\u001b[0m\\n \u001b[0m', '  secret`,?token***'],
+        ]);
+        for (const [input, changed] of changedByReadings) {
+            const before = outputs.cases.find(entry => entry.input === input);
+            expect(before).toBeDefined();
+            expect(before?.redactText).not.toBe(changed);
+        }
+        for (const { input, redactText: before } of outputs.cases) {
+            const expected = changedByReadings.get(input) ?? before;
             const reading = redactTextReading(input);
             expect(reading.text).toBe(expected);
             expect(redactText(input)).toBe(expected);

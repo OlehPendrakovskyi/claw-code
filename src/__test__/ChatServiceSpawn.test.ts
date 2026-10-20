@@ -934,6 +934,27 @@ describe('ChatService.sendMessage', () => {
             }
         });
 
+        it('masks a credential that a terminal code splits in structured details, whatever serialising would escape in it', () => {
+            // Serialising rewrites a quote or backslash inside a code, and a control string ends at the first one:
+            // the details' codes are stripped before serialising, as redaction strips them (#88 review).
+            for (const code of ['\u001b[1"m', '\u001b"B', '\u001b(\\', '\u001b]0;title\u001b[0mignored\u0007', '\u001bp0;say "hi"\u0007']) {
+                for (const details of [`to${code}ken=PRIVATE_VALUE`, { reason: `to${code}ken=PRIVATE_VALUE` }, { [`to${code}ken`]: 'PRIVATE_VALUE' }]) {
+                    const { child, events } = start();
+                    child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                    child.emit('close', 1, null);
+                    expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+                }
+            }
+            for (const payload of ['0;title\tignored', '0;say "hi"', '0;C:\\dir']) {
+                for (const details of [`to\u001b]${payload}\u0007ken=PRIVATE_VALUE`, { reason: `to\u001b]${payload}\u0007ken=PRIVATE_VALUE` }, { [`to\u001b]${payload}\u0007ken`]: 'PRIVATE_VALUE' }]) {
+                    const { child, events } = start();
+                    child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                    child.emit('close', 1, null);
+                    expect((events[0] as { message: string }).message).not.toContain('PRIVATE_VALUE');
+                }
+            }
+        });
+
         it('redacts the whole detail before bounding it, so a credential whose @ falls past the limit is masked', () => {
             const { child, events } = start();
             const details = `https://alice:PRIVATE_PASSWORD${'p'.repeat(2000)}@host.example/x`;
