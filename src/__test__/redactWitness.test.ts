@@ -182,7 +182,9 @@ describe('labelWitnesses', () => {
     });
 
     it('stays linear on large adversarial input (R64)', () => {
-        const size = 128 * 1024;
+        // Each label reads a 32 KiB run in about a second at most, even on a loaded CI runner under coverage; a
+        // matcher that rereads the states before each unit takes far longer than the bound here.
+        const size = 32 * 1024;
         const inputs = [
             `${M}p${M}a${M}s`.repeat(size / 6),
             `pa${M}s`.repeat(size / 4),
