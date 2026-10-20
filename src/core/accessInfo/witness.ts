@@ -120,8 +120,17 @@ function segments(text: string): Unit[][] {
 
 /** The class of a character a reading keeps. */
 function classOf(char: string): Prev {
-    return LETTER.test(char) ? Prev.Letter : WORD_CHAR.test(char) ? Prev.OtherWord : Prev.Boundary;
+    return CLASSES[char.charCodeAt(0)] ?? Prev.Boundary;
 }
+
+/** Each ASCII character's class, by its code, and whether it is a name character: tables, not regexes, since the
+ *  matcher asks per state and unit (R64). */
+const CLASSES = Array.from({ length: 128 }, (_, code): Prev => {
+    const char = String.fromCharCode(code);
+    return LETTER.test(char) ? Prev.Letter : WORD_CHAR.test(char) ? Prev.OtherWord : Prev.Boundary;
+});
+const NAME_CODES = Array.from({ length: 128 }, (_, code) => NAME_CHAR.test(String.fromCharCode(code)));
+const isName = (char: string): boolean => NAME_CODES[char.charCodeAt(0)] ?? false;
 
 /** The character a `\u00XX` escape decodes to, as `decodeNameEscapes` decodes it, or undefined when it stays: a
  *  backslash or DEL stays escaped. A quote becomes a backslash-escaped quote, which is no name character either. */
@@ -167,6 +176,13 @@ const stateOf = (key: number, bits: number): State => {
         done: modes >= 3,
     };
 };
+/** Every state key: done, three modes, the percent and `\u00XX` escapes, and three classes. */
+const KEY_SPACE = 2 * 3 * PCT_STATES * ESC_STATES * 3;
+/** The forward pass's dedupe: a key whose stamp is the unit being read has its entry at its slot. Shared and
+ *  stamped rather than one map per unit, which the pass cannot afford on every unit of every label (R64). */
+const slots = new Int32Array(KEY_SPACE);
+const stamps = new Int32Array(KEY_SPACE);
+let stamp = 0;
 /** What reading a unit leads to from a state: a next state, or the word's acceptance. */
 type Step = State | 'accept';
 
@@ -179,9 +195,20 @@ function leftOver(esc: number): string {
     return esc === Esc.U ? 'u' : esc === Esc.U0 ? 'u0' : esc === Esc.U00 ? 'u00' : '';
 }
 
-/** Each step of `steps` read on with `read`; an acceptance stays one. */
+/** Each step of `steps` read on with `read`; an acceptance stays one. A loop, not `flatMap`: it runs per state and
+ *  unit (R64). */
 function then(steps: readonly Step[], read: (state: State) => Step[]): Step[] {
-    return steps.flatMap(next => next === 'accept' ? ['accept' as const] : read(next));
+    const out: Step[] = [];
+    for (const next of steps) {
+        if (next === 'accept') {
+            out.push(next);
+        } else {
+            for (const result of read(next)) {
+                out.push(result);
+            }
+        }
+    }
+    return out;
 }
 
 /** The marked bytes of one segment's first reading that forms `word`, as text or as a query name, or undefined when
@@ -190,8 +217,12 @@ function then(steps: readonly Step[], read: (state: State) => Step[]): Step[] {
  *  or no name character (`bearer`, `basic`), a break, or the segment's end. Bytes dropped after a word can make an
  *  escape of fixed digits (`\u007` then `2`), so the boundary is read, not assumed. */
 function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): ReadonlySet<number> | undefined {
-    const positions = new Map<string, number>();
-    word.split('').forEach((letter, j) => positions.set(letter, (positions.get(letter) ?? 0) | (1 << j)));
+    // The prefix bits each ASCII character advances, by its code in either case.
+    const positions = new Int32Array(128);
+    word.split('').forEach((letter, j) => {
+        positions[letter.charCodeAt(0)] |= 1 << j;
+        positions[letter.toUpperCase().charCodeAt(0)] |= 1 << j;
+    });
     const full = 1 << word.length;
 
     /** A name character (plain or decoded) read from a state: the states it leads to, or the word's acceptance.
@@ -199,14 +230,14 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
      *  boundary where a longer one (`pa` then `s`, `s`) has it. */
     const readChar = (state: State, char: string): Step[] => {
         if (state.done) {
-            const bounded = kind === 'letters-apart' ? !LETTER.test(char) : !NAME_CHAR.test(char);
+            const bounded = kind === 'letters-apart' ? classOf(char) !== Prev.Letter : !isName(char);
             return bounded ? ['accept'] : [];
         }
-        if (!NAME_CHAR.test(char)) {
+        if (!isName(char)) {
             return [{ mode: state.mode, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false }];
         }
         const start = kind === 'anywhere' || (kind === 'letters-apart' ? state.prev !== Prev.Letter : state.prev === Prev.Boundary);
-        const advanced = ((state.bits | (start ? 1 : 0)) & (positions.get(char.toLowerCase()) ?? 0)) << 1;
+        const advanced = ((state.bits | (start ? 1 : 0)) & (positions[char.charCodeAt(0)] ?? 0)) << 1;
         const going: State = { ...state, esc: Esc.None, pct: Pct.None, prev: classOf(char), bits: advanced & (full - 1) };
         if ((advanced & full) === 0) {
             return [going];
@@ -227,7 +258,9 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
             }
             // The first `%` parts the readings: text leaves it, a query name may decode it.
             const query: State = { ...state, mode: Mode.Query, pct: Pct.Percent };
-            return state.mode === Mode.Query ? [query] : [query, ...readChar({ ...state, mode: Mode.Text }, char)];
+            const steps = readChar({ ...state, mode: Mode.Text }, char);
+            steps.push(query);
+            return state.mode === Mode.Query ? [query] : steps;
         }
         const idle: State = { ...state, pct: Pct.None };
         if (HEX.test(char)) {
@@ -286,22 +319,34 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
         return then(after, next2 => step(next2, unit));
     };
 
-    // The states after each unit, sparse: from `offsets[k]` in `keys` and `masks`.
+    // The states after each unit, sparse: from `offsets[k]` in `keys` and `masks`. The initial state comes first.
     const offsets = new Int32Array(units.length + 1);
-    const keys: number[] = [];
-    const masks: number[] = [];
     const initial: State = { mode: Mode.Either, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false };
-    let current = new Map<number, number>([[keyOf(initial), PRESENT]]);
+    const keys: number[] = [keyOf(initial)];
+    const masks: number[] = [PRESENT];
+    const add = (state: State): void => {
+        const key = keyOf(state);
+        if (stamps[key] === stamp) {
+            masks[slots[key]] |= state.bits | PRESENT;
+        } else {
+            stamps[key] = stamp;
+            slots[key] = keys.length;
+            keys.push(key);
+            masks.push(state.bits | PRESENT);
+        }
+    };
+    let from = 0;
     let accepted = -1;
     for (let k = 0; k < units.length && accepted === -1; k++) {
         const unit = units[k];
-        const next = new Map<number, number>();
-        const add = (state: State): void => {
-            const key = keyOf(state);
-            next.set(key, (next.get(key) ?? 0) | state.bits | PRESENT);
-        };
-        for (const [key, mask] of current) {
-            const state = stateOf(key, mask & ~PRESENT);
+        const to = keys.length;
+        offsets[k] = to;
+        if (++stamp === 0x7fffffff) {
+            stamps.fill(0);
+            stamp = 1;
+        }
+        for (let s = from; s < to; s++) {
+            const state = stateOf(keys[s], masks[s] & ~PRESENT);
             if (unit.kind === 'name' && unit.optional) {
                 add(state);
             }
@@ -313,19 +358,14 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
                 }
             }
         }
-        offsets[k] = keys.length;
-        for (const [key, mask] of next) {
-            keys.push(key);
-            masks.push(mask);
-        }
-        current = next;
+        from = to;
     }
     offsets[units.length] = keys.length;
     if (accepted === -1) {
         // At the segment's end, a done word has its boundary.
         let end = false;
-        for (const key of current.keys()) {
-            end ||= stateOf(key, 0).done;
+        for (let s = from; s < keys.length; s++) {
+            end ||= stateOf(keys[s], 0).done;
         }
         if (!end) {
             return undefined;
