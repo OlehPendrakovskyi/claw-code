@@ -7,6 +7,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as cliLauncher from '../core/cliLauncher';
 import * as acpxProjectConfig from '../chat/acpxProjectConfig';
 import { checkAcpxVersionOnce } from '../chat/acpxVersion';
+import { REDACT_MAX_CHARS, REDACT_WITHHELD } from '../core/accessInfo/redact';
 import { releasePromptImage, stagePromptImage } from '../chat/promptImages';
 import type { ConversationTurn } from '../webview/slashCommands';
 import {
@@ -913,6 +914,24 @@ describe('ChatService.sendMessage', () => {
             expect(message.startsWith('Internal error: quota exceeded xxx')).toBe(true);
             expect(Array.from(message).some(ch => ch.charCodeAt(0) < 0x20)).toBe(false);
             expect(message.length).toBeLessThan(1100);
+        });
+
+        it('withholds the message and masks details too long to redact together (R64)', () => {
+            const { child, events } = start();
+            const details = `${'a'.repeat(REDACT_MAX_CHARS)} token=PRIVATE_VALUE`;
+            child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+            child.emit('close', 1, null);
+            expect((events[0] as { message: string }).message).toBe(`${REDACT_WITHHELD}: ***`);
+        });
+
+        it('withholds details by their raw size, before stripping their terminal codes could shrink them (#89 review)', () => {
+            const reason = `ok\u001b]0;${'a'.repeat(REDACT_MAX_CHARS)}\u0007`;
+            for (const details of [reason, { reason }]) {
+                const { child, events } = start();
+                child.stdout.emit('data', jsonLines({ jsonrpc: '2.0', id: null, error: { message: 'failed', data: { details } } }));
+                child.emit('close', 1, null);
+                expect((events[0] as { message: string }).message).toBe(`${REDACT_WITHHELD}: ***`);
+            }
         });
 
         it('redacts the whole detail before bounding it, so a credential whose @ falls past the limit is masked', () => {

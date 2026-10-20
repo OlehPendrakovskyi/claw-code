@@ -10,7 +10,7 @@ import { PROMPT_IMAGE_MARKER, PromptImage, stagedPromptImage } from './promptIma
 import { asNonEmptyString, asRecord, parseJsonRecord, readPositiveInteger } from '../core/typeGuards';
 import type { TokenUsage } from '../core/gatewayProtocol/model';
 import { errorMessage } from '../core/errors';
-import { joinBoundary, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
+import { joinBoundary, REDACT_MAX_CHARS, REDACT_WITHHELD, redactText, stripTerminalCodes } from '../core/accessInfo/redact';
 import { ConversationTurn, escapeXmlAttr, formatConversation, frameConversation } from '../webview/slashCommands';
 
 const log = vscode.window.createOutputChannel('OpenClaw Agent', { log: true });
@@ -622,6 +622,12 @@ function encodePrompt(blocks: PromptBlock[]): Buffer {
 function withErrorDetails(rawMessage: string | undefined, details: unknown): string | undefined {
     // A message that redaction empties (nothing but terminal codes) counts as missing, so a fallback applies.
     const message = rawMessage !== undefined && redactText(rawMessage).trim() !== '' ? rawMessage : undefined;
+    // Details too long to redact with the message are withheld by their raw size, before stripping their terminal
+    // codes could shrink them under the limit or cost a pass over them (R64), as joinBoundary withholds such a join.
+    const rawDetails = typeof details === 'string' ? details : details === undefined || details === null ? '' : stringifyToolEvent(details);
+    if ((message?.length ?? 0) + rawDetails.length > REDACT_MAX_CHARS) {
+        return message === undefined ? REDACT_WITHHELD : `${REDACT_WITHHELD}: ***`;
+    }
     // Terminal codes come out of string values before serialising, which would turn ESC into a literal `\u001b`.
     const plainDetails = withoutTerminalCodes(details);
     const raw = typeof plainDetails === 'string' ? plainDetails : plainDetails === undefined || plainDetails === null ? '' : stringifyToolEvent(plainDetails);
