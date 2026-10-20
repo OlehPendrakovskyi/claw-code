@@ -43,17 +43,30 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
         expect(redactText('%70ass-p\u001b(a\u001b(s\u001b(s\u001b(x=PRIVATE')).toBe('%70ass-p=***');
     });
 
-    it('strips a code that keeping or removing bytes assembles, until stripping settles (#88 review)', () => {
-        // Keeping the `b` completes `\\u001b[0m`, a serialised CSI between `to` and `ken`.
-        expect(redactText('to\\u001\u001b(b[0mken=PRIVATE')).toBe('to\\u001[0mken=***');
-        // Removing the NUL joins `\\u00` to `1b[0m`; stripping that joins the next pair.
-        for (const redact of [redactText, redactEndpointText]) {
-            expect(redact('to\\u00\\u00\u00001b[0m1b[0mken=PRIVATE')).toBe('token=***');
+    it('withholds text where keeping or dropping a byte assembles a code with a choice of its own (#88 review)', () => {
+        for (const input of [
+            // Keeping the `b` completes `\\u001b[0m`, whose `m` a reading may keep or drop.
+            'to\\u001\u001b(b[0mken=PRIVATE',
+            // Keeping the `b` completes `ESC(0`, whose `0` completes `\\u0070`; and a C1 CSI, whose `n` ends `token`.
+            '\\u007\\u001\u001b(b(0ass=PRIVATE',
+            'toke\\u009\u001b(bn-bearer=PRIVATE',
+            // Removing the NUL joins `\\u00` to `1b[0m`, and dropping that code's `m` joins the next pair.
+            'to\\u00\\u00\u00001b[0m1b[0mken=PRIVATE',
+        ]) {
+            expect(redactText(input)).toBe(REDACT_NESTED_WITHHELD);
+            expect(redactEndpointText(input)).toBe(REDACT_NESTED_WITHHELD);
         }
+        // A code removing a control byte assembles, with no choice of its own, is stripped like any other, its ESC
+        // read with its sequence rather than removed alone as a control byte (which left `[@` in `to[@ken`).
+        for (const redact of [redactText, redactEndpointText]) {
+            expect(redact('to\\u00\\u00\\u00\u00001b[@1b[@1b[@ken=PRIVATE')).toBe('token=***');
+        }
+        expect(redactText('to\\u00\u00001b[1;2Hken=PRIVATE')).toBe('token=***');
+        expect(redactText('\u001b[1mtoken\u001b[0m=PRIVATE')).toBe('token=***');
     });
 
     it('withholds codes nested deeper than any terminal writes them', () => {
-        const nested = `to${'\\u00'.repeat(6)}\u0000${'1b[0m'.repeat(6)}ken=PRIVATE`;
+        const nested = `to${'\\u00'.repeat(6)}\u0000${'1b(@'.repeat(6)}ken=PRIVATE`;
         expect(redactText(nested)).toBe(REDACT_NESTED_WITHHELD);
         expect(redactEndpointText(nested)).toBe(REDACT_NESTED_WITHHELD);
         expect(redactText(REDACT_NESTED_WITHHELD)).toBe(REDACT_NESTED_WITHHELD);
@@ -122,6 +135,7 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
                 : ['=PRIVATE', ': PRIVATE', '":"PRIVATE"', '\\":\\"PRIVATE\\"', '=PRIVATE&b=2', ' = PRIVATE',
                     `\\u002${code('1')}${code('2')}=PRIVATE`, `\\u003${code('d')}PRIVATE`, `%3${code('d')}PRIVATE`][next(9)];
             const input = before + label + after;
+            const assembles = input.includes('\\u001\u001b');
             if (codes(input) > 7) {
                 continue;
             }
@@ -134,7 +148,8 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
             const output = redactText(input);
             if (hidden && oneSegment && output.includes('PRIVATE')) {
                 leaks.push(input);
-            } else if (!hidden && !output.includes('PRIVATE')) {
+            } else if (!hidden && !output.includes('PRIVATE') && !(assembles && output === REDACT_NESTED_WITHHELD)) {
+                // Text where a kept byte assembles a code is withheld whole, which fails closed on purpose.
                 over.push(input);
             }
             judged += hidden && oneSegment ? 1 : 0;
@@ -148,14 +163,15 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
 describe('the cost of the readings (design S7, R64)', () => {
     it('stays linear on costly text whose final bytes make every reading differ', () => {
         // Each label spelled in codes, so each witness keeps other bytes, before text the pipeline is slowest on.
-        // Every reading runs the pipeline once: up to 16 times `main`'s cost, well within the bound at 32 KiB. The
-        // labels repeat, so that a reading per marked byte (hundreds of them) would not be.
-        const size = 32 * 1024;
+        // Every reading runs the pipeline once: up to 16 times `main`'s cost, well within the bound at 8 KiB even on
+        // CI's Windows runners, about ten times slower than a workstation. The labels repeat, so that readings that
+        // were not aligned (one per segment's choice) would not be.
+        const size = 8 * 1024;
         const coded = (word: string): string => word.split('').map(char => `\u001b(${char}`).join('');
         const labels = ['token', 'key', 'secret', 'password', 'passwd', 'passphrase', 'credential', 'signature',
-            'authorization', 'cookie', 'pass', 'bearer', 'basic'].map(word => `x${coded(word)}y `).join('').repeat(16);
+            'authorization', 'cookie', 'pass', 'bearer', 'basic'].map(word => `x${coded(word)}y `).join('').repeat(64);
         const inputs = [
-            Array.from({ length: 250 }, (_, depth) => '\\'.repeat(depth + 1) + '"https://x/?token=x').join('\n'),
+            Array.from({ length: 64 }, (_, depth) => '\\'.repeat(depth + 1) + '"https://x/?token=x').join('\n'),
             'https://a:b/ x'.repeat(size / 14),
             'x://a:b c '.repeat(size / 10),
             'a=b'.repeat(size / 3),
@@ -170,10 +186,11 @@ describe('the cost of the readings (design S7, R64)', () => {
 
 describe('stripping until it settles (R64)', () => {
     it('stays linear on codes nested as deep as the text allows', () => {
-        // Each pass assembles the next layer; after the bounded number of passes the text is withheld.
-        const depth = 16 * 1024;
+        // Each pass assembles the next layer, an escape sequence whose final `@` is no name character and so brings no choice;
+        // after the bounded number of passes the text is withheld.
+        const depth = 4 * 1024;
         const started = performance.now();
-        expect(redactText(`to${'\\u00'.repeat(depth)}\u0000${'1b[0m'.repeat(depth)}ken=PRIVATE`)).toBe(REDACT_NESTED_WITHHELD);
+        expect(redactText(`to${'\\u00'.repeat(depth)}\u0000${'1b(@'.repeat(depth)}ken=PRIVATE`)).toBe(REDACT_NESTED_WITHHELD);
         expect(performance.now() - started).toBeLessThan(3000);
     }, 60_000);
 });

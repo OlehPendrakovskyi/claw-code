@@ -525,7 +525,10 @@ function markFinalBytes(reading: Reading): Reading {
 function stripTerminalCodesIn(reading: Reading): Reading {
     const stripped = markedStripIn(reading).reading;
     const kept = keptLabelBytes(stripped.text);
-    return settledIn(resolveMarksIn(stripped, index => kept.has(index))).reading;
+    const settled = settledIn(resolveMarksIn(stripped, index => kept.has(index))).reading;
+    // Text that does not settle is withheld by redaction; here its last marks are resolved as R79 does.
+    const left = keptLabelBytes(settled.text);
+    return resolveMarksIn(settled, index => left.has(index));
 }
 
 /** The most passes stripping makes before it gives up: removing a code or a control byte can assemble another from
@@ -554,30 +557,39 @@ function markedStripIn(reading: Reading): Stripped {
     return { reading: current, settled: stripPassIn(current).text === current.text };
 }
 
-/** One pass of {@link markedStripIn}, which leaves the marks a pass before it made. */
+/** One pass of {@link markedStripIn}, which leaves the marks a pass before it made. Control bytes go only in a pass
+ *  that finds no terminal code, so an ESC that removing a code assembles (`\\u00` then `1b[@`) is read with its
+ *  sequence by the next pass, not removed alone with the sequence's text left behind. */
 function stripPassIn(reading: Reading): Reading {
     // A sequence's printable bytes may be escaped (`\\u001b\\u005b0m`): decoded first, the sequence is seen whole
     // instead of losing only its ESC.
-    const csiStripped = stripCsiSequencesIn(decodeNameEscapesIn(reading));
-    return replaceInReading(markFinalBytes(csiStripped), CONTROL_BYTE, () => '');
+    const decoded = decodeNameEscapesIn(reading);
+    const codesStripped = markFinalBytes(stripCsiSequencesIn(decoded));
+    return codesStripped.text !== decoded.text ? codesStripped : replaceInReading(codesStripped, CONTROL_BYTE, () => '');
 }
 
-/** A reading whose marked final bytes are resolved, stripped again while the bytes it kept complete another code,
- *  each new final byte resolved as R79 resolves it, at most {@link STRIP_PASSES} times. */
+/** A reading whose marked final bytes are resolved, stripped again while the bytes it kept complete another code
+ *  (`\\u001` then `b[0m`). It is settled only when no such code brings a final byte of its own to keep or drop:
+ *  that byte would be a choice of its own, which one reading cannot stand for, so the text is withheld instead
+ *  (#88 review). */
 function settledIn(resolved: Reading): Stripped {
     let current = resolved;
     for (let pass = 0; pass < STRIP_PASSES; pass++) {
-        const { reading: stripped, settled } = markedStripIn(current);
-        if (!settled) {
-            return { reading: stripped, settled: false };
-        }
-        if (stripped.text === current.text) {
+        if (!holdsTerminalCode(decodeNameEscapesIn(current).text)) {
             return { reading: current, settled: true };
         }
-        const kept = keptLabelBytes(stripped.text);
-        current = resolveMarksIn(stripped, index => kept.has(index));
+        const { reading: stripped, settled } = markedStripIn(current);
+        if (!settled || stripped.text.includes(FINAL_BYTE_MARK)) {
+            return { reading: stripped, settled: false };
+        }
+        current = stripped;
     }
     return { reading: current, settled: false };
+}
+
+/** Whether `text` holds a terminal code or a control byte that stripping removes. */
+function holdsTerminalCode(text: string): boolean {
+    return text.search(TERMINAL_CODE) !== -1 || text.search(CONTROL_BYTE) !== -1;
 }
 
 /** Every {@link FINAL_BYTE_MARK}, the mark before a stripped sequence's final byte that is a name character, which
@@ -1700,9 +1712,10 @@ export const REDACT_MAX_CHARS = 1024 * 1024;
 /** What redaction shows in place of text longer than {@link REDACT_MAX_CHARS}. It holds no credential label and no
  *  `***`, so a later pass leaves it as it is and a join check reads no mask in it. */
 export const REDACT_WITHHELD = '[text over 1 MiB withheld: too long to redact]';
-/** What redaction shows in place of text whose terminal codes are still nested after {@link STRIP_PASSES} passes of
- *  stripping, deeper than any terminal writes them. Like {@link REDACT_WITHHELD}, it holds no label and no `***`. */
-export const REDACT_NESTED_WITHHELD = '[text withheld: terminal codes nested too deep to redact]';
+/** What redaction shows in place of text whose terminal codes assemble more codes: still after {@link STRIP_PASSES}
+ *  passes of stripping, or with a final byte of their own once a reading keeps a byte (`settledIn`). No terminal
+ *  writes either. Like {@link REDACT_WITHHELD}, it holds no label and no `***`. */
+export const REDACT_NESTED_WITHHELD = '[text withheld: terminal codes nested in terminal codes]';
 
 /** `placeholder` as a reading of an input of `length` characters, which it hides whole. */
 function withheldReading(length: number, placeholder = REDACT_WITHHELD): Reading {
