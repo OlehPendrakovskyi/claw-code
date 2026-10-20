@@ -160,7 +160,9 @@ describe('labelWitnesses', () => {
                     marks.push(i + 1);
                 }
             }
-            if (marks.length > 8) {
+            // With no mark there is no segment to read; with marks, a sample is one segment (a space junk leaves an
+            // empty side), so a witness is present exactly when some reading forms the label.
+            if (marks.length === 0 || marks.length > 8) {
                 continue;
             }
             const witnesses = labelWitnesses(text);
@@ -170,6 +172,7 @@ describe('labelWitnesses', () => {
                     any = formsIn(text, index => ((mask >> marks.indexOf(index)) & 1) === 1, label.word, label.kind);
                 }
                 const kept = witnesses.get(label.word);
+                expect(kept !== undefined).toBe(any);
                 const own = formsIn(text, index => kept?.has(index) ?? false, label.word, label.kind);
                 expect(own).toBe(any);
                 formable += any ? 1 : 0;
