@@ -39,7 +39,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
 
-Status: in progress: S-a (`reading.ts`, `readingForRedaction`) and S-b (`redactTextReading`, passes recording what they hide) are built; S-c to S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+Status: in progress: S-a (`reading.ts`, `readingForRedaction`), S-b (`redactTextReading`, passes recording what they hide) and S-c (`witness.ts`, `labelWitnesses`) are built; S-d and S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
 
 ### Invariants
 
@@ -55,7 +55,7 @@ A pass may decide from parsed or normalised text, but its spans and hidden range
 **S3. The readings: the base reading, the extremes, and one witness reading per label.**
 - The base reading is R79's first rule, which is today's output.
 - One reading drops every final byte, and one keeps every final byte.
-- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes `\u00XX` and `%XX` escapes whose digits are final bytes (case 9). A run with no such reading keeps its base bytes.
+- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes escapes whose digits are final bytes (case 9), in the pipeline's order: `\u00XX` as `decodeNameEscapes` does, then, for a query name, `%XX` as `URLSearchParams` does, from what that gave (`\u0025` is a `%`); a run is read both as text, which leaves `%XX`, and as a query name. A run with no such reading keeps its base bytes.
 - Each witness reading is rendered on its own: it does not add to the base reading, so a byte that blocks the label there (`passx.basic`) is dropped.
 - The set has at most 3 + the vocabulary's size readings, whatever the input. Text with no marked final byte has only the base reading.
 
