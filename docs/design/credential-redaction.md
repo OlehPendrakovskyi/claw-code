@@ -55,7 +55,7 @@ A pass may decide from parsed or normalised text, but its spans and hidden range
 **S3. The readings: the base reading, the extremes, and one witness reading per label.**
 - The base reading is R79's first rule, which is today's output.
 - One reading drops every final byte, and one keeps every final byte.
-- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes `\u00XX` and `%XX` escapes whose digits are final bytes (case 9). A run with no such reading keeps its base bytes.
+- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes escapes whose digits are final bytes (case 9), in the pipeline's order: `\u00XX` as `decodeNameEscapes` does, then, for a query name, `%XX` as `URLSearchParams` does, from what that gave (`\u0025` is a `%`); a run is read both as text, which leaves `%XX`, and as a query name. A run with no such reading keeps its base bytes.
 - Each witness reading is rendered on its own: it does not add to the base reading, so a byte that blocks the label there (`passx.basic`) is dropped.
 - The set has at most 3 + the vocabulary's size readings, whatever the input. Text with no marked final byte has only the base reading.
 

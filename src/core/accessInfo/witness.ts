@@ -39,17 +39,27 @@ type Prev = typeof Prev[keyof typeof Prev];
 /** Each class by its number, as a state key holds it. */
 const PREVS: readonly Prev[] = [Prev.Boundary, Prev.Letter, Prev.OtherWord];
 
-/** Where an escape stands after the characters read so far: none; a backslash run, then `u`, `0`, `0` and the high
- *  digit (`2`–`7`, kept in the low bits); or `%` and its high digit (`0`–`F`). */
-const Esc = { None: 0, Backslash: 1, U: 2, U0: 3, U00: 4, U00High: 5, Percent: 11, PercentHigh: 12 } as const;
-/** One past the largest escape state: `U00High` takes six values (`2`–`7`), `PercentHigh` sixteen. */
-const ESC_STATES = Esc.PercentHigh + 16;
+/** Where a `\u00XX` escape stands after the units read so far: none; a backslash run, then `u`, `0`, `0` and the high
+ *  digit (`2`–`7`, kept in the low bits). */
+const Esc = { None: 0, Backslash: 1, U: 2, U0: 3, U00: 4, U00High: 5 } as const;
+/** One past the largest escape state: `U00High` takes six values (`2`–`7`). */
+const ESC_STATES = Esc.U00High + 6;
+/** Where a `%XX` escape stands after the characters `\u00XX` decoding gave so far: none, or `%` and its high digit
+ *  (`0`–`F`, kept in the low bits). */
+const Pct = { None: 0, Percent: 1, High: 2 } as const;
+/** One past the largest percent state: `High` takes sixteen values. */
+const PCT_STATES = Pct.High + 16;
+/** How a reading decodes `%XX`: not decided while no `%` was read, which text and a query name read alike; as
+ *  text, which leaves it; or as a query name, which decodes it. */
+const Mode = { Either: 0, Text: 1, Query: 2 } as const;
 /** For each label, the marked bytes to keep, by their index in `text` (the byte after its mark), so that each
  *  segment that some reading of its bytes lets form the label forms it. A segment is a maximal stretch of name
  *  characters, marked bytes, backslash runs and `%` that holds at least one mark; a label no segment can form is
- *  absent. A decoded escape (`\u0070`, `%70`) joins the run as the character it decodes to, as `decodeNameEscapes`
- *  and a query name's percent-decoding read it, and one that does not decode breaks the run. Linear: each label
- *  reads each segment once forward, with a bounded number of states per unit, and its match once back (R64). */
+ *  absent. A segment is read as text and as a query name: a decoded `\u0070` joins the run as the character it
+ *  decodes to, as `decodeNameEscapes` reads it, and a query name then decodes `%70` too, from what that gave
+ *  (`\u002570` is `%70`, then `p`), as `URLSearchParams` reads it; text leaves `%XX` as it is. A character that is
+ *  no name character, decoded or not, breaks the run. Linear: each label reads each segment once forward, with a
+ *  bounded number of states per unit, and its match once back (R64). */
 export function labelWitnesses(text: string): Map<string, ReadonlySet<number>> {
     const witnesses = new Map<string, Set<number>>();
     for (const units of segments(text)) {
@@ -114,50 +124,68 @@ function classOf(char: string): Prev {
 }
 
 /** The character a `\u00XX` escape decodes to, as `decodeNameEscapes` decodes it, or undefined when it stays: a
- *  backslash or DEL stays escaped, and a quote becomes an escaped quote, which breaks a name as well. */
+ *  backslash or DEL stays escaped. A quote becomes a backslash-escaped quote, which is no name character either. */
 function decodedU(high: number, low: string): string | undefined {
     const value = high * 16 + parseInt(low, 16);
-    if (value === 0x7f || value === 0x5c || value === 0x22 || value === 0x27 || value === 0x60) {
-        return undefined;
-    }
-    return String.fromCharCode(value);
+    return value === 0x7f || value === 0x5c ? undefined : String.fromCharCode(value);
 }
 
-/** The character a `%XX` escape decodes to when it is a printable ASCII one, or undefined. */
-function decodedPercent(high: number, low: string): string | undefined {
+/** The character a `%XX` escape decodes to in a query name, as `URLSearchParams` decodes it: an ASCII byte is
+ *  itself, a control byte included; any other is part of a UTF-8 sequence or U+FFFD, never an ASCII character. */
+function decodedPercent(high: number, low: string): string {
     const value = high * 16 + parseInt(low, 16);
-    return value >= 0x20 && value < 0x7f ? String.fromCharCode(value) : undefined;
+    return value < 0x80 ? String.fromCharCode(value) : '\uFFFD';
 }
 
 /** The bit that marks a state as reached, apart from the matched-prefix bits below it. */
 const PRESENT = 1 << 15;
 
-/** A matcher state: the escape being read, the class of the last kept character, the prefix bits of the word
- *  matched so far, and whether the word is done and waits for the boundary its kind needs. */
-type State = { readonly esc: number; readonly prev: Prev; readonly bits: number; readonly done: boolean };
-/** A state as a number, for a map key: done, escape and class (prefix bits are kept apart). */
-const keyOf = ({ esc, prev, done }: State): number => ((done ? ESC_STATES : 0) + esc) * 3 + prev;
+/** A matcher state: how it decodes `%XX`, the `\u00XX` and `%XX` escapes being read, the class of the last kept
+ *  character, the prefix bits of the word matched so far, and whether the word is done and waits for the boundary
+ *  its kind needs. */
+type State = {
+    readonly mode: number;
+    readonly esc: number;
+    readonly pct: number;
+    readonly prev: Prev;
+    readonly bits: number;
+    readonly done: boolean;
+};
+/** A state as a number, for a map key: done, mode, escapes and class (prefix bits are kept apart). */
+const keyOf = ({ mode, esc, pct, prev, done }: State): number =>
+    ((((done ? 3 : 0) + mode) * PCT_STATES + pct) * ESC_STATES + esc) * 3 + prev;
 const stateOf = (key: number, bits: number): State => {
-    const done = key >= ESC_STATES * 3;
-    const rest = done ? key - ESC_STATES * 3 : key;
-    return { esc: Math.floor(rest / 3), prev: PREVS[rest % 3] ?? Prev.Boundary, bits, done };
+    const escapes = Math.floor(key / 3);
+    const pcts = Math.floor(escapes / ESC_STATES);
+    const modes = Math.floor(pcts / PCT_STATES);
+    return {
+        mode: modes % 3,
+        esc: escapes % ESC_STATES,
+        pct: pcts % PCT_STATES,
+        prev: PREVS[key % 3] ?? Prev.Boundary,
+        bits,
+        done: modes >= 3,
+    };
 };
 /** What reading a unit leads to from a state: a next state, or the word's acceptance. */
 type Step = State | 'accept';
 
-/** The name characters an escape that does not go on leaves as text, after its backslashes or `%`: the `u`, the
- *  zeros and the high digit it read. They join the name again, so `%a` then `u` still holds the `a` of a word. */
+/** The name characters a `\u00XX` escape that does not go on leaves as text, after its backslashes: the `u`, the
+ *  zeros and the high digit it read. They join the name again, so `\u` then `x` still holds the `u` of a word. */
 function leftOver(esc: number): string {
-    if (esc >= Esc.U00High && esc < Esc.U00High + 6) {
+    if (esc >= Esc.U00High) {
         return `u00${esc - Esc.U00High + 2}`;
-    }
-    if (esc >= Esc.PercentHigh) {
-        return (esc - Esc.PercentHigh).toString(16);
     }
     return esc === Esc.U ? 'u' : esc === Esc.U0 ? 'u0' : esc === Esc.U00 ? 'u00' : '';
 }
 
-/** The marked bytes of one segment's first reading that forms `word`, or undefined when none does. A bounded word is
+/** Each step of `steps` read on with `read`; an acceptance stays one. */
+function then(steps: readonly Step[], read: (state: State) => Step[]): Step[] {
+    return steps.flatMap(next => next === 'accept' ? ['accept' as const] : read(next));
+}
+
+/** The marked bytes of one segment's first reading that forms `word`, as text or as a query name, or undefined when
+ *  none does. A bounded word is
  *  accepted only once the reading shows the boundary its kind needs after it: a character that is no letter (`pass`)
  *  or no name character (`bearer`, `basic`), a break, or the segment's end. Bytes dropped after a word can make an
  *  escape of fixed digits (`\u007` then `2`), so the boundary is read, not assumed. */
@@ -175,27 +203,54 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
             return bounded ? ['accept'] : [];
         }
         if (!NAME_CHAR.test(char)) {
-            return [{ esc: Esc.None, prev: Prev.Boundary, bits: 0, done: false }];
+            return [{ mode: state.mode, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false }];
         }
         const start = kind === 'anywhere' || (kind === 'letters-apart' ? state.prev !== Prev.Letter : state.prev === Prev.Boundary);
         const advanced = ((state.bits | (start ? 1 : 0)) & (positions.get(char.toLowerCase()) ?? 0)) << 1;
-        const going: State = { esc: Esc.None, prev: classOf(char), bits: advanced & (full - 1), done: false };
+        const going: State = { ...state, esc: Esc.None, pct: Pct.None, prev: classOf(char), bits: advanced & (full - 1) };
         if ((advanced & full) === 0) {
             return [going];
         }
-        return kind === 'anywhere' ? ['accept'] : [{ esc: Esc.None, prev: classOf(char), bits: 0, done: true }, going];
+        return kind === 'anywhere'
+            ? ['accept']
+            : [{ ...going, bits: 0, done: true }, going];
     };
-    /** A break (a character that is no name character, or an escape that does not go on) from a state. */
-    const breakFrom = (state: State): Step => state.done ? 'accept' : { esc: Esc.None, prev: Prev.Boundary, bits: 0, done: false };
+    /** A character `\u00XX` decoding gave (plain, decoded, or what an escape that does not go on left), read from a
+     *  state with no `\u00XX` escape open: a query name decodes `%XX` from these characters, text reads them as
+     *  they are. A `%` that does not go on stays as text and breaks the name, and the digit it read joins it again. */
+    const readDecoded = (state: State, char: string): Step[] => {
+        const { pct } = state;
+        if (pct === Pct.None) {
+            // An escape may decode to a character of the word: what was matched waits for it.
+            if (char !== '%' || state.mode === Mode.Text) {
+                return readChar(state, char);
+            }
+            // The first `%` parts the readings: text leaves it, a query name may decode it.
+            const query: State = { ...state, mode: Mode.Query, pct: Pct.Percent };
+            return state.mode === Mode.Query ? [query] : [query, ...readChar({ ...state, mode: Mode.Text }, char)];
+        }
+        const idle: State = { ...state, pct: Pct.None };
+        if (HEX.test(char)) {
+            return pct === Pct.Percent
+                ? [{ ...state, pct: Pct.High + parseInt(char, 16) }]
+                : readChar(idle, decodedPercent(pct - Pct.High, char));
+        }
+        const left = pct === Pct.Percent ? '' : (pct - Pct.High).toString(16);
+        let after = readChar(idle, '%');
+        for (const leftChar of left) {
+            after = then(after, next => readChar(next, leftChar));
+        }
+        return then(after, next => readDecoded(next, char));
+    };
     /** Reading `unit` from `state`: the states it leads to and the word's acceptance; none when the path dies. */
     const step = (state: State, unit: Unit): Step[] => {
         const { esc } = state;
         if (esc === Esc.None) {
-            if (unit.kind === 'name') {
-                return readChar(state, unit.char);
+            if (unit.kind === 'backslash') {
+                // An escape may decode to a character of the word: what was matched waits for it.
+                return [{ ...state, esc: Esc.Backslash }];
             }
-            // An escape may decode to a character of the word: what was matched waits for it.
-            return [{ ...state, esc: unit.kind === 'backslash' ? Esc.Backslash : Esc.Percent }];
+            return readDecoded(state, unit.kind === 'name' ? unit.char : '%');
         }
         const char = unit.kind === 'name' ? unit.char : '';
         if (esc === Esc.Backslash && unit.kind === 'backslash') {
@@ -212,33 +267,30 @@ function segmentWitness(units: readonly Unit[], word: string, kind: LabelKind): 
             next = char === '0' ? Esc.U00 : undefined;
         } else if (esc === Esc.U00) {
             next = char >= '2' && char <= '7' && char !== '' ? Esc.U00High + Number(char) - 2 : undefined;
-        } else if (esc >= Esc.U00High && esc < Esc.U00High + 6) {
-            decoded = HEX.test(char) ? decodedU(esc - Esc.U00High + 2, char) : undefined;
-        } else if (esc === Esc.Percent) {
-            next = HEX.test(char) ? Esc.PercentHigh + parseInt(char, 16) : undefined;
         } else {
-            decoded = HEX.test(char) ? decodedPercent(esc - Esc.PercentHigh, char) : undefined;
+            decoded = HEX.test(char) ? decodedU(esc - Esc.U00High + 2, char) : undefined;
         }
         if (next !== undefined) {
             return [{ ...state, esc: next }];
         }
+        const idle: State = { ...state, esc: Esc.None };
         if (decoded !== undefined) {
-            return readChar({ ...state, esc: Esc.None }, decoded);
+            return readDecoded(idle, decoded);
         }
-        // The escape does not go on: its backslashes or `%` stay as text and break the name, the characters it read
-        // join the name again, and then this unit is read.
-        let after: Step[] = [breakFrom(state)];
+        // The escape does not go on: its backslashes stay as text and break the name, the characters it read join
+        // the name again, and then this unit is read.
+        let after = readDecoded(idle, '\\');
         for (const left of leftOver(esc)) {
-            after = after.flatMap(next2 => next2 === 'accept' ? ['accept' as const] : readChar(next2, left));
+            after = then(after, next2 => readDecoded(next2, left));
         }
-        return after.flatMap(next2 => next2 === 'accept' ? ['accept' as const] : step(next2, unit));
+        return then(after, next2 => step(next2, unit));
     };
 
     // The states after each unit, sparse: from `offsets[k]` in `keys` and `masks`.
     const offsets = new Int32Array(units.length + 1);
     const keys: number[] = [];
     const masks: number[] = [];
-    const initial: State = { esc: Esc.None, prev: Prev.Boundary, bits: 0, done: false };
+    const initial: State = { mode: Mode.Either, esc: Esc.None, pct: Pct.None, prev: Prev.Boundary, bits: 0, done: false };
     let current = new Map<number, number>([[keyOf(initial), PRESENT]]);
     let accepted = -1;
     for (let k = 0; k < units.length && accepted === -1; k++) {
