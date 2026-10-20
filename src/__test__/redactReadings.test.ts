@@ -1,4 +1,4 @@
-import { REDACT_MAX_CHARS, redactText } from '../core/accessInfo/redact';
+import { REDACT_MAX_CHARS, REDACT_NESTED_WITHHELD, redactEndpointText, redactText } from '../core/accessInfo/redact';
 import { maskHiddenIn, readingOf, ReadingBuilder } from '../core/accessInfo/reading';
 
 /** A stripped terminal code whose final byte a reading may keep or drop, as the acceptance test writes them: `ESC(`
@@ -41,6 +41,22 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
         expect(redactText('token\\u002\u001b(1\u001b(2=PRIVATE')).toBe('token\\u002=***');
         // Only a query name reads `%70ass` as `pass`, so it does not stand in for the `pass` text needs.
         expect(redactText('%70ass-p\u001b(a\u001b(s\u001b(s\u001b(x=PRIVATE')).toBe('%70ass-p=***');
+    });
+
+    it('strips a code that keeping or removing bytes assembles, until stripping settles (#88 review)', () => {
+        // Keeping the `b` completes `\\u001b[0m`, a serialised CSI between `to` and `ken`.
+        expect(redactText('to\\u001\u001b(b[0mken=PRIVATE')).toBe('to\\u001[0mken=***');
+        // Removing the NUL joins `\\u00` to `1b[0m`; stripping that joins the next pair.
+        for (const redact of [redactText, redactEndpointText]) {
+            expect(redact('to\\u00\\u00\u00001b[0m1b[0mken=PRIVATE')).toBe('token=***');
+        }
+    });
+
+    it('withholds codes nested deeper than any terminal writes them', () => {
+        const nested = `to${'\\u00'.repeat(6)}\u0000${'1b[0m'.repeat(6)}ken=PRIVATE`;
+        expect(redactText(nested)).toBe(REDACT_NESTED_WITHHELD);
+        expect(redactEndpointText(nested)).toBe(REDACT_NESTED_WITHHELD);
+        expect(redactText(REDACT_NESTED_WITHHELD)).toBe(REDACT_NESTED_WITHHELD);
     });
 
     it('shows the base reading, so text no reading masks is left as it was', () => {
@@ -92,6 +108,9 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
                         : char;
                 if (next(7) === 0) {
                     label += code('xz0_m'[next(5)]);
+                } else if (next(12) === 0) {
+                    // A serialised CSI that keeping its final byte assembles (#88 review).
+                    label += `\\u001${code('b')}[0m`;
                 }
             }
             // A label a query name decodes before the run (`%70ass`), and separators and Basic payloads that some of
@@ -106,11 +125,11 @@ describe('redactText on every reading of stripped final bytes (#82 S-d, design S
             if (codes(input) > 7) {
                 continue;
             }
-            // A key's escaped separator is in the label's segment; a Basic or Bearer payload is a segment of its own.
-            const bounded = word === 'bearer' || word === 'basic';
-            const oneSegment = bounded
-                ? codes(label) <= 4 && codes(after) <= 4 && (codes(label) === 0 || codes(after) === 0)
-                : codes(label) + codes(after) <= 4;
+            // Segments as `witness.ts` reads them: name characters, backslashes, `%` and codes, which anything else
+            // (a quote, a space, the `[` of an assembled code) ends. Within scope, one of them holds every code.
+            const coded = input.replace(CODE, '~').split(/[^A-Za-z0-9_.\\%~-]+/)
+                .map(segment => segment.split('~').length - 1).filter(count => count > 0);
+            const oneSegment = coded.length <= 1 && (coded[0] ?? 0) <= 4;
             const hidden = plainReadings(input).some(plain => !redactText(plain).includes('PRIVATE'));
             const output = redactText(input);
             if (hidden && oneSegment && output.includes('PRIVATE')) {
@@ -146,6 +165,16 @@ describe('the cost of the readings (design S7, R64)', () => {
             redactText(labels + input);
             expect(performance.now() - started).toBeLessThan(3000);
         }
+    }, 60_000);
+});
+
+describe('stripping until it settles (R64)', () => {
+    it('stays linear on codes nested as deep as the text allows', () => {
+        // Each pass assembles the next layer; after the bounded number of passes the text is withheld.
+        const depth = 16 * 1024;
+        const started = performance.now();
+        expect(redactText(`to${'\\u00'.repeat(depth)}\u0000${'1b[0m'.repeat(depth)}ken=PRIVATE`)).toBe(REDACT_NESTED_WITHHELD);
+        expect(performance.now() - started).toBeLessThan(3000);
     }, 60_000);
 });
 

@@ -112,10 +112,21 @@ describe('readingForRedaction', () => {
         // Generated from the implementation at the commit it names; a difference is a change in what redactText
         // masks, so the corpus is not regenerated to make it pass.
         expect(golden.cases.length).toBeGreaterThan(1000);
+        // Changed on purpose by stripping until it settles (#88 review): removing a control byte assembles a
+        // serialised one (`\\u00` and `\\u00` around `\\x1b[`) or a JSON-escaped `/`, which the next pass removes.
+        const changedBySettling = new Map([
+            ['/&\u001b(😀\u0000\\\\\u0007\\/https:/', { normalized: '/&(😀/https:/', stripped: '/&(😀/https:/' }],
+            ['\thost.example\\u005c\\u001b(http:\\\\\u0007/%70&\\\\/😀\u001b(', { normalized: '\thost.example\\u005cttp:/%70&/😀(', stripped: '\thost.example\\u005cttp:/%70&/😀(' }],
+            ['\\u00\\x1b[:#\\x1b[\\u00\\\\/cookie', { normalized: '/cookie', stripped: '/cookie' }],
+        ]);
+        for (const input of changedBySettling.keys()) {
+            expect(golden.cases.some(entry => entry.input === input)).toBe(true);
+        }
         for (const { input, normalized, stripped } of golden.cases) {
+            const changed = changedBySettling.get(input);
             const reading = readingForRedaction(input);
-            expect(reading.text).toBe(normalized);
-            expect(stripTerminalCodes(input)).toBe(stripped);
+            expect(reading.text).toBe(changed?.normalized ?? normalized);
+            expect(stripTerminalCodes(input)).toBe(changed?.stripped ?? stripped);
             expectWellFormed(input, reading);
         }
     });
