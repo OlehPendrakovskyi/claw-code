@@ -1561,6 +1561,11 @@ const DELIMITED_USERINFO_TAIL = ' (x@h)';
  *  delimiter show which. Then `right` is to be masked whole, and `left` is cut at the first mask its probe
  *  shows (`https://***`). */
 export function joinBoundary(left: string, right = ''): { left: string; maskRight: boolean } {
+    // Parts too long to redact together are not scanned (R64). Whether `left` opens a credential that runs into
+    // `right` is then unknown, so neither is shown: `left` is withheld, and `right` masked whole.
+    if (left.length + right.length > REDACT_MAX_CHARS) {
+        return { left: REDACT_WITHHELD, maskRight: true };
+    }
     // An open userinfo is checked first: an earlier credential (`token=OLD https://alice:PREFIX/`) would end
     // the search before it, and redacting the prefix alone cannot see the `@` it lacks. A special scheme spelled
     // without `//` (`https:alice:PREFIX/`) gets it from the `@` the probe adds, before a URL parser's dropped
@@ -1612,6 +1617,24 @@ function upToFirstMask(redacted: string): string {
     return redacted.slice(0, redacted.indexOf('***') + 3);
 }
 
+/** The longest text redaction reads, in UTF-16 units (R64). Longer text is withheld whole: cutting it could part a
+ *  credential from its label, and scanning it costs more than a caller can wait for. The acpx stderr tail is
+ *  collected up to the same size, so redaction never withholds it. */
+export const REDACT_MAX_CHARS = 1024 * 1024;
+/** What redaction shows in place of text longer than {@link REDACT_MAX_CHARS}. It holds no credential label and no
+ *  `***`, so a later pass leaves it as it is and a join check reads no mask in it. */
+export const REDACT_WITHHELD = '[text over 1 MiB withheld: too long to redact]';
+
+/** {@link REDACT_WITHHELD} as a reading of an input of `length` characters, which it hides whole. */
+function withheldReading(length: number): Reading {
+    return {
+        text: REDACT_WITHHELD,
+        from: new Int32Array(REDACT_WITHHELD.length),
+        to: new Int32Array(REDACT_WITHHELD.length).fill(length),
+        hidden: [[0, length]],
+    };
+}
+
 /** Redact credentials anywhere in free-form text: URL userinfo and sensitive query params first
  *  ({@link redactEndpoint}), then plain-text forms such as `token=…` and `Bearer …`
  *  ({@link redactPlainSecrets}). Use it for anything that leaves the process: logs, UI, reports. */
@@ -1627,6 +1650,9 @@ export function redactTextReading(text: string): Reading {
     //    one; then query values, which a quote, backtick or angle bracket would otherwise cut off from their URL.
     // Terminal colour codes could sit between a label and its value (`token\u001b[0m=…`): drop them first.
     // A special scheme spelled `https:/` or `https:\\` gets `://`, so its userinfo is found as a parser finds it.
+    if (text.length > REDACT_MAX_CHARS) {
+        return withheldReading(text.length);
+    }
     return maskNormalizedIn(readingForRedaction(text));
 }
 
