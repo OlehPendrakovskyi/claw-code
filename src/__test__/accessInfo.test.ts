@@ -1002,9 +1002,8 @@ describe('redactText', () => {
     });
 
     it('keeps masking every final-byte shape reviewed for issue #63 cases 8 and 10', () => {
-        // Cases 8 and 10 stay open (design open question 3): a rule that picks one reading of a run's final bytes broke
-        // other passes in six review rounds of #81. These shapes each leaked under one of those rules, and `main` masks
-        // them; any later rule must keep doing so.
+        // A rule that picked one reading of a run's final bytes broke other passes in six review rounds of #81. These
+        // shapes each leaked under one of those rules; masking every reading (#82 S-d) must keep masking them.
         expect(redactText('by\u001b(pass=1')).toBe('byass=1');
         expect(redactText('pa\u001b(s\u001b(sx=1')).toBe('pax=1');
         for (const text of [
@@ -1071,7 +1070,8 @@ describe('redactText', () => {
         expect(redactText(`Basic ${coded('token')}pass\\tok`)).toBe('Basic ***\\tok');
         expect(redactText(`Basic ${coded('toxken')}private=`)).toBe('Basic ***');
         expect(redactText(`Basic "${coded('toxken')}private="`)).not.toContain('private');
-        expect(redactText(`Basic ${coded('toxken')}privatevalue:public`)).toBe('Basic ***:public');
+        // Keeping every byte reads `tokenprivatevalue:public`, a key and its value, so `public` is hidden too (#82 S-d).
+        expect(redactText(`Basic ${coded('toxken')}privatevalue:public`)).toBe('Basic ***:***');
         // A reading that holds both a key and a word stays whole.
         expect(redactText(`${coded('key')}.${coded('token')}bearer PRIVATE`)).not.toContain('PRIVATE');
         expect(redactText(`${coded('key')}.${coded('token')}basic dXNlcjpwYXNz`)).not.toContain('dXNlcjpwYXNz');

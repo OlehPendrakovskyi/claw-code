@@ -56,13 +56,13 @@ function forms(decoded: string, word: string, kind: LabelKind): boolean {
  *  other marked byte dropped. */
 function witnessReading(text: string, word: string, percent = false): string | undefined {
     const kept = labelWitnesses(text).get(word);
-    return kept === undefined ? undefined : reading(text, index => kept.has(index), percent);
+    return kept === undefined ? undefined : reading(text, index => kept.get(index) === true, percent);
 }
 
 /** Whether the witness reading of `word` in `text` forms it, as text or as a query name. */
 function witnessForms(text: string, word: string, kind: LabelKind): boolean {
     const kept = labelWitnesses(text).get(word);
-    return formsIn(text, index => kept?.has(index) ?? false, word, kind);
+    return formsIn(text, index => kept?.get(index) === true, word, kind);
 }
 
 describe('labelWitnesses', () => {
@@ -173,7 +173,7 @@ describe('labelWitnesses', () => {
                 }
                 const kept = witnesses.get(label.word);
                 expect(kept !== undefined).toBe(any);
-                const own = formsIn(text, index => kept?.has(index) ?? false, label.word, label.kind);
+                const own = formsIn(text, index => kept?.get(index) === true, label.word, label.kind);
                 expect(own).toBe(any);
                 formable += any ? 1 : 0;
             }

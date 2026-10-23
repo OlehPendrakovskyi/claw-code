@@ -39,7 +39,7 @@ A mask that both renderings keep shows no join-formed credential. That includes 
 
 ## S. Span-based masking (planned, [#82](https://github.com/OlehPendrakovskyi/vsclaw/issues/82))
 
-Status: in progress: S-a (`reading.ts`, `readingForRedaction`), S-b (`redactTextReading`, passes recording what they hide) and S-c (`witness.ts`, `labelWitnesses`) are built; S-d and S-e are not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
+Status: in progress: S-a (`reading.ts`, `readingForRedaction`), S-b (`redactTextReading`, passes recording what they hide), S-c (`witness.ts`, `labelWitnesses`) and S-d (`redactTextReading` over every reading, `maskHiddenIn`) are built; S-e is not. It replaces choosing one reading of ambiguous text with masking everything any of a set of readings hides. It aims to close cases 8, 9 and 10 of #63 (open question 3) and J3's open question 2, and it claims to close them only once the acceptance test in S9 holds. It holds for S-d where what masks a value needs the bytes of one segment, with at most four of them: of 4,000 sampled inputs, 1,031 are such and have a subset of final bytes that hides the value, and the output hides it in every one; no input the subsets leave unmasked is masked. Cases 8, 9 and 10 are closed as far as that sample reaches. Beyond that scope, open question 4 tracks the leaks left. Case 5 (open question 1) is a policy choice that readings do not settle, and it stays as it is.
 
 ### Invariants
 
@@ -52,12 +52,13 @@ A pass may decide from parsed or normalised text, but its spans and hidden range
 
 **S2. A reading is a normalisation of the input with a map back to it.** Each character of a reading maps to the input range it came from: one character, the escape it decodes (`\u0070`), or nothing for one normalisation inserts (`://` after `https:/`). Readings differ only where R79 and R62 leave a choice: which stripped final bytes stay, and so which split escapes decode.
 
-**S3. The readings: the base reading, the extremes, and one witness reading per label.**
+**S3. The readings: the base reading, then each segment's choices, aligned.**
 - The base reading is R79's first rule, which is today's output.
-- One reading drops every final byte, and one keeps every final byte.
-- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes escapes whose digits are final bytes (case 9), in the pipeline's order: `\u00XX` as `decodeNameEscapes` does, then, for a query name, `%XX` as `URLSearchParams` does, from what that gave (`\u0025` is a `%`); a run is read both as text, which leaves `%XX`, and as a query name. A run with no such reading keeps its base bytes.
+- A segment is a maximal stretch of name characters, marked final bytes, backslash runs and `%` (`witness.ts`). Its choices are which of its marked bytes to keep: every subset when it has at most four (`SUBSET_MARKS`), so a separator an escape spells (`\u002·2` is a quote) or a Basic payload's valid length is read as well as a label; otherwise none, all, and each label's witness.
+- Reading *j* keeps each segment's choice *j*, or its base bytes when the segment has fewer choices. Every choice of every segment is read, but a choice of one segment is read alongside some choice of each other one, not every combination (open question 4).
+- For each label in the vocabulary (keys, headers, `bearer`, `basic`), the witness reading keeps, in every run, only the final bytes of the first reading of that run that forms the label, and drops the rest. Witnesses are found by a label automaton that also decodes escapes whose digits are final bytes (case 9), in the pipeline's order: `\u00XX` as `decodeNameEscapes` does, then, for a query name, `%XX` as `URLSearchParams` does, from what that gave (`\u0025` is a `%`); a segment is read as text, which leaves `%XX`, and as a query name, each with its own witness, so a label only one of them forms does not stand in for the other's.
 - Each witness reading is rendered on its own: it does not add to the base reading, so a byte that blocks the label there (`passx.basic`) is dropped.
-- The set has at most 3 + the vocabulary's size readings, whatever the input. Text with no marked final byte has only the base reading.
+- The set has as many readings as the segment with the most choices: at most 16, or 3 + twice the vocabulary's size for a longer segment, whatever the input. Text with no marked final byte has only the base reading.
 
 **S4. The output is the base reading's edits plus what other readings hide.**
 - The base reading applies all of its edits, so with no marked final byte the output is today's.
@@ -91,7 +92,7 @@ Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b holds th
   - `Reading { text: string; from: Int32Array; to: Int32Array }` holds the input range of each character.
   - `Edit { from: number; to: number; text: string; hides: Array<[number, number]> }` is in input coordinates. When edits compose, as a later pass rewriting text an earlier one produced, their `hides` are carried through, merged and mapped.
   - A `Uint8Array` over the input holds the characters other readings hide.
-- **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` resolves the marks once per reading.
+- **Normalisation.** `stripTerminalCodes`, `decodeNameEscapes` and `normalizeSpecialSchemes` each return their output with its map, and the maps compose. `keepLabelBytes` resolves the marks once per reading. Stripping repeats until it changes nothing, since removing a control byte or keeping a final byte can assemble another code (`\u00` NUL `1b[0m`, `\u001·b[0m`); each reading is stripped again after its bytes are resolved (`settledIn`). Both are bounded by `STRIP_PASSES` (4): text that still changes is withheld as `REDACT_NESTED_WITHHELD` (R64), and so is text where a reading's kept bytes assemble a code with a final byte of its own, a choice one reading cannot stand for (#88 review).
 - **Passes.** Each of the following returns edits instead of text:
   - `maskBrokenUserinfo`, `maskUserinfo` and `NETWORK_PATH_USERINFO`;
   - `maskAmbiguousNetworkUserinfo`, `maskSensitivePairs` and `maskQueryPairs`;
@@ -99,7 +100,8 @@ Only the final rendering turns `MASK` into `***`, as `unmask` does. S-b holds th
   - `maskPlainSecrets`, with the Bearer, Basic and header masks inside it.
   
   A helper applies a pass's edits to its view and maps them back.
-- **Rendering.** `render(base, edits, hidden)` applies S4. `redactTextAndSecret` keeps running `maskSecretFragments` on the rendered text, as today.
+- **Rendering.** `maskHiddenIn` (`reading.ts`) applies S4 to the base reading's output. A stretch that stands for one input range (a copied character, a decoded escape, one edit's text) is masked whole when that range holds a character another reading hides and the base does not. A new mask takes in a `***` of the base's own next to it. `redactTextReading` runs each distinct reading once (S7).
+- **Callers.** Text reaches `redactText` with its terminal codes: `redactEndpointText` no longer strips them first, which settled the final bytes on the base reading alone (R81). The ACP error details in `ChatService` still do, since they are serialised before redaction and serialising changes what a code is (#88 review); their readings are a known gap of R81. `redactTextAndSecret` keeps running `maskSecretFragments` on the rendered text, as today.
 
 ### Delivery
 
@@ -115,9 +117,10 @@ Effort: L–XL in total. S-a, S-b and S-c change no output.
 
 ### Open questions for the design
 
-1. **Cost.** Text with marked final bytes runs the pipeline once per reading, up to 3 + the vocabulary's size times. Linear, but each such text costs about 16 times as much. Should a text above a size limit with many marked bytes be withheld instead (R64)?
+1. **Cost.** Text with marked final bytes runs the pipeline once per reading (S3). Linear, but each such text costs up to about 16 times as much. Should a text above a size limit with many marked bytes be withheld instead (R64)? *Measured with S-d:* readings that keep the same bytes run once, so the worst case found is a text the pipeline is slowest on after a run whose codes spell every label. At 256 KiB it takes 1.4–2.6 s, against 0.12–0.15 s for the same text without the codes, which runs once as on `main` (no coverage). The cost test in `redactReadings.test.ts` bounds it at 8 KiB, sized for CI's Windows runners. *Decided 2026-10-20 by the owner:* text over 1 MiB is withheld whole rather than redacted (`REDACT_MAX_CHARS`, #89, R64), which bounds the worst case at about four times the 256 KiB figure.
 2. **Witnesses across runs.** A witness reading picks each run's bytes on its own. A label whose masking depends on two runs together (a key in one run, a continuation in the next) is not chosen jointly. S9's test is what would show whether this matters.
-3. **R0.** Cases 8, 9 and 10 are leaks on contrived terminal-code input. Should #82 block R0 (SEC-4), or ship after it with these cases documented?
+3. **R0.** Cases 8, 9 and 10 are leaks on contrived terminal-code input. Should #82 block R0 (SEC-4), or ship after it with these cases documented? *Decided 2026-10-19 by the owner:* #82 blocks R0.
+4. **Readings S3 does not hold.** Two shapes still leak, both found by widening S9's sample after #88's review: a segment of more than four marked bytes whose label and separator need choices no witness makes together (`pass·wo·rd\u002·1·2=PRIVATE`, where the witness drops the quote's digit), and a value that needs choices in two segments together (`b·as·ic PRIVATE·x·y`, where `basic` and a valid payload length come from different segments). On that widened sample, 2,131 inputs have a subset that hides the value; the output shows it in 123, and `main` in 1,542. Text where a kept byte assembles a code with a choice of its own is withheld instead (`settledIn`). Reading every combination is exponential in the bytes, and a rule per shape is what R8 stopped in #81. Closing them needs a reading set chosen by what the passes need after a label (its separator, a payload), not by the label alone.
 
 ## Open questions
 
@@ -128,7 +131,7 @@ Effort: L–XL in total. S-a, S-b and S-c change no output.
    
    Any rule that keeps the first visible exposes the other two. A fix needs information the text does not carry, such as a caller that knows a part is prose. Until then, over-masking is the safe failure. The regression tests pin every shape that leaked in #80.
 2. **J3: a join that both hides and reveals text.** The subsequence check can be fooled when the revealed text repeats what was hidden. The exact alternative tracks hidden input positions through every pass, which needs `redactUrl`'s re-serialisation reworked.
-3. **Which final bytes of a stripped terminal code to keep (cases 8 and 10).** When a terminal code is stripped, its final byte may be a letter a credential label needs (`ESC[token=…`). R79 keeps a byte that completes a label on its own, or all of a run's bytes if together they make one. That misses:
+3. **Which final bytes of a stripped terminal code to keep (cases 8 and 10).** *Closed by S-d, as far as S9's test samples:* `redactText` masks what any reading of the bytes hides, so no reading has to be chosen. The history below is kept for the shapes it pins. When a terminal code is stripped, its final byte may be a letter a credential label needs (`ESC[token=…`). R79 keeps a byte that completes a label on its own, or all of a run's bytes if together they make one. That misses:
    - a label that needs some of the bytes but not the others: `p ESC(a ESC(s ESC(s ESC(x=PRIVATE` becomes `p=PRIVATE` (case 8);
    - a label judged without the separator after it: `toke ESC(n-bearer=PRIVATE` becomes `toke-bearer=PRIVATE`, because `bearer` counts though the Bearer pass needs whitespace (case 10).
    

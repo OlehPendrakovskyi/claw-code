@@ -175,6 +175,75 @@ export class ReadingBuilder {
     }
 }
 
+/** `reading`, an output over an input of `length` characters, with what `ranges` hide in that input masked too
+ *  (design S4). A stretch of characters that stand for one input range (a copied character, a decoded escape, or
+ *  what one edit put in) is masked whole when that range holds an input character `ranges` hide and
+ *  `reading.hidden` does not; adjacent masked stretches become one `mask`, together with any mask of the reading's
+ *  own next to them: a stretch that is `mask` itself, or whose range `reading.hidden` covers. Linear in the
+ *  reading, the input and the ranges. */
+export function maskHiddenIn(reading: Reading, ranges: ReadonlyArray<readonly [number, number]>, length: number, mask: string): Reading {
+    // How many ranges cover each input character, as differences, for `ranges` and for what `reading` hides.
+    const covered = new Int32Array(length + 1);
+    const own = new Int32Array(length + 1);
+    for (const [from, to] of ranges) {
+        covered[from]++;
+        covered[to]--;
+    }
+    for (const [from, to] of reading.hidden ?? []) {
+        own[from]++;
+        own[to]--;
+    }
+    // `exposed[p]`: how many of the first p input characters `ranges` hide and `reading` does not; `shown[p]`: how
+    // many of them `reading` does not hide.
+    const exposed = new Int32Array(length + 1);
+    const shown = new Int32Array(length + 1);
+    let inRanges = 0;
+    let inOwn = 0;
+    for (let p = 0; p < length; p++) {
+        inRanges += covered[p];
+        inOwn += own[p];
+        exposed[p + 1] = exposed[p] + (inRanges > 0 && inOwn === 0 ? 1 : 0);
+        shown[p + 1] = shown[p] + (inOwn === 0 ? 1 : 0);
+    }
+    if (exposed[length] === 0) {
+        return reading;
+    }
+    const { text, from, to } = reading;
+    const out = new ReadingBuilder(reading);
+    // The stretches read since the last one copied: `run` starts them, and they are masked once one is exposed.
+    let run = -1;
+    let exposing = false;
+    const flush = (end: number): void => {
+        if (run !== -1) {
+            if (exposing) {
+                out.mask(mask, run, end);
+            } else {
+                out.copy(run, end);
+            }
+        }
+        run = -1;
+        exposing = false;
+    };
+    for (let i = 0; i < text.length;) {
+        let end = i + 1;
+        while (end < text.length && from[end] === from[i] && to[end] === to[i]) {
+            end++;
+        }
+        const exposes = exposed[to[i]] > exposed[from[i]];
+        const ownMask = (to[i] > from[i] && shown[to[i]] === shown[from[i]]) || text.slice(i, end) === mask;
+        if (exposes || ownMask) {
+            run = run === -1 ? i : run;
+            exposing ||= exposes;
+        } else {
+            flush(i);
+            out.copy(i, end);
+        }
+        i = end;
+    }
+    flush(text.length);
+    return out.build();
+}
+
 /** `reading` with every match of the global `pattern` replaced as `String.prototype.replace` would replace it,
  *  each replacement standing for the input range of its match. */
 export function replaceInReading(reading: Reading, pattern: RegExp, replacer: (match: RegExpExecArray) => string): Reading {
